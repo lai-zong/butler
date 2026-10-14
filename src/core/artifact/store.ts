@@ -8,6 +8,7 @@
  */
 
 import type { EventLog } from '../events/log.js';
+import { artifactSnapshotOf } from './snapshot.js';
 import type { ClockPort } from '../ports/clock.js';
 import type {
   Artifact,
@@ -69,8 +70,10 @@ export class InMemoryArtifactStore implements ArtifactStore {
         kind: input.kind,
         stepId: input.producedByStep,
         version: 1,
-        // 内容不进事件（体积大且不属于状态），只记大小
+        // 内容不进语义事件的正文（体积大），但下面的 snapshot 里带全
         size: input.items ? input.items.length : input.content.length,
+        // ★ 完整状态快照 —— 让重放能重建（含内容与版本历史）
+        snapshot: artifactSnapshotOf(artifact, this.revisionsById.get(id) ?? []),
       },
       createdAt: now,
     });
@@ -125,11 +128,29 @@ export class InMemoryArtifactStore implements ArtifactStore {
         version,
         reason: input.reason,
         size: input.items ? input.items.length : input.content.length,
+        // ★ 完整状态快照
+        snapshot: artifactSnapshotOf(updated, this.revisionsById.get(input.artifactId) ?? []),
       },
       createdAt: now,
     });
 
     return updated;
+  }
+
+  // ── 重放注入（仅供重放器使用）──
+
+  /**
+   * 直接注入产出物与它的版本历史。
+   *
+   * ★ 为什么不能用 `create()` / `revise()` 重放：
+   *   它们会**发事件**，重放时会把历史事件再发一遍 —— 事件流被污染，
+   *   且下一次重放会翻倍。重放必须走一条不发事件的注入路径。
+   *
+   * ⚠️ 只应由产出物重放器调用。业务代码用 create/revise。
+   */
+  restoreArtifact(artifact: Artifact, revisions: readonly ArtifactRevision[]): void {
+    this.artifacts.set(artifact.id, artifact);
+    this.revisionsById.set(artifact.id, [...revisions]);
   }
 
   get(id: string): Artifact | undefined {

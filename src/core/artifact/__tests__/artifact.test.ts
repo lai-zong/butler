@@ -61,7 +61,7 @@ describe('创建产出物', () => {
     expect(ev[0]?.servantId).toBe('life');
   });
 
-  it('★ 内容不进事件（体积大且不属于状态）', () => {
+  it('★ 语义事件的正文不含内容，但 snapshot 里带全（供重放）', () => {
     const { store, log } = setup();
     store.create({
       label: '长文档',
@@ -70,9 +70,27 @@ describe('创建产出物', () => {
       producedByStep: 's1',
       author: 'butler',
     });
+
     const payload = log.byType('artifact.created')[0]?.payload as Record<string, unknown>;
     expect(payload['size']).toBe(5000);
-    expect(JSON.stringify(payload)).not.toContain('xxxx');
+
+    /**
+     * ⚠️ 这条断言**改过**，原先是 `not.toContain('xxxx')`（内容完全不进事件）。
+     *
+     *    改的理由：重放需要内容。没有内容的产出物恢复出来是空壳，
+     *    而「回退后能看到当时的清单长什么样」正是方案 § 5.2 的演示点。
+     *
+     *    体量实测：单次会话产出物约 5—30 KB，100 次会话 0.5—3 MB。
+     *    这个量级下把内容放进事件是**可接受**的，
+     *    换来的是「事件即完整真相源」这一性质的成立。
+     *
+     *    生产环境应改为内容寻址存储（内容存文件、事件只存哈希）；
+     *    当前规模下引入它属于过度设计。
+     */
+    const snapshot = payload['snapshot'] as {
+      revisions?: { content?: string }[];
+    };
+    expect(snapshot?.revisions?.[0]?.content).toHaveLength(5000);
   });
 });
 

@@ -10,3 +10,4 @@ export * from './replay.js';
 export * from './principles.js';
 export * from './operation.js';
 export * from './operations.js';
+export * from './operationReplay.js';

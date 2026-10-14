@@ -27,6 +27,46 @@ export interface AppendInput<T extends EventType = EventType, P = unknown> {
 
 export type EventListener = (event: SessionEvent) => void;
 
+/**
+ * 事件持久化端口。
+ *
+ * 设计依据：方案 § 4.1（事件是唯一真相源）、ADR 0004（核心层框架无关）
+ *
+ * ★ 为什么是端口而不是直接写文件：
+ *   核心层不许碰文件系统。这个接口只声明"事件产生后要通知谁"，
+ *   真实实现（JSONL 追加写）放在 adapters/。
+ *
+ * ★ 为什么是**追加**而不是覆盖：
+ *   事件流的本质就是追加的。覆盖写会让"长驻进程每秒都在写"
+ *   变成每秒重写整个历史 —— 而且中途崩溃会丢掉全部历史。
+ *
+ * ⚠️ 实现必须**同步可见、异步落盘**：
+ *   `onAppend` 不该阻塞事件产生（否则磁盘慢会拖住整个编排）。
+ *   实现应当先入缓冲、后台刷盘。丢最后几条可接受（有截断保护），
+ *   阻塞整个系统不可接受。
+ */
+export interface EventPersistencePort {
+  /** 有事件被追加。实现负责缓冲与刷盘。 */
+  onAppend(events: readonly SessionEvent[]): void;
+  /**
+   * 事件流被截断（检查点回退）。
+   *
+   * ★ 落盘侧**必须**处理它 —— 否则磁盘上留着已被回退的事件，
+   *   下次启动重放会把回退掉的历史又装回来。
+   *   实现应当重写文件到 `keepSeq` 为止。
+   */
+  onTruncate(keepSeq: number): void;
+  /** 进程退出前把缓冲刷干净。 */
+  flush(): Promise<void>;
+}
+
+/** 空实现：不需要持久化时用（测试、纯内存场景）。 */
+export const NULL_PERSISTENCE: EventPersistencePort = {
+  onAppend: () => undefined,
+  onTruncate: () => undefined,
+  flush: async () => undefined,
+};
+
 let idCounter = 0;
 function defaultId(): string {
   idCounter += 1;
@@ -41,8 +81,33 @@ function defaultId(): string {
 export class EventLog {
   private events: SessionEvent[] = [];
   private readonly listeners = new Set<EventListener>();
+  private persistence: EventPersistencePort = NULL_PERSISTENCE;
+  /** 落盘尚未确认的事件数（供界面显示"保存中"）。 */
+  private pendingPersist = 0;
 
   constructor(readonly sessionId: string) {}
+
+  /**
+   * 挂上持久化端口。
+   *
+   * ⚠️ 必须在**开始产生事件之前**挂上 —— 中途挂会丢掉之前的事件。
+   *    （这条约束比"能中途换端口"更重要：中途换端口意味着有一段历史
+   *      在内存里而不在盘上，重启后状态会少一截且无从发现。）
+   */
+  attachPersistence(port: EventPersistencePort): void {
+    this.persistence = port;
+  }
+
+  /** 还有多少事件在落盘缓冲里。 */
+  pendingPersistence(): number {
+    return this.pendingPersist;
+  }
+
+  /** 刷盘（进程退出前调用）。 */
+  async flushPersistence(): Promise<void> {
+    await this.persistence.flush();
+    this.pendingPersist = 0;
+  }
 
   get length(): number {
     return this.events.length;
@@ -124,6 +189,11 @@ export class EventLog {
 
     this.events.push(event as SessionEvent);
     this.emit(event as SessionEvent);
+
+    // ★ 落盘通知放在最后 —— 事件先在内存里成立，
+    //   磁盘慢不该拖住编排。（实现负责缓冲与后台刷盘。）
+    this.persistAppended([event as SessionEvent]);
+
     return event;
   }
 
@@ -136,7 +206,26 @@ export class EventLog {
   appendMany(inputs: readonly AppendInput[]): readonly SessionEvent[] {
     const snapshot = this.events.length;
     try {
-      return inputs.map((i) => this.append(i));
+      /**
+       * ⚠️ 逐条 append 会各自通知一次落盘。追加顺序本身没问题，
+       *    但会让「批量」的原子性在落盘侧失效 —— 一批里前几条已落、
+       *    后几条崩了。
+       *
+       *    这里先挂起通知，整批成功后再一次性交给端口。
+       */
+      const held: SessionEvent[] = [];
+      const real = this.persistence;
+      this.persistence = {
+        onAppend: (evs) => held.push(...evs),
+        onTruncate: (seq) => real.onTruncate(seq),
+        flush: () => real.flush(),
+      };
+
+      const out = inputs.map((i) => this.append(i));
+
+      this.persistence = real;
+      real.onAppend(out as readonly SessionEvent[]);
+      return out;
     } catch (err) {
       this.events.length = snapshot;
       throw err;
@@ -164,6 +253,14 @@ export class EventLog {
     }
     const discarded = this.events.slice(target.seq);
     this.events = this.events.slice(0, target.seq);
+
+    // ★ 通知落盘侧截断。
+    //
+    //   ⚠️ 不通知的后果很隐蔽：磁盘上留着已被回退的事件，
+    //      **下次启动重放会把回退掉的历史又装回来** ——
+    //      用户明明回退了，重启后状态却"复活"了。
+    this.persistence.onTruncate(target.seq);
+
     return discarded;
   }
 
@@ -177,5 +274,20 @@ export class EventLog {
 
   private emit(event: SessionEvent): void {
     for (const l of this.listeners) l(event);
+  }
+
+  private persistAppended(events: readonly SessionEvent[]): void {
+    if (events.length === 0) return;
+    try {
+      this.persistence.onAppend(events);
+      this.pendingPersist += events.length;
+    } catch {
+      /**
+       * ⚠️ 落盘通知失败**不能**让编排崩掉 —— 内存状态依然是对的。
+       *    但要留下痕迹：`pendingPersist` 会持续增长，
+       *    界面显示"保存中"时用户能看出异常。
+       */
+      this.pendingPersist += events.length;
+    }
   }
 }

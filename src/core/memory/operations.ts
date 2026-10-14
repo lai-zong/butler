@@ -16,6 +16,7 @@
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { RandomPort } from '../ports/clock.js';
+import { operationSnapshotOf } from './operationReplay.js';
 import {
   PATH_LABEL,
   sameTaskKind,
@@ -97,6 +98,18 @@ export class OperationMemoryStore {
      */
     readonly random: RandomPort,
   ) {}
+
+  // ── 重放注入（仅供重放器使用）──
+
+  /**
+   * 直接注入一条操作记忆。
+   *
+   * ⚠️ 只应由 hydrateOperationStore() 调用 ——
+   *    它不发事件，业务代码必须走 ecordAttempt()。
+   */
+  restoreOperation(m: OperationMemory): void {
+    this.entries.set(m.id, m);
+  }
 
   // ── 查询 ──
 
@@ -329,6 +342,7 @@ export class OperationMemoryStore {
         succeeded: args.success ? 1 : 0,
         isNew: true,
         failureReason: args.failureReason ?? null,
+        snapshot: operationSnapshotOf(created),
       },
       createdAt: now,
     });

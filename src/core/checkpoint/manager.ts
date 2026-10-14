@@ -86,6 +86,19 @@ export interface CheckpointManagerOptions {
   readonly clock: ClockPort;
   /** 产出物 id → 展示名（用于回退预览） */
   readonly artifactLabels?: ReadonlyMap<string, string>;
+  /**
+   * `sync()` 是否为新建的检查点落 `checkpoint.created` 事件。默认 true。
+   *
+   * ★ 什么情况下要传 false：**启动重放**。
+   *
+   *   ⚠️ 验证 7 抓到的问题：`bootstrap()` 里调 `sync()` 重建检查点，
+   *      而这些检查点的 `checkpoint.created` 事件**历史里已经有了** ——
+   *      再发一遍会让每次启动都往事件文件里写一批重复事件
+   *      （实测：事件从 12 条涨到 16 条，且每次重启都涨）。
+   *
+   *   重放是**重建**，不是**变化** —— 重建不该产生新事件。
+   */
+  readonly emitCreatedEvents?: boolean;
 }
 
 export class CheckpointManager {
@@ -93,12 +106,15 @@ export class CheckpointManager {
   private readonly log: EventLog;
   private readonly clock: ClockPort;
   private artifactLabels: Map<string, string>;
+  /** 见 CheckpointManagerOptions.emitCreatedEvents */
+  private emitCreatedEvents: boolean;
   private counter = 0;
 
   constructor(opts: CheckpointManagerOptions) {
     this.log = opts.log;
     this.clock = opts.clock;
     this.artifactLabels = new Map(opts.artifactLabels ?? []);
+    this.emitCreatedEvents = opts.emitCreatedEvents !== false;
   }
 
   // ── 查询 ──
@@ -167,6 +183,11 @@ export class CheckpointManager {
     this.revalidate();
 
     // 第二阶段：检查点本身落事件（让 session.rollback 引用的 id 可查）
+    //
+    // ⚠️ 启动重放时**不发** —— 这些事件历史里已经有了，
+    //    再发一遍会让每次启动都往事件文件里写重复事件。
+    if (!this.emitCreatedEvents) return pending.map((p) => p.cp);
+
     for (const { cp, sourceType } of pending) {
       this.log.append({
         type: 'checkpoint.created',
