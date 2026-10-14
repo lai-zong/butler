@@ -57,6 +57,13 @@ export interface MemoryCandidate {
   /** 仆人层反思时是哪个仆人 */
   readonly by: ServantId | 'butler';
   readonly createdAt: number;
+  /**
+   * 原则专属：适用条件与行为要求。
+   *
+   * ⚠️ 没有它，这条原则**无法被正确注入**（系统不知道何时该用它），
+   *    也无法被检测是否被违背。所以 kind=principle 时要求模型必须给出。
+   */
+  readonly principle?: { readonly condition: string; readonly action: string };
 }
 
 export interface ReflectionRunResult {
@@ -369,6 +376,10 @@ interface RawReflectionCandidate {
   readonly confidence: number;
   readonly evidence?: readonly string[];
   readonly rationale?: string;
+  // exactOptionalPropertyTypes 下必须显式允许 undefined —— 
+  // Zod 的 .optional() 产出的类型是 string | undefined
+  readonly principleCondition?: string | undefined;
+  readonly principleAction?: string | undefined;
 }
 
 function toCandidate(

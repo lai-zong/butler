@@ -200,6 +200,59 @@ describe('★ 去重 · 防止候选灌满记忆库', () => {
   });
 });
 
+describe('★ 原则落库时携带条件与动作', () => {
+  it('候选带 principle 时写入仓储（注入与违背检测都依赖它）', () => {
+    const { log, store, clock } = setup();
+    const r = sinkCandidates({ log, store, clock }, [
+      cand({
+        kind: 'principle',
+        content: '推荐餐厅前先确认同行人忌口',
+        principle: {
+          condition: '推荐餐厅或安排聚餐时',
+          action: '先问清同行人的饮食禁忌再给方案',
+        },
+      }),
+    ]);
+
+    const id = r.created[0]?.id;
+    if (!id) throw new Error('未落库');
+    const stored = store.get(id);
+    expect(stored?.principle?.condition).toBe('推荐餐厅或安排聚餐时');
+    expect(stored?.principle?.action).toBe('先问清同行人的饮食禁忌再给方案');
+  });
+
+  it('候选不带 principle 时字段留空（不伪造）', () => {
+    const { log, store, clock } = setup();
+    const r = sinkCandidates({ log, store, clock }, [
+      cand({ kind: 'principle', content: '某条没给条件的原则' }),
+    ]);
+    const id = r.created[0]?.id;
+    if (!id) throw new Error('未落库');
+    expect(store.get(id)?.principle).toBeUndefined();
+  });
+
+  it('反思来源事件里标注是否带结构化详情', () => {
+    const { log, store, clock } = setup();
+    // ⚠️ 两条内容必须**明显不同** —— 否则会被去重跳过（去重覆盖全生命周期）
+    sinkCandidates({ log, store, clock }, [
+      cand({
+        kind: 'principle',
+        content: '推荐餐厅前先确认同行人忌口',
+        principle: { condition: '推荐餐厅或安排聚餐时', action: '先问清同行人禁忌再给方案' },
+      }),
+      cand({
+        id: 'c2',
+        kind: 'principle',
+        content: '安排时间前先确认是工作日还是周末',
+      }),
+    ]);
+    const evs = log.byType('principle.derived');
+    const flags = evs.map((e) => (e.payload as { hasPrincipleDetail?: boolean }).hasPrincipleDetail);
+    expect(flags).toContain(true);
+    expect(flags).toContain(false);
+  });
+});
+
 describe('similarity · 相似度', () => {
   it('完全相同为 1', () => {
     expect(similarity('用户偏好清淡口味', '用户偏好清淡口味')).toBe(1);

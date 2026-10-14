@@ -85,6 +85,15 @@ export function sinkCandidates(
     created.push(res.entry);
     batch.push(res.entry);
 
+    // ★ 原则落库时写入条件与动作 —— 没有它们，这条原则无法被正确注入，
+    //   也无法被检测是否被违背（见 memory/principles.ts）。
+    if (cand.principle !== undefined) {
+      opts.store.setPrincipleDetail(res.entry.id, {
+        condition: cand.principle.condition,
+        action: cand.principle.action,
+      });
+    }
+
     // ③ 反思来源的元信息单独落事件。
     //    ⚠️ 不能重复发 memory.candidate —— store.create 已经发过一次了，
     //       重复会在审计视图里出现两条"候选创建"，看起来像建了两条记忆。
@@ -97,6 +106,7 @@ export function sinkCandidates(
         fromReflection: cand.layer,
         reflectedBy: cand.by,
         rationale: cand.rationale,
+        hasPrincipleDetail: cand.principle !== undefined,
         candidateId: cand.id,
         memClass: cand.scope.memClass,
         domainOwner: cand.scope.domainOwner ?? null,

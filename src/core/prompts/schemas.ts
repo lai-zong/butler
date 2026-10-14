@@ -229,6 +229,22 @@ export const reflectionSchema = z.object({
           .describe('置信度要诚实：单次观察 0.4—0.6，多次验证才给 0.8 以上'),
         evidence: z.array(z.string()).describe('证据：引用具体的产出或用户反馈'),
         rationale: z.string().describe('你为什么这样判断'),
+        // ★ 原则专属：拆成条件与动作，系统才能判断"何时注入"与"是否违背"
+        principleCondition: z
+          .string()
+          .optional()
+          .describe(
+            '仅当 kind=principle 时填：这条原则在**什么情况下**适用。' +
+              '例："推荐餐厅或安排聚餐时"。不填则该原则无法被正确注入。',
+          ),
+        principleAction: z
+          .string()
+          .optional()
+          .describe(
+            '仅当 kind=principle 时填：**具体该怎么做**，要可检查。' +
+              '例："先问清同行人的饮食禁忌再给方案"。' +
+              '不要写"注意一下"这类无法检查的空话。',
+          ),
       }),
     )
     .max(5)
