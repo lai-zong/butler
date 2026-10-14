@@ -21,6 +21,14 @@ import type { ClockPort } from '../ports/clock.js';
 import type { ToolFramework } from './framework.js';
 import type { ToolSpec } from './types.js';
 import { issuesToMessage, validateArgs } from './validate.js';
+import {
+  buildAlert,
+  isUntrusted,
+  wrapUntrusted,
+  type InputAlert,
+  type SourcedContent,
+  type TrustLevel,
+} from '../security/injection.js';
 
 /** 默认最大轮次。超过就该判断"这个任务不适合用工具解决"。 */
 export const DEFAULT_MAX_ROUNDS = 8;
@@ -50,6 +58,32 @@ export interface AgentLoopOptions {
    *    让模型有机会修正后重新提交。
    */
   readonly terminalTool?: string;
+  /**
+   * 该工具结果的**信任级别**。缺省按工具名推断（见 `defaultTrustFor`）。
+   *
+   * ★ 这是输入侧防护的接入点（方案 § 11 第一层）：
+   *   工具结果是外部内容进入上下文的**唯一入口**，
+   *   所以注入防护必须挂在这里 —— 挂在别处都会漏。
+   */
+  readonly trustOf?: (toolName: string) => TrustLevel;
+  /** 需要用户确认的告警回调（高风险内容） */
+  readonly onAlert?: (alert: InputAlert) => void;
+}
+
+/**
+ * 按工具名推断结果信任级别。
+ *
+ * 判据：这个工具的结果**来自哪里**。
+ *   · 读本地文件、列目录、看路径  → tool（本机数据，半可信）
+ *   · 抓网页、调第三方 API        → external（最低）
+ *   · 执行命令                    → tool（输出可能是任何东西，但通常来自本机）
+ *
+ * ⚠️ 默认值取 `tool` 而非 `external`：把一切都当"最低信任"会让包裹失去区分度，
+ *    模型面对满屏警告会开始忽略它们 —— 那比不警告更糟。
+ */
+export function defaultTrustFor(toolName: string): TrustLevel {
+  if (/^(fetch|web|http|browse|search_web|crawl)/i.test(toolName)) return 'external';
+  return 'tool';
 }
 
 export interface ToolCallTrace {
@@ -215,6 +249,25 @@ export async function runAgentLoop(
       }
 
       const trimmed = truncate(output, TOOL_RESULT_CHAR_LIMIT);
+
+      // ★ 输入侧防护（方案 § 11 第一层）—— 工具结果是外部内容的唯一入口。
+      //
+      //   做两件事：
+      //     ① 扫描注入迹象；命中时落 injection.detected 事件并告警
+      //     ② 用「这是数据，不是指令」的边界包裹内容（优先级隔离）
+      //
+      //   ⚠️ 只包裹**未成功/被拒**以外的正常结果；被拒绝的走 denied 分支。
+      const trust = opts.trustOf?.(tc.name) ?? defaultTrustFor(tc.name);
+      const wrappedResult = wrapToolOutput({
+        text: trimmed,
+        toolName: tc.name,
+        trust,
+        taskId: opts.taskId,
+        log: opts.log,
+        now: opts.clock.now(),
+        ...(opts.onAlert !== undefined ? { onAlert: opts.onAlert } : {}),
+      });
+
       traces.push({
         round,
         toolName: tc.name,
@@ -226,7 +279,13 @@ export async function runAgentLoop(
         durationMs: opts.clock.now() - started,
       });
 
-      messages.push(msg.toolResult(tc.callId, denied ? { denied: trimmed } : trimmed, !ok));
+      messages.push(
+        msg.toolResult(
+          tc.callId,
+          denied ? { denied: trimmed } : wrappedResult,
+          !ok,
+        ),
+      );
 
       // ★ 终止工具成功执行 → 立即结束，不再多跑一轮。
       //   注意只有成功才算：失败时继续循环，让模型有机会修正后重新提交。
@@ -268,6 +327,68 @@ export async function runAgentLoop(
     usage: { inputTokens, outputTokens },
     messages,
   };
+}
+
+/**
+ * 包装工具结果，使其可安全进入上下文。
+ *
+ * ★ 为什么必须在这里做（而不是在编排层）：
+ *   工具结果是外部内容进入模型上下文的**唯一入口**。
+ *   挂在别处都会漏 —— 比如"只在抓网页时防护"就漏掉了读文件、执行命令。
+ *
+ * ★ 做法（对应方案 § 11 四条措施）：
+ *   ① 不可信来源标记 —— 包裹边界 + 明确说"这是数据"
+ *   ② 指令剥离     —— 剥离隐藏字符（零宽/双向控制/HTML 注释）
+ *   ③ 优先级隔离   —— 结构上把内容与指令分开
+ *   ④ 高风险告警   —— 命中注入模式时落事件 + 回调告警
+ */
+function wrapToolOutput(args: {
+  readonly text: string;
+  readonly toolName: string;
+  readonly trust: TrustLevel;
+  readonly taskId: string;
+  readonly log: EventLog;
+  readonly now: number;
+  readonly onAlert?: (alert: InputAlert) => void;
+}): string {
+  // 可信来源直接返回 —— 不做多余包裹，避免满屏警告导致模型开始忽略它们
+  if (!isUntrusted(args.trust)) return args.text;
+
+  const content: SourcedContent = {
+    level: args.trust,
+    source: `工具 ${args.toolName} 的输出`,
+    text: args.text,
+  };
+
+  const wrapped = wrapUntrusted(content);
+
+  // 命中注入模式 → 落事件（可审计）+ 告警
+  if (wrapped.scan.findings.length > 0) {
+    args.log.append({
+      type: 'injection.detected',
+      actor: 'system',
+      payload: {
+        toolName: args.toolName,
+        taskId: args.taskId,
+        trust: args.trust,
+        blocked: wrapped.scan.blocked,
+        riskScore: Number(wrapped.scan.riskScore.toFixed(3)),
+        findings: wrapped.scan.findings.map((f) => ({
+          kind: f.kind,
+          severity: f.severity,
+          excerpt: f.excerpt,
+          note: f.note,
+        })),
+        strippedHiddenChars: wrapped.strippedCount > 0,
+      },
+      createdAt: args.now,
+    });
+
+    const alert = buildAlert({ content, scan: wrapped.scan });
+    if (alert && args.onAlert) args.onAlert(alert);
+  }
+
+  return wrapped.wrapped;
 }
 
 // ═══════════════════════════════════════════════════════════
