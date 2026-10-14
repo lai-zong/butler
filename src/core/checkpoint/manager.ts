@@ -17,6 +17,7 @@
 
 import type { EventLog } from '../events/log.js';
 import type { SessionEvent } from '../events/types.js';
+import type { ArtifactStore } from '../artifact/types.js';
 import type { ClockPort } from '../ports/clock.js';
 import { replay, stateHashOf } from './replay.js';
 import {
@@ -278,8 +279,11 @@ export class CheckpointManager {
    *
    * ⚠️ **截断不是删除**：被丢弃的事件返回给调用方归档，
    *    被取代的产出物标记而不移除（方案 § 5.2「被取代产出物不删除，可对比」）。
+   *
+   * ★ 三方同步：如果提供了 `artifacts`，回退会同时把检查点之后产生的产出物
+   *    标记为「已取代」—— 这样对话、任务状态、产出物三者回到同一个点。
    */
-  rollback(targetId: string): RollbackResult {
+  rollback(targetId: string, options?: { readonly artifacts?: ArtifactStore }): RollbackResult {
     const plan = this.planRollback(targetId);
     const fromSeq = this.log.length;
 
@@ -305,6 +309,13 @@ export class CheckpointManager {
     const memoriesToReview = plan.memoryImpact
       .filter((m) => m.action === 'review')
       .map((m) => m.memoryId);
+
+    // ★ 三方同步：把被取代的产出物在仓储里标记（不删除）
+    if (options?.artifacts) {
+      for (const id of superseded) {
+        options.artifacts.supersede(id, { byRollback: plan.target.id });
+      }
+    }
 
     // 落事件（可审计 + 供监督窗口同步）
     this.log.append({
