@@ -549,6 +549,67 @@ export class MemoryStore {
     return n;
   }
 
+  // ── 演化引擎专用（内部）──
+
+  /**
+   * 写入适应度与命中统计。
+   *
+   * ⚠️ **这是系统内部操作，不经过 canWrite**。
+   *    理由：演化是系统自身的行为（actor = 'system'），不是某个角色的写操作。
+   *    用户对演化的干预走 `EvolutionEngine.adjustWeight`，那条路径有显式审计事件。
+   *
+   * 之所以放在 store 而不是让引擎直接改对象：entry 是不可变对象，
+   * 必须由 store 统一替换，否则 Map 里的引用会与外部视图不一致。
+   */
+  setFitness(
+    memoryId: string,
+    fitness: number,
+    hit?: { readonly at: number },
+  ): void {
+    const e = this.entries.get(memoryId);
+    if (!e) return;
+    const now = this.clock.now();
+    this.entries.set(memoryId, {
+      ...e,
+      fitness,
+      updatedAt: now,
+      ...(hit !== undefined
+        ? { hitCount: e.hitCount + 1, lastHitAt: hit.at, useCount: e.useCount + 1 }
+        : {}),
+    });
+  }
+
+  /** 写入生命周期与相关时间戳（演化引擎专用，同样不经过 canWrite）。 */
+  setLifecycle(
+    memoryId: string,
+    lifecycle: MemoryLifecycle,
+    meta: {
+      readonly dormantSince?: number;
+      readonly archivedAt?: number;
+      readonly revivedCount?: number;
+      readonly clearDormant?: boolean;
+    } = {},
+  ): void {
+    const e = this.entries.get(memoryId);
+    if (!e) return;
+
+    const next: MemoryEntry = {
+      ...e,
+      lifecycle,
+      updatedAt: this.clock.now(),
+      ...(meta.revivedCount !== undefined ? { revivedCount: meta.revivedCount } : {}),
+      ...(meta.dormantSince !== undefined ? { dormantSince: meta.dormantSince } : {}),
+      ...(meta.archivedAt !== undefined ? { archivedAt: meta.archivedAt } : {}),
+    };
+
+    // 唤醒时清掉休眠标记（但归档时间保留，便于统计"曾经归档过"）
+    const cleaned: MemoryEntry = meta.clearDormant
+      ? (({ dormantSince: _drop, ...rest }) => rest as MemoryEntry)(next)
+      : next;
+
+    this.entries.set(memoryId, cleaned);
+  }
+
   // ── 内部 ──
 
   /**
