@@ -626,6 +626,45 @@ export class MemoryStore {
     this.entries.set(memoryId, { ...e, principle: detail, updatedAt: this.clock.now() });
   }
 
+  /**
+   * 记录一次冲突裁决结果（创新点 ③ 的效果验证）。
+   *
+   * 语义：
+   *   · `won`  → succeeded +1（这条记忆参与裁决并胜出，说明它经得起考验）
+   *   · `lost` → succeeded 不变，且**适应度小幅下降**
+   *     （落败方只降权不删除 —— 方案 § 8.3 第二层"冲突消解"）
+   *
+   * ⚠️ **不改 applied** —— applied 的语义是"被注入给仆人"，
+   *    裁决是另一条路径，混在一起会让那个数字失去意义。
+   */
+  recordVerdict(
+    memoryId: string,
+    outcome: 'won' | 'lost',
+  ): { readonly ok: boolean; readonly fitnessBefore?: number; readonly fitnessAfter?: number } {
+    const e = this.entries.get(memoryId);
+    if (!e) return { ok: false };
+
+    const now = this.clock.now();
+    const eff = e.effectiveness ?? { applied: 0, succeeded: 0, lastAppliedAt: now };
+
+    // 落败方降权而非删除 —— 渐变，不一刀切
+    const penalty = outcome === 'lost' ? 0.05 : 0;
+    const fitnessAfter = Math.max(0, e.fitness - penalty);
+
+    this.entries.set(memoryId, {
+      ...e,
+      fitness: fitnessAfter,
+      effectiveness: {
+        applied: eff.applied,
+        succeeded: eff.succeeded + (outcome === 'won' ? 1 : 0),
+        lastAppliedAt: eff.lastAppliedAt,
+      },
+      updatedAt: now,
+    });
+
+    return { ok: true, fitnessBefore: e.fitness, fitnessAfter };
+  }
+
   // ── 内部 ──
 
   /**
