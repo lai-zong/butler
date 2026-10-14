@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>管家式 AI · 事件内核自检</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #0a0b0d;
+        --surface: #101114;
+        --line: #22252c;
+        --txt: #e8eaed;
+        --sub: #9ba1ac;
+        --mute: #6b7280;
+        --brand: #4f7df3;
+        --ok: #3fb950;
+        --warn: #d29922;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 32px;
+        background: var(--canvas);
+        color: var(--txt);
+        font: 13px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .wrap { max-width: 900px; margin: 0 auto; }
+      h1 { font-size: 16px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+      .sub { color: var(--mute); font-size: 12px; margin-bottom: 24px; }
+      h2 { font-size: 12px; font-weight: 500; color: var(--mute); margin: 28px 0 10px; }
+      .card { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 14px 16px; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #1a1c21; }
+      th { color: var(--mute); font-weight: 500; font-size: 11px; }
+      tr:last-child td { border-bottom: none; }
+      code { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 11.5px; color: var(--sub); }
+      .seq { color: var(--mute); }
+      .ok { color: var(--ok); }
+      .warn { color: var(--warn); }
+      .brand { color: var(--brand); }
+      .kv { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; }
+      .kv .k { color: var(--mute); min-width: 120px; font-size: 12px; }
+      .kv .v { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>管家式 AI · 事件内核自检</h1>
+      <div class="sub">
+        这一页验证方案 § 4.1 的事件模型与 § 2.2⑥ 的记忆分权在代码层面成立。<br />
+        完整界面见 <code>prototype/index.html</code>。
+      </div>
+
+      <h2>不变量</h2>
+      <div class="card" id="invariants"></div>
+
+      <h2>会话事件流（一次"请朋友吃饭"的完整链路）</h2>
+      <div class="card" id="events"></div>
+
+      <h2>回退演示 · 只重做失败的那一步</h2>
+      <div class="card" id="rollback"></div>
+
+      <h2>记忆分权矩阵</h2>
+      <div class="card" id="partition"></div>
+    </div>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>
