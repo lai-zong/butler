@@ -43,7 +43,17 @@ class ScriptedModel implements ModelPort {
   constructor(private readonly turns: readonly Turn[]) {}
 
   describe() {
-    return { provider: 'scripted', model: 'test' };
+    return {
+      provider: 'scripted',
+      model: 'test',
+      // 测试替身声明全能力，避免能力检查把被测逻辑挡住
+      capabilities: {
+        supportsVision: true,
+        supportsStreaming: true,
+        supportsTools: true,
+        supportsThinking: true,
+      },
+    };
   }
 
   async complete(call: ModelCall): Promise<ModelResponse> {

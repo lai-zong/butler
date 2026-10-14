@@ -15,6 +15,8 @@
 
 import type {
   ModelCall,
+  ModelCapabilities,
+  ModelDescription,
   ModelPort,
   ModelResponse,
   StructuredCall,
@@ -39,6 +41,13 @@ export interface MockModelOptions {
   /** 脚本没命中时的兜底响应 */
   readonly fallback?: ScriptedResponse['respond'];
   readonly model?: string;
+  /**
+   * 覆盖能力声明。
+   *
+   * 默认全能力（避免 mock 把能力检查分支挡掉）；
+   * 要测「模型不支持视觉时怎么办」，在这里传 `{ supportsVision: false }`。
+   */
+  readonly capabilities?: ModelCapabilities;
 }
 
 interface RecordedCall {
@@ -52,6 +61,7 @@ export class MockModel implements ModelPort {
   private readonly script: readonly ScriptedResponse[];
   private readonly fallback: ScriptedResponse['respond'];
   private readonly modelName: string;
+  private readonly capabilities: ModelCapabilities;
 
   /** 记录每次调用的完整提示词，供断言"输入构造是否合规" */
   readonly calls: RecordedCall[] = [];
@@ -62,10 +72,29 @@ export class MockModel implements ModelPort {
     this.script = opts.script;
     this.fallback = opts.fallback ?? { kind: 'json', value: {} };
     this.modelName = opts.model ?? 'mock-model';
+    // 测试替身默认声明全能力，避免 mock 把能力检查分支意外挡住
+    this.capabilities = opts.capabilities ?? {
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsThinking: true,
+    };
   }
 
-  describe(): { provider: string; model: string } {
-    return { provider: 'mock', model: this.modelName };
+  /**
+   * 声明能力。
+   *
+   * ★ 测试替身声明**全能力**是为了让"能力检查"这条分支不被 mock 意外挡住：
+   *   若 mock 声明不支持视觉，任何用 mock 测的多模态路径都会在
+   *   能力检查处被拦下，测试就测不到真正的逻辑了。
+   *   要测"不支持视觉时的行为"，显式传 capabilities 覆盖即可。
+   */
+  describe(): ModelDescription {
+    return {
+      provider: 'mock',
+      model: this.modelName,
+      capabilities: this.capabilities,
+    };
   }
 
   async complete(call: ModelCall): Promise<ModelResponse> {

@@ -36,7 +36,17 @@ class ScriptedModel implements ModelPort {
   readonly seen: ModelCall[] = [];
   constructor(private readonly turns: readonly Turn[]) {}
   describe() {
-    return { provider: 'scripted', model: 'test' };
+    return {
+      provider: 'scripted',
+      model: 'test',
+      // 测试替身声明全能力，避免能力检查把被测逻辑挡住
+      capabilities: {
+        supportsVision: true,
+        supportsStreaming: true,
+        supportsTools: true,
+        supportsThinking: true,
+      },
+    };
   }
   async complete(call: ModelCall): Promise<ModelResponse> {
     this.seen.push(call);
@@ -294,7 +304,16 @@ describe('⑤ 无工具时走单次路径', () => {
     const clock = new FixedClock(T0);
     // 用一个只实现 completeStructured 的模型 —— 若走了循环会抛错
     const model: ModelPort = {
-      describe: () => ({ provider: 'x', model: 'y' }),
+      describe: () => ({
+    provider: 'x',
+    model: 'y',
+    capabilities: {
+      supportsVision: true,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsThinking: true,
+    },
+  }),
       complete: async () => {
         throw new Error('不该走工具循环');
       },

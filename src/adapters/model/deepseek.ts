@@ -8,6 +8,7 @@
  */
 
 import { ModelError } from '../../core/ports/model.js';
+import type { ModelCapabilities, ModelDescription } from '../../core/ports/model.js';
 import type {
   ModelCall,
   ModelMessage,
@@ -167,8 +168,23 @@ export class DeepSeekModel implements ModelPort {
     this.maxStructuredRetries = cfg.maxStructuredRetries ?? 2;
   }
 
-  describe(): { provider: string; model: string } {
-    return { provider: 'deepseek', model: this.model };
+  /**
+   * 声明模型能力。
+   *
+   * ★ 这张表的每条都是**实测**结论（2026-10，用真实 PNG 验证），不是照抄文档：
+   *   · `deepseek-chat`   ✓ 能读图 —— 回答「数字是7391，还有一个红色的圆形」（完全正确）
+   *   · `deepseek-flash`  ✓ 能读图
+   *   · `deepseek-v4-pro` ✗ **静默失效** —— HTTP 200，只回「抱歉，我无法查看这张图片」
+   *
+   * ⚠️ 最后一条就是本表存在的理由。若不在发请求前检查能力，
+   *    用户会以为 AI 看了图，实际图被整个忽略，而任务却报成功。
+   */
+  describe(): ModelDescription {
+    return {
+      provider: 'deepseek',
+      model: this.model,
+      capabilities: capabilitiesOf(this.model),
+    };
   }
 
   // ── 自由文本 / 工具调用 ──
@@ -413,4 +429,59 @@ export class DeepSeekModel implements ModelPort {
       return '';
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 模型能力表（实测）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 各模型的能力。
+ *
+ * ★ 数据来源：2026-10 用真实 PNG（含数字 7391 与红色圆点）实测。
+ *   官方文档只说 deepseek-flash 支持图片，实测发现 deepseek-chat
+ *   也被路由到 flash 因而同样能读图 —— 文档没写的也要实测确认。
+ */
+const CAPABILITY_TABLE: Record<string, ModelCapabilities> = {
+  'deepseek-chat': {
+    supportsVision: true,
+    supportsStreaming: true,
+    supportsTools: true,
+    supportsThinking: false,
+  },
+  'deepseek-flash': {
+    supportsVision: true,
+    supportsStreaming: true,
+    supportsTools: true,
+    supportsThinking: true,
+  },
+  // 实测不能读图：收到图片不报错，只在正文里说无法查看
+  'deepseek-v4-pro': {
+    supportsVision: false,
+    supportsStreaming: true,
+    supportsTools: true,
+    supportsThinking: true,
+  },
+};
+
+/**
+ * 查表；未知模型按保守默认。
+ *
+ * 保守的含义：宁可让用户看到明确的「当前模型不支持图片」，
+ * 也不要让图片被静默丢掉。
+ */
+export function capabilitiesOf(model: string): ModelCapabilities {
+  return (
+    CAPABILITY_TABLE[model] ?? {
+      supportsVision: false,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsThinking: false,
+    }
+  );
+}
+
+/** 已知模型的清单（供界面下拉）。 */
+export function knownModels(): readonly string[] {
+  return Object.keys(CAPABILITY_TABLE);
 }

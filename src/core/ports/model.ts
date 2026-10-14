@@ -21,6 +21,37 @@ export interface ModelTextPart {
   readonly text: string;
 }
 
+/**
+ * 图片内容块（多模态输入）。
+ *
+ * ★ 实测确认（2026-10，用真实 PNG 验证）：
+ *   · `deepseek-chat`  ✓ 能读图（"数字是7391，还有一个红色的圆形"）
+ *   · `deepseek-flash` ✓ 能读图
+ *   · `deepseek-v4-pro` ✗ **静默失效** —— HTTP 200，但只回一句
+ *     "抱歉，我无法查看这张图片"
+ *
+ *   ⚠️ 最后一条是个真风险：不报错、不降级提示，只是把图忽略了。
+ *      所以模型配置里必须声明 `supportsVision`，不能靠试。
+ *
+ * 官方约束（api-docs.deepseek.com/guides/vision）：
+ *   · 仅支持 JPEG / PNG / GIF / WebP，且**按文件内容识别**而非扩展名
+ *   · 图片只能放在 `user` 消息里，放 system/assistant 会 400
+ *   · 单图 ≤ 32 MiB，请求体 ≤ 48 MiB
+ *   · 图片按尺寸折算 token，单图上限 1024 token
+ */
+export interface ModelImagePart {
+  readonly kind: 'image';
+  /** data: URL（base64 内联）或可公开访问的 http(s) 链接 */
+  readonly url: string;
+  /** 供界面与审计显示的说明（不参与模型输入） */
+  readonly alt?: string;
+  /**
+   * 细节级别。`low` 会缩到 512×512，更快更省；
+   * 读文档/截图里的文字时应当用 `high`。
+   */
+  readonly detail?: 'low' | 'high' | 'original' | 'auto';
+}
+
 export interface ModelToolCallPart {
   readonly kind: 'toolCall';
   readonly callId: string;
@@ -35,7 +66,7 @@ export interface ModelToolResultPart {
   readonly isError?: boolean;
 }
 
-export type ModelPart = ModelTextPart | ModelToolCallPart | ModelToolResultPart;
+export type ModelPart = ModelTextPart | ModelImagePart | ModelToolCallPart | ModelToolResultPart;
 
 export interface ModelMessage {
   readonly role: 'system' | 'user' | 'assistant';
@@ -145,6 +176,54 @@ export interface ModelPort {
    */
   completeStructured<T>(call: StructuredCall<T>): Promise<StructuredResult<T>>;
 
-  /** 供日志与审计记录 —— 便于复现（方案 § 5.2 可复现信息） */
-  describe(): { readonly provider: string; readonly model: string };
+  /**
+   * 模型能力声明。
+   *
+   * ★ 为什么必须显式声明（而不是"试试看"）：
+   *   实测发现 `deepseek-v4-pro` 收到图片时**不报错** ——
+   *   HTTP 200，只在正文里回一句"抱歉，我无法查看这张图片"。
+   *   不做能力检查的话，这个降级会无声发生：用户以为 AI 看了图，
+   *   实际它把图整个忽略了，而任务照常"成功"。
+   *
+   *   所以要**在发请求之前**就知道能不能发图。
+   */
+  describe(): ModelDescription;
+}
+
+/**
+ * 模型能力。
+ *
+ * ⚠️ 保守默认：**不知道的能力一律按不支持处理**。
+ *    宁可少用一项能力，也不要让"静默失效"发生。
+ */
+export interface ModelCapabilities {
+  /** 能否接收图片（多模态输入）*/
+  readonly supportsVision: boolean;
+  /** 能否做流式输出 */
+  readonly supportsStreaming: boolean;
+  /** 能否做工具调用 */
+  readonly supportsTools: boolean;
+  /**
+   * 是否把"思考过程"与"正式回答"分开返回。
+   *
+   * 对应原始功能「翻译英文思考」：
+   * 有的模型单独给一个 reasoning 字段，有的把推理混在正文里。
+   * 声明出来才知道该从哪儿取。
+   */
+  readonly supportsThinking: boolean;
+}
+
+/** 保守默认值：不知道的能力一律按「不支持」处理。 */
+export const CONSERVATIVE_CAPABILITIES: ModelCapabilities = {
+  supportsVision: false,
+  supportsStreaming: false,
+  supportsTools: false,
+  supportsThinking: false,
+};
+
+/** 供日志与审计记录 —— 便于复现（方案 § 5.2 可复现信息） */
+export interface ModelDescription {
+  readonly provider: string;
+  readonly model: string;
+  readonly capabilities: ModelCapabilities;
 }
