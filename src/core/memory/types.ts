@@ -158,9 +158,34 @@ export interface CredentialCapability {
 
 /** 原则的效果跟踪（创新点 ②）。 */
 export interface Effectiveness {
+  /**
+   * 被注入给仆人的次数。
+   *
+   * ⚠️ 语义是"**这次任务用到了它**"，不是"这条原则存在"。
+   *    只有真的注入进 prompt 才 +1 —— 否则这个数字没有意义。
+   */
   readonly applied: number;
+  /** 应用后奏效的次数（用户未纠正 / 监督未判违背） */
   readonly succeeded: number;
   readonly lastAppliedAt: number;
+}
+
+/**
+ * 原则的结构化表达。
+ *
+ * 为什么需要它：只有一句自然语言的"推荐餐厅前先确认同行人忌口"，
+ * 系统无法判断**什么时候该注入它**、也无法判断**产出是否违背了它**。
+ * 拆成 condition + action 之后两件事都能做：
+ *   · 注入：拿 condition 与本次任务指令做相关性匹配
+ *   · 违背检测：拿 action 检查仆人产出是否遵守
+ */
+export interface PrincipleDetail {
+  /** 适用条件（什么时候该用它） */
+  readonly condition: string;
+  /** 行为要求（该怎么做事） */
+  readonly action: string;
+  /** 由用户的冲突裁决固化的原则（区别于反思产出的） */
+  readonly fromVerdict?: string;
 }
 
 /** 记忆版本历史，支持回滚与"遗忘权"。 */
@@ -210,6 +235,8 @@ export interface MemoryEntry {
 
   /** 原则专属：效果跟踪 */
   readonly effectiveness?: Effectiveness;
+  /** 原则专属：条件与动作的结构化表达（决定「何时注入」与「是否违背」） */
+  readonly principle?: PrincipleDetail;
   /** 敏感域专属：谁被授权读取过 */
   readonly grants?: readonly MemoryGrant[];
   /** 凭证专属：可用不可见 */

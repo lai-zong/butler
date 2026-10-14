@@ -23,8 +23,10 @@ import {
   type MemoryGrant,
   type MemoryKind,
   type MemoryLifecycle,
+  type Effectiveness,
   type MemoryOwner,
   type MemoryRevision,
+  type PrincipleDetail,
 } from './types.js';
 import type { ServantId } from '../servants/types.js';
 
@@ -608,6 +610,20 @@ export class MemoryStore {
       : next;
 
     this.entries.set(memoryId, cleaned);
+  }
+
+  /** 写入效果跟踪（原则专用）。演化/审计路径调用，不经过 canWrite。 */
+  setEffectiveness(memoryId: string, effectiveness: Effectiveness): void {
+    const e = this.entries.get(memoryId);
+    if (!e) return;
+    this.entries.set(memoryId, { ...e, effectiveness, updatedAt: this.clock.now() });
+  }
+
+  /** 写入原则的结构化条件/动作（建档时给出，之后可修订）。 */
+  setPrincipleDetail(memoryId: string, detail: PrincipleDetail): void {
+    const e = this.entries.get(memoryId);
+    if (!e) return;
+    this.entries.set(memoryId, { ...e, principle: detail, updatedAt: this.clock.now() });
   }
 
   // ── 内部 ──

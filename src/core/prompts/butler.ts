@@ -12,7 +12,12 @@
  *    § 5.2 的「可复现信息」需要记录本次用了哪个版本的提示词。
  */
 
-import { SERVANT_BOUNDARY, SERVANT_IDS, type ServantId } from '../servants/types.js';
+import {
+  SERVANT_BOUNDARY,
+  SERVANT_IDS,
+  SERVANT_REASONING,
+  type ServantId,
+} from '../servants/types.js';
 import type { InjectedConstraint, UpstreamInput } from '../servants/types.js';
 
 export const PROMPT_VERSIONS = {
@@ -275,6 +280,7 @@ ${patterns}
 
 export function servantSystem(servant: ServantId): string {
   const b = SERVANT_BOUNDARY[servant];
+  const reasoning = SERVANT_REASONING[servant];
   const others = SERVANT_IDS.filter((s) => s !== servant)
     .map((s) => `- ${s}（${SERVANT_BOUNDARY[s].test}）`)
     .join('、');
@@ -287,6 +293,12 @@ export function servantSystem(servant: ServantId): string {
 
 不属于你领域的请求（${others}），在 uncertainties 里明确指出"这超出我的领域"，
 不要越界给建议——越界会与其它仆人产生重复和矛盾。
+
+## 你的专业方法
+
+按这套检查清单思考，而不是给泛泛的建议：
+
+${reasoning.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 
 ## 你的地位
 
@@ -315,6 +327,17 @@ export function servantTask(args: {
   readonly injectedConstraints: readonly InjectedConstraint[];
   /** 依赖步骤的产出物 —— 没有它，这个仆人只能凭空猜上游做了什么 */
   readonly inputs?: readonly UpstreamInput[];
+  /**
+   * 本次任务适用的**已生效原则**（方案 § 8.8）。
+   *
+   * ⚠️ 这是"学了要用"的落点：反思提炼出原则、用户审核生效之后，
+   *    必须在执行时注入，否则等于白学。
+   */
+  readonly principles?: readonly {
+    readonly content: string;
+    readonly action: string;
+    readonly why: string;
+  }[];
 }): string {
   const c =
     args.injectedConstraints.length === 0
@@ -325,6 +348,21 @@ export function servantTask(args: {
               `- ${x.negotiable ? '⚠️ 可协商' : '🔒 不可覆盖'} ${x.content}（来源：${x.source}）`,
           )
           .join('\n');
+
+  const principleBlock =
+    !args.principles || args.principles.length === 0
+      ? ''
+      : `
+
+### 你在这个领域总结出的原则（**来自过往经验，请遵守**）
+
+${args.principles
+  .map((p, i) => `${i + 1}. ${p.content}\n   要求：${p.action}\n   依据：${p.why}`)
+  .join('\n')}
+
+这些原则是你在以往同类任务中提炼、并经用户确认的。
+**如果本次情况与原则的适用条件不符，不要机械照搬** ——
+在 findings 里说明"原则 X 不适用，因为……"，由管家判断。`;
 
   const upstream =
     !args.inputs || args.inputs.length === 0
@@ -362,7 +400,7 @@ ${c}
 
 **注意**：你看到的是**与本次任务相关的约束**，不是用户的全部记忆。
 标记为「不可覆盖」的约束**必须遵守**，不得为了完成任务而绕过。
-标记为「可协商」的约束，如果你认为应当放宽，在 findings 里说明理由交由管家裁决。
+标记为「可协商」的约束，如果你认为应当放宽，在 findings 里说明理由交由管家裁决。${principleBlock}
 
 ### 输出要求
 

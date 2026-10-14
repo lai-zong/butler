@@ -15,6 +15,15 @@ import { EventLog } from '../events/log.js';
 import { runServant } from '../servants/execute.js';
 import { SERVANT_BOUNDARY } from '../servants/types.js';
 import type { ToolFramework } from '../tools/framework.js';
+import type { MemoryStore } from '../memory/store.js';
+import {
+  checkPrinciples,
+  recordInjection,
+  recordViolation,
+  selectPrinciples,
+  type PrincipleCandidate,
+  type PrincipleCheck,
+} from '../memory/principles.js';
 import type {
   DispatchStep,
   Finding,
@@ -37,6 +46,11 @@ export interface RunSessionArgs {
    * 不给时走纯推理路径。验证脚本两种都用得到。
    */
   readonly tools?: ToolFramework;
+  /**
+   * 记忆仓储。给出时管家会**注入该领域已生效的原则**并在收尾时检测违背。
+   * 不给则跳过原则环节（纯编排验证时不必要）。
+   */
+  readonly store?: MemoryStore;
 }
 
 export interface RunSessionResult {
@@ -48,6 +62,12 @@ export interface RunSessionResult {
   readonly supervision: SupervisionOutput;
   /** 硬约束机械校验结果（确定性判定，见 hardConstraints.ts） */
   readonly hardConstraints: HardConstraintReport;
+  /** 原则注入与违背检测结果（方案 § 8.8 效果验证） */
+  readonly principles: {
+    readonly injected: readonly PrincipleCandidate[];
+    readonly checks: readonly PrincipleCheck[];
+    readonly violated: readonly PrincipleCheck[];
+  };
   /** 本次登记的产出物（检查点回退预览用） */
   readonly artifacts: readonly { readonly id: string; readonly label: string; readonly stepId: string }[];
   readonly totalUsage: { readonly inputTokens: number; readonly outputTokens: number };
@@ -123,6 +143,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       reports: [],
       supervision: { conflicts: [], summary: '置信度不足，已转入澄清提问，未执行派发。' },
       hardConstraints: { verdicts: [], mustBlock: false },
+      principles: { injected: [], checks: [], violated: [] },
       artifacts: [],
       totalUsage: { inputTokens, outputTokens },
       modelInfo: args.model.describe(),
@@ -145,6 +166,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   // ── ⑤ 逐步派发（含依赖检查与上游产出传递）──
   const reports: ServantReport[] = [];
   const done = new Set<string>();
+  /** 本次会话实际注入过的原则（收尾时做违背检测） */
+  const injectedPrinciples: PrincipleCandidate[] = [];
   /** stepId → 该步骤的产出，供下游步骤使用 */
   const outputs = new Map<string, { servant: string; artifacts: ServantArtifact[]; findings: Finding[] }>();
 
@@ -184,6 +207,29 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       continue;
     }
 
+    // ★ 原则注入：挑出本次任务适用的已生效原则（方案 § 8.8「学了要用」）
+    //   没有这一步，反思产出的原则永远不会被执行，principle.applied 也永远不会发出。
+    const principleCandidates =
+      args.store !== undefined
+        ? selectPrinciples({
+            store: args.store,
+            task: `${args.userGoal}\n${step.instruction}`,
+            servant: step.servant,
+          })
+        : [];
+
+    if (args.store !== undefined && principleCandidates.length > 0) {
+      // 记 applied +1 并落 principle.applied 事件
+      recordInjection({
+        log,
+        store: args.store,
+        clock: args.clock,
+        taskId: step.stepId,
+        candidates: principleCandidates,
+      });
+      injectedPrinciples.push(...principleCandidates);
+    }
+
     log.append({
       type: 'dispatch.stepStarted',
       actor: 'butler',
@@ -207,6 +253,15 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       instruction: step.instruction,
       injectedConstraints: step.injectedConstraints,
       ...(inputs.length > 0 ? { inputs } : {}),
+      ...(principleCandidates.length > 0
+        ? {
+            principles: principleCandidates.map((pc) => ({
+              content: pc.principle.content,
+              action: pc.principle.principle?.action ?? pc.principle.content,
+              why: pc.why,
+            })),
+          }
+        : {}),
       ...(args.tools !== undefined ? { tools: args.tools } : {}),
       now: args.clock.now(),
     });
@@ -254,6 +309,32 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   inputTokens += sup.usage.inputTokens;
   outputTokens += sup.usage.outputTokens;
 
+  // ── ⑦b 原则违背检测（方案 § 2.2③ 第三类检查）──
+  //
+  // ⚠️ 这是"效果验证"闭环的收尾：原则被注入了（applied +1），
+  //    必须也检查它有没有被遵守 —— 否则 applied 只涨不验，创新点 ② 就是空的。
+  //
+  //    关键词初筛只做"疑似违背"的报告，最终判定交由监督层（上面 ⑦ 的 LLM）。
+  //    与硬约束校验同一套分工：确定性的用代码，需要理解力的交给模型。
+  let principleReport: {
+    readonly checks: readonly PrincipleCheck[];
+    readonly violated: readonly PrincipleCheck[];
+  } = { checks: [], violated: [] };
+  if (args.store !== undefined && injectedPrinciples.length > 0) {
+    const check = checkPrinciples({
+      injected: injectedPrinciples,
+      reports: reports.map((r) => ({
+        servant: r.servant,
+        text: JSON.stringify(r.artifacts) + JSON.stringify(r.findings ?? []),
+      })),
+    });
+    principleReport = check;
+
+    for (const v of check.violated) {
+      recordViolation({ log, taskId: args.sessionId, check: v, clock: args.clock });
+    }
+  }
+
   // ── ⑧ 产出物登记（供检查点回退预览说清"哪些产出会被取代"）──
   const artifacts: { readonly id: string; readonly label: string; readonly stepId: string }[] = [];
   for (const rep of reports) {
@@ -298,6 +379,11 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     reports,
     supervision: sup.output,
     hardConstraints: hardReport,
+    principles: {
+      injected: injectedPrinciples,
+      checks: principleReport.checks,
+      violated: principleReport.violated,
+    },
     artifacts,
     totalUsage: { inputTokens, outputTokens },
     modelInfo: args.model.describe(),
