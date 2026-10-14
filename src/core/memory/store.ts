@@ -581,6 +581,22 @@ export class MemoryStore {
     });
   }
 
+  /**
+   * 记录「这条记忆是由哪几条合并而来」（相似合并用，方案 § 8.3 第二层）。
+   *
+   * ⚠️ 被吸收的旧条目**归档而非删除**，且它们的 id 记在这里 ——
+   *    所以合并始终可追溯、可回滚。与"淘汰 ≠ 删除"是同一立场。
+   */
+  setMergedFrom(memoryId: string, fromIds: readonly string[]): void {
+    const e = this.entries.get(memoryId);
+    if (!e) return;
+    this.entries.set(memoryId, {
+      ...e,
+      mergedFrom: [...fromIds],
+      updatedAt: this.clock.now(),
+    });
+  }
+
   /** 写入生命周期与相关时间戳（演化引擎专用，同样不经过 canWrite）。 */
   setLifecycle(
     memoryId: string,

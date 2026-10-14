@@ -4,6 +4,7 @@ export * from './fitness.js';
 export * from './recall.js';
 export * from './evolution.js';
 export * from './sink.js';
+export * from './merge.js';
 export * from './principles.js';
 export * from './operation.js';
 export * from './operations.js';
