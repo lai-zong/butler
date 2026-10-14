@@ -130,8 +130,7 @@ export type EventType =
   | 'mcp.serverDisconnected'
   | 'mcp.serverFailed'
   | 'mcp.toolsDiscovered'
-  | 'mcp.policyChanged'
-  | 'mcp.serverConfigured';
+  | 'mcp.policyChanged';
 
 /** 族划分，便于 UI 分组与统计。 */
 export const EVENT_FAMILIES = {
@@ -221,7 +220,6 @@ export const EVENT_FAMILIES = {
     'mcp.serverFailed',
     'mcp.toolsDiscovered',
     'mcp.policyChanged',
-    'mcp.serverConfigured',
   ],
 } as const satisfies Record<string, readonly EventType[]>;
 
