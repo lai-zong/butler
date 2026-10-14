@@ -10,7 +10,12 @@
  */
 
 import { EventLog } from '../events/log.js';
-import { msg, type ModelPort } from '../ports/model.js';
+import { msg, type ModelMessage, type ModelPort } from '../ports/model.js';
+import type { ClockPort } from '../ports/clock.js';
+import { runAgentLoop } from '../tools/agentLoop.js';
+import { extractReport, submitReportTool } from '../tools/builtin/report.js';
+import type { ToolFramework } from '../tools/framework.js';
+import type { ActionTier } from '../tools/types.js';
 import { PROMPT_VERSIONS, servantSystem, servantTask } from '../prompts/butler.js';
 import {
   normalizeArtifact,
@@ -73,6 +78,31 @@ function trimArtifact(a: ServantArtifact): ServantArtifact {
   }
 }
 
+/**
+ * 仆人可用的工具集（按领域收窄）。
+ *
+ * ⚠️ 这是**能力声明**，不是安全边界 —— 安全由 ToolFramework 的闸门负责。
+ *    收窄的理由是"减少干扰、降低选错工具的概率"：
+ *    健康仆人不需要执行命令，给它那个工具只会增加误用机会。
+ *
+ * 领域差异的依据是职责边界表（生活=去哪买什么 / 代码=怎么实现）。
+ */
+export const SERVANT_TOOL_POLICY: Record<
+  ServantId,
+  { readonly allowTiers: readonly ActionTier[]; readonly includeTerminal: boolean }
+> = {
+  // 生活：查资料、读写清单。不需要执行命令。
+  life: { allowTiers: ['readOnly', 'normal'], includeTerminal: true },
+  // 健康：主要做核对与评估，写文件都很少。
+  health: { allowTiers: ['readOnly'], includeTerminal: true },
+  // 学习：整理资料，需要读写。
+  study: { allowTiers: ['readOnly', 'normal'], includeTerminal: true },
+  // 办公：文档处理，需要读写与移动。
+  work: { allowTiers: ['readOnly', 'normal', 'highRisk'], includeTerminal: true },
+  // 代码：需要执行命令（跑测试、装依赖）。
+  code: { allowTiers: ['readOnly', 'normal', 'highRisk'], includeTerminal: true },
+};
+
 export async function runServant(args: {
   readonly model: ModelPort;
   readonly log: EventLog;
@@ -83,6 +113,15 @@ export async function runServant(args: {
   /** 依赖步骤的产出物 */
   readonly inputs?: readonly UpstreamInput[];
   readonly now: number;
+  readonly clock: ClockPort;
+  /**
+   * 工具框架。给出时仆人走**工具循环**，否则走原来的单次结构化输出。
+   *
+   * ⚠️ 两者必须都支持：验证脚本与纯推理场景不需要工具，
+   *    强行走循环会让每次调用都多花一轮 token。
+   */
+  readonly tools?: ToolFramework;
+  readonly maxRounds?: number;
 }): Promise<ServantRunResult> {
   // 截断上游产出 —— 控制 prompt 体积，同时保留判断所需的信息
   const trimmedInputs: UpstreamInput[] | undefined = args.inputs?.map((inp) => ({
@@ -92,25 +131,20 @@ export async function runServant(args: {
     findings: inp.findings.slice(0, UPSTREAM_MAX_FINDINGS),
   }));
 
-  const result = await args.model.completeStructured({
-    purpose: 'servant',
-    schema: servantReportSchema,
-    schemaName: 'ServantReport',
-    temperature: 0.2,
-    maxOutputTokens: 3072,
-    messages: [
-      msg.system(servantSystem(args.servant)),
-      msg.user(
-        servantTask({
-          instruction: args.instruction,
-          injectedConstraints: args.injectedConstraints,
-          ...(trimmedInputs !== undefined ? { inputs: trimmedInputs } : {}),
-        }),
-      ),
-    ],
-  });
+  const baseMessages: ModelMessage[] = [
+    msg.system(servantSystem(args.servant)),
+    msg.user(
+      servantTask({
+        instruction: args.instruction,
+        injectedConstraints: args.injectedConstraints,
+        ...(trimmedInputs !== undefined ? { inputs: trimmedInputs } : {}),
+      }),
+    ),
+  ];
 
-  const raw = result.value;
+  const { raw, usage, attempts } = args.tools
+    ? await runWithTools(args, baseMessages)
+    : await runSingleShot(args, baseMessages);
 
   // ── 归一化：把模型的多种自然写法收敛成领域模型 ──
   // 这是"防腐层"的落点：LLM 的输出形状会变，领域模型不变。
@@ -160,8 +194,8 @@ export async function runServant(args: {
       uncertainties: report.uncertainties,
       needsButlerDecision: report.needsButlerDecision ?? null,
       memoryRefs: report.memoryRefs,
-      usage: result.usage,
-      attempts: result.attempts,
+      usage,
+      attempts,
       promptVersions: [PROMPT_VERSIONS.servantSystem, PROMPT_VERSIONS.servantTask],
     },
     createdAt: args.now,
@@ -180,8 +214,97 @@ export async function runServant(args: {
   return {
     report,
     raw,
-    usage: result.usage,
-    attempts: result.attempts,
+    usage,
+    attempts,
     promptVersions: [PROMPT_VERSIONS.servantSystem, PROMPT_VERSIONS.servantTask],
   };
 }
+
+// ═══════════════════════════════════════════════════════════
+// 两条执行路径
+// ═══════════════════════════════════════════════════════════
+
+/** 原路径：单次结构化输出。无工具需求时用它，省一轮 token。 */
+async function runSingleShot(
+  args: ServantRunArgs,
+  messages: readonly ModelMessage[],
+): Promise<{ raw: ServantReportOutput; usage: ServantRunResult['usage']; attempts: number }> {
+  const result = await args.model.completeStructured({
+    purpose: 'servant',
+    schema: servantReportSchema,
+    schemaName: 'ServantReport',
+    temperature: 0.2,
+    maxOutputTokens: 3072,
+    messages,
+  });
+  return { raw: result.value, usage: result.usage, attempts: result.attempts };
+}
+
+/**
+ * 工具路径：模型可以反复调用工具，最后通过 `submit_report` 提交结构化汇报。
+ *
+ * ★ 关键设计：汇报做成**终止工具**，而不是让模型在自由文本里同时兼顾
+ *   "调工具"与"交结构化结果" —— 后者模型很容易在中间写一段散文导致解析失败。
+ */
+async function runWithTools(
+  args: ServantRunArgs,
+  messages: readonly ModelMessage[],
+): Promise<{ raw: ServantReportOutput; usage: ServantRunResult['usage']; attempts: number }> {
+  const tools = args.tools;
+  if (!tools) throw new Error('runWithTools 需要 tools');
+
+  // 汇报工具在这里注册（幂等）—— 谁用循环谁负责保证终止工具存在
+  tools.register(submitReportTool(), { overwrite: true });
+  const policy = SERVANT_TOOL_POLICY[args.servant];
+  const loop = await runAgentLoop(
+    {
+      model: args.model,
+      tools,
+      log: args.log,
+      clock: args.clock,
+      taskId: args.taskId,
+      toolFilter: (t) => t.name === 'submit_report' || policy.allowTiers.includes(t.tier),
+      ...(args.maxRounds !== undefined ? { maxRounds: args.maxRounds } : {}),
+      terminalTool: 'submit_report',
+    },
+    messages,
+  );
+
+  const submitted = extractReport(loop.traces);
+  if (submitted === undefined) {
+    // 模型没有提交汇报（可能是轮次用尽或一直调工具）——
+    // 如实反映为 blocked，而不是伪造一份空汇报
+    return {
+      raw: {
+        status: 'blocked',
+        artifacts: [],
+        uncertainties: [
+          loop.hitRoundLimit
+            ? `达到工具调用轮次上限，未能提交汇报。已执行 ${loop.traces.length} 次工具调用。`
+            : '模型未调用 submit_report 提交汇报。',
+        ],
+        findings: [],
+      },
+      usage: loop.usage,
+      attempts: loop.rounds,
+    };
+  }
+
+  const parsed = servantReportSchema.safeParse(submitted);
+  if (!parsed.success) {
+    return {
+      raw: {
+        status: 'blocked',
+        artifacts: [],
+        uncertainties: [`提交的汇报格式不合规：${parsed.error.issues[0]?.message ?? '未知'}`],
+        findings: [],
+      },
+      usage: loop.usage,
+      attempts: loop.rounds,
+    };
+  }
+
+  return { raw: parsed.data, usage: loop.usage, attempts: loop.rounds };
+}
+
+type ServantRunArgs = Parameters<typeof runServant>[0];

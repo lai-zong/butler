@@ -64,8 +64,14 @@ export class ToolFramework {
    *
    * 重名直接抛错 —— 静默覆盖会让"某个工具被悄悄换掉"成为可能。
    */
-  register(spec: ToolSpec): void {
-    if (this.tools.has(spec.name)) {
+  /**
+   * 注册工具。
+   *
+   * ⚠️ 重名**默认抛错** —— 静默覆盖会让「某个工具被悄悄换掉」成为可能。
+   *    确实需要覆盖（如测试或多环境复用）时必须显式传 `overwrite: true`。
+   */
+  register(spec: ToolSpec, opts?: { readonly overwrite?: boolean }): void {
+    if (this.tools.has(spec.name) && opts?.overwrite !== true) {
       throw new ToolError(`工具 ${spec.name} 已注册，不允许静默覆盖`, 'invalid_args');
     }
     this.tools.set(spec.name, spec);

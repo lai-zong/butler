@@ -14,6 +14,7 @@ import { supervise } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { runServant } from '../servants/execute.js';
 import { SERVANT_BOUNDARY } from '../servants/types.js';
+import type { ToolFramework } from '../tools/framework.js';
 import type {
   DispatchStep,
   Finding,
@@ -31,6 +32,11 @@ export interface RunSessionArgs {
   readonly sessionId: string;
   readonly userGoal: string;
   readonly recalled: readonly RecallResult[];
+  /**
+   * 工具框架。给出时仆人走工具循环（能读写文件、跑命令）；
+   * 不给时走纯推理路径。验证脚本两种都用得到。
+   */
+  readonly tools?: ToolFramework;
 }
 
 export interface RunSessionResult {
@@ -195,11 +201,13 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     const run = await runServant({
       model: args.model,
       log,
+      clock: args.clock,
       servant: step.servant,
       taskId: step.stepId,
       instruction: step.instruction,
       injectedConstraints: step.injectedConstraints,
       ...(inputs.length > 0 ? { inputs } : {}),
+      ...(args.tools !== undefined ? { tools: args.tools } : {}),
       now: args.clock.now(),
     });
     inputTokens += run.usage.inputTokens;
