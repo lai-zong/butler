@@ -211,6 +211,43 @@ export function normalizeReport(raw: ServantReportOutput): {
 
 
 // ═══════════════════════════════════════════════════════════
+// 反思（分层反思 · 创新点 ①）
+// ═══════════════════════════════════════════════════════════
+
+export const reflectionSchema = z.object({
+  candidates: z
+    .array(
+      z.object({
+        kind: z
+          .enum(['fact', 'preference', 'principle'])
+          .describe('fact=客观事实；preference=倾向习惯；principle=可复用的行为准则'),
+        content: z.string().min(1).describe('候选内容，一句话说清，不要写成长段落'),
+        confidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .describe('置信度要诚实：单次观察 0.4—0.6，多次验证才给 0.8 以上'),
+        evidence: z.array(z.string()).describe('证据：引用具体的产出或用户反馈'),
+        rationale: z.string().describe('你为什么这样判断'),
+      }),
+    )
+    .max(5)
+    .describe('反思产出的候选；**没有可复用规律就返回空数组**，不要凑数'),
+  /** 仅管家层使用 */
+  collaborationIssues: z
+    .array(z.string())
+    .optional()
+    .describe('跨领域协作中发现的问题（仆人看不到这些）'),
+  /** 仅管家层使用 */
+  rhythmChanges: z
+    .array(z.string())
+    .optional()
+    .describe('观察到的生活节奏变化'),
+});
+
+export type ReflectionOutput = z.infer<typeof reflectionSchema>;
+
+// ═══════════════════════════════════════════════════════════
 // 管家 · 监督校验
 // ═══════════════════════════════════════════════════════════
 
