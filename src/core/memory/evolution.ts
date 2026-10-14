@@ -13,6 +13,7 @@
  */
 
 import type { EventLog } from '../events/log.js';
+import { snapshotOf } from './snapshot.js';
 import type { ClockPort, RandomPort } from '../ports/clock.js';
 import {
   adaptThreshold,
@@ -169,7 +170,12 @@ export class EvolutionEngine {
     this.log.append({
       type: 'fitness.updated',
       actor: 'supervisor',
-      payload: { memoryId, reason: 'conflict', conflicts: this.acc(memoryId).conflicts },
+      payload: {
+        memoryId,
+        reason: 'conflict',
+        conflicts: this.acc(memoryId).conflicts,
+        snapshot: snapshotOf(this.store.get(memoryId)),
+      },
       createdAt: now,
     });
   }
@@ -330,6 +336,11 @@ export class EvolutionEngine {
         smoothed: Number(fit.smoothed.toFixed(4)),
         components: fit.components,
         decayClass: fit.decayClass,
+        // ★ 状态快照 —— 与其他状态事件同一约定：
+        //   任何改状态的事件都带 snapshot，否则重放会得到「部分正确」的状态，
+        //   而部分正确是最难查的。
+        //   （验证 6 抓到过：这条没带时，重放后 fitness 与真实值不一致。）
+        snapshot: snapshotOf(this.store.get(entry.id)),
       },
       createdAt: now,
     });
@@ -375,6 +386,10 @@ export class EvolutionEngine {
         content: entry.content,
         reason: transition.reason,
         fitness: this.store.get(entry.id)?.fitness,
+        // ★ 完整状态快照 —— 让重放能精确恢复
+        //   （dormantSince / archivedAt / revivedCount 都是状态的一部分，
+        //    只记 fitness 不足以重建）
+        snapshot: snapshotOf(this.store.get(entry.id)),
       },
       createdAt: now,
     });
@@ -429,3 +444,4 @@ export class EvolutionEngine {
     };
   }
 }
+

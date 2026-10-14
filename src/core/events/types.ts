@@ -61,6 +61,7 @@ export type EventType =
   | 'constraint.hardBlocked'
 
   // ── 族 5 · 记忆生命周期 ──
+  | 'memory.created'
   | 'memory.recalled'
   | 'memory.candidate'
   | 'memory.approved'
@@ -162,6 +163,7 @@ export const EVENT_FAMILIES = {
     'constraint.hardBlocked',
   ],
   memoryLifecycle: [
+    'memory.created',
     'memory.recalled',
     'memory.candidate',
     'memory.approved',

@@ -13,6 +13,7 @@
  */
 
 import type { EventLog } from '../events/log.js';
+import { snapshotOf } from './snapshot.js';
 import type { ClockPort } from '../ports/clock.js';
 import {
   isButlerWriteOnly,
@@ -99,6 +100,33 @@ export class MemoryStore {
     private readonly clock: ClockPort,
     private readonly userId: string,
   ) {}
+
+  // ── 重放注入（仅供重放器使用）──
+
+  /**
+   * 直接注入一条记忆的完整状态。
+   *
+   * ★ 为什么不能用 `create()` 重放：
+   *   `create()` 会**发事件** —— 重放时用它会把历史事件再发一遍，
+   *   事件流被污染，且下一次重放会翻倍。
+   *
+   *   所以重放必须走一条**不发事件**的注入路径。
+   *
+   * ⚠️ 只应由 `replayMemoryStore()` 调用。业务代码用 `create()`。
+   */
+  restoreEntry(entry: MemoryEntry): void {
+    this.entries.set(entry.id, entry);
+  }
+
+  /** 注入一条版本历史（详情见 MemoryRevision）。 */
+  restoreRevision(revision: MemoryRevision): void {
+    this.revisions.push(revision);
+  }
+
+  /** 全部版本历史（重放器用来做等价性校验）。 */
+  allRevisions(): readonly MemoryRevision[] {
+    return this.revisions;
+  }
 
   // ── 查询 ──
 
@@ -333,6 +361,62 @@ export class MemoryStore {
         evidence: entry.evidence,
         owner,
         lifecycle: entry.lifecycle,
+        /**
+         * ⚠️ 这条事件**也**要带 snapshot。
+         *
+         *   我第一版只给 `review()` 路径加了 snapshot，于是「建档即 active」
+         *   发出的那条 `memory.approved` 没有 —— 重放时被判为"信息不足"跳过。
+         *   验证 6 直接抓到了它（报告 13 条被跳过）。
+         *
+         *   教训：**同一个事件类型被两条路径使用时，两条都要带齐字段**。
+         *   否则重放会得到"部分正确"的状态 —— 而部分正确是最难查的。
+         */
+        snapshot: snapshotOf(entry),
+        decidedBy: actor.kind === 'user' ? 'user' : 'system',
+        audit: entry.lifecycle === 'candidate' ? 'candidateCreated' : 'created',
+      },
+      createdAt: now,
+    });
+
+    // ★★ `memory.created` —— 专用于**重建**的完整状态快照。
+    //
+    //   ⚠️ 上面那条 `memory.candidate` / `memory.approved` 是**语义事件**
+    //      （回答"这条记忆是怎么来的"），字段刻意为审计服务，
+    //      **缺 fitness / createdAt / version / subject / principle 等**，
+    //      不足以重建出等价的 MemoryEntry。
+    //
+    //      两者职责不同，都需要：
+    //        · 语义事件 → 审计、界面展示、用户理解"它为什么记下这条"
+    //        · 状态事件 → 重放重建（本事件）
+    //
+    //   这也是"事件是唯一真相源"能成立的前提：
+    //   真相源必须包含**足以重建状态**的信息，否则重放会得到残缺的状态。
+    this.log.append({
+      type: 'memory.created',
+      actor: actor.kind === 'user' ? 'user' : actor.kind,
+      ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
+      payload: {
+        // 完整条目 —— 重放器直接用它恢复，不做任何推断
+        entry: {
+          id: entry.id,
+          memClass: entry.memClass,
+          kind: entry.kind,
+          content: entry.content,
+          subject: entry.subject ?? null,
+          confidence: entry.confidence,
+          evidence: entry.evidence,
+          owner: entry.owner,
+          lifecycle: entry.lifecycle,
+          fitness: entry.fitness,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+          version: entry.version,
+        },
+        // 便于界面与日志快速读取（不必解包 entry）
+        memoryId: id,
+        memClass: entry.memClass,
+        kind: entry.kind,
+        content: entry.content,
       },
       createdAt: now,
     });
@@ -407,6 +491,19 @@ export class MemoryStore {
     id: string,
     decision: 'approve' | 'reject',
     reason = '',
+    /**
+     * 审核的元信息。
+     *
+     * ★ `decidedBy: 'system'` 表示这是**系统自主**决定的（分级准入），
+     *   不是用户点的。审计时必须能区分这两者 ——
+     *   它们的安全含义完全不同：一个是用户授权，一个是系统自判。
+     */
+    meta?: {
+      readonly decidedBy?: 'user' | 'system';
+      readonly source?: string;
+      readonly sourceLabel?: string;
+      readonly audit?: string;
+    },
   ): WriteResult {
     const entry = this.entries.get(id);
     if (!entry) return { ok: false, reason: 'not_found' as never };
@@ -426,7 +523,27 @@ export class MemoryStore {
       type: decision === 'approve' ? 'memory.approved' : 'memory.rejected',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
       ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
-      payload: { memoryId: id, decision, reason },
+      payload: {
+        memoryId: id,
+        decision,
+        reason,
+        // ★ 状态快照 —— 让重放能精确恢复（decision 改变了 lifecycle）
+        snapshot: snapshotOf(after),
+        decidedBy: meta?.decidedBy ?? (actor.kind === 'user' ? 'user' : 'system'),
+        ...(meta?.source !== undefined ? { source: meta.source } : {}),
+        ...(meta?.sourceLabel !== undefined ? { sourceLabel: meta.sourceLabel } : {}),
+        /**
+         * ⚠️ `memory.approved` 被两处使用：
+         *   · 建档时 lifecycle 就是 active（新记忆直接生效）
+         *   · 审核候选通过
+         *
+         *   统计与界面需要区分它们，所以带一个 `audit` 标记。
+         *   没有这个标记的老事件按 `created` 处理（建档）。
+         */
+        audit: meta?.audit ?? (entry.lifecycle === 'candidate' ? 'review' : 'created'),
+        // 用户随时可以撤销 —— 这是「自主生效不等于失控」的落点
+        revocable: true,
+      },
       createdAt: now,
     });
 
@@ -579,6 +696,20 @@ export class MemoryStore {
         ? { hitCount: e.hitCount + 1, lastHitAt: hit.at, useCount: e.useCount + 1 }
         : {}),
     });
+    /**
+     * ★ 落状态变更事件。
+     *
+     *   ⚠️ 我第一版**没落** —— 理由是"演化引擎已经发了一条语义化的
+     *      `fitness.updated`"。但那只覆盖**演化主循环**里的调用；
+     *      `merge.ts` / 手动压低适应度 / 未来任何直接调用都会漏。
+     *      验证 6 直接抓到：重放后 `fitness` 与真实值不一致。
+     *
+     *   教训：**state setter 不能假设调用方会替它落事件**。
+     *   让 setter 自己保证"状态变化可重放"，是唯一可靠的边界。
+     *   （代价是演化路径会有两条相邻事件 —— 一条语义、一条状态，
+     *     这与 `memory.candidate/approved` + `memory.created` 是同一个模式。）
+     */
+    this.emitStateChanged(memoryId, 'fitness');
   }
 
   /**
@@ -595,6 +726,8 @@ export class MemoryStore {
       mergedFrom: [...fromIds],
       updatedAt: this.clock.now(),
     });
+    // ★ 合并来源也是一部分状态 —— 重放时要能恢复「这条是从哪几条合来的」
+    this.emitStateChanged(memoryId, 'mergedFrom');
   }
 
   /** 写入生命周期与相关时间戳（演化引擎专用，同样不经过 canWrite）。 */
@@ -633,6 +766,8 @@ export class MemoryStore {
     const e = this.entries.get(memoryId);
     if (!e) return;
     this.entries.set(memoryId, { ...e, effectiveness, updatedAt: this.clock.now() });
+    // ★ 落状态变更事件 —— 否则"这条原则用了 7 次"重放不出来
+    this.emitStateChanged(memoryId, 'effectiveness');
   }
 
   /** 写入原则的结构化条件/动作（建档时给出，之后可修订）。 */
@@ -640,6 +775,35 @@ export class MemoryStore {
     const e = this.entries.get(memoryId);
     if (!e) return;
     this.entries.set(memoryId, { ...e, principle: detail, updatedAt: this.clock.now() });
+    // ★ 落状态变更事件 —— 否则原则的条件与动作重放不出来，
+    //   而它们是**注入与违背检测的依据**（见 memory/principles.ts）
+    this.emitStateChanged(memoryId, 'principle');
+  }
+
+  /**
+   * 记录一次状态变更（供重放）。
+   *
+   * ⚠️ 这是本类中**唯一**为"纯状态写入"落事件的地方，用 `fitness.updated`
+   *    这个已有的事件类型承载（它属于 evolution 族，语义是"这条记忆的状态变了"）。
+   *
+   *    为什么不新增事件类型：`memory.*` 族已经有 12 种，
+   *    再加一个只为内部记账的类型会让事件族更难理解。
+   *    `fitness.updated` 的 payload 本文就用 `field` 字段说明变的是哪一项。
+   */
+  private emitStateChanged(memoryId: string, field: string): void {
+    const e = this.entries.get(memoryId);
+    if (!e) return;
+    this.log.append({
+      type: 'fitness.updated',
+      actor: 'system',
+      payload: {
+        memoryId,
+        field,
+        note: '状态字段更新（供重放）',
+        snapshot: snapshotOf(e),
+      },
+      createdAt: this.clock.now(),
+    });
   }
 
   /**
