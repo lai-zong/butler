@@ -100,8 +100,13 @@ describe('recordHit · 命中驱动适应度', () => {
     engine.recordOutcome(id, true, '用户采纳');
     engine.recordOutcome(id, false, '用户纠正');
 
-    expect(log.byType('principle.effectMeasured')).toHaveLength(1);
-    expect(log.byType('intervention.correct')).toHaveLength(1);
+    const measured = log.byType('principle.effectMeasured');
+    const corrected = log.byType('intervention.correct');
+    expect(measured).toHaveLength(1);
+    expect(corrected).toHaveLength(1);
+    // 反馈要能追溯到是哪条记忆、用户说了什么
+    expect(measured[0]?.payload).toMatchObject({ memoryId: 'm3', effective: true, note: '用户采纳' });
+    expect(corrected[0]?.payload).toMatchObject({ memoryId: 'm3', effective: false });
   });
 
   it('冲突会扣分并留痕', () => {
@@ -156,8 +161,8 @@ describe('runPass · 一轮演化', () => {
     void r2;
   });
 
-  it('★ 归档后仍存在（淘汰 ≠ 删除）', () => {
-    const { store, engine, clock } = setup();
+  it('★ 归档且仍存在（淘汰 ≠ 删除）', () => {
+    const { store, engine, clock, log } = setup();
     const id = seedPref(store, 'gone');
     engine.adjustWeight(id, -0.6);
     clock.advance(61 * DAY);
@@ -168,6 +173,19 @@ describe('runPass · 一轮演化', () => {
     expect(store.get(id)?.lifecycle).toBe('archived');
     expect(store.get(id)).toBeDefined(); // 数据还在
     expect(store.get(id)?.content).toBe('偏好清淡口味');
+    // 归档必须留痕，否则界面上"归档区"永远空着
+    expect(log.byType('memory.archived')).toHaveLength(1);
+  });
+
+  it('命中会写 memory.recalled 事件（界面上"记忆引用"的数据源）', () => {
+    const { store, engine, log } = setup();
+    const id = seedPref(store, 'cited');
+    engine.recordHit(id);
+    engine.recordHit(id);
+
+    const ev = log.byType('memory.recalled');
+    expect(ev).toHaveLength(2);
+    expect(ev[0]?.payload).toMatchObject({ memoryId: 'cited', hits: 1 });
   });
 
   it('硬约束永不迁移（跑多少轮都一样）', () => {
