@@ -13,6 +13,7 @@ import { verifyHardConstraints, type HardConstraintReport } from '../butler/hard
 import { supervise } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { runServant } from '../servants/execute.js';
+import { SERVANT_BOUNDARY } from '../servants/types.js';
 import type {
   DispatchStep,
   Finding,
@@ -41,6 +42,8 @@ export interface RunSessionResult {
   readonly supervision: SupervisionOutput;
   /** 硬约束机械校验结果（确定性判定，见 hardConstraints.ts） */
   readonly hardConstraints: HardConstraintReport;
+  /** 本次登记的产出物（检查点回退预览用） */
+  readonly artifacts: readonly { readonly id: string; readonly label: string; readonly stepId: string }[];
   readonly totalUsage: { readonly inputTokens: number; readonly outputTokens: number };
   readonly modelInfo: { readonly provider: string; readonly model: string };
   readonly startedAt: number;
@@ -114,6 +117,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       reports: [],
       supervision: { conflicts: [], summary: '置信度不足，已转入澄清提问，未执行派发。' },
       hardConstraints: { verdicts: [], mustBlock: false },
+      artifacts: [],
       totalUsage: { inputTokens, outputTokens },
       modelInfo: args.model.describe(),
       startedAt,
@@ -242,10 +246,39 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   inputTokens += sup.usage.inputTokens;
   outputTokens += sup.usage.outputTokens;
 
+  // ── ⑧ 产出物登记（供检查点回退预览说清"哪些产出会被取代"）──
+  const artifacts: { readonly id: string; readonly label: string; readonly stepId: string }[] = [];
+  for (const rep of reports) {
+    for (const [i, art] of rep.artifacts.entries()) {
+      const id = `art_${rep.servant}_${rep.taskId}_${i}`;
+      const label = `${SERVANT_BOUNDARY[rep.servant].name}产出 ${i + 1}`;
+      artifacts.push({ id, label, stepId: rep.taskId });
+      log.append({
+        type: 'artifact.created',
+        actor: 'butler',
+        payload: {
+          artifactId: id,
+          label,
+          stepId: rep.taskId,
+          servant: rep.servant,
+          kind: art.kind,
+          // 只记大小不记内容：内容体积大且不属于"状态"，
+          // 状态由事件流表达（见 ADR 0002 与检查点设计）
+          size: Array.isArray(art.content) ? art.content.length : String(art.content).length,
+        },
+        createdAt: args.clock.now(),
+      });
+    }
+  }
+
   log.append({
     type: 'session.ended',
     actor: 'butler',
-    payload: { totalEvents: log.length, model: args.model.describe() },
+    payload: {
+      totalEvents: log.length,
+      model: args.model.describe(),
+      artifactCount: artifacts.length,
+    },
     createdAt: args.clock.now(),
   });
 
@@ -257,6 +290,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     reports,
     supervision: sup.output,
     hardConstraints: hardReport,
+    artifacts,
     totalUsage: { inputTokens, outputTokens },
     modelInfo: args.model.describe(),
     startedAt,

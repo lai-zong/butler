@@ -72,7 +72,14 @@ function seedSession(log: EventLog): void {
   log.append({ type: 'conflict.resolved', actor: 'user', payload: { resolution: '健康优先' }, createdAt: at(11) });
   log.append({ type: 'dispatch.stepDone', actor: 'butler', payload: { stepId: 's2', servant: 'health', status: 'done' }, createdAt: at(12) });
   log.append({ type: 'artifact.created', actor: 'butler', payload: { artifactId: 'art_menu_v2', label: '菜单 v2' }, createdAt: at(13) });
-  log.append({ type: 'memory.candidate', actor: 'butler', payload: { memoryId: 'mem_new_pref' }, createdAt: at(14) });
+  // 让检查点建立"记忆依赖"：只有 constraint.injected 与 servant.report.memoryRefs
+  // 算依赖（memory.candidate 是"产生了"，不是"依赖了"）
+  log.append({
+    type: 'constraint.injected',
+    actor: 'butler',
+    payload: { stepId: 's2', memoryId: 'mem_new_pref', negotiable: true },
+    createdAt: at(14),
+  });
   log.append({ type: 'session.ended', actor: 'butler', payload: {}, createdAt: at(15) });
 }
 

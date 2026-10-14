@@ -231,14 +231,28 @@ export class CheckpointManager {
       });
     }
 
-    // 记忆层面：目标之后新增的记忆需要复核（它们是基于"当时的信息"产出的）
+    // 记忆层面：目标之后**新被依赖**的记忆需要复核
+    // （它们是"回退掉的那段任务"里引入的，基于当时的信息产出）
+    // ⚠️ 与 replay 保持同一套依赖语义：只有 constraint.injected 与
+    //    servant.report.memoryRefs 算依赖。
     const keptMemories = new Set(target.snapshot.memories.map((m) => m.memoryId));
     const memoryImpact: { memoryId: string; action: 'keep' | 'review' }[] = [];
     for (const e of eventsAfter) {
       const p = (e.payload ?? {}) as Record<string, unknown>;
-      const id = p['memoryId'];
-      if (typeof id === 'string' && (e.type === 'memory.candidate' || e.type === 'memory.approved') && !keptMemories.has(id)) {
-        memoryImpact.push({ memoryId: id, action: 'review' });
+      if (e.type === 'constraint.injected') {
+        const id = p['memoryId'];
+        if (typeof id === 'string' && !keptMemories.has(id)) {
+          memoryImpact.push({ memoryId: id, action: 'review' });
+        }
+      } else if (e.type === 'servant.report') {
+        const refs = p['memoryRefs'];
+        if (Array.isArray(refs)) {
+          for (const r of refs) {
+            if (typeof r === 'string' && !keptMemories.has(r)) {
+              memoryImpact.push({ memoryId: r, action: 'review' });
+            }
+          }
+        }
       }
     }
     for (const m of target.snapshot.memories) {

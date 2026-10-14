@@ -168,21 +168,34 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
         break;
       }
 
-      case 'memory.candidate':
-      case 'memory.approved':
-      case 'memory.revised':
-      case 'memory.recalled': {
+      // ⚠️ 检查点只引用**会话事件显式引用过**的记忆。
+      //
+      //    踩过的坑：记忆事件与会话事件共用同一个 EventLog，
+      //    如果按"凡是出现 memoryId 的事件都算依赖"来收集，
+      //    就会把**记忆库里后来新增的、跟本次会话无关的记忆**也算成依赖 ——
+      //    结果是删掉任意一条记忆，全部检查点集体失效。
+      //    实测：本该只失效 1 个，实际失效了 8 个。
+      //
+      //    正确的依赖来源只有两处：
+      //      · `constraint.injected` —— 管家注入给某步骤的约束（真正被依赖）
+      //      · `servant.report.memoryRefs` —— 仆人声明用到了哪些记忆
+      //    `memory.recalled` 是"读了但没依赖"，`memory.candidate` 是"产生了"
+      //    （产出物，不是依赖），都不该让检查点因它被删而失效。
+
+      case 'constraint.injected': {
         const id = p?.['memoryId'];
         if (typeof id === 'string') memories.add(id);
         break;
       }
-      case 'memory.rejected':
-      case 'memory.archived':
-      case 'intervention.forgotten': {
-        const id = p?.['memoryId'];
-        if (typeof id === 'string') memories.delete(id);
+
+      case 'servant.report': {
+        const refs = p?.['memoryRefs'];
+        if (Array.isArray(refs)) {
+          for (const r of refs) if (typeof r === 'string') memories.add(r);
+        }
         break;
       }
+
       default:
         break;
     }
