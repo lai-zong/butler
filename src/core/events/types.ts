@@ -119,7 +119,14 @@ export type EventType =
 
 /** 族划分，便于 UI 分组与统计。 */
 export const EVENT_FAMILIES = {
-  reasoning: ['thought.delta', 'thought.done', 'plan.created', 'plan.revised', 'tool.call', 'tool.result'],
+  reasoning: [
+    'thought.delta',
+    'thought.done',
+    'plan.created',
+    'plan.revised',
+    'tool.call',
+    'tool.result',
+  ],
   routing: [
     'route.decided',
     'route.clarify',
