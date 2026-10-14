@@ -171,16 +171,43 @@ export function normalizeArtifact(
   return { kind, content };
 }
 
+/**
+ * `needsButlerDecision` 的兼容处理。
+ *
+ * 实测：模型有时输出 `true`（想说"需要管家裁决"但没给具体问题），
+ * 有时输出问题字符串。字段名是个疑问句，两种读法都合理。
+ *
+ * 处理方式：接受联合类型，归一化成"要么没有，要么是有内容的字符串"。
+ */
+const needsDecisionSchema = z
+  .union([z.string(), z.boolean()])
+  .optional()
+  .describe('需要管家裁决的问题；没有就省略或填 false');
+
+function normalizeNeedsDecision(v: string | boolean | undefined): string | undefined {
+  if (v === undefined || v === false) return undefined;
+  if (v === true) return '仆人声明需要管家裁决，但未给出具体问题';
+  const s = v.trim();
+  return s.length > 0 ? s : undefined;
+}
+
 export const servantReportSchema = z.object({
   status: z.enum(['done', 'failed', 'blocked']),
   artifacts: z.array(artifactSchema).describe('产出物，可为空数组'),
   /** 诚实声明不确定的地方，而不是硬着头皮给答案 */
   uncertainties: z.array(z.string()).describe('自己不确定的地方；没有就填空数组'),
-  needsButlerDecision: z.string().optional().describe('需要管家裁决的问题'),
+  needsButlerDecision: needsDecisionSchema,
   findings: z.array(findingSchema).describe('发现清单；没有就填空数组'),
 });
 
 export type ServantReportOutput = z.infer<typeof servantReportSchema>;
+
+/** 把报告里的 needsButlerDecision 归一化（在适配边界调用）。 */
+export function normalizeReport(raw: ServantReportOutput): {
+  needsButlerDecision: string | undefined;
+} {
+  return { needsButlerDecision: normalizeNeedsDecision(raw.needsButlerDecision) };
+}
 
 
 // ═══════════════════════════════════════════════════════════

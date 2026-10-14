@@ -15,10 +15,17 @@ import { PROMPT_VERSIONS, servantSystem, servantTask } from '../prompts/butler.j
 import {
   normalizeArtifact,
   normalizeFinding,
+  normalizeReport,
   servantReportSchema,
   type ServantReportOutput,
 } from '../prompts/schemas.js';
-import type { InjectedConstraint, ServantArtifact, ServantId, ServantReport } from '../servants/types.js';
+import type {
+  InjectedConstraint,
+  ServantArtifact,
+  ServantId,
+  ServantReport,
+  UpstreamInput,
+} from '../servants/types.js';
 
 export interface ServantRunResult {
   readonly report: ServantReport;
@@ -28,6 +35,44 @@ export interface ServantRunResult {
   readonly promptVersions: readonly string[];
 }
 
+/**
+ * 上游产出物传给下游时的截断上限。
+ *
+ * 取舍依据：下游要判断的是"上游做出来的东西对不对"，
+ * 需要看到**实质内容**，但不需要看到上游的逐条实现细节。
+ * 实测：健康仆人拿到截断后的菜单，已能指出
+ * "喷雾油或菜籽油/橄榄油"的"或"字表述存在被替换成花生调和油的风险" ——
+ * 这类实质结论不依赖完整长度。
+ */
+const UPSTREAM_ARTIFACT_CHAR_LIMIT = 1200;
+const UPSTREAM_MAX_ITEMS = 40;
+const UPSTREAM_MAX_FINDINGS = 5;
+
+function trimArtifact(a: ServantArtifact): ServantArtifact {
+  switch (a.kind) {
+    case 'text':
+      return a.content.length <= UPSTREAM_ARTIFACT_CHAR_LIMIT
+        ? a
+        : { kind: 'text', content: `${a.content.slice(0, UPSTREAM_ARTIFACT_CHAR_LIMIT)}…（已截断）` };
+
+    case 'list':
+    case 'plan':
+      return a.content.length <= UPSTREAM_MAX_ITEMS
+        ? a
+        : {
+            kind: a.kind,
+            content: [
+              ...a.content.slice(0, UPSTREAM_MAX_ITEMS),
+              `…（另有 ${a.content.length - UPSTREAM_MAX_ITEMS} 条，已省略）`,
+            ],
+          };
+
+    case 'file':
+      // 文件引用本身很小，原样透传
+      return a;
+  }
+}
+
 export async function runServant(args: {
   readonly model: ModelPort;
   readonly log: EventLog;
@@ -35,20 +80,31 @@ export async function runServant(args: {
   readonly taskId: string;
   readonly instruction: string;
   readonly injectedConstraints: readonly InjectedConstraint[];
+  /** 依赖步骤的产出物 */
+  readonly inputs?: readonly UpstreamInput[];
   readonly now: number;
 }): Promise<ServantRunResult> {
+  // 截断上游产出 —— 控制 prompt 体积，同时保留判断所需的信息
+  const trimmedInputs: UpstreamInput[] | undefined = args.inputs?.map((inp) => ({
+    stepId: inp.stepId,
+    servant: inp.servant,
+    artifacts: inp.artifacts.map(trimArtifact),
+    findings: inp.findings.slice(0, UPSTREAM_MAX_FINDINGS),
+  }));
+
   const result = await args.model.completeStructured({
     purpose: 'servant',
     schema: servantReportSchema,
     schemaName: 'ServantReport',
     temperature: 0.2,
-    maxOutputTokens: 2048,
+    maxOutputTokens: 3072,
     messages: [
       msg.system(servantSystem(args.servant)),
       msg.user(
         servantTask({
           instruction: args.instruction,
           injectedConstraints: args.injectedConstraints,
+          ...(trimmedInputs !== undefined ? { inputs: trimmedInputs } : {}),
         }),
       ),
     ],
@@ -79,6 +135,8 @@ export async function runServant(args: {
     .map(normalizeFinding)
     .filter((f): f is NonNullable<typeof f> => f !== null);
 
+  const decision = normalizeReport(raw).needsButlerDecision;
+
   const report: ServantReport = {
     taskId: args.taskId,
     servant: args.servant,
@@ -86,9 +144,7 @@ export async function runServant(args: {
     artifacts,
     memoryRefs: args.injectedConstraints.map((c) => c.memoryId),
     uncertainties: raw.uncertainties,
-    ...(raw.needsButlerDecision !== undefined
-      ? { needsButlerDecision: raw.needsButlerDecision }
-      : {}),
+    ...(decision !== undefined ? { needsButlerDecision: decision } : {}),
     findings,
   };
 

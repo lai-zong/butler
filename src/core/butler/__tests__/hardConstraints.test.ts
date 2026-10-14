@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest';
 import { EventLog } from '../../events/log.js';
 import type { RecallResult } from '../dispatch.js';
 import type { MemoryEntry } from '../../memory/types.js';
-import { coreOf, extractKeywords, verifyHardConstraints } from '../hardConstraints.js';
+import { coreOf } from '../../text/keywords.js';
+import { extractKeywords, verifyHardConstraints } from '../hardConstraints.js';
 import type { ServantReport } from '../../servants/types.js';
 
 // ── 测试夹具 ──

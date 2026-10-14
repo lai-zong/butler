@@ -259,8 +259,26 @@ export class DeepSeekModel implements ModelPort {
       if (call.temperature !== undefined) body['temperature'] = call.temperature;
 
       const data = await this.request(body);
-      const raw = data.choices?.[0]?.message.content ?? '';
+      const choice = data.choices?.[0];
+      const raw = choice?.message.content ?? '';
+      const finishReason = choice?.finish_reason ?? 'stop';
       lastRaw = raw;
+
+      // ⚠️ 输出被 max_tokens 截断时，JSON 必然是残缺的。
+      // 直接判定为截断并重试（并告知模型要精简），
+      // 比让它以"不是合法 JSON"的名义瞎猜有效得多。
+      if (finishReason === 'length') {
+        lastError = `你的输出被长度上限截断了（已用满 ${body['max_tokens']} tokens）。请大幅精简：只保留结论与关键依据，不要写计算过程和逐条推导。`;
+        if (attempts > this.maxStructuredRetries) {
+          throw new ModelError(
+            `结构化输出重试 ${attempts} 次后仍被长度上限截断。请提高 maxOutputTokens 或精简 schema 要求。`,
+            'BAD_OUTPUT',
+            attempts,
+          );
+        }
+        await sleep(200 * attempts);
+        continue;
+      }
 
       let parsed: unknown;
       try {

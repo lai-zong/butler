@@ -10,6 +10,7 @@ import { BUTLER_SYSTEM, dispatchTask, PROMPT_VERSIONS } from '../prompts/butler.
 import { dispatchPlanSchema, type DispatchPlan } from '../prompts/schemas.js';
 import type { Dispatch, DispatchStep, InjectedConstraint } from '../servants/types.js';
 import type { MemoryEntry } from '../memory/types.js';
+import { isRelevant } from '../text/keywords.js';
 
 export interface RecallResult {
   readonly memory: MemoryEntry;
@@ -22,12 +23,19 @@ export interface RecallResult {
  * **仆人不是"读到了全局记忆"，而是管家按任务相关性注入了必要约束。**
  * 这既保证安全（硬约束一定送达），又避免仆人被无关信息干扰。
  *
+ * 注入规则（两条，缺一不可）：
+ *   ① **硬约束无条件注入** —— 安全不能靠相关性判断来省
+ *   ② 其余约束**按与本次子任务指令的相关性**注入 ——
+ *      既省 token，也避免让"时间安排"步骤去操心"3 公里内的餐厅"
+ *
  * 注入过程本身可审计 —— 会写 constraint.injected 事件。
  */
 export function injectConstraints(args: {
   readonly log: EventLog;
   readonly stepId: string;
   readonly servant: string;
+  /** 本步骤的指令，用于相关性判定 */
+  readonly instruction: string;
   readonly recalled: readonly RecallResult[];
   readonly now: number;
 }): readonly InjectedConstraint[] {
@@ -39,9 +47,14 @@ export function injectConstraints(args: {
 
   for (const r of args.recalled) {
     const m = r.memory;
-    // 硬约束无条件注入；其余按相关性阈值注入
     const isHardConstraint = m.memClass === 'global_constraint';
-    if (!isHardConstraint && r.relevance < 0.5) continue;
+
+    // ① 硬约束无条件送达
+    // ② 软约束需同时满足"召回相关性达标"与"与本次指令相关"
+    if (!isHardConstraint) {
+      if (r.relevance < 0.5) continue;
+      if (!isRelevant(args.instruction, m.content)) continue;
+    }
 
     injected.push({
       memoryId: m.id,
@@ -62,6 +75,7 @@ export function injectConstraints(args: {
         content: m.content,
         source: m.memClass,
         negotiable: !isHardConstraint,
+        reason: isHardConstraint ? '硬约束无条件注入' : '与本次指令相关',
       },
       createdAt: args.now,
     });
@@ -124,6 +138,7 @@ export async function decompose(args: {
       log: args.log,
       stepId: s.stepId,
       servant: s.servant,
+      instruction: s.instruction,
       recalled: args.recalled,
       now: args.now,
     });

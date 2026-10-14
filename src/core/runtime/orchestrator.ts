@@ -13,7 +13,13 @@ import { verifyHardConstraints, type HardConstraintReport } from '../butler/hard
 import { supervise } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { runServant } from '../servants/execute.js';
-import type { DispatchStep, ServantReport } from '../servants/types.js';
+import type {
+  DispatchStep,
+  Finding,
+  ServantArtifact,
+  ServantReport,
+  UpstreamInput,
+} from '../servants/types.js';
 import type { ClockPort, ModelPort } from '../ports/index.js';
 import type { SupervisionOutput } from '../prompts/schemas.js';
 import type { RoutingDecision } from '../prompts/schemas.js';
@@ -126,9 +132,11 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     now: args.clock.now(),
   });
 
-  // ── ⑤ 逐步派发（含依赖检查）──
+  // ── ⑤ 逐步派发（含依赖检查与上游产出传递）──
   const reports: ServantReport[] = [];
   const done = new Set<string>();
+  /** stepId → 该步骤的产出，供下游步骤使用 */
+  const outputs = new Map<string, { servant: string; artifacts: ServantArtifact[]; findings: Finding[] }>();
 
   for (const step of dispatch.decomposition) {
     const missing = step.dependsOn.filter((d) => !done.has(d));
@@ -142,12 +150,24 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       continue;
     }
 
+    // 汇总上游产出 —— 这一步让 dependsOn 从"顺序控制"变成真正的"数据流"
+    const inputs: UpstreamInput[] = step.dependsOn.flatMap((d) => {
+      const o = outputs.get(d);
+      if (!o) return [];
+      return [{ stepId: d, servant: o.servant, artifacts: o.artifacts, findings: o.findings }];
+    });
+
     // 管家自己汇总的步骤不派发
     if (step.servant === 'butler') {
       log.append({
         type: 'dispatch.stepDone',
         actor: 'butler',
-        payload: { stepId: step.stepId, by: 'butler', note: '由管家汇总' },
+        payload: {
+          stepId: step.stepId,
+          by: 'butler',
+          note: '由管家汇总',
+          inputCount: inputs.length,
+        },
         createdAt: args.clock.now(),
       });
       done.add(step.stepId);
@@ -162,6 +182,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
         servant: step.servant,
         instruction: step.instruction,
         injectedConstraints: step.injectedConstraints,
+        // 可审计：这一步拿到了哪些上游产出
+        upstream: inputs.map((i) => i.stepId),
       },
       createdAt: args.clock.now(),
     });
@@ -173,11 +195,18 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       taskId: step.stepId,
       instruction: step.instruction,
       injectedConstraints: step.injectedConstraints,
+      ...(inputs.length > 0 ? { inputs } : {}),
       now: args.clock.now(),
     });
     inputTokens += run.usage.inputTokens;
     outputTokens += run.usage.outputTokens;
     reports.push(run.report);
+
+    outputs.set(step.stepId, {
+      servant: step.servant,
+      artifacts: [...run.report.artifacts],
+      findings: [...(run.report.findings ?? [])],
+    });
 
     log.append({
       type: run.report.status === 'done' ? 'dispatch.stepDone' : 'dispatch.stepFailed',

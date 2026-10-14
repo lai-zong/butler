@@ -18,6 +18,7 @@
  */
 
 import type { EventLog } from '../events/log.js';
+import { coreOf, hasAnyNgram } from '../text/keywords.js';
 import type { RecallResult } from './dispatch.js';
 import type { ServantReport } from '../servants/types.js';
 
@@ -65,7 +66,7 @@ function handledBy(report: ServantReport, constraintContent: string, constraintI
 /**
  * 文本是否提到约束内容。
  *
- * 做法：把约束剥虚词、去标点、去掉单字后得到核心串，
+ * 做法：把约束剥虚词、去标点后得到核心串，
  * 检查它**任意一个长度 ≥2 的连续片段**是否出现在文本中。
  *
  * 例：「你对花生严重过敏」→ 核心串「花生过敏」
@@ -81,41 +82,15 @@ function mentions(text: string, constraint: string): boolean {
   return hasAnyNgram(text, core, 2);
 }
 
-/** 剥离虚词与标点，得到约束的核心字串。 */
-export function coreOf(constraint: string): string {
-  const stop = [
-    '你对', '我对', '你是', '我是', '他的', '她的', '你的', '我的',
-    '严重', '非常', '特别', '一定', '必须', '不能', '严禁', '禁止',
-    '注意', '记得', '需要', '正在', '已经', '还有', '以及',
-    '的', '了', '和', '与', '或', '及', '是', '在', '要',
-  ];
-  let s = constraint;
-  for (const w of stop) s = s.split(w).join('');
-  // 只保留中日韩文字与字母数字
-  return s.replace(/[^\u4e00-\u9fff\u3040-\u30ffA-Za-z0-9]/g, '').trim();
-}
-
-/** haystack 中是否出现了 core 的任一长度 ≥minLen 的连续片段。 */
-function hasAnyNgram(haystack: string, core: string, minLen: number): boolean {
-  for (let len = core.length; len >= minLen; len--) {
-    for (let i = 0; i + len <= core.length; i++) {
-      if (haystack.includes(core.slice(i, i + len))) return true;
-    }
-  }
-  return false;
-}
-
 /**
- * 从约束文本提取关键词（供外部展示与调试用）。
+ * 从约束文本提取候选片段（供日志与调试展示）。
  *
- * ⚠️ 与实际判定逻辑（`mentions`）不同：这里给的是**可读的候选片段**，
- *    判定用 `coreOf` + `hasAnyNgram`。保留此函数是为了日志可解释。
+ * ⚠️ 与实际判定逻辑（`mentions`）不同：这里给的是**可读的候选项**。
  */
 export function extractKeywords(constraint: string): readonly string[] {
   const core = coreOf(constraint);
   if (core.length < 2) return [];
   const out = new Set<string>();
-  // 优先给出较长的片段，便于人读
   for (let len = core.length; len >= 2; len--) {
     for (let i = 0; i + len <= core.length; i++) out.add(core.slice(i, i + len));
   }

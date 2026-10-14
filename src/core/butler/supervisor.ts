@@ -21,12 +21,25 @@ export interface SupervisionResult {
   readonly promptVersion: string;
 }
 
+/**
+ * 每个仆人给监督者的摘要上限（字符）。
+ *
+ * 监督者要做的是"跨仆人比对"，需要看到**结论与关键依据**，
+ * 不需要看到每个人的完整产出 —— 那是仆人自己该负责的细节。
+ * 实测：超出部分对冲突判定没有贡献，只是推高输入 token。
+ */
+const SUMMARY_CHAR_LIMIT = 900;
+
 function summarize(report: ServantReport): string {
   const arts = report.artifacts
     .map((a) => (Array.isArray(a.content) ? a.content.join('；') : String(a.content)))
     .join(' | ');
   const findings = (report.findings ?? []).map((f) => `[${f.kind}] ${f.statement}`).join('；');
-  return [arts, findings].filter((s) => s.length > 0).join(' ‖ ') || '(无产出)';
+  // uncertainties 不进摘要 —— 监督者判断的是"产出是否冲突"，不是"仆人有多不确定"
+  const joined = [arts, findings].filter((s) => s.length > 0).join(' ‖ ') || '(无产出)';
+  return joined.length <= SUMMARY_CHAR_LIMIT
+    ? joined
+    : `${joined.slice(0, SUMMARY_CHAR_LIMIT)}…（已截断）`;
 }
 
 export async function supervise(args: {

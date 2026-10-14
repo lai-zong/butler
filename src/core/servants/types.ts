@@ -88,6 +88,15 @@ export interface InjectedConstraint {
   readonly negotiable: boolean;
 }
 
+/** 上游步骤传给本步骤的产出物（方案 § 2.2① 依赖关系的实际语义）。 */
+export interface UpstreamInput {
+  readonly stepId: string;
+  readonly servant: string;
+  readonly artifacts: readonly ServantArtifact[];
+  /** 上游的发现（仅陈述，不含裁决） */
+  readonly findings: readonly Finding[];
+}
+
 export interface DispatchStep {
   readonly stepId: string;
   readonly servant: ServantId | 'butler';
@@ -96,6 +105,14 @@ export interface DispatchStep {
   readonly status: StepStatus;
   /** 管家按任务相关性注入，而非仆人读取全部记忆 */
   readonly injectedConstraints: readonly InjectedConstraint[];
+  /**
+   * 依赖步骤的产出物。
+   *
+   * ⚠️ 没有这个字段，"依赖"就只是**顺序控制**，下游拿不到上游做出来的东西——
+   *    实测表现为：健康仆人声称"未收到菜单原文，无法独立复核"，
+   *    于是它只能声明风险而无法真正审核（由监督层 crossServant 检出）。
+   */
+  readonly inputs?: readonly UpstreamInput[];
   readonly report?: ServantReport;
 }
 

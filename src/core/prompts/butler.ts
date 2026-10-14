@@ -13,7 +13,7 @@
  */
 
 import { SERVANT_BOUNDARY, SERVANT_IDS, type ServantId } from '../servants/types.js';
-import type { InjectedConstraint } from '../servants/types.js';
+import type { InjectedConstraint, UpstreamInput } from '../servants/types.js';
 
 export const PROMPT_VERSIONS = {
   butlerSystem: 'butler.system@1',
@@ -179,6 +179,8 @@ export function servantSystem(servant: ServantId): string {
 export function servantTask(args: {
   readonly instruction: string;
   readonly injectedConstraints: readonly InjectedConstraint[];
+  /** 依赖步骤的产出物 —— 没有它，这个仆人只能凭空猜上游做了什么 */
+  readonly inputs?: readonly UpstreamInput[];
 }): string {
   const c =
     args.injectedConstraints.length === 0
@@ -190,9 +192,35 @@ export function servantTask(args: {
           )
           .join('\n');
 
+  const upstream =
+    !args.inputs || args.inputs.length === 0
+      ? '（本步骤无上游依赖）'
+      : args.inputs
+          .map((inp) => {
+            const arts = inp.artifacts
+              .map((a) => {
+                const body = Array.isArray(a.content) ? a.content.join('\n  ') : String(a.content);
+                return `  · [${a.kind}] ${body}`;
+              })
+              .join('\n');
+            const finds = inp.findings
+              .map((f) => `  ⚑ [${f.kind}] ${f.statement}`)
+              .join('\n');
+            return `【${inp.stepId} · ${inp.servant} 的产出】\n${arts}${finds ? `\n${finds}` : ''}`;
+          })
+          .join('\n\n');
+
   return `## 管家交给你的子任务
 
 ${args.instruction}
+
+### 上游步骤的产出（你可以直接使用）
+
+${upstream}
+
+**注意**：如果上游产出与你的判断冲突，**不要默默接受，也不要擅自改写**——
+在 findings 里写清冲突点与依据，交由管家裁决。
+如果上游产出不足以支撑你的判断，在 uncertainties 里指明缺什么。
 
 ### 本次注入给你的约束
 
@@ -204,8 +232,13 @@ ${c}
 
 ### 输出要求
 
-- status：完成填 \`done\`；无法完成填 \`failed\`；被约束卡住填 \`blocked\`
-- artifacts：你的产出。清单类内容用 \`list\`，方案类用 \`plan\`，普通说明用 \`text\`
-- findings：只陈述发现，不做裁决
-- uncertainties：如实写出不确定的地方`;
+只输出 JSON。清单类内容用 artifacts(kind=list)，方案类用 kind=plan，普通说明用 kind=text。
+status：完成填 done；无法完成填 failed；被约束卡住填 blocked。
+findings 只陈述发现，不做裁决；uncertainties 如实写出不确定的地方。
+
+**内容要求（重要）**：
+- artifacts 必须给出**可核对的实质内容** —— 菜单要列具体菜名与配料，清单要列具体条目与数量。
+- **只写标题、不写内容等于没做**：下游仆人要靠你的产出做审核，管家也要靠它校验硬约束。
+- 可以省略的是**推导过程、常识复述、上游原文摘抄**，不是结论本身。
+- 预期篇幅：一份清单类产出约 10—25 条。不要为了凑长度灌水，也不要为了省字数而空洞。`;
 }
