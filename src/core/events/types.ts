@@ -115,7 +115,23 @@ export type EventType =
   | 'session.rollback'
   | 'schedule.triggered'
   | 'session.forked'
-  | 'session.ended';
+  | 'session.ended'
+
+  // ── 族 10 · MCP 集成（方案第十章）──
+  //
+  // ⚠️ 方案第十章详细写了 MCP 客户端，但事件类型里原本一个都没有 ——
+  //    这是审查时发现的方案缺口，这里补上。
+  //
+  // ★ MCP 工具的**调用**复用 tool.call / tool.result（它们走同一个闸门），
+  //   这一族只记**服务器生命周期**与**外部工具挂载**，不重复记调用。
+  | 'mcp.serverAdded'
+  | 'mcp.serverRemoved'
+  | 'mcp.serverConnected'
+  | 'mcp.serverDisconnected'
+  | 'mcp.serverFailed'
+  | 'mcp.toolsDiscovered'
+  | 'mcp.policyChanged'
+  | 'mcp.serverConfigured';
 
 /** 族划分，便于 UI 分组与统计。 */
 export const EVENT_FAMILIES = {
@@ -196,6 +212,16 @@ export const EVENT_FAMILIES = {
     'schedule.triggered',
     'session.forked',
     'session.ended',
+  ],
+  mcp: [
+    'mcp.serverAdded',
+    'mcp.serverRemoved',
+    'mcp.serverConnected',
+    'mcp.serverDisconnected',
+    'mcp.serverFailed',
+    'mcp.toolsDiscovered',
+    'mcp.policyChanged',
+    'mcp.serverConfigured',
   ],
 } as const satisfies Record<string, readonly EventType[]>;
 

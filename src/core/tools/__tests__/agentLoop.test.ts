@@ -409,8 +409,34 @@ describe('③ ★ 权限闸门在循环里依然生效', () => {
     await run(s);
 
     const calls = s.log.byType('tool.call');
+    // ⚠️ 恰好 1 条：这个测试只让模型调了 read_file。
+    //    （我一度把断言改成 ≥2，以为 submit_report 也算 —— 错了：
+    //     汇报工具是在**仆人路径**里注册的，agentLoop 的裸测试里没有它。）
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.payload).toMatchObject({ toolName: 'read_file', tier: 'readOnly', round: 1 });
+    expect(calls[0]?.payload).toMatchObject({ toolName: 'read_file', tier: 'readOnly' });
+    // 本地工具标注 native 来源，与 MCP 外部工具区分
+    expect((calls[0]?.payload as { source?: string }).source).toBe('native');
+    // 事件里带 taskId 与授权结果（可审计）
+    const p = calls[0]?.payload as { taskId?: string; authorization?: string };
+    expect(p.taskId).toBe('t1');
+    expect(p.authorization).toBe('allow');
+  });
+
+  it('★ 参数经脱敏后才入事件流（不把凭证写进日志）', async () => {
+    const s = setup([
+      {
+        toolCalls: [
+          { name: 'write_file', args: { path: 'a.txt', content: 'sk-abcdef1234567890' } },
+        ],
+      },
+      { text: 'ok' },
+    ]);
+    await run(s);
+
+    const call = s.log
+      .byType('tool.call')
+      .find((c) => (c.payload as { toolName?: string }).toolName === 'write_file');
+    expect(JSON.stringify(call?.payload)).not.toContain('sk-abcdef1234567890');
   });
 });
 

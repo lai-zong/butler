@@ -217,18 +217,17 @@ export async function runAgentLoop(
       }
 
       // ③ 走闸门执行 —— 循环不直接碰工具实现，因此权限无法绕过
-      opts.log.append({
-        type: 'tool.call',
-        actor: 'butler',
-        payload: {
-          toolName: tc.name,
-          taskId: opts.taskId,
-          round,
-          tier: spec.tier,
-          argsSummary: safeSummary(check.value),
-        },
-        createdAt: opts.clock.now(),
-      });
+      //
+      // ⚠️ 这里**不再发 tool.call**（原先发过，与 ToolFramework 重复了）。
+      //
+      //   职责划分：
+      //     · 参数**校验失败** → 循环负责记录（工具根本没被调用，见上面那条）
+      //     · 参数校验通过     → 由 ToolFramework 在执行前记录
+      //
+      //   为什么统一到 framework：只有它知道这次调用是否真的走到了执行阶段。
+      //   循环里记的"调用"会把**被闸门拒绝**的也算成一次调用，
+      //   而实际上那次调用从未发生 —— 它应该只出现在 action.blocked 里。
+      //   （实测踩到：两处都发导致事件条数翻倍，且循环那条缺 source 字段。）
 
       let output: string;
       let ok: boolean;
@@ -440,11 +439,3 @@ function truncate(text: string, limit: number): string {
   return `${text.slice(0, limit)}\n…（结果过长已截断，共 ${text.length} 字符）`;
 }
 
-function safeSummary(args: unknown): string {
-  try {
-    const s = JSON.stringify(args);
-    return s.length <= 200 ? s : `${s.slice(0, 200)}…`;
-  } catch {
-    return '(无法序列化)';
-  }
-}

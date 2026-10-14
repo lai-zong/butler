@@ -182,6 +182,32 @@ export class ToolFramework {
     }
 
     // ③ 执行
+    //
+    // ★ 在执行**之前**落 tool.call 事件。
+    //
+    //   ⚠️ 审查时发现的缺口：此前只发 tool.result，**从不发 tool.call** ——
+    //      结果是"AI 调用过哪些工具"这个问题在事件流里查不到。
+    //      而 tool.result 里虽然有工具名，但它表达的是"结果"，
+    //      用它反推调用会把"发出但未返回"的调用漏掉（超时、进程被杀）。
+    //
+    //   位置放在授权通过之后：被拒绝的调用走 action.blocked，
+    //   不需要重复记一条"调用"——它根本没有发生。
+    this.log.append({
+      type: 'tool.call',
+      actor: 'butler',
+      payload: {
+        toolName: spec.name,
+        tier: spec.tier,
+        taskId: args.taskId,
+        // 参数经脱敏后再入流（方案 § 11 第二层）
+        args: redactArgs(args.args),
+        argsSummary: redactArgs(args.args),
+        authorization,
+        source: spec.name.startsWith('mcp__') ? 'mcp' : 'native',
+      },
+      createdAt: this.clock.now(),
+    });
+
     const ctx: ToolContext = { clock: this.clock, taskId: args.taskId };
     let result: ToolResult;
     try {
