@@ -133,25 +133,63 @@ export class CheckpointManager {
    * 设计成"扫描式"而不是"每写一条事件就拦一次"：
    * 编排层不需要知道检查点的存在，检查点从事件流**派生**出来。
    * 这符合"事件是唯一真相源"。
+   *
+   * ★ 但派生结果本身也要落事件（`checkpoint.created`）—— 理由：
+   *   `session.rollback` 事件会引用 `checkpointId`，
+   *   若那个 id 在事件流里查不到，审计时就无法回答
+   *   "这个检查点是何时、因何建立的"。
+   *   派生视图不写事件，等于在真相源上留了个洞。
+   *
+   * ⚠️ 不会造成循环：`checkpoint.created` 本身**不在** CHECKPOINT_RULES 白名单里，
+   *    所以它不会派生出新的检查点。
    */
   sync(): readonly Checkpoint[] {
-    const events = this.log.all();
+    // ⚠️ 必须**两阶段**：先扫描完毕，再统一补落事件。
+    //
+    //    我第一版在遍历里直接 append，结果每次 append 都会改变 log.all() 的长度、
+    //    并让 `existing` 判断失真 —— 实测事件数从 16 涨到 27（失控）。
+    //    边界清晰的做法：扫描只读，写入延后。
     const existing = new Set(this.checkpoints.map((c) => c.seq));
-    const added: Checkpoint[] = [];
+    const pending: { readonly cp: Checkpoint; readonly sourceType: string }[] = [];
 
-    for (const e of events) {
+    for (const e of this.log.all()) {
       if (existing.has(e.seq)) continue;
       if (!isCheckpointWorthy(e)) continue;
       const cp = this.build(e);
       this.checkpoints.push(cp);
-      added.push(cp);
+      existing.add(e.seq);
+      pending.push({ cp, sourceType: e.type });
     }
 
-    if (added.length > 0) {
-      this.checkpoints.sort((a, b) => a.seq - b.seq);
-      this.revalidate();
+    if (pending.length === 0) return [];
+
+    this.checkpoints.sort((a, b) => a.seq - b.seq);
+    this.revalidate();
+
+    // 第二阶段：检查点本身落事件（让 session.rollback 引用的 id 可查）
+    for (const { cp, sourceType } of pending) {
+      this.log.append({
+        type: 'checkpoint.created',
+        actor: 'system',
+        payload: {
+          checkpointId: cp.id,
+          label: cp.label,
+          kind: cp.kind,
+          atSeq: cp.seq,
+          atEventType: sourceType,
+          snapshot: {
+            completedSteps: cp.snapshot.completedSteps.length,
+            pendingSteps: cp.snapshot.pendingSteps.length,
+            failedSteps: cp.snapshot.failedSteps.length,
+            artifacts: cp.snapshot.artifacts.length,
+            memories: cp.snapshot.memories.length,
+          },
+        },
+        createdAt: cp.createdAt,
+      });
     }
-    return added;
+
+    return pending.map((p) => p.cp);
   }
 
   /** 用户手动打点。 */

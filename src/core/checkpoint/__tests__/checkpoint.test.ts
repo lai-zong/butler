@@ -91,12 +91,44 @@ describe('① 检查点筛选', () => {
   it('★ 只有关键决策点成为检查点（16 条事件 → 少数几个）', () => {
     const { log, mgr } = setup();
     seedSession(log);
+    // 先记下 sync 前的事件数 —— sync 会为每个检查点补落 checkpoint.created
+    const before = log.length;
+    expect(before).toBe(16);
+
     const added = mgr.sync();
 
-    expect(log.length).toBe(16);
     // 关键点：理解目标 / 召回 / 路由 / 分解 / s1完成 / v1 / 冲突 / 裁决 / s2完成 / v2 / 交付
     expect(added.length).toBeGreaterThan(5);
-    expect(added.length).toBeLessThan(log.length);
+    expect(added.length).toBeLessThan(before);
+
+    // sync 后事件流增加，增量恰好等于新增检查点数（每个一条 checkpoint.created）
+    expect(log.length).toBe(before + added.length);
+  });
+
+  it('★ 检查点自身落事件（否则 session.rollback 引用的 id 查不到）', () => {
+    const { log, mgr } = setup();
+    seedSession(log);
+    mgr.sync();
+
+    const created = log.byType('checkpoint.created');
+    expect(created.length).toBeGreaterThan(0);
+    // 事件的 checkpointId 必须与内存里的检查点对得上
+    const ids = created.map((e) => (e.payload as { checkpointId: string }).checkpointId);
+    for (const id of ids) {
+      expect(mgr.byId(id), `事件引用的检查点 ${id} 应存在`).toBeDefined();
+    }
+  });
+
+  it('checkpoint.created 自身不派生出新检查点（避免自激）', () => {
+    const { log, mgr } = setup();
+    seedSession(log);
+    mgr.sync();
+    const first = mgr.all().length;
+
+    // 再 sync 一次：日志里已有 checkpoint.created，但它们不该被当作检查点来源
+    const again = mgr.sync();
+    expect(again).toHaveLength(0);
+    expect(mgr.all()).toHaveLength(first);
   });
 
   it('明确不该成为检查点的事件被排除', () => {
@@ -240,9 +272,15 @@ describe('② 回退预览（用户按之前看到的东西）', () => {
     const { log, mgr } = setup();
     seedSession(log);
     mgr.sync();
-    const last = mgr.all()[mgr.all().length - 1];
-    if (!last) throw new Error('no target');
-    expect(() => mgr.planRollback(last.id)).toThrow(RollbackError);
+
+    // ⚠️ 不能用 sync 出来的最后一个检查点 ——
+    //    sync 会为每个检查点补落 checkpoint.created 事件，
+    //    于是日志尾部已经在那之后了，最后一个检查点并不在"当前位置"。
+    //    用 manual() 建一个**落在当前位置**的检查点来测这条路径。
+    const here = mgr.manual('当前位置');
+    expect(here.seq).toBe(log.nextSeq() - 1);
+
+    expect(() => mgr.planRollback(here.id)).toThrow(RollbackError);
   });
 
   it('不存在的检查点抛明确错误', () => {
