@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "validate:1": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/01-orchestration.ts",
     "validate:2": "node node_modules/tsx/dist/cli.mjs src/validate/02-memory-loop.ts",
-    "validate:3": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/03-tool-use.ts"
+    "validate:3": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/03-tool-use.ts",
+    "validate:4": "node node_modules/tsx/dist/cli.mjs src/validate/04-activity-profile.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
