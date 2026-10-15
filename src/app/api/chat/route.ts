@@ -85,6 +85,17 @@ export async function POST(req: NextRequest): Promise<Response> {
       // 立刻告诉客户端会话 id（界面需要它来续接）
       send({ type: 'session', sessionId: session.id });
 
+      /**
+       * ★ 记下这一轮的起始 seq —— 界面据此取「本轮依据」。
+       *
+       *   ⚠️ 用 seq 区间而不是消息 id 关联：
+       *      事件流是线性的，一轮对话对应一段连续 seq，
+       *      这是**由事件流结构本身给出的**，不需要额外记账表。
+       *      （而记账表本身会成为需要维护、也可能出错的东西 ——
+       *        「这条注入属于哪一轮」在没有唯一答案时怎么办？）
+       */
+      const fromSeq = rt.bootstrapped.log.length + 1;
+
       try {
         const result = await runTurn({
           sessionId: session.id,
@@ -102,6 +113,17 @@ export async function POST(req: NextRequest): Promise<Response> {
         send({ type: 'user', messageId: result.userMessageId });
         send({ type: 'reply', messageId: result.replyMessageId, text: result.replyText });
         send({ type: 'verdict', verdict: result.verdict });
+
+        /**
+         * ★ 本轮的 seq 区间 —— 界面据此拉「它凭什么这么说」。
+         *
+         *   只发区间不发内容：内容可能不小（召回 + 注入 + 校验），
+         *   而用户在多数轮次里不会展开看。**按需拉取**比一次性推更省。
+         */
+        send({
+          type: 'audit',
+          range: { fromSeq, toSeq: rt.bootstrapped.log.length },
+        });
       } catch (err) {
         send({
           type: 'error',

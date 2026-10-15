@@ -60,6 +60,58 @@ interface Verdict {
   readonly durationMs: number;
 }
 
+/** 本轮的 seq 区间 —— 界面据此按需拉取审计依据。 */
+interface AuditRange {
+  readonly fromSeq: number;
+  readonly toSeq: number;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 审计依据（`/api/audit` 的返回形状）
+// ═══════════════════════════════════════════════════════════
+
+interface AuditData {
+  readonly recalls: readonly {
+    readonly seq: number;
+    readonly count: number;
+    readonly items: readonly {
+      readonly memoryId: string;
+      readonly memClassLabel: string;
+      readonly relevancePercent: number;
+      readonly forced: boolean;
+    }[];
+  }[];
+  readonly injections: readonly {
+    readonly seq: number;
+    readonly servantLabel: string;
+    readonly content: string;
+    readonly sourceLabel: string;
+    readonly negotiable: boolean;
+    readonly reason: string;
+  }[];
+  readonly hardChecks: readonly {
+    readonly seq: number;
+    readonly content: string;
+    readonly unhandledByLabels: readonly string[];
+    readonly deterministic: boolean;
+    readonly note: string;
+  }[];
+  readonly grants: readonly {
+    readonly seq: number;
+    readonly kindLabel: string;
+    readonly toServantLabel: string;
+    readonly reason: string;
+    readonly expired: boolean;
+  }[];
+  readonly writeAttempts: readonly {
+    readonly seq: number;
+    readonly actor: string;
+    readonly reason: string;
+    readonly rejected: boolean;
+  }[];
+  readonly summary: string;
+}
+
 interface ProgressLine {
   readonly id: string;
   readonly kind: 'stage' | 'step' | 'done';
@@ -103,6 +155,8 @@ export function ConversationView({
   const [sessionId, setSessionId] = useState(initialSessionId);
   const [progress, setProgress] = useState<ProgressLine[]>([]);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
+  /** 本轮的 seq 区间 —— 用于按需拉取审计依据 */
+  const [auditRange, setAuditRange] = useState<AuditRange | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -141,6 +195,7 @@ export function ConversationView({
     setBusy(true);
     setError(null);
     setVerdict(null);
+    setAuditRange(null);
     setProgress([]);
     setInput('');
     pinnedToBottom.current = true;
@@ -266,6 +321,12 @@ export function ConversationView({
       return;
     }
 
+    if (type === 'audit') {
+      const r = e['range'] as AuditRange | undefined;
+      if (r !== undefined) setAuditRange(r);
+      return;
+    }
+
     if (type === 'error') {
       setError(String(e['message'] ?? '未知错误'));
     }
@@ -336,7 +397,12 @@ export function ConversationView({
               )}
 
               {/* ── 审查结论 ── */}
-              {verdict !== null && <VerdictCard verdict={verdict} />}
+              {verdict !== null && (
+                <VerdictCard
+                  verdict={verdict}
+                  {...(auditRange !== null ? { range: auditRange } : {})}
+                />
+              )}
 
               {error !== null && (
                 <div className="notice notice-warn" style={{ marginTop: 12 }}>
@@ -423,7 +489,13 @@ function MessageBubble({ message }: { readonly message: Message }) {
  * ⚠️ 打回时**必须给用户留门**（"我确认，继续"）——
  *   他是最终决策者，管家说明风险，但门是开是关由他定。
  */
-function VerdictCard({ verdict }: { readonly verdict: Verdict }) {
+function VerdictCard({
+  verdict,
+  range,
+}: {
+  readonly verdict: Verdict;
+  readonly range?: AuditRange;
+}) {
   const rejected = verdict.outcome === 'rejected';
   const blocking = verdict.issues.filter((i) => i.severity === 'blocking');
   const advisory = verdict.issues.filter((i) => i.severity === 'advisory');
@@ -487,6 +559,177 @@ function VerdictCard({ verdict }: { readonly verdict: Verdict }) {
           <span className="verdict-actions-hint">
             你是最终决策者 —— 想继续的话直接说「我确认，继续」
           </span>
+        </div>
+      )}
+
+      {/**
+       * ★★ 「它凭什么这么说」—— 本项目的差异化卖点就在这里。
+       *
+       *   ⚠️ 默认折叠且**按需拉取**（点开才请求 `/api/audit`）：
+       *      召回 + 注入 + 校验的内容可能不小，而多数轮次用户不会展开看。
+       *      无条件拉取等于每轮都多付一次数据传输 ——
+       *      而"审计可见"的价值在于**需要时看得到**，不在于一直摆在眼前。
+       */}
+      {range !== undefined && <AuditTrail range={range} />}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// 审计痕迹
+// ═══════════════════════════════════════════════════════════
+
+function AuditTrail({ range }: { readonly range: AuditRange }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<AuditData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (): Promise<void> => {
+    if (data !== null || loading) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/audit?from=${range.fromSeq}&to=${range.toSeq}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = (await res.json()) as { audit?: AuditData };
+      setData(j.audit ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggle = (): void => {
+    const next = !open;
+    setOpen(next);
+    if (next) void load();
+  };
+
+  return (
+    <div className="audit">
+      <button type="button" className="audit-toggle" onClick={toggle}>
+        {open ? '▾' : '▸'} 它凭什么这么说
+        <span className="audit-range mono">
+          seq {range.fromSeq}—{range.toSeq}
+        </span>
+      </button>
+
+      {open && (
+        <div className="audit-body">
+          {loading && <div className="audit-loading">读取依据中…</div>}
+          {error !== null && <div className="audit-error">读取失败：{error}</div>}
+
+          {data !== null && (
+            <>
+              <div className="audit-summary">{data.summary}</div>
+
+              {/* ── 硬约束未被处理：最需要用户知道的一件事 ── */}
+              {data.hardChecks.length > 0 && (
+                <div className="audit-section">
+                  <div className="audit-section-title audit-danger">
+                    ⛔ 硬约束未被处理（{data.hardChecks.length} 处）
+                  </div>
+                  {data.hardChecks.map((h) => (
+                    <div className="audit-item" key={h.seq}>
+                      <div>{h.content}</div>
+                      <div className="audit-item-sub">
+                        未处理：{h.unhandledByLabels.join('、') || '（未知）'}
+                      </div>
+                      {h.deterministic && (
+                        <div className="audit-item-sub">
+                          {h.note || '确定性机械校验判定，非模型裁决'}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── 注入了哪些约束（自查清单点名要求可见）── */}
+              {data.injections.length > 0 && (
+                <div className="audit-section">
+                  <div className="audit-section-title">
+                    给仆人注入了什么（{data.injections.length} 条）
+                  </div>
+                  {data.injections.map((inj) => (
+                    <div className="audit-item" key={inj.seq}>
+                      <div className="audit-item-head">
+                        <span className={inj.negotiable ? 'tag' : 'tag tag-danger'}>
+                          {inj.negotiable ? '可协商' : '不可协商'}
+                        </span>
+                        <span className="audit-item-who">→ {inj.servantLabel}</span>
+                        <span className="audit-item-why">{inj.reason}</span>
+                      </div>
+                      <div>{inj.content}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── 召回了什么 ── */}
+              {data.recalls.length > 0 && (
+                <div className="audit-section">
+                  <div className="audit-section-title">
+                    召回的记忆（
+                    {data.recalls.reduce((n, r) => n + r.count, 0)} 条）
+                  </div>
+                  {data.recalls.flatMap((r) =>
+                    r.items.map((it) => (
+                      <div className="audit-item audit-item-inline" key={`${r.seq}_${it.memoryId}`}>
+                        <span className={it.forced ? 'tag tag-danger' : 'tag'}>
+                          {it.memClassLabel}
+                        </span>
+                        <span className="audit-relevance mono">
+                          相关度 {it.relevancePercent}%
+                        </span>
+                        {it.forced && <span className="audit-item-sub">强制带回，不参与筛选</span>}
+                      </div>
+                    )),
+                  )}
+                </div>
+              )}
+
+              {/* ── 敏感域授权（方案要求"谁读了我的敏感信息"可查）── */}
+              {data.grants.length > 0 && (
+                <div className="audit-section">
+                  <div className="audit-section-title">敏感域授权（{data.grants.length} 条）</div>
+                  {data.grants.map((g) => (
+                    <div className="audit-item" key={g.seq}>
+                      <div className="audit-item-head">
+                        <span className={g.expired ? 'tag tag-warn' : 'tag tag-ok'}>
+                          {g.kindLabel}
+                          {g.expired ? '（已过期）' : ''}
+                        </span>
+                        <span className="audit-item-who">→ {g.toServantLabel}</span>
+                      </div>
+                      {g.reason.length > 0 && <div className="audit-item-sub">{g.reason}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── 越权写入被拒（方案要求"应全部被拒"）── */}
+              {data.writeAttempts.length > 0 && (
+                <div className="audit-section">
+                  <div className="audit-section-title">
+                    越权写入尝试（{data.writeAttempts.length} 次）
+                  </div>
+                  {data.writeAttempts.map((w) => (
+                    <div className="audit-item" key={w.seq}>
+                      <div className="audit-item-head">
+                        <span className={w.rejected ? 'tag tag-ok' : 'tag tag-danger'}>
+                          {w.rejected ? '已拒绝' : '⚠️ 未被拒绝'}
+                        </span>
+                        <span className="audit-item-who">{w.actor}</span>
+                      </div>
+                      <div className="audit-item-sub">{w.reason}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

@@ -573,6 +573,132 @@ a {
   color: var(--text-mute);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   审计痕迹（「它凭什么这么说」）
+   ═══════════════════════════════════════════════════════════
+
+   ★ 这是本项目差异化卖点的落点：**可审计**。
+
+   ⚠️ 默认折叠 —— 审计的价值在于「需要时看得到」，
+      不在于一直摆在眼前。一直展开会让对话流被证据淹没，
+      而用户会学会忽略它（那比没有更糟）。
+   ═══════════════════════════════════════════════════════════ */
+
+.audit {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.audit-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-sub);
+  cursor: pointer;
+  text-align: left;
+}
+
+.audit-toggle:hover {
+  color: var(--accent);
+}
+
+.audit-range {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+.audit-body {
+  margin-top: 10px;
+  padding-left: 4px;
+}
+
+.audit-loading,
+.audit-error {
+  font-size: 12px;
+  color: var(--text-mute);
+}
+
+.audit-error {
+  color: var(--danger);
+}
+
+.audit-summary {
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-bottom: 10px;
+}
+
+.audit-section {
+  margin-bottom: 12px;
+}
+
+.audit-section:last-child {
+  margin-bottom: 0;
+}
+
+.audit-section-title {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  margin-bottom: 5px;
+}
+
+/* ⚠️ 硬约束未被处理是最需要用户知道的一件事 —— 用危险色，不与其他混在一起 */
+.audit-section-title.audit-danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.audit-item {
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--line);
+  margin-bottom: 5px;
+}
+
+.audit-item-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.audit-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+
+.audit-item-who {
+  font-size: 11.5px;
+  color: var(--text-sub);
+}
+
+.audit-item-why {
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+
+.audit-item-sub {
+  font-size: 11.5px;
+  color: var(--text-mute);
+  margin-top: 2px;
+}
+
+.audit-relevance {
+  font-size: 11.5px;
+  color: var(--text-sub);
+}
+
 /* ── 输入框（固定在面板底部）── */
 
 .composer {
