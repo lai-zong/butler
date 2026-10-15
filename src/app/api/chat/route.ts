@@ -215,6 +215,13 @@ export async function POST(req: NextRequest): Promise<Response> {
         send({ type: 'user', messageId: result.userMessageId });
         send({ type: 'reply', messageId: result.replyMessageId, text: result.replyText });
         send({ type: 'verdict', verdict: result.verdict });
+        /**
+         * ★ 各仆人各自的产出 —— 右侧「仆人面板」的数据。
+         *
+         *   与落进消息的那一份是**同一个对象**（在 runTurn 里只转换一次）——
+         *   否则会出现「界面上看到的」与「刷新后看到的」不一致。
+         */
+        send({ type: 'reports', reports: result.servantReports });
 
         /**
          * ★ 本轮的 seq 区间 —— 界面据此拉「它凭什么这么说」。

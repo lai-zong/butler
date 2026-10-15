@@ -82,9 +82,59 @@ export interface ChatMessage {
    *   整套 trace 通常几 KB，可以进事件。
    */
   readonly agentTrace?: AgentTraceData;
+  /**
+   * ★★ 这条回复背后**每个仆人各自的产出**。
+   *
+   * ★ 为什么它与 `agentTrace` 必须分开：
+   *   · `agentTrace` 是**工具循环过程**（思考 + 调了什么工具）——
+   *     回答「它是怎么做的」
+   *   · `servantReports` 是**各仆人的结论**（产出物 + 发现 + 不确定）——
+   *     回答「它得出了什么、依据是什么」
+   *
+   *   ⚠️ 两者不能合并：一个仆人可能没走工具循环（纯推理），
+   *      也可能多个仆人各跑一遍工具循环。**按仆人归属**才对得上
+   *      界面上「仆人面板」那个分栏。
+   *
+   * ⚠️ 之前**完全没有收集它** —— 于是界面上无从显示"某个仆人说了什么"，
+   *    只能显示管家汇总后的结果。而方案 § 2.2 强调的是
+   *    **仆人只提交发现、管家才做裁决** —— 那个区分必须在界面上看得见。
+   */
+  readonly servantReports?: readonly ServantReportData[];
 }
 
-/** 一轮工具循环的可持久化记录。 */
+/** 一个仆人的产出（可持久化形状）。 */
+export interface ServantReportData {
+  readonly servant: string;
+  readonly taskId: string;
+  readonly status: 'done' | 'failed' | 'blocked';
+  /** 指令 —— 界面要知道「让它干什么」 */
+  readonly instruction: string;
+  readonly artifacts: readonly {
+    readonly kind: string;
+    /** 已截断的正文（清单类已合并成字符串） */
+    readonly text: string;
+    readonly itemCount: number;
+  }[];
+  readonly findings: readonly {
+    readonly kind: string;
+    readonly statement: string;
+    readonly evidence: readonly string[];
+  }[];
+  readonly uncertainties: readonly string[];
+  readonly needsButlerDecision?: string;
+  /** 注入给这个仆人的约束（可审计） */
+  readonly injectedConstraints: readonly {
+    readonly content: string;
+    readonly negotiable: boolean;
+  }[];
+}
+
+/**
+ * 一轮工具循环的可持久化记录。
+ *
+ * ⚠️ 与 `servantReports` 的区别：这是**过程**（怎么做的），
+ *    那个是**结论**（得出了什么）。两者都要，且不能互相替代。
+ */
 export interface AgentTraceData {
   readonly rounds: readonly {
     readonly round: number;
@@ -209,6 +259,7 @@ export interface AppendMessageInput {
   readonly status?: MessageStatus;
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
   readonly agentTrace?: AgentTraceData;
+  readonly servantReports?: readonly ServantReportData[];
 }
 
 /**
@@ -301,6 +352,7 @@ export class SessionStore {
        *      唯一能发现它的方式是**端到端检查落盘结果**。
        */
       ...(input.agentTrace !== undefined ? { agentTrace: input.agentTrace } : {}),
+      ...(input.servantReports !== undefined ? { servantReports: input.servantReports } : {}),
     };
 
     const list = this.messages.get(sessionId) ?? [];
@@ -334,6 +386,7 @@ export class SessionStore {
          *    功能在当次会话里表现完全正常，只在重启后才暴露。
          */
         ...(msg.agentTrace !== undefined ? { agentTrace: msg.agentTrace } : {}),
+        ...(msg.servantReports !== undefined ? { servantReports: msg.servantReports } : {}),
       },
       createdAt: now,
     });
@@ -545,6 +598,9 @@ export function replaySessions(
         // ★ 工具循环过程也要重放 —— 否则重启后「它干了什么」就查不到了
         ...(typeof trace === 'object' && trace !== null
           ? { agentTrace: trace as AgentTraceData }
+          : {}),
+        ...(Array.isArray(p['servantReports'])
+          ? { servantReports: p['servantReports'] as ServantReportData[] }
           : {}),
       });
       touch(sessions, sessionId, e.createdAt);

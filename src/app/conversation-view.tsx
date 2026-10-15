@@ -43,6 +43,8 @@ interface Message {
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
   /** ★ 工具循环过程（随消息持久化，刷新后仍可见） */
   readonly agentTrace?: PersistedTrace;
+  /** ★ 仆人各自的产出（右侧面板的数据，刷新后仍可见） */
+  readonly servantReports?: readonly ServantReport[];
 }
 
 interface VerdictIssue {
@@ -196,6 +198,87 @@ function normalizeTrace(t: PersistedTrace): AgentTrace {
 }
 
 // ═══════════════════════════════════════════════════════════
+// 仆人产出（右侧面板的数据）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 一个仆人的产出（与 `core/chat/types.ts` 的 `ServantReportData` 对应）。
+ *
+ * ★★ 这一块是「仆人面板」的内容 —— 它与管家的对话**并排**显示，
+ *    而不是混在对话流里。
+ *
+ * ★ 为什么必须分开显示（方案 § 2.2 的核心）：
+ *     **仆人只提交发现，管家才做裁决。**
+ *     混在一起会让「谁说的」变得模糊，
+ *     而那个区分恰恰是本项目「平等编排」的立论基础。
+ */
+interface ServantReport {
+  readonly servant: string;
+  readonly taskId: string;
+  readonly status: 'done' | 'failed' | 'blocked';
+  readonly instruction: string;
+  readonly artifacts: readonly {
+    readonly kind: string;
+    readonly text: string;
+    readonly itemCount: number;
+  }[];
+  readonly findings: readonly {
+    readonly kind: string;
+    readonly statement: string;
+    readonly evidence: readonly string[];
+  }[];
+  readonly uncertainties: readonly string[];
+  readonly needsButlerDecision?: string;
+  readonly injectedConstraints: readonly {
+    readonly content: string;
+    readonly negotiable: boolean;
+  }[];
+}
+
+/** 仆人的展示名。⚠️ 与 `core/chat/reports.ts` 的映射保持一致。 */
+const SERVANT_NAME: Record<string, string> = {
+  life: '生活仆人',
+  health: '健康仆人',
+  study: '学习仆人',
+  work: '办公仆人',
+  code: '代码仆人',
+};
+
+/** 产出物类型展示名。 */
+const ARTIFACT_LABEL: Record<string, string> = {
+  text: '正文',
+  list: '清单',
+  plan: '方案',
+  file: '文件',
+};
+
+/** 发现类型展示名。 */
+const FINDING_LABEL: Record<string, string> = {
+  constraintRef: '约束相关',
+  risk: '风险',
+  alternative: '备选',
+};
+
+/**
+ * 从历史消息里找出**最近一轮**的仆人产出。
+ *
+ * ★ 为什么只取最近一条，而不是汇总全部轮次：
+ *   右侧栏回答的是「**这一轮**仆人在干什么」。
+ *   把历史全部堆上去会让它变成第二个对话流，
+ *   与「管家 | 仆人」双栏的用意正相反。
+ *   历史轮次的产出仍能在各自的消息里看到（见 `MessageBubble`）。
+ */
+function latestReportsOf(messages: readonly Message[]): readonly ServantReport[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m?.servantReports !== undefined && m.servantReports.length > 0) {
+      return m.servantReports;
+    }
+  }
+  return [];
+}
+
+// ═══════════════════════════════════════════════════════════
 // 审计依据（`/api/audit` 的返回形状）
 // ═══════════════════════════════════════════════════════════
 
@@ -304,6 +387,27 @@ export function ConversationView({
    *   这是用户真正想看的那个东西：仆人**实际在调什么工具、拿到什么结果**。
    */
   const [agent, setAgent] = useState<AgentTrace>({ rounds: [], finished: null });
+  /**
+   * ★★ 本轮各仆人的产出 —— 右侧「仆人面板」的内容。
+   *
+   *   空数组时右侧栏不出现（默认单栏对话）——
+   *   即你自己定的规则：**仆人执行时才左右双栏**。
+   *
+   * ⚠️⚠️ 初值**必须在这里算**，不能放 `useEffect`。
+   *
+   *   我第一版写成了 `useEffect(() => { … setReports(…) }, …)`，
+   *   结果是：**服务端渲染时 `reports` 是空的** →
+   *   `<aside>` 根本不出现在 HTML 里 →
+   *   截图（截图发生在 hydration 之前）看不到右栏。
+   *
+   *   症状极具误导性：落盘数据齐全、DOM 检查里却连 `servant-pane`
+   *   都搜不到 —— 看起来像"组件没渲染"，实际是**渲染时机**问题。
+   *
+   *   ★ 用惰性初值既让 SSR 就带上数据，也省掉一次多余渲染。
+   */
+  const [reports, setReports] = useState<readonly ServantReport[]>(() =>
+    latestReportsOf(initialMessages),
+  );
   const [error, setError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -347,6 +451,7 @@ export function ConversationView({
     setNarration(null);
     setShowReasoning(false);
     setAgent({ rounds: [], finished: null });
+    setReports([]);
     setProgress([]);
     setInput('');
     pinnedToBottom.current = true;
@@ -480,6 +585,12 @@ export function ConversationView({
 
     if (type === 'agent') {
       handleAgentEvent(e);
+      return;
+    }
+
+    if (type === 'reports') {
+      // 本轮仆人产出（服务端在编排完成后一次性推）
+      setReports(Array.isArray(e['reports']) ? (e['reports'] as ServantReport[]) : []);
       return;
     }
 
@@ -649,7 +760,16 @@ export function ConversationView({
         title="顶栏（待设计）"
       />
 
-      <div className="app-body">
+      {/**
+       * ★ `app-body-split` 是**两栏等分**的开关（图二）。
+       *
+       * ⚠️ 用显式 class 而不是 CSS 的 `:has(~ .servant-pane)` ——
+       *    `:has()` 在部分浏览器/版本上不支持，
+       *    而它一旦失效，布局会**静默退回**单栏吃满：
+       *    没有报错、没有告警，只是看起来"图二那半边不见了"。
+       *    显式 class 的行为是完全确定的。
+       */}
+      <div className={`app-body ${reports.length > 0 ? 'app-body-split' : ''}`}>
         {/* ── 侧栏：同样只做机构 ── */}
         <CollapsibleRegion
           id="sidebar"
@@ -751,6 +871,235 @@ export function ConversationView({
             </div>
           </div>
         </main>
+
+        {/* ══════════════════════════════════════════════════════
+            ★★ 仆人面板（右侧）
+
+            即你手绘图二：**仆人执行时才出现，管家 | 仆人 左右双栏**。
+            没有仆人产出时**整栏不渲染** —— 默认是单栏纯对话。
+
+            ⚠️ 与「管家的对话」并排而不是混在对话流里的理由：
+               方案 § 2.2 的核心是**仆人只提交发现、管家才做裁决**。
+               混在一起会让「谁说的」变得模糊，
+               而那个区分是本项目「平等编排」的立论基础。
+            ══════════════════════════════════════════════════════ */}
+        {reports.length > 0 && (
+          <aside className="servant-pane">
+            <ServantPanel reports={reports} busy={busy} />
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// 仆人面板（右侧栏）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 仆人面板 —— 展示本轮每个仆人**各自的**产出。
+ *
+ * ★★ 排版上的四个决定（每条都有理由）：
+ *
+ *   ① **按仆人分标签页**，而不是全部平铺
+ *      一轮可能有 2—4 个仆人，每个 5 个产出物 + 10 条发现 ——
+ *      平铺会变成一面墙，用户找不到想看的那一个。
+ *
+ *   ② **注入的约束放在最上面**
+ *      它回答「这个仆人是在**知道了什么**的前提下得出这个结论的」。
+ *      放在结论之后就成了脚注，而它其实是前提。
+ *      这也是方案 § 2.2⑥「约束注入可见」的落点。
+ *
+ *   ③ **不确定声明单列一块，且不用灰色弱化**
+ *      方案 § 2.2 明确要求仆人"诚实声明不确定，而不是硬着头皮给答案"。
+ *      如果把它做得像免责声明，就等于在鼓励模型少说 ——
+ *      所以它要有**同等的视觉分量**。
+ *
+ *   ④ **发现带证据**（折叠）
+ *      「有依据」是本项目的立身之本。证据默认收起以免淹没收结论，
+ *      但必须能展开 —— 展开不了就等于没有证据。
+ */
+function ServantPanel({
+  reports,
+  busy,
+}: {
+  readonly reports: readonly ServantReport[];
+  readonly busy: boolean;
+}) {
+  const [active, setActive] = useState(0);
+  const [openEvidence, setOpenEvidence] = useState<Record<string, boolean>>({});
+
+  // ⚠️ 选中项可能越界（新一轮仆人数量变少）—— 兜底回第一条
+  const idx = active < reports.length ? active : 0;
+  const cur = reports[idx];
+  if (cur === undefined) return null;
+
+  return (
+    <div className="servant-panel">
+      {/* ── 头部：标题 + 进行中指示 ── */}
+      <div className="servant-head">
+        <span className="servant-head-title">仆人</span>
+        {busy && <span className="servant-live" title="执行中" />}
+      </div>
+
+      {/* ── 标签页：一个仆人一个 ── */}
+      <div className="servant-tabs" role="tablist">
+        {reports.map((r, i) => (
+          <button
+            key={`${r.servant}_${r.taskId}`}
+            type="button"
+            role="tab"
+            aria-selected={i === idx}
+            className={`servant-tab ${i === idx ? 'servant-tab-on' : ''}`}
+            onClick={() => setActive(i)}
+          >
+            <span className={`servant-dot servant-dot-${r.status}`} />
+            {SERVANT_NAME[r.servant] ?? r.servant}
+          </button>
+        ))}
+      </div>
+
+      <div className="servant-body">
+        {/* ── ① 注入的约束（前提，放最上面）── */}
+        {cur.injectedConstraints.length > 0 && (
+          <section className="servant-sec">
+            <div className="servant-sec-title">
+              已注入的约束
+              <span className="servant-sec-note">它在知道这些的前提下作答</span>
+            </div>
+            {cur.injectedConstraints.map((c, i) => (
+              <div key={i} className={`servant-constraint ${c.negotiable ? '' : 'servant-constraint-hard'}`}>
+                <span className={`tag ${c.negotiable ? 'tag-soft' : 'tag-hard'}`}>
+                  {c.negotiable ? '软约束' : '硬约束'}
+                </span>
+                {c.content}
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* ── ② 指令（让它干什么）── */}
+        {cur.instruction.length > 0 && (
+          <section className="servant-sec">
+            <div className="servant-sec-title">收到的指令</div>
+            <div className="servant-instruction">{cur.instruction}</div>
+          </section>
+        )}
+
+        {/* ── ③ 产出物 ── */}
+        {cur.artifacts.length > 0 && (
+          <section className="servant-sec">
+            <div className="servant-sec-title">
+              产出物
+              <span className="servant-sec-note">{cur.artifacts.length} 项</span>
+            </div>
+            {cur.artifacts.map((a, i) => (
+              <div key={i} className="servant-artifact">
+                <div className="servant-artifact-kind">
+                  {ARTIFACT_LABEL[a.kind] ?? a.kind}
+                  {a.itemCount > 1 && <span className="servant-sec-note">{a.itemCount} 条</span>}
+                </div>
+                <div className="servant-artifact-text">{a.text}</div>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* ── ④ 发现（带证据）── */}
+        {cur.findings.length > 0 && (
+          <section className="servant-sec">
+            <div className="servant-sec-title">
+              发现
+              <span className="servant-sec-note">只陈述，不裁决</span>
+            </div>
+            {cur.findings.map((f, i) => {
+              const key = `${cur.taskId}_f${i}`;
+              const open = openEvidence[key] === true;
+              return (
+                <div key={key} className="servant-finding">
+                  <div className="servant-finding-head">
+                    <span className={`finding-kind finding-kind-${f.kind}`}>
+                      {FINDING_LABEL[f.kind] ?? f.kind}
+                    </span>
+                    <span className="servant-finding-text">{f.statement}</span>
+                  </div>
+                  {f.evidence.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        className="servant-evidence-toggle"
+                        onClick={() => setOpenEvidence((s) => ({ ...s, [key]: !open }))}
+                      >
+                        {open ? '收起依据' : `依据 ${f.evidence.length} 条`}
+                      </button>
+                      {open && (
+                        <ul className="servant-evidence">
+                          {f.evidence.map((e, j) => (
+                            <li key={j}>{e}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        )}
+
+        {/* ── ⑤ 不确定声明（同等视觉分量，不弱化）── */}
+        {cur.uncertainties.length > 0 && (
+          <section className="servant-sec servant-sec-uncertain">
+            <div className="servant-sec-title">
+              它声明不确定的地方
+              <span className="servant-sec-note">{cur.uncertainties.length} 条</span>
+            </div>
+            <ul className="servant-uncertain">
+              {cur.uncertainties.map((u, i) => (
+                <li key={i}>{u}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {/* ── ⑥ 需要管家裁决 ── */}
+        {cur.needsButlerDecision !== undefined && (
+          <section className="servant-sec servant-sec-escalate">
+            <div className="servant-sec-title">请求管家裁决</div>
+            <div className="servant-escalate-text">{cur.needsButlerDecision}</div>
+          </section>
+        )}
+      </div>
+
+      {/**
+       * ★★ 右栏的输入框 —— 按**图二**「两侧各有输入框」补。
+       *
+       * ⚠️ 这里必须说清楚它的**性质**，否则会被当成装饰：
+       *
+       *   它目前是**留位**。真正的「直接与仆人对话」需要一条
+       *   独立的通路（用户 → 指定仆人 → 产出回填），而那一步还没做。
+       *
+       *   ★ 但即使只是留位，也**不能做成能输入却发不出去的样子** ——
+       *     那是最糟的一种：用户可以打字、点发送、然后什么也不发生。
+       *     所以这里 `disabled` + 明确说明，用户一眼知道它还没接上。
+       *
+       * ★ 已定好的规则（后面接通路时必须遵守）：
+       *     直接与仆人对话时，**管家可以提醒但不得拦截仆人进程** ——
+       *     也就是这个输入框发出的消息**不该**被管家改成"先审查再执行"。
+       */}
+      <div className="composer composer-servant">
+        <div className="composer-row">
+          <input
+            className="composer-input"
+            placeholder={`直接对${SERVANT_NAME[cur.servant] ?? '仆人'}说…（尚未接通）`}
+            disabled
+            title="这条通路还没做：目前与仆人的沟通都要经过管家"
+          />
+          <button type="button" className="btn" disabled>
+            发送
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1014,6 +1363,23 @@ function MessageBubble({ message }: { readonly message: Message }) {
       {/* ★ 工具循环过程：随消息持久化，刷新后仍能看到「它读了哪个文件」 */}
       {message.agentTrace !== undefined && message.agentTrace.rounds.length > 0 && (
         <AgentTraceView trace={normalizeTrace(message.agentTrace)} />
+      )}
+
+      {/* ── ★ 仆人产出：这一轮的仆人各自说了什么 ──
+           右侧栏显示的是**最近一轮**（那是"当前在执行什么"），
+           历史轮次的产出收在这里，收起以免淹没收官家的回复。 */}
+      {message.servantReports !== undefined && message.servantReports.length > 0 && (
+        <details className="msg-servants">
+          <summary>
+            本轮 {message.servantReports.length} 位仆人：
+            {message.servantReports
+              .map((r) => SERVANT_NAME[r.servant] ?? r.servant)
+              .join(' · ')}
+          </summary>
+          <div className="msg-servants-body">
+            <ServantPanel reports={message.servantReports} busy={false} />
+          </div>
+        </details>
       )}
 
       {message.memoryRefs !== undefined && message.memoryRefs.length > 0 && (

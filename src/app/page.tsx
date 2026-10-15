@@ -38,6 +38,8 @@ export default async function HomePage() {
         ...(m.memoryRefs !== undefined ? { memoryRefs: m.memoryRefs } : {}),
         // ★ 工具循环过程随消息一起恢复 —— 刷新后仍看得到「它读了哪个文件」
         ...(m.agentTrace !== undefined ? { agentTrace: m.agentTrace } : {}),
+        // ★ 仆人各自的产出 —— 右侧「仆人面板」的数据（刷新后仍在）
+        ...(m.servantReports !== undefined ? { servantReports: m.servantReports } : {}),
       }))}
     />
   );

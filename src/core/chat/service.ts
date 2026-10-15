@@ -36,9 +36,15 @@ import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
-import { SessionStore, type Verdict, type VerdictIssue } from './types.js';
+import {
+  SessionStore,
+  type ServantReportData,
+  type Verdict,
+  type VerdictIssue,
+} from './types.js';
 import { buildHistoryMessages, buildServantHistoryMessages } from './history.js';
 import { createTraceCollector } from './trace.js';
+import { toServantReportData } from './reports.js';
 import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -101,6 +107,19 @@ export interface RunTurnResult {
    *    它失败不该让整轮失败。
    */
   readonly narration?: NarrationResult;
+  /**
+   * ★★ 本轮各仆人的产出 —— 界面右侧「仆人面板」的数据。
+   *
+   * ⚠️ 与 `session.reports` 的区别：
+   *    · `session.reports` 是**领域对象**（完整产出物，给管家校验用）
+   *    · 这个是**已截断的展示形状**（给界面排版用）
+   *
+   *   ★ 在 `runTurn` 里**只转换一次**，然后复用到两个地方
+   *     （落进消息 + 通过 SSE 推给界面）——
+   *     转两次会出现「界面上看到的」与「存下来的」不一致，
+   *     而那是最难查的一类 bug。
+   */
+  readonly servantReports: readonly ServantReportData[];
 }
 
 /**
@@ -308,6 +327,12 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     ? buildAcceptedReply(session, verdict)
     : buildRejectedReply(session, verdict);
 
+  /**
+   * ★ 仆人产出**只转换一次** —— 下面两个地方复用它
+   *   （落进消息 + 通过返回值给 SSE）。
+   */
+  const servantReports = toServantReportData(session);
+
   const reply = chat.appendMessage(sessionId, {
     role: 'butler',
     text: replyText,
@@ -315,6 +340,16 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     memoryRefs: memRefs,
     // ★ 工具循环过程随消息落盘 —— 刷新后仍能看到「它读了哪个文件」
     ...(trace.hasContent() ? { agentTrace: trace.build() } : {}),
+    /**
+     * ★★ 各仆人各自的产出 —— 界面上「仆人面板」的数据源。
+     *
+     * ⚠️ 之前**没有收集它**，于是界面上只能显示管家汇总后的结果，
+     *    看不到「某个仆人说了什么、依据是什么」。
+     *    而方案 § 2.2 的核心是**仆人只提交发现、管家才做裁决** ——
+     *    那个区分必须在界面上看得见，
+     *    否则「平等编排」只是文档里的一句话。
+     */
+    ...(servantReports.length > 0 ? { servantReports } : {}),
   });
 
   args.onProgress?.({
@@ -407,6 +442,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   return {
     userMessageId: userMsg.id,
     replyMessageId: reply.id,
+    servantReports,
     replyText,
     verdict,
     session,
