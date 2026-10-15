@@ -67,8 +67,48 @@ export interface ChatMessage {
   readonly reasoningTranslated?: string;
   readonly status: MessageStatus;
   readonly createdAt: number;
-  /** 这条回复引用了哪些记忆（界面上要能点开看"凭什么这么说"） */
+  /** 这条回复引用了哪些记忆（界面上要能点开看「凭什么这么说」） */
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
+  /**
+   * ★★ 这条回复背后的**工具循环过程**（「思考 → 工具 → 再思考」）。
+   *
+   * ⚠️ 为什么要持久化，而不是只在前端内存里留一份：
+   *    工具调用过程是「它到底干了什么」的唯一记录 ——
+   *    **刷新就没了的话，用户想回看"它刚才读了哪个文件、结果是什么"**
+   *    就做不到。而「可审计」是本项目的立身之本，
+   *    过程不该只在流式期间可见。
+   *
+   * ★ 只存必要字段：工具结果已截断（1200 字/条），
+   *   整套 trace 通常几 KB，可以进事件。
+   */
+  readonly agentTrace?: AgentTraceData;
+}
+
+/** 一轮工具循环的可持久化记录。 */
+export interface AgentTraceData {
+  readonly rounds: readonly {
+    readonly round: number;
+    readonly maxRounds: number;
+    /** 该轮的思考（可能为空 —— 实测模型按任务难度分配思考量） */
+    readonly reasoning: string;
+    /** 该轮模型的正文（对用户说的话） */
+    readonly text: string;
+    readonly toolCalls: readonly {
+      readonly callId: string;
+      readonly name: string;
+      readonly argsText: string;
+      readonly ok: boolean;
+      readonly denied: boolean;
+      /** 已截断的结果（完整内容看审计视图） */
+      readonly output: string;
+      readonly durationMs: number;
+    }[];
+  }[];
+  readonly finished: {
+    readonly rounds: number;
+    readonly hitRoundLimit: boolean;
+    readonly reason: string;
+  } | null;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -168,6 +208,7 @@ export interface AppendMessageInput {
   readonly reasoningTranslated?: string;
   readonly status?: MessageStatus;
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
+  readonly agentTrace?: AgentTraceData;
 }
 
 /**
@@ -246,6 +287,20 @@ export class SessionStore {
       status: input.status ?? 'done',
       createdAt: now,
       ...(input.memoryRefs !== undefined ? { memoryRefs: input.memoryRefs } : {}),
+      /**
+       * ⚠️ 这一行**必须**有。
+       *
+       *   我第一版只做了两件事：给 `ChatMessage` 加字段、
+       *   在事件 payload 里 spread 它 —— 却**漏了在 `msg` 对象里赋值**。
+       *   于是 `msg.agentTrace` 永远是 `undefined`，payload 里的 spread
+       *   静默跳过，落盘检查报 `hasAgentTrace=False`，
+       *   而内存里的消息明明是有的。
+       *
+       *   ⚠️ 这类"三处要改只改了两处"的缺口在 TypeScript 下不会报错：
+       *      字段是可选的，缺了就是 `undefined`，类型完全合法。
+       *      唯一能发现它的方式是**端到端检查落盘结果**。
+       */
+      ...(input.agentTrace !== undefined ? { agentTrace: input.agentTrace } : {}),
     };
 
     const list = this.messages.get(sessionId) ?? [];
@@ -267,6 +322,18 @@ export class SessionStore {
         status: msg.status,
         hasReasoning: msg.reasoning !== undefined,
         memoryRefCount: msg.memoryRefs?.length ?? 0,
+        /**
+         * ★ 工具循环过程随消息落盘 —— 刷新后仍能看到「它读了哪个文件」。
+         *
+         * ⚠️ 我第一版给 `ChatMessage` 加了 `agentTrace` 字段、也在 `runTurn`
+         *    里填了值，**但忘了写进事件 payload** ——
+         *    于是**内存里有、磁盘上没有**，刷新就丢。
+         *    症状是落盘检查报 `hasAgentTrace=False`，而界面上明明有。
+         *
+         *    这类「加了字段但没落盘」的缺口很隐蔽：
+         *    功能在当次会话里表现完全正常，只在重启后才暴露。
+         */
+        ...(msg.agentTrace !== undefined ? { agentTrace: msg.agentTrace } : {}),
       },
       createdAt: now,
     });
@@ -467,6 +534,7 @@ export function replaySessions(
       const messageId = p['messageId'];
       if (typeof messageId !== 'string') continue;
       const role = p['role'];
+      const trace = p['agentTrace'];
       messages.push({
         id: messageId,
         sessionId,
@@ -474,6 +542,10 @@ export function replaySessions(
         text: typeof p['text'] === 'string' ? p['text'] : '',
         status: (typeof p['status'] === 'string' ? p['status'] : 'done') as MessageStatus,
         createdAt: e.createdAt,
+        // ★ 工具循环过程也要重放 —— 否则重启后「它干了什么」就查不到了
+        ...(typeof trace === 'object' && trace !== null
+          ? { agentTrace: trace as AgentTraceData }
+          : {}),
       });
       touch(sessions, sessionId, e.createdAt);
       continue;

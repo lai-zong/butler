@@ -34,6 +34,8 @@ import type {
   UpstreamInput,
 } from '../servants/types.js';
 import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
+import type { ModelStreamPort } from '../ports/stream.js';
+import type { AgentProgressEvent } from '../tools/agentLoop.js';
 import type { SupervisionOutput } from '../prompts/schemas.js';
 import type { RoutingDecision } from '../prompts/schemas.js';
 
@@ -86,6 +88,15 @@ export interface RunSessionArgs {
    *    「回答用户」而不是「产出结构化报告」。
    */
   readonly servantHistory?: readonly ModelMessage[];
+  /**
+   * 流式端口。给出时**仆人的工具循环走流式** ——
+   * 「思考 → 工具 → 再思考」画面的来源。
+   *
+   * ⚠️ 不给则行为与之前完全一致。
+   */
+  readonly streamPort?: ModelStreamPort;
+  /** 工具循环进度（供界面实时渲染工具卡片） */
+  readonly onAgentProgress?: (e: AgentProgressEvent) => void;
   /**
    * 进度回调 —— 让**界面能实时看到**任务执行到哪一步。
    *
@@ -395,6 +406,11 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
         // 仆人用**精简历史**（只有用户本轮原话）——它需要的是上游产出，
         // 不是对话的来龙去脉
         ...(args.servantHistory !== undefined ? { history: args.servantHistory } : {}),
+        // ★ 工具循环的流式（给出才走）
+        ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
+        ...(args.onAgentProgress !== undefined
+          ? { onAgentProgress: args.onAgentProgress }
+          : {}),
         now: args.clock.now(),
       });
     } catch (err) {

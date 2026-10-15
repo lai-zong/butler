@@ -26,19 +26,70 @@ export interface NodeFsOptions {
    *
    * ⚠️ 这不是沙箱 —— 绝对路径仍可访问。真沙箱需要容器或权限隔离，
    *    那属于部署层面的事，不在适配器的职责内。
+   *
+   * ⚠️⚠️ 但**受保护路径是另一回事**，见 `protectedPaths`。
    */
   readonly root: string;
+  /**
+   * ★★ 受保护路径 —— 模型**不得**读写的前缀。
+   *
+   * ★ 为什么必须有它（实测暴露的问题，不是预防性设计）：
+   *
+   *   `WORKSPACE_ROOT` 默认是项目根目录，而系统自己的数据目录
+   *   `.butler-data/` 就在它里面。于是模型可以读 `events.jsonl` ——
+   *   而那是**整个系统的真相源**，里面有全部记忆内容（含敏感域）、
+   *   全部对话、全部内部状态。
+   *
+   *   实测后果（一次真实对话）：
+   *     · 模型调 `read_file {"path":".butler-data/events.jsonl"}`
+   *     · 然后说出「系统本次未召回任何用户健康记忆
+   *       （memory.recalled count = 0）」—— **它通过读事件文件
+   *       推断出了内部状态**
+   *
+   *   ⚠️ 这同时击穿了三条设计：
+   *     ① **记忆分权** —— 敏感域隔离与逐次授权全部失效
+   *        （它直接读原始事件，绕过了 `canRead`）
+   *     ② **审计** —— 读文件不产生 `memory.recalled`，
+   *        但内容一样拿到了
+   *     ③ **提示隔离** —— 它能看到系统写给自己的内部诊断
+   *
+   *   ★ 所以这里做的是**结构性防护**：按解析后的绝对路径前缀拒绝，
+   *     而不是靠"模型应该不会去读"。安全不能靠自觉。
+   */
+  readonly protectedPaths?: readonly string[];
 }
 
 export class NodeFileSystem implements FileSystemPort {
   private readonly root: string;
+  private readonly protectedAbs: readonly string[];
 
   constructor(opts: NodeFsOptions) {
     this.root = resolve(opts.root);
+    this.protectedAbs = (opts.protectedPaths ?? []).map((p) =>
+      isAbsolute(p) ? resolve(p) : resolve(this.root, p),
+    );
   }
 
   resolve(path: string): string {
     return isAbsolute(path) ? resolve(path) : resolve(this.root, path);
+  }
+
+  /**
+   * 该路径是否受保护。
+   *
+   * ⚠️ 判据是**解析后的绝对路径前缀**，不是字符串匹配 ——
+   *    否则 `./x/../.butler-data/events.jsonl` 这类写法就能绕过。
+   */
+  private checkProtected(path: string): void {
+    const abs = this.resolve(path);
+    for (const p of this.protectedAbs) {
+      if (abs === p || abs.startsWith(p + sep)) {
+        throw new FileSystemError(
+          `路径受保护，拒绝访问：${path}（这是系统内部数据，不属于工作区）`,
+          'PERMISSION',
+        );
+      }
+    }
   }
 
   async exists(path: string): Promise<boolean> {
@@ -51,6 +102,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async stat(path: string): Promise<FileStat> {
+    this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const st = await fs.stat(abs);
@@ -66,6 +118,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async readText(path: string, maxBytes = DEFAULT_MAX_READ_BYTES): Promise<string> {
+    this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const st = await fs.stat(abs);
@@ -86,6 +139,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async writeText(path: string, content: string): Promise<number> {
+    this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       // 上级目录不存在时自动创建 —— 这是用户期待的默认行为
@@ -98,6 +152,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async listDir(path: string): Promise<readonly DirEntry[]> {
+    this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const names = await fs.readdir(abs);
@@ -124,6 +179,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async mkdir(path: string): Promise<void> {
+    this.checkProtected(path);
     try {
       await fs.mkdir(this.resolve(path), { recursive: true });
     } catch (err) {
@@ -138,6 +194,7 @@ export class NodeFileSystem implements FileSystemPort {
    *    目录非空且未声明递归时**拒绝**，而不是默默删掉。
    */
   async remove(path: string, options?: { readonly recursive?: boolean }): Promise<void> {
+    this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const st = await fs.stat(abs);

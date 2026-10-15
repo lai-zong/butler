@@ -36,6 +36,8 @@ export default async function HomePage() {
         status: m.status,
         createdAt: m.createdAt,
         ...(m.memoryRefs !== undefined ? { memoryRefs: m.memoryRefs } : {}),
+        // ★ 工具循环过程随消息一起恢复 —— 刷新后仍看得到「它读了哪个文件」
+        ...(m.agentTrace !== undefined ? { agentTrace: m.agentTrace } : {}),
       }))}
     />
   );

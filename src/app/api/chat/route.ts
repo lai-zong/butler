@@ -107,6 +107,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           clock: rt.clock,
           store: rt.bootstrapped.memory,
           chat: rt.bootstrapped.chat,
+          // ★ 装配好的工具框架 —— 不给则仆人不调工具
+          tools: rt.tools,
           onProgress: (e: ProgressEvent) => send({ type: 'progress', event: e }),
 
           /**
@@ -129,6 +131,85 @@ export async function POST(req: NextRequest): Promise<Response> {
               firstChunkMs: s.firstChunkMs,
               done: s.done,
             }),
+
+          /**
+           * ★★ 工具循环进度 —— 「思考 → 工具 → 再思考」画面的来源。
+           *
+           *   实测（一次真实工具循环，3 轮 4 次调用）：
+           *     ▸ 调用 list_dir → ⚙ 执行 → ✓ 结果 32 字（8ms）
+           *     ▸ 调用 read_file → ⚙ 执行 → ✓ 结果 26 字（2ms）
+           *     ▸ 调用 submit_report → ✓ 13 字（20ms）
+           *
+           *   ⚠️ 只推**必要**字段：
+           *      工具结果可能几十 KB，而界面只需要看开头
+           *      （完整内容用户可展开审计视图看）。
+           *      `accumulated` 已经截断在 agentLoop 里。
+           */
+          onAgentProgress: (e) => {
+            switch (e.kind) {
+              case 'roundStarted':
+                send({ type: 'agent', kind: 'round', round: e.round, maxRounds: e.maxRounds });
+                break;
+              case 'reasoning':
+                send({
+                  type: 'agent',
+                  kind: 'reasoning',
+                  round: e.round,
+                  accumulated: e.accumulated.slice(-4000),
+                });
+                break;
+              case 'text':
+                send({
+                  type: 'agent',
+                  kind: 'text',
+                  round: e.round,
+                  accumulated: e.accumulated.slice(-4000),
+                });
+                break;
+              case 'toolCall':
+                send({
+                  type: 'agent',
+                  kind: 'toolCall',
+                  round: e.round,
+                  callId: e.callId,
+                  name: e.name,
+                  argsDelta: e.argsDelta,
+                  partial: e.partial,
+                });
+                break;
+              case 'toolStarted':
+                send({
+                  type: 'agent',
+                  kind: 'toolStarted',
+                  round: e.round,
+                  callId: e.callId,
+                  name: e.name,
+                });
+                break;
+              case 'toolResult':
+                send({
+                  type: 'agent',
+                  kind: 'toolResult',
+                  round: e.round,
+                  callId: e.callId,
+                  name: e.name,
+                  ok: e.ok,
+                  denied: e.denied,
+                  output: e.output,
+                  durationMs: e.durationMs,
+                });
+                break;
+              case 'finished':
+                send({
+                  type: 'agent',
+                  kind: 'finished',
+                  rounds: e.rounds,
+                  hitRoundLimit: e.hitRoundLimit,
+                  reason: e.reason,
+                });
+                break;
+            }
+          },
         });
 
         send({ type: 'user', messageId: result.userMessageId });

@@ -33,10 +33,12 @@ import {
 import { extractFacts } from '../reflection/extractFacts.js';
 import { runNarration, type NarrationResult, type NarrationState } from '../stream/narrate.js';
 import type { ModelStreamPort } from '../ports/stream.js';
+import type { AgentProgressEvent } from '../tools/agentLoop.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
 import { SessionStore, type Verdict, type VerdictIssue } from './types.js';
 import { buildHistoryMessages, buildServantHistoryMessages } from './history.js';
+import { createTraceCollector } from './trace.js';
 import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -71,6 +73,12 @@ export interface RunTurnArgs {
   readonly streamModel?: ModelStreamPort;
   /** 叙述状态更新回调（供 SSE 推送逐字内容） */
   readonly onNarration?: (s: NarrationState) => void;
+  /**
+   * 工具循环进度（供界面渲染「思考 → 工具 → 再思考」画面）。
+   *
+   * ⚠️ 只有给了 streamPort 才有事件 —— 工具循环得走流式才看得到过程。
+   */
+  readonly onAgentProgress?: (e: AgentProgressEvent) => void;
 }
 
 export interface RunTurnResult {
@@ -247,6 +255,19 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
         }).catch(() => null)
       : Promise.resolve(null);
 
+  /**
+   * ★★ 收集工具循环过程 —— 让「它到底干了什么」**跨刷新留存**。
+   *
+   *   ⚠️ 必须在 `runSession` **之前**建：
+   *      事件从 `onAgentProgress` 同步推出，晚一步就漏掉前面的轮次。
+   *
+   *   ★ 与界面内存里那份的分工：
+   *      · 界面那份用于**流式渲染**（逐片更新，看得见"正在长"）
+   *      · 这份用于**持久化**（收完写进消息）
+   *      只做前者的话，刷新就再也看不到"它读了哪个文件、结果是什么"。
+   */
+  const trace = createTraceCollector();
+
   const session = await runSession({
     model: args.model,
     clock: args.clock,
@@ -259,6 +280,15 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     ...(history.length > 0 ? { history } : {}),
     // 仆人用精简历史（只有用户本轮原话）
     ...(servantHistory.length > 0 ? { servantHistory } : {}),
+    // ★ 工具循环的流式：让「调了什么工具、拿到什么」可见
+    ...(args.streamModel !== undefined && args.streamModel !== null
+      ? { streamPort: args.streamModel }
+      : {}),
+    // ★ 一路喂给收集器（持久化），一路喂给调用方（流式渲染）
+    onAgentProgress: (e) => {
+      trace.onEvent(e);
+      args.onAgentProgress?.(e);
+    },
     ...(args.tools !== undefined ? { tools: args.tools } : {}),
     ...(args.onProgress !== undefined ? { onProgress: args.onProgress } : {}),
   });
@@ -283,6 +313,8 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     text: replyText,
     status: 'done',
     memoryRefs: memRefs,
+    // ★ 工具循环过程随消息落盘 —— 刷新后仍能看到「它读了哪个文件」
+    ...(trace.hasContent() ? { agentTrace: trace.build() } : {}),
   });
 
   args.onProgress?.({

@@ -816,6 +816,177 @@ a {
   color: var(--text-mute);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   工具循环过程（思考 → 工具 → 再思考）
+   ═══════════════════════════════════════════════════════════
+
+   ★ 这是 dsh / codex 那种画面的落点 ——
+     在此之前工具循环**完全不可见**，用户只能看到一行行进度文字。
+
+   ⚠️ 视觉上要能一眼看出"在干活"：
+     左侧竖线串起轮次，工具卡片用等宽字体，状态点用颜色区分
+     （未执行灰 / 执行中脉动 / 成功绿 / 失败黄 / 被拒红）。
+   ═══════════════════════════════════════════════════════════ */
+
+.agent {
+  margin-bottom: 20px;
+  border-left: 2px solid var(--line-strong);
+  padding-left: 10px;
+}
+
+.agent-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.agent-title {
+  font-size: 12px;
+  color: var(--text-sub);
+  font-weight: 600;
+}
+
+.agent-meta {
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-left: 6px;
+}
+
+.agent-round {
+  margin-bottom: 8px;
+}
+
+.agent-round-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-mute);
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-round-head:hover {
+  color: var(--text-sub);
+}
+
+.agent-round-label {
+  font-weight: 500;
+}
+
+/* 思考：默认收起；展开时限高可滚 —— 一轮可能有几千字 */
+.agent-reasoning {
+  margin: 4px 0 6px 10px;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-sub);
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── 工具卡片 ── */
+
+.agent-tool {
+  margin: 3px 0 3px 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.agent-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.agent-tool-name {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.agent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--line-strong);
+}
+
+.agent-dot-run {
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.agent-dot-ok {
+  background: var(--ok);
+}
+
+.agent-dot-fail {
+  background: var(--warn);
+}
+
+.agent-dot-deny {
+  background: var(--danger);
+}
+
+.agent-tool-toggle {
+  margin-left: auto;
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+/* 参数：等宽字体才看得出 JSON 结构 */
+.agent-tool-args {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-mute);
+  word-break: break-all;
+}
+
+.agent-tool-result {
+  margin-top: 6px;
+  padding: 7px 9px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-sub);
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-tool-result-bad {
+  background: var(--danger-subtle);
+}
+
+.agent-tool-denied {
+  color: var(--danger);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
 /* ── 输入框（固定在面板底部）── */
 
 .composer {

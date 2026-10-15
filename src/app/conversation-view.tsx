@@ -41,6 +41,8 @@ interface Message {
   readonly status: string;
   readonly createdAt: number;
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
+  /** ★ 工具循环过程（随消息持久化，刷新后仍可见） */
+  readonly agentTrace?: PersistedTrace;
 }
 
 interface VerdictIssue {
@@ -67,9 +69,9 @@ interface AuditRange {
 }
 
 /**
- * 流式叙述状态（与 `core/stream/narrate.ts` 的 `NarrationState` 一致）。
+ * 流式叙述状态（与 core/stream/narrate.ts 的 NarrationState 一致）。
  *
- * ⚠️ `reasoning` 可能为空 —— 实测模型思考量波动很大（0—844 字，
+ * ⚠️ easoning 可能为空 —— 实测模型思考量波动很大（0—844 字，
  *    偶发为 0）。**界面不能假设一定有思考**，要按空处理。
  */
 interface NarrationState {
@@ -78,6 +80,119 @@ interface NarrationState {
   readonly answer: string;
   readonly firstChunkMs: number | null;
   readonly done: boolean;
+}
+
+/**
+ * 工具调用（界面卡片的一条）。
+ *
+ * ★ 这是 dsh / codex 那种画面的核心元素：
+ *   「▸ 调用 read_file → ⚙ 执行 → ✓ 结果 26 字（2ms）」。
+ *
+ * ⚠️ 参数是**分片拼出来的**，所以要能表现"还在长"的状态
+ *    （`partial: true` 时参数不完整，界面不该尝试解析它）。
+ */
+interface ToolCallView {
+  readonly callId: string;
+  readonly name: string;
+  /** 累积的参数 JSON 字符串（分片拼接） */
+  readonly argsText: string;
+  /** 参数是否拼完了 */
+  readonly argsComplete: boolean;
+  readonly started: boolean;
+  readonly result?: {
+    readonly ok: boolean;
+    readonly denied: boolean;
+    readonly output: string;
+    readonly durationMs: number;
+  };
+}
+
+/** 一轮 Agent 循环（界面上是一个可折叠的分组）。 */
+interface AgentRound {
+  readonly round: number;
+  readonly maxRounds: number;
+  readonly reasoning: string;
+  readonly text: string;
+  readonly toolCalls: readonly ToolCallView[];
+}
+
+/**
+ * 本轮的 Agent 过程（「思考 → 工具 → 再思考」）。
+ *
+ * ⚠️ 与 `narration` 的区别（两者都在界面上出现，容易混）：
+ *   · `narration` —— 管家在**仆人干活期间**说的那段话（另一次调用，1.6—2.4s）
+ *   · `agent`     —— **仆人真正干活的工具循环**（思考 + 调工具 + 看结果）
+ *
+ *   前者是"交代安排"，后者是"实际动作"。用户想看的画面主要是后者。
+ */
+interface AgentTrace {
+  readonly rounds: readonly AgentRound[];
+  readonly finished: {
+    readonly rounds: number;
+    readonly hitRoundLimit: boolean;
+    readonly reason: string;
+  } | null;
+}
+
+/**
+ * 持久化形状（与 `core/chat/types.ts` 的 `AgentTraceData` 对应）。
+ *
+ * ⚠️ 与 `AgentTrace` 的区别只在**工具调用**：
+ *   持久化时不需要 `argsComplete` / `started` ——
+ *   那两个是**流式期间**的中间状态（「参数还在长」「刚开始执行」），
+ *   存下来没有意义。
+ *
+ *   → 由 `normalizeTrace()` 把它转成渲染形状，
+ *     组件因此只需处理**一种**形状（否则渲染里到处要判两种形状）。
+ */
+interface PersistedTrace {
+  readonly rounds: readonly {
+    readonly round: number;
+    readonly maxRounds: number;
+    readonly reasoning: string;
+    readonly text: string;
+    readonly toolCalls: readonly {
+      readonly callId: string;
+      readonly name: string;
+      readonly argsText: string;
+      readonly ok: boolean;
+      readonly denied: boolean;
+      readonly output: string;
+      readonly durationMs: number;
+    }[];
+  }[];
+  readonly finished: AgentTrace['finished'];
+}
+
+/**
+ * 把持久化形状归一化成渲染形状。
+ *
+ * ★ 已完成的调用一律 `argsComplete: true, started: true` ——
+ *   能从事件流里存下来的，必然是已经执行过的。
+ */
+function normalizeTrace(t: PersistedTrace): AgentTrace {
+  return {
+    rounds: t.rounds.map((r) => ({
+      round: r.round,
+      maxRounds: r.maxRounds,
+      reasoning: r.reasoning,
+      text: r.text,
+      toolCalls: r.toolCalls.map((tc) => ({
+        callId: tc.callId,
+        name: tc.name,
+        argsText: tc.argsText,
+        argsComplete: true,
+        started: true,
+        result: {
+          ok: tc.ok,
+          denied: tc.denied,
+          output: tc.output,
+          durationMs: tc.durationMs,
+        },
+      })),
+    })),
+    finished: t.finished,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -183,6 +298,12 @@ export function ConversationView({
   const [narration, setNarration] = useState<NarrationState | null>(null);
   /** 思考区是否展开（默认收起：思考是过程，不是结论） */
   const [showReasoning, setShowReasoning] = useState(false);
+  /**
+   * ★★ 本轮的工具循环过程 —— 「思考 → 工具 → 再思考」画面。
+   *
+   *   这是用户真正想看的那个东西：仆人**实际在调什么工具、拿到什么结果**。
+   */
+  const [agent, setAgent] = useState<AgentTrace>({ rounds: [], finished: null });
   const [error, setError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -211,7 +332,7 @@ export function ConversationView({
   useEffect(() => {
     scrollToBottom();
     // 叙述逐字增长也要跟随，否则内容在视口外长出来，用户看不到「流」
-  }, [messages, progress, narration, scrollToBottom]);
+  }, [messages, progress, narration, agent, scrollToBottom]);
 
   // ── 发送 ──
 
@@ -225,6 +346,7 @@ export function ConversationView({
     setAuditRange(null);
     setNarration(null);
     setShowReasoning(false);
+    setAgent({ rounds: [], finished: null });
     setProgress([]);
     setInput('');
     pinnedToBottom.current = true;
@@ -356,6 +478,11 @@ export function ConversationView({
       return;
     }
 
+    if (type === 'agent') {
+      handleAgentEvent(e);
+      return;
+    }
+
     if (type === 'narration') {
       // ⚠️ 整体替换而不是累加 —— 服务端推的是**累计**内容。
       //    累加会变成重复文本，而这类 bug 在流式里很常见且很难一眼看出。
@@ -372,6 +499,133 @@ export function ConversationView({
     if (type === 'error') {
       setError(String(e['message'] ?? '未知错误'));
     }
+  };
+
+  /**
+   * 处理工具循环的进度事件。
+   *
+   * ★★ 这是「思考 → 工具 → 再思考」画面的拼装处。
+   *
+   * ⚠️ 三条要点：
+   *   ① 事件里带 `round` —— 界面据此把内容归到对应轮次（可折叠分组）
+   *   ② `toolCall` 分片是**累积**的（`argsDelta` 逐段拼），
+   *      所以这里也累积；而 `reasoning`/`text` 的 `accumulated`
+   *      是服务端已经累好的，**整体替换**
+   *   ③ 参数拼完（`partial: false`）才标记 `argsComplete` ——
+   *      在那之前界面不该尝试解析或展示参数内容
+   */
+  const handleAgentEvent = (e: Record<string, unknown>): void => {
+    const kind = String(e['kind'] ?? '');
+
+    setAgent((prev) => {
+      const rounds = [...prev.rounds];
+
+      const ensureRound = (n: number): AgentRound => {
+        const idx = rounds.findIndex((r) => r.round === n);
+        if (idx >= 0) return rounds[idx]!;
+        const fresh: AgentRound = {
+          round: n,
+          maxRounds: typeof e['maxRounds'] === 'number' ? e['maxRounds'] : 0,
+          reasoning: '',
+          text: '',
+          toolCalls: [],
+        };
+        rounds.push(fresh);
+        return fresh;
+      };
+
+      const putRound = (r: AgentRound): void => {
+        const idx = rounds.findIndex((x) => x.round === r.round);
+        if (idx >= 0) rounds[idx] = r;
+      };
+
+      if (kind === 'round') {
+        ensureRound(typeof e['round'] === 'number' ? e['round'] : 1);
+        return { rounds, finished: prev.finished };
+      }
+
+      if (kind === 'reasoning') {
+        const r = ensureRound(typeof e['round'] === 'number' ? e['round'] : 1);
+        // 整体替换（服务端已累好）
+        putRound({ ...r, reasoning: String(e['accumulated'] ?? '') });
+        return { rounds, finished: prev.finished };
+      }
+
+      if (kind === 'text') {
+        const r = ensureRound(typeof e['round'] === 'number' ? e['round'] : 1);
+        putRound({ ...r, text: String(e['accumulated'] ?? '') });
+        return { rounds, finished: prev.finished };
+      }
+
+      if (kind === 'toolCall') {
+        const r = ensureRound(typeof e['round'] === 'number' ? e['round'] : 1);
+        const callId = String(e['callId'] ?? '');
+        const name = String(e['name'] ?? '');
+        const delta = String(e['argsDelta'] ?? '');
+        const complete = e['partial'] === false;
+
+        const list = [...r.toolCalls];
+        const i = list.findIndex(
+          (t) => t.callId === callId || (name.length > 0 && t.name === name && !t.argsComplete),
+        );
+
+        if (i < 0) {
+          list.push({
+            callId,
+            name,
+            argsText: delta,
+            argsComplete: complete,
+            started: false,
+          });
+        } else {
+          const cur = list[i]!;
+          list[i] = {
+            ...cur,
+            name: name.length > 0 ? name : cur.name,
+            argsText: cur.argsText + delta,
+            argsComplete: complete || cur.argsComplete,
+          };
+        }
+
+        putRound({ ...r, toolCalls: list });
+        return { rounds, finished: prev.finished };
+      }
+
+      if (kind === 'toolStarted' || kind === 'toolResult') {
+        const r = ensureRound(typeof e['round'] === 'number' ? e['round'] : 1);
+        const callId = String(e['callId'] ?? '');
+        const list = r.toolCalls.map((t) => {
+          if (t.callId !== callId) return t;
+          if (kind === 'toolStarted') return { ...t, started: true };
+          return {
+            ...t,
+            started: true,
+            argsComplete: true,
+            result: {
+              ok: e['ok'] === true,
+              denied: e['denied'] === true,
+              output: String(e['output'] ?? ''),
+              durationMs: typeof e['durationMs'] === 'number' ? e['durationMs'] : 0,
+            },
+          };
+        });
+        putRound({ ...r, toolCalls: list });
+        return { rounds, finished: prev.finished };
+      }
+
+      if (kind === 'finished') {
+        return {
+          rounds,
+          finished: {
+            rounds: typeof e['rounds'] === 'number' ? e['rounds'] : rounds.length,
+            hitRoundLimit: e['hitRoundLimit'] === true,
+            reason: String(e['reason'] ?? ''),
+          },
+        };
+      }
+
+      return prev;
+    });
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -447,6 +701,9 @@ export function ConversationView({
                     onToggleReasoning={() => setShowReasoning((v) => !v)}
                   />
                 )}
+
+              {/* ── ★ 工具循环过程：思考 → 工具 → 再思考 ── */}
+              {agent.rounds.length > 0 && <AgentTraceView trace={agent} />}
 
               {/* ── 审查结论 ── */}
               {verdict !== null && (
@@ -587,6 +844,155 @@ function NarrationBlock({
 }
 
 // ═══════════════════════════════════════════════════════════
+// 工具循环过程（思考 → 工具 → 再思考）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 把工具循环渲染成 dsh / codex 那种画面。
+ *
+ * ★ 结构：
+ *     第 1 轮 · 思考 4687 字
+ *       ▸ list_dir        ⚙ ✓ 32 字 · 8ms
+ *       ▸ stat_path       ⚙ ✓ 119 字 · 3ms
+ *     第 2 轮
+ *       ▸ read_file       ⚙ ✓ 26 字 · 2ms
+ *     第 3 轮
+ *       ▸ submit_report   ⚙ ✓ 13 字 · 20ms
+ *
+ * ★★ 三处刻意的设计：
+ *
+ *   ① **轮次可折叠** —— 一轮的思考可能有几千字（实测 4687 字），
+ *      全部展开会把对话淹没。默认只展开工具调用，思考收起来。
+ *
+ *   ② **工具结果可展开** —— 结果可能几百到几千字，
+ *      默认只显示长度与耗时，点开看内容。
+ *
+ *   ③ **参数用等宽字体** —— 它是 JSON，等宽才看得出结构。
+ *      且参数**只在拼完后显示**（`argsComplete`），
+ *      否则用户会看到一个残缺的 JSON 而不知道那是"还在生成"。
+ */
+function AgentTraceView({ trace }: { readonly trace: AgentTrace }) {
+  const [openRounds, setOpenRounds] = useState<Record<number, boolean>>({});
+  const [openResults, setOpenResults] = useState<Record<string, boolean>>({});
+
+  const f = trace.finished;
+  const totalCalls = trace.rounds.reduce((n, r) => n + r.toolCalls.length, 0);
+
+  return (
+    <div className="agent">
+      <div className="agent-head">
+        <span className="agent-title">
+          执行过程
+          <span className="agent-meta mono">
+            {f !== null ? `${f.rounds} 轮` : `${trace.rounds.length} 轮进行中`} · {totalCalls} 次工具调用
+          </span>
+        </span>
+        {f !== null && f.hitRoundLimit && (
+          <span className="tag tag-warn">达到轮次上限</span>
+        )}
+      </div>
+
+      {trace.rounds.map((r) => {
+        const expanded = openRounds[r.round] === true;
+        const hasReasoning = r.reasoning.length > 0;
+
+        return (
+          <div className="agent-round" key={r.round}>
+            <button
+              type="button"
+              className="agent-round-head"
+              onClick={() => setOpenRounds((s) => ({ ...s, [r.round]: !expanded }))}
+            >
+              <span className="agent-round-label">第 {r.round} 轮</span>
+              {hasReasoning && (
+                <span className="agent-meta mono">思考 {r.reasoning.length} 字</span>
+              )}
+              {r.toolCalls.length > 0 && (
+                <span className="agent-meta mono">{r.toolCalls.length} 次调用</span>
+              )}
+            </button>
+
+            {/* 思考（默认收起 —— 一轮可能几千字，全展开会淹没对话） */}
+            {expanded && hasReasoning && (
+              <div className="agent-reasoning">{r.reasoning}</div>
+            )}
+
+            {/* 工具调用卡片 */}
+            {r.toolCalls.map((tc, i) => {
+              const key = `${r.round}_${tc.callId}_${i}`;
+              const showResult = openResults[key] === true;
+              const res = tc.result;
+
+              return (
+                <div className="agent-tool" key={key}>
+                  <div className="agent-tool-head">
+                    {/* 状态图标：未执行 / 执行中 / 成功 / 失败 / 被拒 */}
+                    <span
+                      className={
+                        res === undefined
+                          ? tc.started
+                            ? 'agent-dot agent-dot-run'
+                            : 'agent-dot'
+                          : res.denied
+                            ? 'agent-dot agent-dot-deny'
+                            : res.ok
+                              ? 'agent-dot agent-dot-ok'
+                              : 'agent-dot agent-dot-fail'
+                      }
+                    />
+                    <span className="agent-tool-name mono">{tc.name || '（未知工具）'}</span>
+
+                    {!tc.argsComplete && <span className="agent-meta">生成参数…</span>}
+
+                    {res !== undefined && (
+                      <>
+                        <span className="agent-meta mono">
+                          {res.output.length} 字 · {res.durationMs}ms
+                        </span>
+                        <button
+                          type="button"
+                          className="agent-tool-toggle"
+                          onClick={() => setOpenResults((s) => ({ ...s, [key]: !showResult }))}
+                        >
+                          {showResult ? '收起' : '结果'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  {/* 参数：只在拼完后显示 —— 残缺的 JSON 会让用户困惑 */}
+                  {tc.argsComplete && tc.argsText.length > 0 && (
+                    <div className="agent-tool-args mono">{formatArgs(tc.argsText)}</div>
+                  )}
+
+                  {showResult && res !== undefined && (
+                    <div className={`agent-tool-result ${res.ok ? '' : 'agent-tool-result-bad'}`}>
+                      {res.denied && <div className="agent-tool-denied">已拒绝 —— 未执行</div>}
+                      {res.output}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 把参数 JSON 压成一行显示（太长就截断）。 */
+function formatArgs(raw: string): string {
+  try {
+    const v: unknown = JSON.parse(raw);
+    const s = JSON.stringify(v);
+    return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+  } catch {
+    return raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // 子组件
 // ═══════════════════════════════════════════════════════════
 
@@ -605,6 +1011,11 @@ function MessageBubble({ message }: { readonly message: Message }) {
       <div className="msg-body">
         <RichContent text={message.text} />
       </div>
+      {/* ★ 工具循环过程：随消息持久化，刷新后仍能看到「它读了哪个文件」 */}
+      {message.agentTrace !== undefined && message.agentTrace.rounds.length > 0 && (
+        <AgentTraceView trace={normalizeTrace(message.agentTrace)} />
+      )}
+
       {message.memoryRefs !== undefined && message.memoryRefs.length > 0 && (
         <details className="msg-refs">
           <summary>参考了 {message.memoryRefs.length} 条记忆</summary>

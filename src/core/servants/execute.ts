@@ -12,7 +12,8 @@
 import { EventLog } from '../events/log.js';
 import { msg, type ModelMessage, type ModelPort } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
-import { runAgentLoop } from '../tools/agentLoop.js';
+import type { ModelStreamPort } from '../ports/stream.js';
+import { runAgentLoop, type AgentProgressEvent } from '../tools/agentLoop.js';
 import { extractReport, submitReportTool } from '../tools/builtin/report.js';
 import type { ToolFramework } from '../tools/framework.js';
 import type { ActionTier } from '../tools/types.js';
@@ -121,6 +122,14 @@ export async function runServant(args: {
    *    给多了会让它跑偏到「回答用户」而不是「产出结构化报告」。
    */
   readonly history?: readonly ModelMessage[];
+  /**
+   * 流式端口。给出时工具循环走流式，过程通过 onAgentProgress 实时推出。
+   *
+   * ⚠️ 不给则行为与之前完全一致 —— 既有测试与验证脚本不受影响。
+   */
+  readonly streamPort?: ModelStreamPort;
+  /** 工具循环进度（「思考 → 工具 → 再思考」画面的来源） */
+  readonly onAgentProgress?: (e: AgentProgressEvent) => void;
   readonly now: number;
   readonly clock: ClockPort;
   /**
@@ -277,6 +286,9 @@ async function runWithTools(
       toolFilter: (t) => t.name === 'submit_report' || policy.allowTiers.includes(t.tier),
       ...(args.maxRounds !== undefined ? { maxRounds: args.maxRounds } : {}),
       terminalTool: 'submit_report',
+      // ★ 流式（给出才走；不给出行为不变）
+      ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
+      ...(args.onAgentProgress !== undefined ? { onProgress: args.onAgentProgress } : {}),
     },
     messages,
   );

@@ -34,6 +34,12 @@ import { SystemClock } from '@/adapters/clock/system.js';
 import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/runtime/bootstrap.js';
 import { DeepSeekModel, deepSeekConfigFromEnv } from '@/adapters/model/deepseek.js';
 import { modelConfig } from '@/core/config/env.js';
+import { ToolFramework } from '@/core/tools/framework.js';
+import { fileTools } from '@/core/tools/builtin/file.js';
+import { execTool } from '@/core/tools/builtin/exec.js';
+import { NodeFileSystem } from '@/adapters/fs/node.js';
+import { NodeExec } from '@/adapters/exec/node.js';
+import { WebPermissionPolicy } from './server/permission.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
 import type { ModelPort } from '@/core/ports/model.js';
 import type { ModelStreamPort } from '@/core/ports/stream.js';
@@ -58,6 +64,15 @@ export function eventsFile(customDir?: string): string {
  */
 export const DEFAULT_USER_ID = process.env['BUTLER_USER_ID'] ?? 'local';
 
+/**
+ * 工具的工作根目录。
+ *
+ * ⚠️ 这是**应用的启动目录**，不是数据目录 ——
+ *    仆人的文件工具在这里读写，而 `.butler-data` 是系统自己的事件流。
+ *    让模型能读写自己的事件文件是不必要的风险。
+ */
+export const WORKSPACE_ROOT = process.env['BUTLER_WORKSPACE'] ?? process.cwd();
+
 // ═══════════════════════════════════════════════════════════
 // 运行时形状
 // ═══════════════════════════════════════════════════════════
@@ -70,6 +85,13 @@ export interface ButlerRuntime {
   readonly model: ModelPort | null;
   /** 流式模型（推理流用） */
   readonly streamModel: ModelStreamPort | null;
+  /**
+   * 工具框架。
+   *
+   * ⚠️ 不给它，仆人就走「纯推理」路径 ——
+   *    界面上也就看不到任何工具调用。
+   */
+  readonly tools: ToolFramework;
   /** 启动时间 */
   readonly startedAt: number;
   /** 启动摘要（供界面"已恢复 N 条记忆"展示） */
@@ -156,12 +178,59 @@ async function initRuntime(): Promise<ButlerRuntime> {
     model = null;
   }
 
+  /**
+   * ── 工具框架 ──
+   *
+   * ★★ 这一步之前**缺失**，后果很直接：
+   *   `runTurn` 只有在拿到 `tools` 时才让仆人走工具循环，
+   *   而界面从未装配过它 —— 所以**界面聊天时仆人根本不调工具**，
+   *   那张「思考 → 工具 → 再思考」的画面也就无从出现。
+   *
+   * ⚠️ 权限策略用 `WebPermissionPolicy`：只读放行、写操作**拒绝**。
+   *    理由见 `server/permission.ts`：SSE 响应没法中途停下来等用户确认，
+   *    而"静默放行写操作"会让安全闸门形同虚设。
+   *    被拒的调用会在界面上显示成红色卡片 —— 用户看得见「它想做什么」。
+   */
+  const tools = new ToolFramework({
+    log: bootstrapped.log,
+    clock,
+    policy: new WebPermissionPolicy({
+      allowWrite: process.env['BUTLER_ALLOW_WRITE'] === '1',
+    }),
+  });
+
+  const fsPort = new NodeFileSystem({
+    root: WORKSPACE_ROOT,
+    /**
+     * ★★ 受保护路径 —— 模型**不得**读写。
+     *
+     * ★ 这不是预防性设计，是**实测暴露的漏洞**：
+     *   之前的默认配置下，模型调了
+     *     `read_file {"path":".butler-data/events.jsonl"}`
+     *   然后说出「系统本次未召回任何用户健康记忆
+     *   （memory.recalled count = 0）」—— 它读到了内部状态。
+     *
+     *   事件文件是整个系统的真相源，里面有全部记忆（含敏感域）、
+     *   全部对话、全部内部诊断。能读它等于：
+     *     · **绕过分权** —— 不走 `canRead`，敏感域隔离形同虚设
+     *     · **绕过审计** —— 读文件不产生 `memory.recalled` 事件
+     *     · **破坏提示隔离** —— 看到系统写给自己的诊断
+     *
+     * ⚠️ 同时保护 `.env.local` —— 那里有 API 密钥。
+     *    工具层虽有凭证脱敏，但**不让它读到**比"读到再抹掉"更稳。
+     */
+    protectedPaths: [DATA_DIR, join(WORKSPACE_ROOT, '.env.local')],
+  });
+  tools.registerAll(fileTools(fsPort));
+  tools.register(execTool(new NodeExec({ cwdRoot: WORKSPACE_ROOT }), WORKSPACE_ROOT));
+
   return {
     bootstrapped,
     clock,
     random,
     model,
     streamModel,
+    tools,
     startedAt: clock.now(),
     restoreSummary: renderRestoreSummary(bootstrapped),
     sessionId,
