@@ -70,5 +70,12 @@ export class ExecError extends Error {
 /** 默认输出上限：256 KiB。 */
 export const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
 
-/** 默认超时：15 秒。 */
+/**
+ * 默认超时：15 秒。
+ *
+ * ⚠️ 这是**端口层的兜底常量**，刻意不读环境变量。
+ *    端口是「外部世界的抽象」，不该知道配置从哪里来 ——
+ *    让 `TOOL_TIMEOUT_MS` 生效的读取放在工具层（`tools/builtin/exec.ts`），
+ *    由它解析后传进来。这样端口保持纯净，配置也真的能生效。
+ */
 export const DEFAULT_TIMEOUT_MS = 15_000;

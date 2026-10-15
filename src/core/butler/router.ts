@@ -8,9 +8,9 @@
  */
 
 import { msg, type ModelPort } from '../ports/model.js';
+import { routingConfig } from '../config/env.js';
 import { BUTLER_SYSTEM, PROMPT_VERSIONS, routerTask } from '../prompts/butler.js';
 import { routingSchema, type RoutingDecision } from '../prompts/schemas.js';
-import { ROUTING_CONFIDENCE_THRESHOLD } from '../servants/types.js';
 
 export interface RouteResult {
   readonly decision: RoutingDecision;
@@ -26,7 +26,8 @@ export async function route(args: {
   readonly userGoal: string;
   readonly threshold?: number;
 }): Promise<RouteResult> {
-  const threshold = args.threshold ?? ROUTING_CONFIDENCE_THRESHOLD;
+  // ★ 可用 `ROUTING_CONFIDENCE_THRESHOLD` 覆盖（默认 0.6，与原先一致）
+  const threshold = args.threshold ?? routingConfig.confidenceThreshold;
 
   const result = await args.model.completeStructured({
     purpose: 'routing',

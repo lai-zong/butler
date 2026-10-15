@@ -16,6 +16,7 @@
  *   所以额度检查发生在**每次执行之前**，而不是事后统计。
  */
 
+import { limitsConfig } from '../config/env.js';
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 
@@ -81,6 +82,16 @@ export interface QuotaConfig {
   readonly exhaustedReason?: string;
 }
 
+/**
+ * 默认日额度。
+ *
+ * ★ 可用 DAILY_TOKEN_TASK_LIMIT 覆盖（默认 10，与原先一致）。
+ */
+export function defaultQuota(): QuotaConfig {
+  return { dailyTokenTaskLimit: limitsConfig.dailyTokenTaskLimit };
+}
+
+/** @deprecated 用 defaultQuota() —— 保留是为了不破坏既有测试。 */
 export const DEFAULT_QUOTA: QuotaConfig = { dailyTokenTaskLimit: 10 };
 
 export interface QuotaState {
@@ -147,7 +158,7 @@ export class Scheduler {
   constructor(
     private readonly log: EventLog,
     private readonly clock: ClockPort,
-    quota: QuotaConfig = DEFAULT_QUOTA,
+    quota: QuotaConfig = defaultQuota(),
   ) {
     this.quota = quota;
   }

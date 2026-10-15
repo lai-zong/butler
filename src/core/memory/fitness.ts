@@ -13,6 +13,7 @@
  *    不是让 LLM 事后评判。这样适应度可复算、可审计、可重放。
  */
 
+import { memoryConfig } from '../config/env.js';
 import type { EvolutionEvent, MemoryEntry, MemoryLifecycle } from './types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -36,13 +37,34 @@ export interface EvolutionParams {
   readonly maxFitness: number;
 }
 
+/**
+ * 默认演化参数。
+ *
+ * ★ 四个可配项来自环境变量（见 core/config/env.ts），**默认值与原先完全一致** ——
+ *   这次改动不改变任何现有行为，只是让「想改的时候能改」。
+ *
+ * ⚠️ 用 getter 而非普通对象：环境变量在模块加载后才由 CLI 载入，
+ *    若在此处一次性求值，utler doctor 之类的场景会读到旧值。
+ *
+ * ⚠️ ecallThresholdBase / diversityMinPerKind / maxFitness **刻意不开放**：
+ *    它们属于召回算法内部标定，改错会让召回静默失效
+ *    （阈值太高 → 什么都召不回，且不报错）。开放它们收益小、风险大。
+ */
 export const DEFAULT_PARAMS: EvolutionParams = {
-  emaAlpha: 0.15,
-  dormantAfterMs: 60 * 24 * 60 * 60 * 1000, // 60 天
-  archiveBelowFitness: 0.25,
+  get emaAlpha() {
+    return memoryConfig.emaAlpha;
+  },
+  get dormantAfterMs() {
+    return memoryConfig.dormantAfterMs;
+  },
+  get archiveBelowFitness() {
+    return memoryConfig.archiveBelowFitness;
+  },
   recallThresholdBase: 0.35,
   diversityMinPerKind: 2,
-  exploratoryRatio: 0.1,
+  get exploratoryRatio() {
+    return memoryConfig.exploratoryRatio;
+  },
   maxFitness: 0.98,
 };
 

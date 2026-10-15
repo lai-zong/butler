@@ -16,14 +16,25 @@
 
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
-  DEFAULT_TIMEOUT_MS,
   ExecError,
   type ExecPort,
 } from '../../ports/exec.js';
+import { limitsConfig } from '../../config/env.js';
 import type { ToolContext, ToolSpec } from '../types.js';
 
 /** 超时上限：5 分钟。再长就该做成后台任务，而不是占着会话。 */
 const MAX_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * 默认超时（按环境变量解析）。
+ *
+ * ★ 可用 `TOOL_TIMEOUT_MS` 覆盖（默认 15000，与原先一致）。
+ * ⚠️ 用函数而非常量：环境变量在模块加载之后才由 CLI 载入。
+ * ⚠️ 仍受 `MAX_TIMEOUT_MS` 硬上限约束 —— 那是安全边界，不由环境放宽。
+ */
+function defaultTimeoutMs(): number {
+  return Math.min(limitsConfig.toolTimeoutMs, MAX_TIMEOUT_MS);
+}
 
 /** 常见只读命令（用于预览里提示"这条是只读的"）。 */
 const LIKELY_READONLY: readonly string[] = [
@@ -66,7 +77,7 @@ export function execTool(exec: ExecPort, defaultCwd: string): ToolSpec {
       const rest = Array.isArray(a?.args) ? a.args.map(String) : [];
       const full = [cmd, ...rest].join(' ');
       const cwd = a?.cwd ?? defaultCwd;
-      const timeout = Math.min(a?.timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+      const timeout = Math.min(a?.timeoutMs ?? defaultTimeoutMs(), MAX_TIMEOUT_MS);
 
       const lines = [`将执行：${full}`, `工作目录：${cwd}`, `超时：${timeout} ms`];
 
@@ -106,7 +117,7 @@ export function execTool(exec: ExecPort, defaultCwd: string): ToolSpec {
       const argv = Array.isArray(a.args) ? a.args.map(String) : [];
       const cwd = typeof a.cwd === 'string' && a.cwd.length > 0 ? a.cwd : defaultCwd;
       const timeoutMs = Math.min(
-        typeof a.timeoutMs === 'number' && a.timeoutMs > 0 ? a.timeoutMs : DEFAULT_TIMEOUT_MS,
+        typeof a.timeoutMs === 'number' && a.timeoutMs > 0 ? a.timeoutMs : defaultTimeoutMs(),
         MAX_TIMEOUT_MS,
       );
 

@@ -15,6 +15,7 @@
  *      把 token 烧光
  */
 
+import { limitsConfig } from '../config/env.js';
 import type { EventLog } from '../events/log.js';
 import { msg, type ModelMessage, type ModelPort, type ModelToolSpec } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
@@ -31,6 +32,17 @@ import {
 } from '../security/injection.js';
 
 /** 默认最大轮次。超过就该判断"这个任务不适合用工具解决"。 */
+/**
+ * 默认最大推理轮次。
+ *
+ * ★ 可用 MAX_ROUNDS_PER_SESSION 覆盖（默认 8，与原先一致）。
+ * ⚠️ getter 而非常量：环境变量在模块加载后才载入。
+ */
+export function defaultMaxRounds(): number {
+  return limitsConfig.maxRoundsPerSession;
+}
+
+/** @deprecated 用 defaultMaxRounds() —— 保留是为了不破坏既有测试断言。 */
 export const DEFAULT_MAX_ROUNDS = 8;
 
 /** 历史里保留的最大工具结果条数（更早的被摘要替换，控制上下文增长）。 */
@@ -116,7 +128,7 @@ export async function runAgentLoop(
   opts: AgentLoopOptions,
   initialMessages: readonly ModelMessage[],
 ): Promise<AgentLoopResult> {
-  const maxRounds = opts.maxRounds ?? DEFAULT_MAX_ROUNDS;
+  const maxRounds = opts.maxRounds ?? defaultMaxRounds();
   const toolSpecs: readonly ModelToolSpec[] = opts.tools.toModelSpecs(opts.toolFilter);
 
   const messages: ModelMessage[] = [...initialMessages];
