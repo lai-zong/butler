@@ -24,6 +24,13 @@ import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ToolFramework } from '../tools/framework.js';
 import { recall } from '../memory/recall.js';
+import {
+  reflectTurn,
+  renderReflectSummary,
+  sinkAndAdmit,
+  type ReflectTurnResult,
+} from '../reflection/runReflection.js';
+import { extractFacts } from '../reflection/extractFacts.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
 import { SessionStore, type Verdict, type VerdictIssue } from './types.js';
@@ -57,6 +64,13 @@ export interface RunTurnResult {
   readonly replyText: string;
   readonly verdict: Verdict;
   readonly session: RunSessionResult;
+  /**
+   * 本次反思与入库的结果。
+   *
+   * ⚠️ 可空：反思失败时（模型超时等）它是 undefined，
+   *    但**对话本身仍然成功** —— 学习失败不该让用户拿不到结果。
+   */
+  readonly reflection?: ReflectTurnResult;
 }
 
 /**
@@ -71,6 +85,68 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   // ── ① 记下用户发言（落事件，供回退与重放）──
   const userMsg = chat.appendMessage(sessionId, { role: 'user', text: userText });
+
+  /**
+   * ── ①b ★ 从用户发言提取事实 ──
+   *
+   * ★★ 这一步是「它记得你」的起点，之前**完全缺失**。
+   *
+   *   实测发现：用户说「我叫示例用户，对花生严重过敏」，
+   *   而系统只从**反思**里产出候选 —— 反思的 prompt 面向
+   *   「这轮协作有什么可改进的」，天生产出**原则**，一条事实都没有。
+   *
+   *   后果链：
+   *     没有 fact 类候选 → `inferSource` 对原则一律判 aiDerivedPrinciple
+   *     → 全部待审核 → 方案规定候选不参与召回 → **召回恒为 0**
+   *     → 「它记得你」永不成立，**而系统看起来一切正常**。
+   *
+   *   ★ 根本区分：**事实不是「反思」出来的，是「听到」的。**
+   *     用户说「我对花生过敏」是一句陈述，不需要推理，需要的是记下来。
+   *
+   * ⚠️ 刻意放在**召回之前** —— 这样本轮就能用上刚提取的事实。
+   *    用户说「我对花生过敏，今晚吃什么」时，第一条消息就该生效，
+   *    而不是等到下一轮。
+   */
+  let extractedFactCount = 0;
+  try {
+    const existingFacts = args.store
+      .visibleTo({ kind: 'butler', userId: args.userId })
+      .filter((m) => m.kind === 'fact')
+      .map((m) => m.content);
+
+    const ex = await extractFacts({
+      model: args.model,
+      log: args.log,
+      clock: args.clock,
+      store: args.store,
+      userId: args.userId,
+      userText,
+      existing: existingFacts,
+    });
+
+    if (ex.candidates.length > 0) {
+      const r = sinkAndAdmit({
+        log: args.log,
+        store: args.store,
+        clock: args.clock,
+        candidates: ex.candidates,
+      });
+      extractedFactCount = r.admittedAutonomously;
+    }
+  } catch (err) {
+    // 提取失败不该阻断对话 —— 但要留痕，不静默吞
+    args.log.append({
+      type: 'reflection.done',
+      actor: 'butler',
+      payload: {
+        sessionId,
+        kind: 'factExtraction',
+        failed: true,
+        reason: err instanceof Error ? err.message : String(err),
+      },
+      createdAt: args.clock.now(),
+    });
+  }
 
   // ── ② 召回记忆 ──
   //
@@ -136,12 +212,81 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     label: verdict.outcome === 'accepted' ? '完成' : '打回',
   });
 
+  /**
+   * ── ⑥ 反思与入库 ──
+   *
+   * ★★ 这一步之前**缺了**，而且是整个项目最严重的一个缺口：
+   *
+   *   `reflectServant` / `reflectButler` / `sinkCandidates` 在此之前
+   *   **只有验证脚本调用**。生产代码里没有任何地方调用它们。
+   *
+   *   失效链：界面聊天 → 记忆库永远是空的 → 召回 0 条
+   *   → 没有硬约束注入 → 没有原则 → 没有演化
+   *   → **「它记得你」在真实使用路径上完全不成立**。
+   *
+   *   ⚠️ 而验证 2 是 34/34 全过的 —— 因为它手工调了反思与入库。
+   *      这暴露了验证方法上的一个问题：
+   *      **验证「核心能力可用」不等于验证「真实路径可达」**。
+   *
+   * ⚠️ 刻意放在汇报**之后**：用户先拿到结果，反思是"附赠的积累"。
+   *    反思失败也**不影响**已交付的结果。
+   */
+  args.onProgress?.({ kind: 'stage', stage: 'reflect', label: '整理这次的经验' });
+
+  let reflection: ReflectTurnResult | null = null;
+  try {
+    reflection = await reflectTurn({
+      model: args.model,
+      log: args.log,
+      clock: args.clock,
+      store: args.store,
+      session,
+      userGoal: userText,
+      userId: args.userId,
+      accepted: verdict.outcome === 'accepted',
+    });
+  } catch (err) {
+    // 反思失败不该让用户拿不到结果 —— 但要留痕，不静默吞
+    args.log.append({
+      type: 'reflection.done',
+      actor: 'butler',
+      payload: {
+        sessionId,
+        failed: true,
+        reason: err instanceof Error ? err.message : String(err),
+      },
+      createdAt: args.clock.now(),
+    });
+  }
+
+  // 学到了什么 —— 追加到回复末尾（用户应当看得见「它在积累」）
+  const learnedParts: string[] = [];
+  if (extractedFactCount > 0) {
+    learnedParts.push(`从你这句话里记住了 ${extractedFactCount} 条`);
+  }
+  if (reflection !== null) {
+    const s = renderReflectSummary(reflection);
+    if (s.length > 0) learnedParts.push(s);
+  }
+  if (learnedParts.length > 0) {
+    chat.updateMessage(sessionId, reply.id, {
+      text: `${replyText}\n\n---\n\n*${learnedParts.join(' · ')}*`,
+    });
+  }
+
+  args.onProgress?.({
+    kind: 'stage',
+    stage: 'done',
+    label: '完成',
+  });
+
   return {
     userMessageId: userMsg.id,
     replyMessageId: reply.id,
     replyText,
     verdict,
     session,
+    ...(reflection !== null ? { reflection } : {}),
   };
 }
 

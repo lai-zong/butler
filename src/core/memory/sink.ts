@@ -22,6 +22,21 @@ import type { MemoryEntry } from './types.js';
 
 export interface SinkResult {
   readonly created: readonly MemoryEntry[];
+  /**
+   * `created` 里每一条**来自哪个候选**。
+   *
+   * ★ 为什么必须有这个配对：
+   *   `MemoryCandidate.id`（`cand_*`）与 `MemoryEntry.id`（`m_*`）是两套
+   *   不同的 id，靠「id 相等」去找对应候选**永远找不到**。
+   *
+   *   ⚠️ 这个坑实际发生过：分级自主准入按 `c.id === entry.id` 匹配，
+   *      结果全部匹配失败 → 全落进「待审核」→ 分级自主策略**静默失效**
+   *      （功能看起来正常，只是所有记忆都变成要用户点确认）。
+   */
+  readonly paired: readonly {
+    readonly entry: MemoryEntry;
+    readonly candidate: MemoryCandidate;
+  }[];
   /** 与既有记忆重复而被跳过的候选 */
   readonly skipped: readonly { readonly candidate: MemoryCandidate; readonly reason: string; readonly duplicateOf: string }[];
 }
@@ -48,6 +63,7 @@ export function sinkCandidates(
   candidates: readonly MemoryCandidate[],
 ): SinkResult {
   const created: MemoryEntry[] = [];
+  const paired: { entry: MemoryEntry; candidate: MemoryCandidate }[] = [];
   const skipped: SinkResult['skipped'][number][] = [];
   const batch: MemoryEntry[] = [];
 
@@ -83,6 +99,7 @@ export function sinkCandidates(
     }
 
     created.push(res.entry);
+    paired.push({ entry: res.entry, candidate: cand });
     batch.push(res.entry);
 
     // ★ 原则落库时写入条件与动作 —— 没有它们，这条原则无法被正确注入，
@@ -116,7 +133,7 @@ export function sinkCandidates(
   }
 
   void opts.dedupeWithinBatch;
-  return { created, skipped };
+  return { created, paired, skipped };
 }
 
 // ═══════════════════════════════════════════════════════════

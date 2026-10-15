@@ -289,3 +289,43 @@ export const supervisionSchema = z.object({
 });
 
 export type SupervisionOutput = z.infer<typeof supervisionSchema>;
+
+// ═══════════════════════════════════════════════════════════
+// 事实提取（从用户发言里抽出关于用户本人的事实）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 一条提取出的事实。
+ *
+ * ⚠️ `quote` 是**必填**且由调用方核对（见 `extractFacts` 里的
+ *    `quoteAppearsIn`）。理由：模型很擅长把"常识"写成"用户说过"，
+ *    而记忆库一旦被这种内容污染，用户很难发现 ——
+ *    他会以为是自己说过的。
+ *
+ *    ⚠️ 实测踩过：`needsButlerDecision` 那类字段只写 `.optional()`
+ *       不接受 `null`，而模型常用明确的 `null` 表示"没有"。
+ *       这里同理 —— 用 `.nullable().optional()` 收下它。
+ */
+export const extractedFactSchema = z.object({
+  content: z
+    .string()
+    .min(2)
+    .max(120)
+    .describe('第三人称陈述句，不超过 40 字，如「用户对花生严重过敏」'),
+  confidence: z.number().min(0).max(1).describe('0—1'),
+  category: z
+    .enum(['identity', 'constraint', 'preference', 'context'])
+    .describe('identity=身份 / constraint=约束 / preference=长期偏好 / context=长期背景'),
+  quote: z
+    .string()
+    .min(2)
+    .describe('用户原话片段，必须逐字出现在用户这句话里（这是防幻觉的关键）'),
+});
+
+export const memoryExtractionSchema = z.object({
+  facts: z
+    .array(extractedFactSchema)
+    .describe('关于用户本人且长期有效的事实；没有就填空数组（这是正常答案）'),
+});
+
+export type ExtractedFactsOutput = z.infer<typeof memoryExtractionSchema>;
