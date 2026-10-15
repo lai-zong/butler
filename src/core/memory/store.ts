@@ -55,7 +55,19 @@ export type ReadResult =
 export type WriteDenyReason =
   | 'global_butler_only' // 全局层只能管家写
   | 'domain_not_owner' // 领域记忆只能所属仆人写
-  | 'hard_constraint_immutable'; // 硬约束不可被仆人改动
+  | 'hard_constraint_immutable' // 硬约束不可被仆人改动
+  /**
+   * ⚠️ 这条是**后补的** —— 原先漏了它。
+   *
+   *   症状：`review()` 里要返回 `not_found`，但类型里没有这个值，
+   *   于是写成了 `'not_found' as never`（用断言压住类型系统的合法投诉）。
+   *
+   *   ⚠️ 同一类值在别处是**正常使用**的（`forget()` 就写了 `'not_found'`）——
+   *      因为那个方法的返回类型是宽松的 `{ ok: boolean; reason?: string }`。
+   *      也就是说：**类型越精确的地方，越容易用断言绕过，而不是补全类型**。
+   *      而断言是静默的：类型系统不再保护这一处，也没人知道。
+   */
+  | 'not_found';
 
 export type WriteResult =
   | { readonly ok: true; readonly entry: MemoryEntry }
@@ -506,7 +518,7 @@ export class MemoryStore {
     },
   ): WriteResult {
     const entry = this.entries.get(id);
-    if (!entry) return { ok: false, reason: 'not_found' as never };
+    if (!entry) return { ok: false, reason: 'not_found' };
 
     const deny = this.canWrite(actor, entry);
     if (deny) return { ok: false, reason: deny };

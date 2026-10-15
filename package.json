@@ -24,7 +24,8 @@
     "validate:4": "node node_modules/tsx/dist/cli.mjs src/validate/04-activity-profile.ts",
     "validate:5": "node node_modules/tsx/dist/cli.mjs src/validate/05-mcp.ts",
     "validate:6": "node node_modules/tsx/dist/cli.mjs src/validate/06-persistence.ts",
-    "validate:7": "node node_modules/tsx/dist/cli.mjs src/validate/07-runtime-restart.ts"
+    "validate:7": "node node_modules/tsx/dist/cli.mjs src/validate/07-runtime-restart.ts",
+    "validate:8": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/08-real-path.ts"
   },
   "dependencies": {
     "next": "15",
