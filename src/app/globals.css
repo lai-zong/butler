@@ -209,9 +209,9 @@ a {
 }
 
 .chat-inner {
-  max-width: 760px;
+  max-width: 780px;
   margin: 0 auto;
-  padding: 24px 24px 8px;
+  padding: 28px 28px 12px;
 }
 
 .chat-empty {
@@ -236,7 +236,8 @@ a {
 /* ── 消息 ── */
 
 .msg {
-  margin-bottom: 20px;
+  /* ⚠️ 消息之间也要呼吸 —— 原来 20px 在多轮对话里显得挤 */
+  margin-bottom: 28px;
 }
 
 .msg-user {
@@ -247,9 +248,10 @@ a {
 .msg-user .msg-body {
   background: var(--accent-subtle);
   border-radius: var(--radius);
-  padding: 8px 12px;
+  padding: 9px 14px;
   max-width: 80%;
-  font-size: 13.5px;
+  font-size: 14px;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -257,36 +259,166 @@ a {
 .msg-butler .msg-role {
   font-size: 11.5px;
   color: var(--text-mute);
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
 
 .msg-butler .msg-body {
-  font-size: 13.5px;
-  line-height: 1.7;
+  word-break: break-word;
+  /* ⚠️ 行高不在这里给 —— 内容块的疏密由 .content 系列控制，
+     否则两处行高会互相打架。 */
+}
+
+/* ═══════════════════════════════════════════════════════════
+   内容排版（模型产出的正文）
+   ═══════════════════════════════════════════════════════════
+
+   ★ 用户反馈：「排版太密集了……要让用户看着舒适，看得清晰易懂，
+     而不是麻木地将文字打印出来。」
+
+   ★★ 疏密的三条规则（顺序即优先级）：
+
+     ① **块与块之间给足间距**（--content-block-gap: 18px）
+        文字密不密，主要不取决于行高，而取决于**块之间有没有呼吸**。
+        一堆行高 1.9 但块间距只有 4px 的内容，看起来仍然是糊在一起的。
+
+     ② **行内行高放宽到 1.85**
+        中文没有词间空格，行高不足时上下行会「粘」在一起。
+        西文 1.5 就够了，中文需要更多。
+
+     ③ **标题与它的正文贴紧，标题与上一块拉开**
+        这是"分组"的视觉来源 —— 标题离谁近，就属于谁。
+        （格式塔的邻近原则，不是审美偏好）
+
+   ⚠️ 空行不靠 <br> 撑：模型给的空行数不可控，用它决定疏密等于
+      把排版交给模型的心情。这里由 CSS 统一给间距。
+   ═══════════════════════════════════════════════════════════ */
+
+.content {
+  --content-block-gap: 18px;
+  --content-line-height: 1.85;
+  font-size: 14px;
+  line-height: var(--content-line-height);
+  color: var(--text);
   word-break: break-word;
 }
 
-.md-p {
-  margin: 0;
+/* ── 块容器：只负责下间距 ── */
+.content-block {
+  margin: 0 0 var(--content-block-gap);
 }
 
-.md-gap {
-  height: 8px;
+.content-block:last-child {
+  margin-bottom: 0;
 }
 
-.md-ul {
-  margin: 4px 0;
-  padding-left: 20px;
+/* ── 一级标题：标粗 + 标大 ──
+   ⚠️ 只用字重与字号拉开层次，**不加横线不加框** ——
+      白色简约的底子上，装饰比层次更容易显乱。 */
+.content-major {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  /* 标题离自己的正文近（6px），离上一块远（由 .content-block 的 18px 给） */
+  margin-bottom: 6px;
 }
 
-.md-ul li {
-  margin: 2px 0;
+/* 一级标题若紧跟正文（【标题】正文 同行拆开的情况），间距更小 */
+.content-major + .content-body {
+  margin-top: 0;
 }
 
-.md-hr {
+/* ── 二级标题：只标粗，不标大 ──
+   ★ 用户明确要求：「"能量估算"可以标粗不标大」 */
+.content-minor {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+/* ── 正文 ── */
+.content-body {
+  font-size: 14px;
+  line-height: var(--content-line-height);
+  color: var(--text);
+}
+
+/* ── 列表 ──
+   ★ 用悬挂缩进：编号/圆点在左，换行的文字与首行对齐。
+      这样多行项看起来是一个整体，而不是"折行后错位"。 */
+.content-item {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 7px;
+  font-size: 14px;
+  line-height: var(--content-line-height);
+}
+
+/* ⚠️ 最后一项也要留块间距 ——
+   否则「列表 + 紧跟的下一个标题」会比「标题 + 正文」贴得更紧，
+   看起来像标题属于上面那个列表。分组关系不能靠巧合，要靠间距一致。 */
+.content-item:last-child {
+  margin-bottom: var(--content-block-gap);
+}
+
+.content-bullet {
+  flex-shrink: 0;
+  min-width: 18px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.content-item-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── 字段清单（「生鲜：鲜虾400g、牛里脊300g、…」拆成的子项）──
+   ★ 这是整段里最容易显密的地方：按普通段落渲染会折成两三行、
+     每行都塞满，扫不动。
+
+   ★★ 用**自动折行的行内项**，而不是「一项一行」：
+       一项一行最易读，但对「盐」「糖」「香油」这类短词项太浪费 ——
+       13 项会撑成 13 行（实测过，页面显得很空）。
+       折行排布在保持"每项不被拆断"的同时把短项并到一起。
+       （`display: inline` + `white-space: nowrap` 是这个效果的
+        标准做法：inline 让浏览器按行宽折行，nowrap 保证单项不跨行断开） */
+.content-field-items {
+  margin-top: 3px;
+  /* 项之间的间隔用右边距给 —— 折行处才不会粘在一起 */
+  line-height: 2;
+}
+
+.content-field-item {
+  display: inline;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* 项之间的分隔符。
+   ⚠️ 用 `::after` 而不是 `join(' · ')`：分隔符不进入文本节点，
+      复制出来仍是干净的项目列表。 */
+.content-field-item:not(:last-child)::after {
+  content: ' · ';
+  color: var(--text-mute);
+  white-space: normal;
+}
+
+/* ── 分隔线 ── */
+.content-divider {
   border: none;
   border-top: 1px solid var(--line);
-  margin: 12px 0;
+  margin: 22px 0;
+}
+
+/* 内容里的加粗（行内） */
+.content strong {
+  font-weight: 600;
+  color: var(--text);
 }
 
 .msg-refs {

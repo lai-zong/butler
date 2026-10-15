@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { CollapsibleRegion } from './collapsible-region';
+import { RichContent } from './rich-content';
 
 // ═══════════════════════════════════════════════════════════
 // 类型（与服务端一致）
@@ -397,7 +398,7 @@ function MessageBubble({ message }: { readonly message: Message }) {
     <div className="msg msg-butler">
       <div className="msg-role">管家</div>
       <div className="msg-body">
-        <Markdown text={message.text} />
+        <RichContent text={message.text} />
       </div>
       {message.memoryRefs !== undefined && message.memoryRefs.length > 0 && (
         <details className="msg-refs">
@@ -489,76 +490,5 @@ function VerdictCard({ verdict }: { readonly verdict: Verdict }) {
         </div>
       )}
     </div>
-  );
-}
-
-/**
- * 极简 Markdown 渲染。
- *
- * ⚠️ 刻意只支持**行级**语法（列表、加粗、分隔线），不做完整解析：
- *   仆人的产出是清单与短句，不是富文本。
- *   引入完整 Markdown 库会带来 XSS 面（需要 sanitize），
- *   而这里的产出全部来自我们自己的模型 —— 但仍按纯文本处理，
- *   不做 dangerouslySetInnerHTML，从根本上没有注入面。
- */
-function Markdown({ text }: { readonly text: string }) {
-  const lines = text.split('\n');
-  const out: React.ReactNode[] = [];
-  let list: string[] = [];
-
-  const flushList = (key: string): void => {
-    if (list.length === 0) return;
-    out.push(
-      <ul className="md-ul" key={key}>
-        {list.map((li, i) => (
-          <li key={i}>
-            <Inline text={li} />
-          </li>
-        ))}
-      </ul>,
-    );
-    list = [];
-  };
-
-  lines.forEach((line, i) => {
-    const trimmed = line.trim();
-    if (/^[-*]\s+/.test(trimmed)) {
-      list.push(trimmed.replace(/^[-*]\s+/, ''));
-      return;
-    }
-    flushList(`ul_${i}`);
-
-    if (trimmed === '---') {
-      out.push(<hr className="md-hr" key={i} />);
-      return;
-    }
-    if (trimmed.length === 0) {
-      out.push(<div className="md-gap" key={i} />);
-      return;
-    }
-    out.push(
-      <p className="md-p" key={i}>
-        <Inline text={trimmed} />
-      </p>,
-    );
-  });
-  flushList('ul_end');
-
-  return <>{out}</>;
-}
-
-/** 行内加粗（`**x**`）。 */
-function Inline({ text }: { readonly text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return (
-    <>
-      {parts.map((p, i) =>
-        p.startsWith('**') && p.endsWith('**') ? (
-          <strong key={i}>{p.slice(2, -2)}</strong>
-        ) : (
-          <span key={i}>{p}</span>
-        ),
-      )}
-    </>
   );
 }
