@@ -174,18 +174,24 @@ export function normalizeArtifact(
 /**
  * `needsButlerDecision` 的兼容处理。
  *
- * 实测：模型有时输出 `true`（想说"需要管家裁决"但没给具体问题），
- * 有时输出问题字符串。字段名是个疑问句，两种读法都合理。
+ * 实测：模型有时输出 `true`（想说「需要管家裁决」但没给具体问题），
+ * 有时输出问题字符串，**有时明确输出 `null` 表示「没有」**。
  *
- * 处理方式：接受联合类型，归一化成"要么没有，要么是有内容的字符串"。
+ * ⚠️ 最后一种最容易漏：只写 `.optional()` 表示「字段可以不存在」，
+ *    并不接受「字段存在但值是 null」。于是 `{ needsButlerDecision: null }`
+ *    被判为非法 —— 实测一次真实对话因此中断在第三步仆人上。
+ *
+ *    处理方式：schema 负责「收得进来」（接受 string / boolean / null），
+ *    归一化在适配边界做（`normalizeNeedsDecision`）。
+ *    **schema 的职责是收，不是已经规整。**
  */
 const needsDecisionSchema = z
-  .union([z.string(), z.boolean()])
+  .union([z.string(), z.boolean(), z.null()])
   .optional()
-  .describe('需要管家裁决的问题；没有就省略或填 false');
+  .describe('需要管家裁决的问题；没有就省略、填 false 或 null');
 
-function normalizeNeedsDecision(v: string | boolean | undefined): string | undefined {
-  if (v === undefined || v === false) return undefined;
+function normalizeNeedsDecision(v: string | boolean | null | undefined): string | undefined {
+  if (v === undefined || v === null || v === false) return undefined;
   if (v === true) return '仆人声明需要管家裁决，但未给出具体问题';
   const s = v.trim();
   return s.length > 0 ? s : undefined;

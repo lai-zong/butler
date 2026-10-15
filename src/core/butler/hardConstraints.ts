@@ -19,7 +19,7 @@
 
 import type { EventLog } from '../events/log.js';
 import { coreOf, hasAnyNgram } from '../text/keywords.js';
-import type { RecallResult } from './dispatch.js';
+import type { ScoredMemory } from '../memory/recall.js';
 import type { ServantReport } from '../servants/types.js';
 
 export interface HardConstraintVerdict {
@@ -105,7 +105,7 @@ export function extractKeywords(constraint: string): readonly string[] {
  */
 export function verifyHardConstraints(args: {
   readonly log: EventLog;
-  readonly hardConstraints: readonly RecallResult[];
+  readonly hardConstraints: readonly ScoredMemory[];
   readonly reports: readonly ServantReport[];
   readonly now: number;
 }): HardConstraintReport {

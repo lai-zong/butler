@@ -9,13 +9,17 @@ import { msg, type ModelPort } from '../ports/model.js';
 import { BUTLER_SYSTEM, dispatchTask, PROMPT_VERSIONS } from '../prompts/butler.js';
 import { dispatchPlanSchema, type DispatchPlan } from '../prompts/schemas.js';
 import type { Dispatch, DispatchStep, InjectedConstraint } from '../servants/types.js';
-import type { MemoryEntry } from '../memory/types.js';
+import type { ScoredMemory } from '../memory/recall.js';
 import { isRelevant } from '../text/keywords.js';
 
-export interface RecallResult {
-  readonly memory: MemoryEntry;
-  readonly relevance: number;
-}
+/**
+ * ⚠️ 原先这里自己定义了一个 `RecallResult`，与 `memory/recall.ts` 里的
+ *    同名类型**撞名**，而且两处标注都不对 ——
+ *    实际用法是 `r.memory` / `r.relevance`，那是 `ScoredMemory`。
+ *
+ *    现在统一用 `recall.ts` 的 `ScoredMemory`：
+ *    召回的打分结果本来就只有一种形状，定义两份必然漂移。
+ */
 
 /**
  * 约束注入（方案 § 2.2⑥ 第 ③ 步）
@@ -36,7 +40,7 @@ export function injectConstraints(args: {
   readonly servant: string;
   /** 本步骤的指令，用于相关性判定 */
   readonly instruction: string;
-  readonly recalled: readonly RecallResult[];
+  readonly recalled: readonly ScoredMemory[];
   readonly now: number;
 }): readonly InjectedConstraint[] {
   const injected: InjectedConstraint[] = [];
@@ -90,7 +94,7 @@ export async function decompose(args: {
   readonly sessionId: string;
   readonly userGoal: string;
   readonly primaryServant: string;
-  readonly recalled: readonly RecallResult[];
+  readonly recalled: readonly ScoredMemory[];
   readonly now: number;
 }): Promise<{ readonly dispatch: Dispatch; readonly plan: DispatchPlan; readonly promptVersion: string }> {
   const result = await args.model.completeStructured({

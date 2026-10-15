@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { EventLog } from '../../events/log.js';
-import type { RecallResult } from '../dispatch.js';
+import type { ScoredMemory } from '../../memory/recall.js';
 import type { MemoryEntry } from '../../memory/types.js';
 import { coreOf } from '../../text/keywords.js';
 import { extractKeywords, verifyHardConstraints } from '../hardConstraints.js';
@@ -21,7 +21,7 @@ import type { ServantReport } from '../../servants/types.js';
 
 const T = 1_760_000_000_000;
 
-function constraint(content: string, id = 'm_hard'): RecallResult {
+function constraint(content: string, id = 'm_hard'): ScoredMemory {
   const memory: MemoryEntry = {
     id,
     owner: { kind: 'butler', userId: 'u' },
@@ -41,7 +41,16 @@ function constraint(content: string, id = 'm_hard'): RecallResult {
     updatedAt: T,
     useCount: 1,
   };
-  return { memory, relevance: 0.95 };
+  // ⚠️ ScoredMemory 的完整形状（原先只给两个字段，是因为旧类型只要求两个）
+  return {
+    memory,
+    relevance: 0.95,
+    score: 0.95,
+    fitness: memory.fitness,
+    confidence: memory.confidence,
+    exploratory: false,
+    why: '测试夹具',
+  };
 }
 
 function report(

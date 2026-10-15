@@ -179,9 +179,9 @@ describe('EventLog · 订阅（跨会话一致性的基础）', () => {
 });
 
 describe('EVENT_FAMILIES 自检', () => {
-  it('十个事件族全部非空', () => {
+  it('十一个事件族全部非空', () => {
     const families = Object.entries(EVENT_FAMILIES);
-    expect(families).toHaveLength(10);
+    expect(families).toHaveLength(11);
     for (const [name, types] of families) {
       expect(types.length, `事件族 ${name} 不应为空`).toBeGreaterThan(0);
     }

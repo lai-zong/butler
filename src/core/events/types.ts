@@ -131,7 +131,16 @@ export type EventType =
   | 'mcp.serverDisconnected'
   | 'mcp.serverFailed'
   | 'mcp.toolsDiscovered'
-  | 'mcp.policyChanged';
+  | 'mcp.policyChanged'
+
+  // ── 族 11 · 会话与消息 ──
+  //
+  // ★ 为什么单独成族：方案 § 5.2 明确要求「产出物必须与**对话**、
+  //   任务状态一同快照并同步回退」—— 既然回退要处理对话，
+  //   对话就必须是**可持久化、可重放**的状态，而不只是界面里的一段 UI 状态。
+  | 'session.message'
+  | 'session.reply'
+  | 'session.verdict';
 
 /** 族划分，便于 UI 分组与统计。 */
 export const EVENT_FAMILIES = {
@@ -213,6 +222,11 @@ export const EVENT_FAMILIES = {
     'schedule.triggered',
     'session.forked',
     'session.ended',
+  ],
+  chat: [
+    'session.message',
+    'session.reply',
+    'session.verdict',
   ],
   mcp: [
     'mcp.serverAdded',

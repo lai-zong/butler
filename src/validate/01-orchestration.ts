@@ -17,7 +17,7 @@
 import { deepSeekConfigFromEnv, DeepSeekModel } from '../adapters/model/deepseek.js';
 import { SystemClock } from '../adapters/clock/system.js';
 import { runSession } from '../core/runtime/orchestrator.js';
-import type { RecallResult } from '../core/butler/dispatch.js';
+import type { ScoredMemory } from '../core/memory/recall.js';
 import type { MemoryEntry } from '../core/memory/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -57,7 +57,7 @@ const SCENARIO = {
     { memory: mem('m_li', 'global_shared', '小李是你的朋友，素食者', 0.95), relevance: 0.91 },
     { memory: mem('m_fat', 'global_shared', '你正在减脂期，需控制高油高盐', 0.88), relevance: 0.83 },
     { memory: mem('m_pref', 'domain', '你偏好离家 3 公里内的餐厅', 0.79), relevance: 0.72 },
-  ] as RecallResult[],
+  ] as ScoredMemory[],
 };
 
 // ═══════════════════════════════════════════════════════════

@@ -26,7 +26,10 @@ const GROUPS: readonly {
 }[] = [
   {
     label: '对话',
-    items: [{ href: '/', label: '开始对话' }],
+    items: [
+      { href: '/', label: '与管家对话' },
+      { href: '/overview', label: '总览' },
+    ],
   },
   {
     label: '记忆',

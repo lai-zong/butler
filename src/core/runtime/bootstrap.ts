@@ -40,6 +40,7 @@ import {
 import { CheckpointManager } from '../checkpoint/manager.js';
 import { McpClient } from '../mcp/client.js';
 import { Scheduler, DEFAULT_QUOTA } from '../schedule/scheduler.js';
+import { SessionStore, replaySessions } from '../chat/types.js';
 
 // ═══════════════════════════════════════════════════════════
 // 结果
@@ -70,6 +71,13 @@ export interface BootstrapResult {
    *    观察器，由服务端运行时按可用能力装配。
    */
   readonly scheduler: Scheduler;
+  /**
+   * 会话与消息仓储。
+   *
+   * ★ 方案 § 5.2 把「对话」列为回退必须覆盖的三方之一，
+   *   所以它必须可持久化、可重放 —— 而不只是界面里的一段 UI 状态。
+   */
+  readonly chat: SessionStore;
 
   /** 本次启动是否从磁盘恢复（false = 全新开始） */
   readonly resumed: boolean;
@@ -93,6 +101,7 @@ export interface BootstrapResult {
     readonly artifacts: number;
     readonly operationMemories: number;
     readonly checkpoints: number;
+    readonly chatSessions: number;
   };
 }
 
@@ -212,6 +221,15 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
   });
   checkpoints.sync();
 
+  // ── 会话重放 ──
+  const sessionReplay = replaySessions(log.all());
+  const chat = new SessionStore(log, args.clock, args.userId);
+  for (const s of sessionReplay.sessions) {
+    chat.restoreSession({ ...s, userId: args.userId });
+  }
+  for (const m of sessionReplay.messages) chat.restoreMessage(m);
+  for (const v of sessionReplay.verdicts) chat.restoreVerdict(v);
+
   const mcp = new McpClient(log, args.clock);
   const scheduler = new Scheduler(log, args.clock, DEFAULT_QUOTA);
 
@@ -223,6 +241,7 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
     checkpoints,
     mcp,
     scheduler,
+    chat,
     resumed: historical.length > 0,
     historicalEvents: historical.length,
     badLines: args.badLines ?? 0,
@@ -233,6 +252,7 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
       artifacts: artifacts.all().length,
       operationMemories: operations.all().length,
       checkpoints: checkpoints.all().length,
+      chatSessions: chat.listSessions().length,
     },
   };
 }
