@@ -33,6 +33,7 @@ import { SeededRandom } from '@/core/ports/clock.js';
 import { SystemClock } from '@/adapters/clock/system.js';
 import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/runtime/bootstrap.js';
 import { DeepSeekModel, deepSeekConfigFromEnv } from '@/adapters/model/deepseek.js';
+import { modelConfig } from '@/core/config/env.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
 import type { ModelPort } from '@/core/ports/model.js';
 import type { ModelStreamPort } from '@/core/ports/stream.js';
@@ -136,7 +137,19 @@ async function initRuntime(): Promise<ButlerRuntime> {
     const cfg = deepSeekConfigFromEnv();
     if (cfg.apiKey.length > 0) {
       model = new DeepSeekModel(cfg);
-      streamModel = new DeepSeekStream(cfg);
+
+      /**
+       * ★ 叙述用的流式模型**独立配置**，不复用 `cfg.model`。
+       *
+       * ⚠️ 实测（三个模型逐一验证）：
+       *     `deepseek-chat`     **完全不产 `reasoning_content`**（只发 content）
+       *     `deepseek-flash`    产思考 + 正文，最快（1.6—2.4 秒）
+       *     `deepseek-v4-pro`   产思考 + 正文，但慢（约 11.8 秒）
+       *
+       *   接错模型的后果很隐蔽：**推理流永远是空的，而且不报错** ——
+       *   界面上只是"什么都不显示"，看起来像功能没做。
+       */
+      streamModel = new DeepSeekStream({ ...cfg, model: modelConfig.narrationModel });
     }
   } catch {
     // 没有配置模型不是致命错误 —— 记忆治理界面不需要模型也能用

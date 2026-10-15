@@ -52,6 +52,7 @@ export function deepSeekConfigFromEnv(
   return {
     apiKey,
     baseUrl: env['DEEPSEEK_BASE_URL'] ?? DEFAULT_DEEPSEEK_BASE_URL,
+    // ⚠️ 变量名集中在 core/config/env.ts —— 这里不再各读各的
     model: env['DEEPSEEK_MODEL'] ?? DEFAULT_DEEPSEEK_MODEL,
     timeoutMs: Number(env['MODEL_TIMEOUT_MS'] ?? 90_000),
     maxStructuredRetries: 2,

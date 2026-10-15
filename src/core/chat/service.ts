@@ -23,7 +23,7 @@ import type { ClockPort, RandomPort } from '../ports/clock.js';
 import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ToolFramework } from '../tools/framework.js';
-import { recall } from '../memory/recall.js';
+import { recall, type ScoredMemory } from '../memory/recall.js';
 import {
   reflectTurn,
   renderReflectSummary,
@@ -31,6 +31,8 @@ import {
   type ReflectTurnResult,
 } from '../reflection/runReflection.js';
 import { extractFacts } from '../reflection/extractFacts.js';
+import { runNarration, type NarrationResult, type NarrationState } from '../stream/narrate.js';
+import type { ModelStreamPort } from '../ports/stream.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
 import { SessionStore, type Verdict, type VerdictIssue } from './types.js';
@@ -56,6 +58,18 @@ export interface RunTurnArgs {
   readonly chat: SessionStore;
   readonly tools?: ToolFramework;
   readonly onProgress?: (e: ProgressEvent) => void;
+  /**
+   * 流式叙述端口（流式的「边说边想」）。
+   *
+   * ⚠️ 必须是有思考分片的模型 —— 实测 `deepseek-chat` **完全不产**
+   *    `reasoning_content`，接它会得到**永远空的推理流，且不报错**。
+   *    用 `NARRATION_MODEL` 配置（默认 `deepseek-flash`）。
+   *
+   * 不给则跳过叙述（测试与纯推理场景不需要它）。
+   */
+  readonly streamModel?: ModelStreamPort;
+  /** 叙述状态更新回调（供 SSE 推送逐字内容） */
+  readonly onNarration?: (s: NarrationState) => void;
 }
 
 export interface RunTurnResult {
@@ -71,6 +85,13 @@ export interface RunTurnResult {
    *    但**对话本身仍然成功** —— 学习失败不该让用户拿不到结果。
    */
   readonly reflection?: ReflectTurnResult;
+  /**
+   * 本次的流式叙述结果。
+   *
+   * ⚠️ 可空且**可能 failed** —— 叙述是"附赠的可见性"，
+   *    它失败不该让整轮失败。
+   */
+  readonly narration?: NarrationResult;
 }
 
 /**
@@ -172,6 +193,34 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   }));
 
   // ── ③ 编排（仆人执行；管家只旁注，不中断）──
+  //
+  /**
+   * ★★ 叙述与仆人执行**并发**跑 —— 这是流式真正该填的地方。
+   *
+   *   实测数据（一轮真实对话）：
+   *     · 仆人执行  30—60 秒   ← 期间界面只有一行行进度文字
+   *     · 叙述本身  1.6—2.4 秒
+   *
+   *   ⚠️ 所以**不能串行**加在前面：串行会让每轮多等 2—3 秒 ——
+   *      那是拿体验换演示，方向反了。
+   *      并发跑则叙述在那段死时间里说完，随后被真实结果覆盖。
+   *
+   *   ⚠️ 叙述失败**不影响**编排：`runNarration` 内部吞掉异常并返回
+   *      `failed: true`，这里再用 `.catch` 兜一层，防止意外冒泡。
+   */
+  const narrationPromise: Promise<NarrationResult | null> =
+    args.streamModel !== undefined && args.streamModel !== null
+      ? runNarration({
+          port: args.streamModel,
+          log: args.log,
+          clock: args.clock,
+          taskId: sessionId,
+          userGoal: userText,
+          context: narrationContext(args.store, recalled, args.userId),
+          onUpdate: (s) => args.onNarration?.(s),
+        }).catch(() => null)
+      : Promise.resolve(null);
+
   const session = await runSession({
     model: args.model,
     clock: args.clock,
@@ -280,6 +329,19 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     label: '完成',
   });
 
+  /**
+   * ⚠️ 等叙述收尾。
+   *
+   *   为什么要等：它在仆人执行期间**并行**跑完了，但结果要落事件
+   *   （`thought.done`），而落事件必须在本轮结束前完成 ——
+   *   否则本轮 seq 区间会漏掉它，审计视图看不到这段。
+   *
+   *   ⚠️ 也可能它还在跑（叙述比仆人慢的情况，如 v4-pro 的 11.8 秒）。
+   *      那就等它：已经有完整结果了，多等一两秒不影响正确性，
+   *      而丢掉一段**已生成**的叙述是内容损失。
+   */
+  const narration = await narrationPromise;
+
   return {
     userMessageId: userMsg.id,
     replyMessageId: reply.id,
@@ -287,7 +349,42 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     verdict,
     session,
     ...(reflection !== null ? { reflection } : {}),
+    ...(narration !== null ? { narration } : {}),
   };
+}
+
+/**
+ * 给叙述的上下文 —— 让管家「知道自己在为谁办这件事」。
+ *
+ * ★ 实测效果：带上「用户对花生严重过敏。」之后，叙述里自然出现了
+ *   「花生过敏这条更是底线，绝不会碰」。
+ *   **这就是「它记得你」在界面上可见的地方。**
+ *
+ * ⚠️ 硬约束排在**最前** —— 它是叙述里最该被提到的内容，
+ *    而上下文有长度上限（`slice`），排后面可能被截掉。
+ */
+function narrationContext(
+  store: MemoryStore,
+  recalled: readonly ScoredMemory[],
+  userId: string,
+): readonly string[] {
+  const out: string[] = [];
+
+  // ① 硬约束无条件进（与召回层的处理一致）
+  for (const m of store.visibleTo({ kind: 'butler', userId })) {
+    if (m.memClass === 'global_constraint' && m.lifecycle === 'active') {
+      out.push(m.content);
+    }
+  }
+
+  // ② 其余按召回结果（已按分数排序）
+  for (const r of recalled) {
+    if (r.memory.memClass === 'global_constraint') continue;
+    if (out.includes(r.memory.content)) continue;
+    out.push(r.memory.content);
+  }
+
+  return out.slice(0, 12);
 }
 
 // ═══════════════════════════════════════════════════════════

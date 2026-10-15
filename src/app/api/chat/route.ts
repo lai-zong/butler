@@ -108,6 +108,27 @@ export async function POST(req: NextRequest): Promise<Response> {
           store: rt.bootstrapped.memory,
           chat: rt.bootstrapped.chat,
           onProgress: (e: ProgressEvent) => send({ type: 'progress', event: e }),
+
+          /**
+           * ★ 流式叙述 —— 与仆人执行**并发**跑。
+           *
+           *   实测：仆人执行 30—60 秒，而叙述只要 1.6—2.4 秒。
+           *   所以叙述会在死时间里先说完，逐字推给界面。
+           *
+           * ⚠️ 用 `streamModel`（`NARRATION_MODEL`，默认 deepseek-flash），
+           *    **不是** `model` —— 实测 `deepseek-chat` 完全不产思考分片，
+           *    接它会得到一个永远空的推理流且不报错。
+           */
+          ...(rt.streamModel !== null ? { streamModel: rt.streamModel } : {}),
+          onNarration: (s) =>
+            send({
+              type: 'narration',
+              reasoning: s.reasoning,
+              reasoningTranslated: s.reasoningTranslated,
+              answer: s.answer,
+              firstChunkMs: s.firstChunkMs,
+              done: s.done,
+            }),
         });
 
         send({ type: 'user', messageId: result.userMessageId });

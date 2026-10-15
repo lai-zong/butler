@@ -106,6 +106,35 @@ export const modelConfig = {
   get baseUrl(): string {
     return str('DEEPSEEK_BASE_URL', 'https://api.deepseek.com');
   },
+  /**
+   * 结构化调用用的模型（路由、分解、仆人、监督、反思）。
+   *
+   * ⚠️ 这个变量**之前被 deepseek.ts 直接读取，但没登记在这里、
+   *    也不在 `.env.example` 里** —— 违反「变量名集中一处」的纪律。
+   *    现在收回集中管理。
+   */
+  get model(): string {
+    return str('DEEPSEEK_MODEL', 'deepseek-chat');
+  },
+  /** 单次模型调用超时（毫秒）。同样之前未登记。 */
+  get timeoutMs(): number {
+    return num('MODEL_TIMEOUT_MS', 90_000, { min: 1000 });
+  },
+  /**
+   * ★ 叙述（流式"边说边想"）用的模型。
+   *
+   * ⚠️ 为什么**必须**与结构化调用分开：
+   *    实测（2026-10，三个模型逐一验证）：
+   *      `deepseek-chat`       **完全不产 `reasoning_content`**（只发 content）
+   *      `deepseek-flash`      产思考 + 正文，且最快（1.6—2.4s）
+   *      `deepseek-v4-pro`     产思考 + 正文，但慢（11.8s）
+   *
+   *    接错模型的后果很隐蔽：**推理流永远是空的，且不报错**。
+   *    所以这里默认给 `deepseek-flash`，并用注释把这个实测结论钉住。
+   */
+  get narrationModel(): string {
+    return str('NARRATION_MODEL', 'deepseek-flash');
+  },
 } as const;
 
 /**
@@ -298,6 +327,9 @@ export function loadEnvFile(dir: string = process.cwd()): {
 export const KNOWN_KEYS: readonly string[] = [
   'DEEPSEEK_API_KEY',
   'DEEPSEEK_BASE_URL',
+  'DEEPSEEK_MODEL',
+  'MODEL_TIMEOUT_MS',
+  'NARRATION_MODEL',
   'VISION_API_KEY',
   'VISION_BASE_URL',
   'VISION_MODEL',

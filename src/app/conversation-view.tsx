@@ -66,6 +66,20 @@ interface AuditRange {
   readonly toSeq: number;
 }
 
+/**
+ * 流式叙述状态（与 `core/stream/narrate.ts` 的 `NarrationState` 一致）。
+ *
+ * ⚠️ `reasoning` 可能为空 —— 实测模型思考量波动很大（0—844 字，
+ *    偶发为 0）。**界面不能假设一定有思考**，要按空处理。
+ */
+interface NarrationState {
+  readonly reasoning: string;
+  readonly reasoningTranslated: string;
+  readonly answer: string;
+  readonly firstChunkMs: number | null;
+  readonly done: boolean;
+}
+
 // ═══════════════════════════════════════════════════════════
 // 审计依据（`/api/audit` 的返回形状）
 // ═══════════════════════════════════════════════════════════
@@ -157,6 +171,18 @@ export function ConversationView({
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   /** 本轮的 seq 区间 —— 用于按需拉取审计依据 */
   const [auditRange, setAuditRange] = useState<AuditRange | null>(null);
+  /**
+   * 流式叙述状态。
+   *
+   * ★ 这是「流式输出渲染」的落点 —— 内容**逐字**到达，
+   *   而不是等全部生成完再一次性显示。
+   *
+   *   实测：首片延迟 629—947ms，叙述整体 1.6—2.4 秒；
+   *   而仆人执行要 30—60 秒。所以叙述基本会在死时间里先说完。
+   */
+  const [narration, setNarration] = useState<NarrationState | null>(null);
+  /** 思考区是否展开（默认收起：思考是过程，不是结论） */
+  const [showReasoning, setShowReasoning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -184,7 +210,8 @@ export function ConversationView({
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, progress, scrollToBottom]);
+    // 叙述逐字增长也要跟随，否则内容在视口外长出来，用户看不到「流」
+  }, [messages, progress, narration, scrollToBottom]);
 
   // ── 发送 ──
 
@@ -196,6 +223,8 @@ export function ConversationView({
     setError(null);
     setVerdict(null);
     setAuditRange(null);
+    setNarration(null);
+    setShowReasoning(false);
     setProgress([]);
     setInput('');
     pinnedToBottom.current = true;
@@ -327,6 +356,19 @@ export function ConversationView({
       return;
     }
 
+    if (type === 'narration') {
+      // ⚠️ 整体替换而不是累加 —— 服务端推的是**累计**内容。
+      //    累加会变成重复文本，而这类 bug 在流式里很常见且很难一眼看出。
+      setNarration({
+        reasoning: String(e['reasoning'] ?? ''),
+        reasoningTranslated: String(e['reasoningTranslated'] ?? ''),
+        answer: String(e['answer'] ?? ''),
+        firstChunkMs: typeof e['firstChunkMs'] === 'number' ? e['firstChunkMs'] : null,
+        done: e['done'] === true,
+      });
+      return;
+    }
+
     if (type === 'error') {
       setError(String(e['message'] ?? '未知错误'));
     }
@@ -396,6 +438,16 @@ export function ConversationView({
                 </div>
               )}
 
+              {/* ── 流式叙述：管家边说边想 ── */}
+              {narration !== null &&
+                (narration.answer.length > 0 || narration.reasoning.length > 0) && (
+                  <NarrationBlock
+                    state={narration}
+                    showReasoning={showReasoning}
+                    onToggleReasoning={() => setShowReasoning((v) => !v)}
+                  />
+                )}
+
               {/* ── 审查结论 ── */}
               {verdict !== null && (
                 <VerdictCard
@@ -443,6 +495,93 @@ export function ConversationView({
           </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// 流式叙述
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 管家的「边说边想」—— 与仆人执行**并发**产生的逐字内容。
+ *
+ * ★ 为什么要有它（实测数据支撑）：
+ *   仆人执行要 30—60 秒，而叙述只要 1.6—2.4 秒。
+ *   没有它，用户在那 30—60 秒里只能盯着一行行进度文字。
+ *
+ * ★★ 三处处理是刻意的：
+ *
+ *   ① **思考默认收起**
+ *      思考是过程不是结论。一直展开会让用户先读一段推理再读结论 ——
+ *      而多数人只想要结论。
+ *      但**要能看到** —— 这是「可审计」在推理层的形态。
+ *
+ *   ② **思考可能为空**（`reasoning.length === 0`）
+ *      实测模型思考量波动极大（0—844 字，偶发为 0）。
+ *      界面**不能假设一定有思考** —— 没有就只显示正文，
+ *      而不是显示一个空的「思考中…」。
+ *
+ *   ③ **译文优先、原文保留**
+ *      有译文说明原文是英文（用户看中文更方便），
+ *      但原文始终可对照 —— 方案 § 13.3 要求「可切换」。
+ */
+function NarrationBlock({
+  state,
+  showReasoning,
+  onToggleReasoning,
+}: {
+  readonly state: NarrationState;
+  readonly showReasoning: boolean;
+  readonly onToggleReasoning: () => void;
+}) {
+  const hasReasoning = state.reasoning.length > 0;
+  const translated = state.reasoningTranslated;
+
+  return (
+    <div className="narration">
+      {hasReasoning && (
+        <div className="narration-thinking">
+          <button
+            type="button"
+            className="narration-thinking-toggle"
+            onClick={onToggleReasoning}
+          >
+            {showReasoning ? '▾' : '▸'} 思考过程
+            {!state.done && <span className="narration-pulse" />}
+            <span className="narration-meta mono">
+              {state.reasoning.length} 字
+              {state.firstChunkMs !== null && ` · 首字 ${state.firstChunkMs}ms`}
+            </span>
+          </button>
+
+          {showReasoning && (
+            <div className="narration-reasoning">
+              {translated.length > 0 && (
+                <>
+                  <div className="narration-reasoning-label">译文</div>
+                  <div className="narration-reasoning-text">{translated}</div>
+                  <div className="narration-reasoning-label">原文</div>
+                </>
+              )}
+              <div className="narration-reasoning-text narration-reasoning-raw">
+                {state.reasoning}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {state.answer.length > 0 ? (
+        <div className="narration-answer">
+          <RichContent text={state.answer} />
+          {/* 光标：流未结束时显示，让「还在生成」这件事可见 */}
+          {!state.done && <span className="narration-cursor" />}
+        </div>
+      ) : (
+        // 首片延迟 629—947ms，这段空窗要有交代，否则像是卡住了
+        !hasReasoning && <div className="narration-waiting">管家正在安排…</div>
+      )}
     </div>
   );
 }
