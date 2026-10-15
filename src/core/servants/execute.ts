@@ -112,6 +112,15 @@ export async function runServant(args: {
   readonly injectedConstraints: readonly InjectedConstraint[];
   /** 依赖步骤的产出物 */
   readonly inputs?: readonly UpstreamInput[];
+  /**
+   * 对话历史（**精简版**，只带用户本轮原话）。
+   *
+   * ⚠️ 仆人刻意用比管家**少得多**的历史：
+   *    它的职责是「按指令干活」，需要的是**上游产出**
+   *    （通过 `inputs` 精确传递），不是对话的来龙去脉。
+   *    给多了会让它跑偏到「回答用户」而不是「产出结构化报告」。
+   */
+  readonly history?: readonly ModelMessage[];
   readonly now: number;
   readonly clock: ClockPort;
   /**
@@ -133,6 +142,8 @@ export async function runServant(args: {
 
   const baseMessages: ModelMessage[] = [
     msg.system(servantSystem(args.servant)),
+    // 精简历史放在指令之前 —— 让它先有语境，再读指令
+    ...(args.history ?? []),
     msg.user(
       servantTask({
         instruction: args.instruction,

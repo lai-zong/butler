@@ -36,6 +36,7 @@ import type { ModelStreamPort } from '../ports/stream.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
 import { SessionStore, type Verdict, type VerdictIssue } from './types.js';
+import { buildHistoryMessages, buildServantHistoryMessages } from './history.js';
 import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -106,6 +107,31 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   // ── ① 记下用户发言（落事件，供回退与重放）──
   const userMsg = chat.appendMessage(sessionId, { role: 'user', text: userText });
+
+  /**
+   * ── ①a ★ 构造对话历史 ──
+   *
+   * ★★ 这一步之前**完全缺失**，后果实测过：
+   *   用户第二轮说「那今晚就按你说的做」，回复里明说
+   *   「用户目标中『按你说的做』指向此前某位仆人给出的方案，
+   *     但**本次校验未收到该方案产出**，无法核对」。
+   *   它明确说了「看不到」—— 因为它真的看不到。
+   *
+   * ⚠️ 一处容易混淆的地方（值得写清楚）：
+   *    之前那轮能知道「用户对花生过敏」，**不是因为它记得对话**，
+   *    而是因为**记忆系统**把这条事实存下来并在每轮注入。
+   *
+   *    **记忆系统在替对话历史补位，但补不了「你刚才那句话指的是什么」。**
+   *      · 记忆 —— 跨会话的长期事实（你是谁、有什么约束）
+   *      · 历史 —— 本次会话的指代上下文（「那个」「按你说的」）
+   *
+   * ⚠️ 必须在 `appendMessage` **之后**取：
+   *    管家的历史要**排除**最后一条（那是本轮用户消息，调用方自己会带，
+   *    不排除会出现两遍）；仆人的历史要**包含**它（要知道用户本轮说了什么）。
+   */
+  const priorMessages = chat.messagesOf(sessionId);
+  const history = buildHistoryMessages(priorMessages, { excludeLast: true });
+  const servantHistory = buildServantHistoryMessages(priorMessages);
 
   /**
    * ── ①b ★ 从用户发言提取事实 ──
@@ -229,6 +255,10 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     recalled,
     log: args.log,
     store: args.store,
+    // 管家要理解指代（「按你说的」）
+    ...(history.length > 0 ? { history } : {}),
+    // 仆人用精简历史（只有用户本轮原话）
+    ...(servantHistory.length > 0 ? { servantHistory } : {}),
     ...(args.tools !== undefined ? { tools: args.tools } : {}),
     ...(args.onProgress !== undefined ? { onProgress: args.onProgress } : {}),
   });

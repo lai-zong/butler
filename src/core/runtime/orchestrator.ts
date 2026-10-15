@@ -33,7 +33,7 @@ import type {
   ServantReport,
   UpstreamInput,
 } from '../servants/types.js';
-import type { ClockPort, ModelPort } from '../ports/index.js';
+import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
 import type { SupervisionOutput } from '../prompts/schemas.js';
 import type { RoutingDecision } from '../prompts/schemas.js';
 
@@ -68,6 +68,24 @@ export interface RunSessionArgs {
    *      用返回值断言结果，从没检查过「事件有没有落盘」。
    */
   readonly log?: EventLog;
+  /**
+   * 对话历史（供理解跨轮指代）。
+   *
+   * ⚠️ 不给则模型只看得到本轮 —— 实测后果：
+   *    用户说「那今晚就按你说的做」，回复里明说
+   *    「本次校验未收到该方案产出，无法核对」。
+   *    因为它**真的**看不到上一轮。
+   */
+  readonly history?: readonly ModelMessage[];
+  /**
+   * 给仆人的**精简**历史（与 `history` 分开）。
+   *
+   * ⚠️ 为什么不复用 `history`：
+   *    管家要理解指代（「按你说的」），仆人只要干活。
+   *    同一份历史喂两边，仆人会被对话细节带偏到
+   *    「回答用户」而不是「产出结构化报告」。
+   */
+  readonly servantHistory?: readonly ModelMessage[];
   /**
    * 进度回调 —— 让**界面能实时看到**任务执行到哪一步。
    *
@@ -183,7 +201,11 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
 
   // ── ③ 路由 ──
   stage('route', '判断该由谁处理');
-  const r = await route({ model: args.model, userGoal: args.userGoal });
+  const r = await route({
+    model: args.model,
+    userGoal: args.userGoal,
+    ...(args.history !== undefined ? { history: args.history } : {}),
+  });
   inputTokens += r.usage.inputTokens;
   outputTokens += r.usage.outputTokens;
 
@@ -239,6 +261,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     primaryServant: r.decision.servant,
     recalled: args.recalled,
     now: args.clock.now(),
+    ...(args.history !== undefined ? { history: args.history } : {}),
   });
 
   // ── ⑤ 逐步派发（含依赖检查与上游产出传递）──
@@ -369,6 +392,9 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
             }
           : {}),
         ...(args.tools !== undefined ? { tools: args.tools } : {}),
+        // 仆人用**精简历史**（只有用户本轮原话）——它需要的是上游产出，
+        // 不是对话的来龙去脉
+        ...(args.servantHistory !== undefined ? { history: args.servantHistory } : {}),
         now: args.clock.now(),
       });
     } catch (err) {

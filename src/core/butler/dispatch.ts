@@ -5,7 +5,7 @@
  */
 
 import { EventLog } from '../events/log.js';
-import { msg, type ModelPort } from '../ports/model.js';
+import { msg, type ModelMessage, type ModelPort } from '../ports/model.js';
 import { BUTLER_SYSTEM, dispatchTask, PROMPT_VERSIONS } from '../prompts/butler.js';
 import { dispatchPlanSchema, type DispatchPlan } from '../prompts/schemas.js';
 import type { Dispatch, DispatchStep, InjectedConstraint } from '../servants/types.js';
@@ -96,6 +96,8 @@ export async function decompose(args: {
   readonly primaryServant: string;
   readonly recalled: readonly ScoredMemory[];
   readonly now: number;
+  /** 对话历史（供理解跨轮指代，如「那今晚就按你说的做」）*/
+  readonly history?: readonly ModelMessage[];
 }): Promise<{ readonly dispatch: Dispatch; readonly plan: DispatchPlan; readonly promptVersion: string }> {
   const result = await args.model.completeStructured({
     purpose: 'planning',
@@ -105,6 +107,7 @@ export async function decompose(args: {
     maxOutputTokens: 1024,
     messages: [
       msg.system(BUTLER_SYSTEM),
+      ...(args.history ?? []),
       msg.user(
         dispatchTask({
           userGoal: args.userGoal,
