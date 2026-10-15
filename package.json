@@ -4,7 +4,11 @@
   "private": true,
   "description": "管家式 AI —— 可审计的记忆治理与自进化系统",
   "type": "module",
+  "bin": {
+    "butler": "bin/butler.mjs"
+  },
   "scripts": {
+    "butler": "node bin/butler.mjs",
     "dev": "next dev",
     "dev:vite": "vite",
     "build": "next build",
