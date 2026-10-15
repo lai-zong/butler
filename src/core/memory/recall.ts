@@ -128,7 +128,17 @@ export function scoreMemory(
 export function recall(args: RecallArgs): RecallResult {
   const params = args.params ?? DEFAULT_PARAMS;
 
-  // ── ① 只考虑活跃与休眠（候选不参与召回；归档仅在探索时可能被唤醒）──
+  /**
+   * ── ① 只考虑活跃与休眠（候选不参与召回；归档仅在探索时可能被唤醒）──
+   *
+   * ⚠️ 硬约束**不需要在这里特判** —— `relevanceOf` 已经对
+   *    `global_constraint` 恒返回 1.0，所以它永远不会被
+   *    `relevance > 0` 或阈值挡掉。
+   *
+   *    （我曾在这里加过一段"强制带回硬约束"的代码，读 `relevanceOf`
+   *      后发现是冗余的 —— 纪律：**读清楚已有的判定再动手**，
+   *      多加一层特判会让"谁在保证安全"变得没人说得清。）
+   */
   const eligible = args.candidates.filter(
     (m) => m.lifecycle === 'active' || m.lifecycle === 'dormant' || m.lifecycle === 'archived',
   );

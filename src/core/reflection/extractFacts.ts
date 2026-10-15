@@ -186,13 +186,26 @@ export async function extractFacts(args: {
     confidence: clamp01(f.confidence),
     /**
      * ★ 证据链带上用户原话 —— 这是 `inferSource` 判定
-     *   「用户陈述」的依据，也是用户日后审计时看到的"你当时是这么说的"。
+     *   「用户陈述」的依据，也是用户日后审计时看到的「你当时是这么说的」。
      */
     evidence: [`用户说：「${f.quote}」`],
     scope: {
-      // identity / constraint / context 属于全局共享层；
-      // 偏好仍是全局共享（用户偏好不分领域）
-      memClass: 'global_shared',
+      /**
+       * ★★ 类别决定记忆分层 —— 这是**安全设计的核心区分**，
+       *    不是分类学的洁癖。
+       *
+       *   实测踩过：`constraint` 类（过敏）被一律写成 `global_shared`，
+       *   于是它是一条**软约束** —— 可以被相关性过滤掉、会随时间衰减、
+       *   会被归档淘汰。
+       *
+       *   ⚠️ 而「花生过敏」这类信息的安全属性是**不可协商**的：
+       *      它必须 ① 无条件注入给每个相关仆人（不看相关性）
+       *             ② 不参与衰减与演化淘汰
+       *             ③ 任何冲突都按 blocking 处理
+       *
+       *   这正是 `global_constraint` 的定义（见方案 § 2.2⑥ 的权限矩阵）。
+       */
+      memClass: f.category === 'constraint' ? 'global_constraint' : 'global_shared',
     },
     rationale: `从用户发言中提取（类别：${CATEGORY_LABEL[f.category] ?? f.category}）`,
     layer: 'butler',
