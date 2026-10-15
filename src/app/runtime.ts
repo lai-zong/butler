@@ -1,0 +1,184 @@
+/**
+ * 服务端运行时 —— 请求间共享的**单例**
+ *
+ * 设计依据：方案 § 14（技术栈：必须长驻进程，不能用 Serverless）
+ *
+ * ★ 这个文件解决一个具体问题：
+ *   Next.js 的 Route Handler 每次请求都可能重新求值模块。
+ *   如果没有单例，每次请求都会重新 `bootstrap()` ——
+ *   于是：
+ *     · 进程内积累的记忆在请求之间丢失
+ *     · 事件文件被并发追加（JSONL 交错损坏）
+ *     · 定时任务被重复启动
+ *
+ *   **持久化做完但没接单例，等于白做。**
+ *
+ * ⚠️ 为什么用 `globalThis` 而不是模块级变量：
+ *   Next.js 开发模式会热重载模块 —— 模块级变量在每次热重载时重置，
+ *   于是开发时表现成"状态老是丢"，而生产环境却正常，极难排查。
+ *   `globalThis` 在热重载之间存活。
+ *
+ * ⚠️ 为什么不能部署到 Serverless：
+ *   本模块的正确性依赖"进程持续存在"。
+ *   Vercel 之类的 Serverless 每个请求可能落在不同实例上，
+ *   单例与内存状态都不成立，事件文件也会并发写坏。
+ *   ——这也正是方案 § 14 明确要求长驻进程的原因。
+ */
+
+import { join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+
+import { JsonlEventStore, loadEvents } from '@/adapters/storage/jsonlEvents.js';
+import { SeededRandom } from '@/core/ports/clock.js';
+import { SystemClock } from '@/adapters/clock/system.js';
+import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/runtime/bootstrap.js';
+import { DeepSeekModel, deepSeekConfigFromEnv } from '@/adapters/model/deepseek.js';
+import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
+import type { ModelPort } from '@/core/ports/model.js';
+import type { ModelStreamPort } from '@/core/ports/stream.js';
+
+// ═══════════════════════════════════════════════════════════
+// 配置
+// ═══════════════════════════════════════════════════════════
+
+/** 数据目录（可用环境变量覆盖）。 */
+export const DATA_DIR = process.env['BUTLER_DATA_DIR'] ?? join(process.cwd(), '.butler-data');
+
+/** 事件文件路径。 */
+export function eventsFile(customDir?: string): string {
+  return join(customDir ?? DATA_DIR, 'events.jsonl');
+}
+
+/** 默认用户 id。
+ *
+ * ⚠️ 现在是固定的单用户 —— 方案 § 5.5 的「轻量本地账号」尚未实现。
+ *    所有记忆都归属这一个 id，所以"多用户隔离"当前不成立，
+ *    不能对外宣称支持多用户。
+ */
+export const DEFAULT_USER_ID = process.env['BUTLER_USER_ID'] ?? 'local';
+
+// ═══════════════════════════════════════════════════════════
+// 运行时形状
+// ═══════════════════════════════════════════════════════════
+
+export interface ButlerRuntime {
+  readonly bootstrapped: BootstrapResult;
+  readonly clock: SystemClock;
+  readonly random: SeededRandom;
+  /** 主模型（文本 + 结构化 + 工具） */
+  readonly model: ModelPort | null;
+  /** 流式模型（推理流用） */
+  readonly streamModel: ModelStreamPort | null;
+  /** 启动时间 */
+  readonly startedAt: number;
+  /** 启动摘要（供界面"已恢复 N 条记忆"展示） */
+  readonly restoreSummary: string;
+  /** 当前会话 id */
+  sessionId: string;
+}
+
+const GLOBAL_KEY = '__butlerRuntime__';
+
+interface GlobalWithRuntime {
+  [GLOBAL_KEY]?: Promise<ButlerRuntime>;
+}
+
+/**
+ * 取运行时（单例）。
+ *
+ * ★ 返回 Promise 而不是同步值 —— 因为首次初始化要读盘。
+ *   并发调用会共享同一个 Promise，**不会重复初始化**。
+ */
+export function getRuntime(): Promise<ButlerRuntime> {
+  const g = globalThis as GlobalWithRuntime;
+  g[GLOBAL_KEY] ??= initRuntime();
+  return g[GLOBAL_KEY];
+}
+
+/** 仅供测试/重置使用。 */
+export async function resetRuntime(): Promise<void> {
+  const g = globalThis as GlobalWithRuntime;
+  const current = g[GLOBAL_KEY];
+  if (current) {
+    const rt = await current;
+    await rt.bootstrapped.log.flushPersistence();
+  }
+  delete g[GLOBAL_KEY];
+}
+
+async function initRuntime(): Promise<ButlerRuntime> {
+  const dir = DATA_DIR;
+  await mkdir(dir, { recursive: true });
+
+  const file = eventsFile(dir);
+  const loaded = await loadEvents(file);
+
+  const clock = new SystemClock();
+  const random = new SeededRandom(Date.now() % 2147483647);
+  const store = new JsonlEventStore({ file, flushIntervalMs: 300 });
+
+  const sessionId = `s_${clock.now().toString(36)}`;
+
+  const bootstrapped = bootstrap({
+    sessionId,
+    userId: DEFAULT_USER_ID,
+    clock,
+    random,
+    historicalEvents: loaded.events,
+    badLines: loaded.badLines,
+    persistence: store,
+  });
+
+  // ── 模型（没有 API Key 时为 null，界面据此提示"未配置模型"）──
+  let model: ModelPort | null = null;
+  let streamModel: ModelStreamPort | null = null;
+  try {
+    const cfg = deepSeekConfigFromEnv();
+    if (cfg.apiKey.length > 0) {
+      model = new DeepSeekModel(cfg);
+      streamModel = new DeepSeekStream(cfg);
+    }
+  } catch {
+    // 没有配置模型不是致命错误 —— 记忆治理界面不需要模型也能用
+    model = null;
+  }
+
+  return {
+    bootstrapped,
+    clock,
+    random,
+    model,
+    streamModel,
+    startedAt: clock.now(),
+    restoreSummary: renderRestoreSummary(bootstrapped),
+    sessionId,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// 便捷取用
+// ═══════════════════════════════════════════════════════════
+
+/** 取记忆仓储（最常用）。 */
+export async function getMemoryStore() {
+  const rt = await getRuntime();
+  return rt.bootstrapped.memory;
+}
+
+/** 是否已配置模型。 */
+export async function hasModel(): Promise<boolean> {
+  const rt = await getRuntime();
+  return rt.model !== null;
+}
+
+/**
+ * 进程退出前刷盘。
+ *
+ * ⚠️ 在 Next.js 里挂进程钩子不可靠（它可能自己管理生命周期），
+ *    所以 `JsonlEventStore` 用**定时刷盘 + 缓冲**兜底：
+ *    即使没有优雅退出，最多丢最后几百毫秒的事件。
+ */
+export async function flush(): Promise<void> {
+  const rt = await getRuntime();
+  await rt.bootstrapped.log.flushPersistence();
+}

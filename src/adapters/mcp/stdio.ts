@@ -220,7 +220,8 @@ export function stdioTransportFactory(opts: StdioTransportOptions = {}): McpTran
           // ⚠️ shell: false —— 与命令执行工具同一条纪律：
           //    不经 shell 解释，避免注入与转义问题
           shell: false,
-          env,
+          // 同 exec 适配器：传的是白名单，比 ProcessEnv 要求的更严
+          env: env as unknown as NodeJS.ProcessEnv,
           ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
           stdio: ['pipe', 'pipe', 'pipe'],
         });

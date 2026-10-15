@@ -29,3 +29,13 @@ coverage/
 .data/
 *.sqlite
 *.sqlite-journal
+
+# ── Next.js ──
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# ── 运行时数据（本机记忆与事件流，绝不入库）──
+/.butler-data/
+*.jsonl

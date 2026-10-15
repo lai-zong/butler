@@ -38,6 +38,8 @@ import {
   type ReplayOperationResult,
 } from '../memory/operationReplay.js';
 import { CheckpointManager } from '../checkpoint/manager.js';
+import { McpClient } from '../mcp/client.js';
+import { Scheduler, DEFAULT_QUOTA } from '../schedule/scheduler.js';
 
 // ═══════════════════════════════════════════════════════════
 // 结果
@@ -54,6 +56,20 @@ export interface BootstrapResult {
   readonly artifacts: InMemoryArtifactStore;
   readonly operations: OperationMemoryStore;
   readonly checkpoints: CheckpointManager;
+  /**
+   * MCP 客户端。
+   *
+   * ⚠️ 只建了实例，**没有注册任何传输** —— 传输在适配器层
+   *    （stdioTransportFactory() 等）。服务端运行时负责注册。
+   */
+  readonly mcp: McpClient;
+  /**
+   * 定时任务调度器。
+   *
+   * ⚠️ 同样只建实例、**没有注册任何任务** —— 任务处理器需要模型与
+   *    观察器，由服务端运行时按可用能力装配。
+   */
+  readonly scheduler: Scheduler;
 
   /** 本次启动是否从磁盘恢复（false = 全新开始） */
   readonly resumed: boolean;
@@ -196,12 +212,17 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
   });
   checkpoints.sync();
 
+  const mcp = new McpClient(log, args.clock);
+  const scheduler = new Scheduler(log, args.clock, DEFAULT_QUOTA);
+
   return {
     log,
     memory,
     artifacts,
     operations,
     checkpoints,
+    mcp,
+    scheduler,
     resumed: historical.length > 0,
     historicalEvents: historical.length,
     badLines: args.badLines ?? 0,

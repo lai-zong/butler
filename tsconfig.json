@@ -4,7 +4,9 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "jsx": "react-jsx",
+    "jsx": "preserve",
+    "allowJs": true,
+    "incremental": true,
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -22,12 +24,13 @@
     "forceConsistentCasingInFileNames": true,
 
     "noEmit": true,
-    "types": ["vitest/globals"],
+    "plugins": [{ "name": "next" }],
 
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["next-env.d.ts", "src", "vite.config.ts", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", "prototype"]
 }

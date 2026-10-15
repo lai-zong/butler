@@ -90,7 +90,16 @@ export class NodeExec implements ExecPort {
           //    因此用户输入的 `; rm -rf /` 只是一个普通参数字符串。
           shell: false,
           windowsHide: true,
-          env: { ...this.buildEnv(req.env) },
+          /**
+           * ⚠️ 断言成 `ProcessEnv` 是**刻意的**。
+           *
+           *   我们传的是**环境变量白名单**（只保留 PATH / SystemRoot 等），
+           *   而 `ProcessEnv` 类型声明了 NODE_ENV 等必填键 —— 于是类型对不上。
+           *
+           *   断言表达的是「这里传的就是完整环境，且它比类型要求的更严」。
+           *   这不是绕过类型检查，而是把「有意收紧」这件事写进代码。
+           */
+          env: this.buildEnv(req.env) as unknown as NodeJS.ProcessEnv,
         });
       } catch (err) {
         rejectP(
