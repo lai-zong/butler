@@ -3,22 +3,37 @@
  *
  * 设计依据：方案 § 6（操作能力）、§ 12（大模型集成质量）
  *
- * 这是"仆人真的能动手"的那一环：模型提出工具调用 → 校验参数 →
+ * 这是「仆人真的能动手」的那一环：模型提出工具调用 → 校验参数 →
  * 经安全闸门执行 → 结果回喂 → 直到模型不再调用工具或达到轮次上限。
  *
  * ★ 三条纪律：
  *   ① **参数在边界校验** —— 模型生成的参数不能直接信，
- *      给出可纠正的反馈（"缺少必填参数 path"）而不是让它以执行错误的面目出现
+ *      给出可纠正的反馈（「缺少必填参数 path」）而不是让它以执行错误的面目出现
  *   ② **一切执行走 ToolFramework** —— 循环本身**不**直接调用工具实现，
  *      因此权限闸门无法被绕过（这条是安全设计的核心）
- *   ③ **有界** —— 轮次上限 + 上下文裁剪，防止模型陷入"调工具→看结果→再调"的死循环
+ *   ③ **有界** —— 轮次上限 + 上下文裁剪，防止模型陷入「调工具→看结果→再调」的死循环
  *      把 token 烧光
+ *
+ * ★★ 关于流式（`streamPort`）：
+ *
+ *   给出 `streamPort` 时，每一轮走**流式**，并把过程通过 `onProgress`
+ *   实时推给界面：思考分片、正文分片、工具调用分片、工具结果。
+ *
+ *   **这才是 dsh / codex 那种「思考 → 工具 → 再思考」画面的来源** ——
+ *   在此之前工具循环完全不可见（grep 全 `src/app` 搜 `toolCall` 无匹配），
+ *   用户只能看到一行行进度文字。
+ *
+ *   ⚠️ 不给 `streamPort` 时行为与之前**完全一致**（走 `model.complete`）——
+ *      既有 40+ 测试与验证脚本不受影响。
+ *      这个"两条路径并存"是刻意的：流式要拿到真实模型才能验证，
+ *      而单元测试用 MockModel 走非流式路径更稳定。
  */
 
 import { limitsConfig } from '../config/env.js';
 import type { EventLog } from '../events/log.js';
 import { msg, type ModelMessage, type ModelPort, type ModelToolSpec } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
+import type { ModelStreamPort } from '../ports/stream.js';
 import type { ToolFramework } from './framework.js';
 import type { ToolSpec } from './types.js';
 import { issuesToMessage, validateArgs } from './validate.js';
@@ -47,6 +62,213 @@ export const DEFAULT_MAX_ROUNDS = 8;
 
 /** 历史里保留的最大工具结果条数（更早的被摘要替换，控制上下文增长）。 */
 export const MAX_TOOL_RESULTS_IN_HISTORY = 12;
+
+// ═══════════════════════════════════════════════════════════
+// 循环进度（供界面实时呈现）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 循环进度事件。
+ *
+ * ★ 这是「让模型干活的过程可见」的载体 —— 界面上那条
+ *   「思考 → 工具 → 再思考」的流，就是这些事件拼出来的。
+ *
+ * ⚠️ 刻意**逐类区分**而不是一个通用的 `message`：
+ *   界面要对它们做不同渲染（思考是灰字、工具是卡片、结果是代码块），
+ *   一个通用事件会让界面不得不自己解析文本去猜类型。
+ */
+export type AgentProgressEvent =
+  /** 新一轮开始（模型开始思考） */
+  | { readonly kind: 'roundStarted'; readonly round: number; readonly maxRounds: number }
+  /** 思考分片（可能为空 —— 实测模型按任务难度分配思考量） */
+  | { readonly kind: 'reasoning'; readonly round: number; readonly delta: string; readonly accumulated: string }
+  /** 正文分片（模型对用户说的话） */
+  | {
+      readonly kind: 'text';
+      readonly round: number;
+      readonly delta: string;
+      readonly accumulated: string;
+    }
+  /** 工具调用开始（参数可能还在拼接 —— `partial` 为 true 时表示未完成） */
+  | {
+      readonly kind: 'toolCall';
+      readonly round: number;
+      readonly callId: string;
+      readonly name: string;
+      readonly argsDelta: string;
+      readonly partial: boolean;
+    }
+  /** 工具开始执行（参数已校验通过，进入闸门） */
+  | { readonly kind: 'toolStarted'; readonly round: number; readonly callId: string; readonly name: string }
+  /** 工具结果（可能是执行结果，也可能是被拒绝/校验失败） */
+  | {
+      readonly kind: 'toolResult';
+      readonly round: number;
+      readonly callId: string;
+      readonly name: string;
+      readonly ok: boolean;
+      readonly denied: boolean;
+      readonly output: string;
+      readonly durationMs: number;
+    }
+  /** 循环结束 */
+  | {
+      readonly kind: 'finished';
+      readonly rounds: number;
+      readonly hitRoundLimit: boolean;
+      readonly reason: 'noToolCalls' | 'terminalTool' | 'roundLimit';
+    };
+
+/** 一轮的产出（流式与非流式共用同一形状 —— 让主循环不必分叉）。 */
+interface RoundOutcome {
+  readonly text: string;
+  readonly toolCalls: readonly { readonly callId: string; readonly name: string; readonly args: string }[];
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+}
+
+/**
+ * 跑一轮（流式）。
+ *
+ * ★★ 工具调用分片的拼接是这里的**技术核心**，也是最容易写错的地方：
+ *
+ *   OpenAI 兼容协议里，工具调用以**分片**到达：
+ *     · `id` 与 `function.name` 只在**该调用的第一个分片**里出现
+ *     · `function.arguments` 是**逐段拼接**的 JSON 字符串
+ *     · `index` 是**稳定标识**，每个分片都带
+ *
+ *   ⚠️ 所以必须按 **`index`** 聚合，不能按 `id`（后续分片可能没有 id）。
+ *      按 id 聚合会把一次调用拆成多个，参数拼不起来 ——
+ *      症状是"参数是残缺的 JSON"，而这个错很难从现象推回原因。
+ */
+async function runRoundStreaming(args: {
+  readonly port: ModelStreamPort;
+  readonly messages: readonly ModelMessage[];
+  readonly toolSpecs: readonly ModelToolSpec[];
+  readonly round: number;
+  readonly maxRounds: number;
+  readonly onProgress?: (e: AgentProgressEvent) => void;
+}): Promise<RoundOutcome> {
+  const emit = (e: AgentProgressEvent): void => {
+    try {
+      args.onProgress?.(e);
+    } catch {
+      // ⚠️ 界面出错不该拖垮工具循环 —— 这是「回调是纯通知」的落实
+    }
+  };
+
+  emit({ kind: 'roundStarted', round: args.round, maxRounds: args.maxRounds });
+
+  let text = '';
+  let reasoning = '';
+  const usage = { inputTokens: 0, outputTokens: 0 };
+
+  /** ⚠️ 按 `index` 聚合，不按 id —— 见上方说明。 */
+  const byIndex = new Map<number, { callId: string; name: string; args: string }>();
+
+  for await (const chunk of args.port.stream({
+    purpose: 'servant',
+    messages: args.messages,
+    ...(args.toolSpecs.length > 0 ? { tools: args.toolSpecs } : {}),
+    temperature: 0.2,
+  })) {
+    switch (chunk.kind) {
+      case 'reasoning':
+        reasoning += chunk.delta;
+        emit({
+          kind: 'reasoning',
+          round: args.round,
+          delta: chunk.delta,
+          accumulated: reasoning,
+        });
+        break;
+
+      case 'text':
+        text += chunk.delta;
+        emit({ kind: 'text', round: args.round, delta: chunk.delta, accumulated: text });
+        break;
+
+      case 'toolCall': {
+        /**
+         * ★★ 按 `index` 聚合 —— 这是唯一稳定正确的做法。
+         *
+         *   ⚠️ **不能按 `callId` 或 `name` 聚合**，原因见
+         *      `ModelStreamChunk` 里那段说明：`id` 与 `name`
+         *      **只在一次调用的第一个分片出现**。
+         *
+         *      正确的分片形状（实测原始 SSE）：
+         *        #1  index=0  name="list_dir"  argsDelta=""
+         *        #2  index=0  name=""          argsDelta="{"
+         *        …   index=0  name=""          argsDelta="}"
+         *
+         *   ⚠️ 我第一版按 `name`/`callId` 聚合，结果一次调用被拆成两个：
+         *      一个只有名字没参数、一个只有参数没名字 ——
+         *      **两者都通不过参数校验**。
+         *      实测症状：20 轮、25 次调用、参数全空、6.9 万输入 token 烧光。
+         */
+        const prev = byIndex.get(chunk.index) ?? { callId: chunk.callId, name: '', args: '' };
+        byIndex.set(chunk.index, {
+          callId: chunk.callId.length > 0 ? chunk.callId : prev.callId,
+          name: chunk.name.length > 0 ? chunk.name : prev.name,
+          args: prev.args + chunk.argsDelta,
+        });
+
+        emit({
+          kind: 'toolCall',
+          round: args.round,
+          callId: chunk.callId,
+          name: chunk.name,
+          argsDelta: chunk.argsDelta,
+          // 参数还在拼 —— 界面据此显示「正在生成参数」
+          partial: true,
+        });
+        break;
+      }
+
+      case 'done':
+        usage.inputTokens = chunk.usage.inputTokens;
+        usage.outputTokens = chunk.usage.outputTokens;
+        break;
+    }
+  }
+
+  const toolCalls = [...byIndex.values()]
+    .filter((c) => c.name.length > 0)
+    .map((c) => ({ callId: c.callId, name: c.name, args: c.args }));
+
+  // 工具调用的参数拼完了 —— 再推一次，标记 partial: false
+  for (const tc of toolCalls) {
+    emit({
+      kind: 'toolCall',
+      round: args.round,
+      callId: tc.callId,
+      name: tc.name,
+      argsDelta: '',
+      partial: false,
+    });
+  }
+
+  return { text, toolCalls, usage };
+}
+
+/**
+ * 把流式拼接出来的参数 JSON 串解析成对象。
+ *
+ * ⚠️ 为什么失败时返回一个**带 `__raw` 的对象**而不是 `null`：
+ *   返回 `null` 会让下游的 `validateArgs` 报「缺少全部必填参数」——
+ *   那对模型是**误导性的反馈**（它会以为参数名写错了，而不是参数没拼完）。
+ *   带上 `__raw` 后校验器能给出「参数格式不合规」这类准确提示。
+ */
+function parseStreamedArgs(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return {};
+
+  try {
+    const v: unknown = JSON.parse(trimmed);
+    return v;
+  } catch {
+    return { __raw: trimmed, __parseError: '工具调用参数不是合法 JSON（可能被截断）' };
+  }
+}
 
 /** 单个工具结果进上下文的最大字符数。 */
 export const TOOL_RESULT_CHAR_LIMIT = 4000;
@@ -80,6 +302,21 @@ export interface AgentLoopOptions {
   readonly trustOf?: (toolName: string) => TrustLevel;
   /** 需要用户确认的告警回调（高风险内容） */
   readonly onAlert?: (alert: InputAlert) => void;
+  /**
+   * 流式端口。给出时每一轮走流式，并把过程实时推给 onProgress。
+   *
+   * ⚠️ 不给则行为与之前**完全一致**（走 model.complete）——
+   *    既有 40+ 测试与验证脚本不受影响。
+   *    这个「两条路径并存」是刻意的：流式要真实模型才能验证，
+   *    而单元测试用 MockModel 走非流式路径更稳定。
+   */
+  readonly streamPort?: ModelStreamPort;
+  /**
+   * 循环进度回调 —— 「思考 → 工具 → 再思考」画面的来源。
+   *
+   * ⚠️ 回调是**纯通知**：它抛错会被吞掉，不影响循环。
+   */
+  readonly onProgress?: (e: AgentProgressEvent) => void;
 }
 
 /**
@@ -137,21 +374,79 @@ export async function runAgentLoop(
   let outputTokens = 0;
   let round = 0;
 
+  const emitProgress = (e: AgentProgressEvent): void => {
+    try {
+      opts.onProgress?.(e);
+    } catch {
+      // 界面出错不影响循环
+    }
+  };
+
   while (round < maxRounds) {
     round += 1;
 
-    const res = await opts.model.complete({
-      purpose: 'servant',
-      messages,
-      ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
-      temperature: 0.2,
-    });
+    /**
+     * ★★ 两条路径共用同一份「一轮的产出」形状，主循环不必分叉。
+     *
+     *   ⚠️ 走流式时**工具调用的参数是拼接出来的字符串**，
+     *      而非流式时 `complete()` 已经给了解析后的对象。
+     *      所以这里要把字符串解析回对象，才能进 `validateArgs`。
+     *
+     *   ⚠️ 用 if/else 而不是三元表达式：TS 无法在三元的两个分支里
+     *      收窄 `opts.streamPort`（它只在同一次属性访问上有效）。
+     *      用局部常量显式收窄，而不是加 `!` —— 断言会掩盖真正的 undefined。
+     */
+    interface RoundResult {
+      readonly text: string;
+      readonly toolCalls: readonly { readonly callId: string; readonly name: string; readonly args: unknown }[];
+      readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+    }
+
+    let res: RoundResult;
+    const streamPort = opts.streamPort;
+
+    if (streamPort !== undefined) {
+      const raw = await runRoundStreaming({
+        port: streamPort,
+        messages,
+        toolSpecs,
+        round,
+        maxRounds,
+        ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+      });
+      res = {
+        text: raw.text,
+        toolCalls: raw.toolCalls.map((tc) => ({
+          callId: tc.callId,
+          name: tc.name,
+          // 参数是逐段拼出来的 JSON 字符串；残缺时给出明确的错误标记，
+          // 让它以「参数不合规」的面目出现，而不是一个诡异的崩溃
+          args: parseStreamedArgs(tc.args),
+        })),
+        usage: raw.usage,
+      };
+    } else {
+      const r = await opts.model.complete({
+        purpose: 'servant',
+        messages,
+        ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
+        temperature: 0.2,
+      });
+      res = { text: r.text, toolCalls: r.toolCalls, usage: r.usage };
+    }
+
     inputTokens += res.usage.inputTokens;
     outputTokens += res.usage.outputTokens;
 
     // 模型不再调用工具 → 这就是最终答案
     if (res.toolCalls.length === 0) {
       if (res.text.length > 0) messages.push(msg.assistant(res.text));
+      emitProgress({
+        kind: 'finished',
+        rounds: round,
+        hitRoundLimit: false,
+        reason: 'noToolCalls',
+      });
       return {
         finalText: res.text,
         traces,
@@ -241,6 +536,8 @@ export async function runAgentLoop(
       //   而实际上那次调用从未发生 —— 它应该只出现在 action.blocked 里。
       //   （实测踩到：两处都发导致事件条数翻倍，且循环那条缺 source 字段。）
 
+      emitProgress({ kind: 'toolStarted', round, callId: tc.callId, name: tc.name });
+
       let output: string;
       let ok: boolean;
       let denied = false;
@@ -290,6 +587,20 @@ export async function runAgentLoop(
         durationMs: opts.clock.now() - started,
       });
 
+      // ★ 界面进度：工具结果（这是 dsh/codex 画面里那个可展开的卡片）
+      emitProgress({
+        kind: 'toolResult',
+        round,
+        callId: tc.callId,
+        name: tc.name,
+        ok,
+        denied,
+        // ⚠️ 推给界面的结果要**截断** —— 完整结果可能几十 KB，
+        //    而界面只需要看到开头（用户想看全部可以展开审计视图）
+        output: trimmed.slice(0, 1200),
+        durationMs: opts.clock.now() - started,
+      });
+
       messages.push(
         msg.toolResult(
           tc.callId,
@@ -301,6 +612,7 @@ export async function runAgentLoop(
       // ★ 终止工具成功执行 → 立即结束，不再多跑一轮。
       //   注意只有成功才算：失败时继续循环，让模型有机会修正后重新提交。
       if (opts.terminalTool !== undefined && tc.name === opts.terminalTool && ok) {
+        emitProgress({ kind: 'finished', rounds: round, hitRoundLimit: false, reason: 'terminalTool' });
         return {
           finalText: res.text,
           traces,
@@ -315,6 +627,8 @@ export async function runAgentLoop(
     // 上下文裁剪：保留最近的若干条工具结果，更早的替换成占位
     trimHistory(messages);
   }
+
+  emitProgress({ kind: 'finished', rounds: round, hitRoundLimit: true, reason: 'roundLimit' });
 
   opts.log.append({
     type: 'supervisor.observe',

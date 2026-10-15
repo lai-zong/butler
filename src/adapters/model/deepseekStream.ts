@@ -19,6 +19,7 @@ import type { ModelUsage } from '../../core/ports/model.js';
 import type { ModelStreamChunk, ModelStreamPort, StreamCall } from '../../core/ports/stream.js';
 import type { DeepSeekConfig } from './deepseek.js';
 import { capabilitiesOf } from './deepseek.js';
+import { toApiMessages } from './convert.js';
 
 /** 官方文档给的 finish_reason 取值。 */
 type ApiFinishReason =
@@ -123,9 +124,22 @@ export class DeepSeekStream implements ModelStreamPort {
       throw new ModelError(`模型 ${model} 未声明支持流式输出`, 'BAD_OUTPUT');
     }
 
+    /**
+     * ★ index → 该调用的真实 id。
+     *
+     * ⚠️ 必须在整个流上记住：`id` **只在一次调用的第一个分片出现**，
+     *    后续分片没有 id。若不记住，就只能给兜底名，
+     *    于是同一个调用会有两个 callId（第 1 片真 id、后续片兜底名）。
+     */
+    const streamCallIds = new Map<number, string>();
+
     const body: Record<string, unknown> = {
       model,
-      messages: call.messages.map(toApiMessage),
+      // ⚠️ 用共享转换（convert.ts）而不是本文件自己的实现 ——
+      //    原先那份**只处理 text 与 image**，会把 toolCall 与 toolResult
+      //    静默丢掉。工具循环一旦走流式就会坏（模型收不到工具结果，
+      //    于是反复调同一个工具直到轮次耗尽）。
+      messages: toApiMessages(call.messages),
       stream: true,
       // 文档：打开后最后一个内容分片会带 usage
       stream_options: { include_usage: true },
@@ -243,9 +257,31 @@ export class DeepSeekStream implements ModelStreamPort {
             yield { kind: 'text', delta: delta.content };
           }
           for (const tc of delta?.tool_calls ?? []) {
+            /**
+             * ★★ 两个**实测得出的**协议细节，都必须处理：
+             *
+             *   ① `index` 每个分片都带 —— 它是唯一稳定的聚合键，必须透传。
+             *   ② `id` 只在第一个分片出现 —— 所以要按 index 记住它，
+             *      后续分片沿用它。
+             *
+             *   ⚠️ 原先写的是 `tc.id ?? \`call_${index}\``：同一个调用会
+             *      拿到两个不同的 callId（第 1 片真 id、后续片兜底名）。
+             *      按 callId 聚合时一次调用被拆成两个 ——
+             *      一个只有名字没参数、一个只有参数没名字，
+             *      **两者都通不过参数校验**。
+             *      症状是「工具调用参数全空、模型反复重试到轮次耗尽」，
+             *      而从现象几乎推不回这个原因。
+             */
+            const index = tc.index ?? 0;
+            if (tc.id != null && tc.id.length > 0) {
+              streamCallIds.set(index, tc.id);
+            }
+            const callId = streamCallIds.get(index) ?? `call_${String(index)}`;
+
             yield {
               kind: 'toolCall',
-              callId: tc.id ?? `call_${String(tc.index ?? 0)}`,
+              index,
+              callId,
               name: tc.function?.name ?? '',
               argsDelta: tc.function?.arguments ?? '',
             };
@@ -290,36 +326,4 @@ export class DeepSeekStream implements ModelStreamPort {
       fullReasoning,
     };
   }
-}
-
-/** 把我们的消息形状转成官方 API 的形状。 */
-function toApiMessage(m: {
-  readonly role: string;
-  readonly content: readonly { readonly kind: string }[];
-}): Record<string, unknown> {
-  const parts: unknown[] = [];
-  let hasImage = false;
-
-  for (const p of m.content) {
-    const part = p as Record<string, unknown>;
-    if (part['kind'] === 'text') {
-      parts.push({ type: 'text', text: String(part['text'] ?? '') });
-    } else if (part['kind'] === 'image') {
-      hasImage = true;
-      parts.push({
-        type: 'image_url',
-        image_url: {
-          url: String(part['url'] ?? ''),
-          ...(part['detail'] !== undefined ? { detail: part['detail'] } : {}),
-        },
-      });
-    }
-  }
-
-  // ⚠️ 没有图片时用纯字符串 —— 官方文档明确图片只能放 user 消息，
-  //    且部分模型对 content 数组更挑剔，能简单就简单。
-  if (!hasImage) {
-    return { role: m.role, content: parts.map((p) => String((p as { text?: string }).text ?? '')).join('') };
-  }
-  return { role: m.role, content: parts };
 }

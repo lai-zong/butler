@@ -8,14 +8,13 @@
  */
 
 import { ModelError } from '../../core/ports/model.js';
+import { toApiMessages, toApiTools } from './convert.js';
 import type { ModelCapabilities, ModelDescription } from '../../core/ports/model.js';
 import type {
   ModelCall,
   ModelMessage,
-  ModelPart,
   ModelPort,
   ModelResponse,
-  ModelToolSpec,
   ModelUsage,
   StructuredCall,
   StructuredResult,
@@ -62,13 +61,14 @@ export function deepSeekConfigFromEnv(
 // ═══════════════════════════════════════════════════════════
 // 与 OpenAI 兼容协议的映射
 // ═══════════════════════════════════════════════════════════
-
-interface ApiMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
-  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
-  tool_call_id?: string;
-}
+//
+// ⚠️ `ApiMessage` 的定义已移到 `convert.ts`（与流式适配器共用）。
+//    此前两个适配器各有一份消息转换，而流式那份**只处理 text 与 image** ——
+//    工具调用与工具结果会被静默丢掉。
+//    一旦工具循环走流式就会坏，且症状难懂（模型收不到工具结果，
+//    于是反复调同一个工具直到轮次耗尽）。
+//
+//    现在**只留一份**：`convert.ts`。
 
 interface ApiChoice {
   message: {
@@ -88,57 +88,8 @@ interface ApiResponse {
   error?: { message?: string; type?: string };
 }
 
-function partToApi(msg: ModelMessage): ApiMessage[] {
-  const texts: string[] = [];
-  const toolCalls: ApiMessage['tool_calls'] = [];
-  const toolResults: ApiMessage[] = [];
 
-  for (const p of msg.content as readonly ModelPart[]) {
-    switch (p.kind) {
-      case 'text':
-        texts.push(p.text);
-        break;
-      case 'toolCall':
-        toolCalls.push({
-          id: p.callId,
-          type: 'function',
-          function: { name: p.name, arguments: JSON.stringify(p.args ?? {}) },
-        });
-        break;
-      case 'toolResult':
-        toolResults.push({
-          role: 'tool',
-          tool_call_id: p.callId,
-          content: JSON.stringify(p.result ?? null),
-        });
-        break;
-    }
-  }
 
-  const out: ApiMessage[] = [];
-  const hasBody = texts.length > 0 || (toolCalls && toolCalls.length > 0);
-  if (hasBody) {
-    out.push({
-      role: msg.role,
-      content: texts.length > 0 ? texts.join('\n') : null,
-      ...(toolCalls && toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-    });
-  }
-  out.push(...toolResults);
-  return out;
-}
-
-function toApiMessages(messages: readonly ModelMessage[]): ApiMessage[] {
-  return messages.flatMap(partToApi);
-}
-
-function toApiTools(tools: readonly ModelToolSpec[] | undefined): unknown[] | undefined {
-  if (!tools || tools.length === 0) return undefined;
-  return tools.map((t) => ({
-    type: 'function',
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
-}
 
 function mapError(status: number, body: ApiResponse | null): ModelError {
   const detail = body?.error?.message ?? `HTTP ${status}`;

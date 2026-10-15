@@ -478,8 +478,10 @@ describe('④ 推理流编排', () => {
     const { log, clock } = setup();
     const r = await runReasoningStream({
       port: portOf([
-        { kind: 'toolCall', callId: 'c1', name: 'read_file', argsDelta: '{"pa' },
-        { kind: 'toolCall', callId: 'c1', name: '', argsDelta: 'th":"a.txt"}' },
+        // ⚠️ index 是必填 —— 它是工具调用分片唯一稳定的聚合键
+        //    （实测：id 与 name 只在一次调用的第一个分片出现）
+        { kind: 'toolCall', index: 0, callId: 'c1', name: 'read_file', argsDelta: '{"pa' },
+        { kind: 'toolCall', index: 0, callId: 'c1', name: '', argsDelta: 'th":"a.txt"}' },
         {
           kind: 'done',
           finishReason: 'toolCalls',

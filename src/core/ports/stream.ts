@@ -39,7 +39,26 @@ export type ModelStreamChunk =
     }
   | {
       readonly kind: 'toolCall';
-      /** 工具调用可能分多次到达（参数是拼接出来的） */
+      /**
+       * 工具调用可能分多次到达（参数是拼接出来的）。
+       *
+       * ⚠️⚠️ **聚合必须按 `index`，不能按 `callId`。**
+       *
+       *   实测暴露的协议细节（原始 SSE 逐片核对）：
+       *     · `id` **只在一次调用的第一个分片里出现**
+       *     · 后续分片只有 `index` 与 `arguments` 片段
+       *
+       *   于是"用 id 兜底"的实现会给同一个调用产出**两个不同的 callId**：
+       *     第 1 片 → `call_00_YnwBeLAS3o4hSsSDa6B22753`（真 id）
+       *     第 2 片起 → `call_0`（index 兜底）
+       *
+       *   ⚠️ 按 callId 聚合会把一次调用拆成两个：一个只有名字、没有参数，
+       *      另一个只有参数、没有名字。**两者都通不过参数校验**，
+       *      症状是"工具调用参数全空、模型反复重试直到轮次耗尽"。
+       *      这个错从现象很难推回原因 —— 所以在这里写清楚。
+       */
+      readonly index: number;
+      /** 稳定的调用标识（同一 index 的分片共享最终 id；缺失时为 `call_${index}` 兜底） */
       readonly callId: string;
       readonly name: string;
       readonly argsDelta: string;
