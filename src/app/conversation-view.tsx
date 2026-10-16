@@ -900,25 +900,30 @@ export function ConversationView({
 /**
  * 仆人面板 —— 展示本轮每个仆人**各自的**产出。
  *
- * ★★ 排版上的四个决定（每条都有理由）：
+ * ★★ 这一版按用户反馈**大幅精简**（原先"太不简洁清晰"）。
  *
- *   ① **按仆人分标签页**，而不是全部平铺
- *      一轮可能有 2—4 个仆人，每个 5 个产出物 + 10 条发现 ——
- *      平铺会变成一面墙，用户找不到想看的那一个。
+ * 用户的两条意见（都已落实）：
  *
- *   ② **注入的约束放在最上面**
- *      它回答「这个仆人是在**知道了什么**的前提下得出这个结论的」。
- *      放在结论之后就成了脚注，而它其实是前提。
- *      这也是方案 § 2.2⑥「约束注入可见」的落点。
+ *   ① **"已注入的约束"不该给用户看** ——
+ *      那是**内部机制**，回答的是"系统怎么运作"。
+ *      用户关心的是"它给我得出了什么"。
+ *      ⚠️ 我原先把它放在最上面还加红边，是**把内部实现当成了内容**。
+ *      → 已删除。它仍在事件流里（审计视图能查），只是不上界面。
  *
- *   ③ **不确定声明单列一块，且不用灰色弱化**
- *      方案 § 2.2 明确要求仆人"诚实声明不确定，而不是硬着头皮给答案"。
- *      如果把它做得像免责声明，就等于在鼓励模型少说 ——
- *      所以它要有**同等的视觉分量**。
+ *   ② **"收到的指令"同样不该给用户看** ——
+ *      同理：那是系统的调度细节，不是用户要的信息。
+ *      → 已删除。
  *
- *   ④ **发现带证据**（折叠）
- *      「有依据」是本项目的立身之本。证据默认收起以免淹没收结论，
- *      但必须能展开 —— 展开不了就等于没有证据。
+ * ★ 精简后的结构（只留用户真正要的）：
+ *      状态一行 → 产出物 → 发现（可展开证据）→ 不确定
+ *
+ * ⚠️ "不确定声明"刻意**保留**、且不弱化：
+ *    它是仆人"诚实声明不确定"的落点。删掉它等于鼓励模型少说 ——
+ *    而用户看不到不确定，就会把推测当结论用。
+ *
+ * ⚠️ 产出物**默认收起内容**（只显示"清单 12 条"这样的规模），
+ *    点开才看正文。理由：一次可能 4—5 个产出物、每个几百字，
+ *    全展开会把面板变成一面墙（这正是用户说"不简洁"的原因之一）。
  */
 function ServantPanel({
   reports,
@@ -928,7 +933,8 @@ function ServantPanel({
   readonly busy: boolean;
 }) {
   const [active, setActive] = useState(0);
-  const [openEvidence, setOpenEvidence] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const toggle = (k: string): void => setOpen((s) => ({ ...s, [k]: s[k] !== true }));
 
   // ⚠️ 选中项可能越界（新一轮仆人数量变少）—— 兜底回第一条
   const idx = active < reports.length ? active : 0;
@@ -961,52 +967,43 @@ function ServantPanel({
       </div>
 
       <div className="servant-body">
-        {/* ── ① 注入的约束（前提，放最上面）── */}
-        {cur.injectedConstraints.length > 0 && (
-          <section className="servant-sec">
-            <div className="servant-sec-title">
-              已注入的约束
-              <span className="servant-sec-note">它在知道这些的前提下作答</span>
-            </div>
-            {cur.injectedConstraints.map((c, i) => (
-              <div key={i} className={`servant-constraint ${c.negotiable ? '' : 'servant-constraint-hard'}`}>
-                <span className={`tag ${c.negotiable ? 'tag-soft' : 'tag-hard'}`}>
-                  {c.negotiable ? '软约束' : '硬约束'}
-                </span>
-                {c.content}
-              </div>
-            ))}
-          </section>
-        )}
-
-        {/* ── ② 指令（让它干什么）── */}
-        {cur.instruction.length > 0 && (
-          <section className="servant-sec">
-            <div className="servant-sec-title">收到的指令</div>
-            <div className="servant-instruction">{cur.instruction}</div>
-          </section>
-        )}
-
-        {/* ── ③ 产出物 ── */}
+        {/* ── 产出物 ── */}
         {cur.artifacts.length > 0 && (
           <section className="servant-sec">
-            <div className="servant-sec-title">
-              产出物
-              <span className="servant-sec-note">{cur.artifacts.length} 项</span>
-            </div>
-            {cur.artifacts.map((a, i) => (
-              <div key={i} className="servant-artifact">
-                <div className="servant-artifact-kind">
-                  {ARTIFACT_LABEL[a.kind] ?? a.kind}
-                  {a.itemCount > 1 && <span className="servant-sec-note">{a.itemCount} 条</span>}
+            <div className="servant-sec-title">产出</div>
+            {cur.artifacts.map((a, i) => {
+              const key = `${cur.taskId}_a${i}`;
+              const isOpen = open[key] === true;
+              return (
+                <div key={key} className="servant-item">
+                  {/* 一行：类型 + 规模 + 展开。**没有边框没有底色** */}
+                  <button
+                    type="button"
+                    className="servant-row servant-row-clickable"
+                    onClick={() => toggle(key)}
+                    aria-expanded={isOpen}
+                    data-open={isOpen ? 'true' : undefined}
+                  >
+                    <span className="servant-caret" aria-hidden>
+                      {isOpen ? '▾' : '▸'}
+                    </span>
+                    <span className="servant-row-name">{ARTIFACT_LABEL[a.kind] ?? a.kind}</span>
+                    {a.itemCount > 1 && (
+                      <>
+                        <span className="servant-sep" />
+                        <span className="servant-note">{a.itemCount} 条</span>
+                      </>
+                    )}
+                    <span className="servant-note servant-tail">{a.text.length} 字</span>
+                  </button>
+                  {isOpen && <div className="servant-content">{a.text}</div>}
                 </div>
-                <div className="servant-artifact-text">{a.text}</div>
-              </div>
-            ))}
+              );
+            })}
           </section>
         )}
 
-        {/* ── ④ 发现（带证据）── */}
+        {/* ── 发现（带证据）── */}
         {cur.findings.length > 0 && (
           <section className="servant-sec">
             <div className="servant-sec-title">
@@ -1015,25 +1012,34 @@ function ServantPanel({
             </div>
             {cur.findings.map((f, i) => {
               const key = `${cur.taskId}_f${i}`;
-              const open = openEvidence[key] === true;
+              const isOpen = open[key] === true;
               return (
-                <div key={key} className="servant-finding">
-                  <div className="servant-finding-head">
+                <div key={key} className="servant-item">
+                  <div className="servant-finding">
+                    {/* ⚠️ 行首加一个小竖标 —— 否则「发现」与「产出」的行
+                        长得一样，用户分不清哪一行是哪一类的 */}
                     <span className={`finding-kind finding-kind-${f.kind}`}>
                       {FINDING_LABEL[f.kind] ?? f.kind}
                     </span>
                     <span className="servant-finding-text">{f.statement}</span>
                   </div>
+                  {/* 依据：**只在有证据时才出现**，且默认收起。
+                      有多条证据时可直接扫读条数。 */}
                   {f.evidence.length > 0 && (
                     <>
                       <button
                         type="button"
-                        className="servant-evidence-toggle"
-                        onClick={() => setOpenEvidence((s) => ({ ...s, [key]: !open }))}
+                        className="servant-row servant-row-clickable"
+                        onClick={() => toggle(key)}
+                        aria-expanded={isOpen}
+                        data-open={isOpen ? 'true' : undefined}
                       >
-                        {open ? '收起依据' : `依据 ${f.evidence.length} 条`}
+                        <span className="servant-caret" aria-hidden>
+                          {isOpen ? '▾' : '▸'}
+                        </span>
+                        <span className="servant-note">依据</span>
                       </button>
-                      {open && (
+                      {isOpen && (
                         <ul className="servant-evidence">
                           {f.evidence.map((e, j) => (
                             <li key={j}>{e}</li>
@@ -1048,9 +1054,11 @@ function ServantPanel({
           </section>
         )}
 
-        {/* ── ⑤ 不确定声明（同等视觉分量，不弱化）── */}
+        {/* ── 不确定声明：保留且不弱化 ──
+            ⚠️ 删掉它等于鼓励模型少说 ——
+               而用户看不到不确定，就会把推测当结论用。 */}
         {cur.uncertainties.length > 0 && (
-          <section className="servant-sec servant-sec-uncertain">
+          <section className="servant-sec">
             <div className="servant-sec-title">
               它声明不确定的地方
               <span className="servant-sec-note">{cur.uncertainties.length} 条</span>
@@ -1063,9 +1071,9 @@ function ServantPanel({
           </section>
         )}
 
-        {/* ── ⑥ 需要管家裁决 ── */}
+        {/* ── 需要管家裁决 ── */}
         {cur.needsButlerDecision !== undefined && (
-          <section className="servant-sec servant-sec-escalate">
+          <section className="servant-sec">
             <div className="servant-sec-title">请求管家裁决</div>
             <div className="servant-escalate-text">{cur.needsButlerDecision}</div>
           </section>
@@ -1075,18 +1083,16 @@ function ServantPanel({
       {/**
        * ★★ 右栏的输入框 —— 按**图二**「两侧各有输入框」补。
        *
-       * ⚠️ 这里必须说清楚它的**性质**，否则会被当成装饰：
-       *
+       * ⚠️ 必须说清它的性质，否则会被当成装饰：
        *   它目前是**留位**。真正的「直接与仆人对话」需要一条
        *   独立的通路（用户 → 指定仆人 → 产出回填），而那一步还没做。
        *
        *   ★ 但即使只是留位，也**不能做成能输入却发不出去的样子** ——
        *     那是最糟的一种：用户可以打字、点发送、然后什么也不发生。
-       *     所以这里 `disabled` + 明确说明，用户一眼知道它还没接上。
+       *     所以这里 `disabled` + 明确说明。
        *
        * ★ 已定好的规则（后面接通路时必须遵守）：
-       *     直接与仆人对话时，**管家可以提醒但不得拦截仆人进程** ——
-       *     也就是这个输入框发出的消息**不该**被管家改成"先审查再执行"。
+       *     直接与仆人对话时，**管家可以提醒但不得拦截仆人进程**。
        */}
       <div className="composer composer-servant">
         <div className="composer-row">
@@ -1220,125 +1226,236 @@ function NarrationBlock({
  *      且参数**只在拼完后显示**（`argsComplete`），
  *      否则用户会看到一个残缺的 JSON 而不知道那是"还在生成"。
  */
+/**
+ * 执行过程 —— 「思考 → 工具 → 再思考」的画面。
+ *
+ * ★★ 这一版按 dsh 的手法**重排**（参考 `docs/dsh-ui-reference.md`）。
+ *    旧版被用户指出"太不简洁清晰"，根因有三：
+ *
+ *   ① **每个工具调用是一张带边框的卡片**（`border` + `background` + `padding`）
+ *      → 一次循环 8 次调用就是 8 个框，页面全是格子。
+ *      dsh 的做法：**一行**（高 24px），没有边框没有底色。
+ *
+ *   ② **标题用正文色 + 摘要用亮色**
+ *      → 工具名比模型说的话还抢眼。
+ *      dsh 的做法：可折叠行的标题用 **tertiary**（最弱一级），悬停才提亮。
+ *
+ *   ③ **原始结果整块塞进卡片**（几百到几千字）
+ *      → 用户看到的是"一大坨输出"。
+ *      dsh 的做法：**只提取该类型有用的字段**（文件→路径+行数，
+ *      搜索→命中数），原始内容只在点击时才取。
+ *
+ * ★ 三处刻意保留的差异（因为本项目与 dsh 的信息模型不同）：
+ *   · **有"轮"这一层** —— 管家的多轮循环是本项目的编排单元，
+ *     dsh 没有对应概念。用左侧细线缩进表达层级（借用它 `subCalls` 的手法）。
+ *   · **思考可展开** —— 这是"可审计"在推理层的形态，不能省。
+ *   · **状态用点 + 颜色**，但不加文字标签（dsh 的做法），
+ *     失败/被拒才补一个词，因为那时用户必须知道。
+ */
 function AgentTraceView({ trace }: { readonly trace: AgentTrace }) {
-  const [openRounds, setOpenRounds] = useState<Record<number, boolean>>({});
-  const [openResults, setOpenResults] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const toggle = (k: string): void => setOpen((s) => ({ ...s, [k]: s[k] !== true }));
+
+  /**
+   * ★★ 整个执行块**默认收起成一行**。
+   *
+   * ★ 这是从 dsh 学到的最重要的一条（`.root:not([data-expanded])` 固定
+   *   `height: calc(24px + delta)`）：
+   *   过程信息在**收起态必须恰好一行高**。
+   *
+   * ⚠️ 我前一版让过程常驻展开 —— 一轮 8 次调用就是 8 行 + 轮标题 + 面板头，
+   *    十几行「执行日志」压在模型的回复上面。
+   *    用户说"太不简洁清晰"，主要就是这里。
+   *
+   * ★ 收起时显示什么：**业务动词 + 规模**，而不是"执行过程"这种名词。
+   *   dsh 的组标题是合成出来的（"Reading files and running commands"），
+   *   我这里是"执行了 4 轮 · 8 次工具调用" ——
+   *   信息等价，但**是散文而不是标签**。
+   */
+  const [expanded, setExpanded] = useState(false);
 
   const f = trace.finished;
   const totalCalls = trace.rounds.reduce((n, r) => n + r.toolCalls.length, 0);
+  const hasReasoning = trace.rounds.some((r) => r.reasoning.length > 0);
+  const running = f === null;
+
+  /** 收起态那一行的文字。 */
+  const summary = running
+    ? `正在执行（第 ${trace.rounds.length} 轮 · ${totalCalls} 次工具调用）`
+    : `执行了 ${f.rounds} 轮 · ${totalCalls} 次工具调用`;
 
   return (
-    <div className="agent">
-      <div className="agent-head">
-        <span className="agent-title">
-          执行过程
-          <span className="agent-meta mono">
-            {f !== null ? `${f.rounds} 轮` : `${trace.rounds.length} 轮进行中`} · {totalCalls} 次工具调用
-          </span>
+    <div className="exec" data-expanded={expanded ? 'true' : undefined}>
+      {/* ── 收起态就是这一行（恰好 24px）── */}
+      <button
+        type="button"
+        className="exec-row exec-row-clickable exec-head"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        data-open={expanded ? 'true' : undefined}
+      >
+        <span className="exec-caret" aria-hidden>
+          {expanded ? '▾' : '▸'}
         </span>
-        {f !== null && f.hitRoundLimit && (
-          <span className="tag tag-warn">达到轮次上限</span>
-        )}
-      </div>
+        {/* 运行中：文字带流光（dsh 的 TextShimmer 手法） */}
+        <span className={running ? 'exec-head-label exec-shimmer' : 'exec-head-label'}>
+          {summary}
+        </span>
+        {f !== null && f.hitRoundLimit && <span className="tag tag-warn">到轮次上限</span>}
+      </button>
 
-      {trace.rounds.map((r) => {
-        const expanded = openRounds[r.round] === true;
-        const hasReasoning = r.reasoning.length > 0;
-
-        return (
-          <div className="agent-round" key={r.round}>
-            <button
-              type="button"
-              className="agent-round-head"
-              onClick={() => setOpenRounds((s) => ({ ...s, [r.round]: !expanded }))}
-            >
-              <span className="agent-round-label">第 {r.round} 轮</span>
-              {hasReasoning && (
-                <span className="agent-meta mono">思考 {r.reasoning.length} 字</span>
+      {/* ── 展开态才挂载 ──
+          ⚠️ 用条件渲染而不是 CSS 隐藏：
+             一次循环可能上千字思考 + 几十 KB 结果，
+             CSS 隐藏仍然会进 DOM，长对话下内存与渲染都会拖慢。 */}
+      {expanded && (
+        <div className="exec-body">
+          {trace.rounds.map((r) => (
+            <div className="exec-round" key={r.round}>
+              {/* ── 轮标题：一行。有思考时它才是可点的 ── */}
+              {hasReasoning && r.reasoning.length > 0 ? (
+                <button
+                  type="button"
+                  className="exec-row exec-row-clickable"
+                  onClick={() => toggle(`r${r.round}`)}
+                  aria-expanded={open[`r${r.round}`] === true}
+                  data-open={open[`r${r.round}`] === true ? 'true' : undefined}
+                >
+                  <span className="exec-caret" aria-hidden>
+                    {open[`r${r.round}`] === true ? '▾' : '▸'}
+                  </span>
+                  <span className="exec-round-name">第 {r.round} 轮</span>
+                  <span className="exec-sep" />
+                  <span className="exec-note">思考 {r.reasoning.length} 字</span>
+                </button>
+              ) : (
+                <div className="exec-row">
+                  <span className="exec-caret exec-caret-none" aria-hidden />
+                  <span className="exec-round-name">第 {r.round} 轮</span>
+                </div>
               )}
+
+              {/* 思考：默认收起（一轮可能几千字） */}
+              {open[`r${r.round}`] === true && r.reasoning.length > 0 && (
+                <div className="exec-reasoning">{r.reasoning}</div>
+              )}
+
+              {/* ★ 工具调用：**一次调用一行**，缩进在轮之下 */}
               {r.toolCalls.length > 0 && (
-                <span className="agent-meta mono">{r.toolCalls.length} 次调用</span>
-              )}
-            </button>
+                <div className="exec-calls">
+                  {r.toolCalls.map((tc, i) => {
+                    const key = `${r.round}_${tc.callId}_${i}`;
+                    const res = tc.result;
+                    const state =
+                      res === undefined
+                        ? tc.started
+                          ? 'run'
+                          : 'idle'
+                        : res.denied
+                          ? 'deny'
+                          : res.ok
+                            ? 'ok'
+                            : 'fail';
 
-            {/* 思考（默认收起 —— 一轮可能几千字，全展开会淹没对话） */}
-            {expanded && hasReasoning && (
-              <div className="agent-reasoning">{r.reasoning}</div>
-            )}
-
-            {/* 工具调用卡片 */}
-            {r.toolCalls.map((tc, i) => {
-              const key = `${r.round}_${tc.callId}_${i}`;
-              const showResult = openResults[key] === true;
-              const res = tc.result;
-
-              return (
-                <div className="agent-tool" key={key}>
-                  <div className="agent-tool-head">
-                    {/* 状态图标：未执行 / 执行中 / 成功 / 失败 / 被拒 */}
-                    <span
-                      className={
-                        res === undefined
-                          ? tc.started
-                            ? 'agent-dot agent-dot-run'
-                            : 'agent-dot'
-                          : res.denied
-                            ? 'agent-dot agent-dot-deny'
-                            : res.ok
-                              ? 'agent-dot agent-dot-ok'
-                              : 'agent-dot agent-dot-fail'
-                      }
-                    />
-                    <span className="agent-tool-name mono">{tc.name || '（未知工具）'}</span>
-
-                    {!tc.argsComplete && <span className="agent-meta">生成参数…</span>}
-
-                    {res !== undefined && (
-                      <>
-                        <span className="agent-meta mono">
-                          {res.output.length} 字 · {res.durationMs}ms
-                        </span>
+                    return (
+                      <div key={key}>
                         <button
                           type="button"
-                          className="agent-tool-toggle"
-                          onClick={() => setOpenResults((s) => ({ ...s, [key]: !showResult }))}
+                          className="exec-row exec-row-clickable"
+                          onClick={() => toggle(key)}
+                          aria-expanded={open[key] === true}
+                          data-open={open[key] === true ? 'true' : undefined}
                         >
-                          {showResult ? '收起' : '结果'}
+                          <span className={`exec-dot exec-dot-${state}`} aria-hidden />
+                          {/* 工具名 + 参数摘要**同一行** —— 旧版分成两行且各带容器 */}
+                          <span className="exec-tool">{tc.name || '未知工具'}</span>
+                          {tc.argsComplete && tc.argsText.length > 0 && (
+                            <span className="exec-args mono">{summarizeArgs(tc.argsText)}</span>
+                          )}
+                          {!tc.argsComplete && <span className="exec-note">生成参数…</span>}
+
+                          {/* 右侧：结果规模 + 耗时。失败/被拒才给词 */}
+                          <span className="exec-tail">
+                            {res !== undefined && res.denied && (
+                              <span className="exec-word exec-word-deny">已拒绝</span>
+                            )}
+                            {res !== undefined && !res.denied && !res.ok && (
+                              <span className="exec-word exec-word-fail">失败</span>
+                            )}
+                            {res !== undefined && (
+                              <span className="exec-note mono">
+                                {res.output.length} 字 · {res.durationMs}ms
+                              </span>
+                            )}
+                          </span>
                         </button>
-                      </>
-                    )}
-                  </div>
 
-                  {/* 参数：只在拼完后显示 —— 残缺的 JSON 会让用户困惑 */}
-                  {tc.argsComplete && tc.argsText.length > 0 && (
-                    <div className="agent-tool-args mono">{formatArgs(tc.argsText)}</div>
-                  )}
-
-                  {showResult && res !== undefined && (
-                    <div className={`agent-tool-result ${res.ok ? '' : 'agent-tool-result-bad'}`}>
-                      {res.denied && <div className="agent-tool-denied">已拒绝 —— 未执行</div>}
-                      {res.output}
-                    </div>
-                  )}
+                        {/* 结果：**只在点击后**渲染 */}
+                        {open[key] === true && res !== undefined && (
+                          <div className="exec-output mono">
+                            {res.denied && <div className="exec-denied">已拒绝 —— 未执行</div>}
+                            {previewText(res.output)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        );
-      })}
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-/** 把参数 JSON 压成一行显示（太长就截断）。 */
-function formatArgs(raw: string): string {
+/** 结果预览的最大字符数（超出给"展开全部"的提示）。 */
+const OUTPUT_PREVIEW_CHARS = 1200;
+
+/**
+ * 结果预览。
+ *
+ * ⚠️ 这里**只截断，不折叠**（不额外套一层"显示更多"按钮）——
+ *    用户在工具行上已经点过一次了，再点一次是多余的。
+ *    真要全量内容，审计视图里有。
+ */
+function previewText(text: string): string {
+  return text.length > OUTPUT_PREVIEW_CHARS
+    ? `${text.slice(0, OUTPUT_PREVIEW_CHARS)}\n…（共 ${text.length} 字，完整内容见审计）`
+    : text;
+}
+
+/**
+ * 参数摘要 —— **一行、只留最有辨识度的值**。
+ *
+ * ⚠️ 旧版是把整个 JSON 序列化后截 200 字显示。
+ *    后果：`{"path":"冰箱盘点.txt"}` 变成
+ *    `{"path":"冰箱盘点.txt"}`，还把不需要的键也带上，
+ *    且 JSON 的引号/括号对中文用户是纯噪音。
+ *
+ * ★ 做法：把 JSON 摊平成 `键=值` 的短串，值过长才截。
+ *   例如 `{"path": "冰箱盘点.txt"}` → `path=冰箱盘点.txt`
+ */
+function summarizeArgs(raw: string): string {
+  let value: unknown;
   try {
-    const v: unknown = JSON.parse(raw);
-    const s = JSON.stringify(v);
-    return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+    value = JSON.parse(raw);
   } catch {
-    return raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+    return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw;
   }
+
+  if (typeof value !== 'object' || value === null) return String(value);
+
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    // 单个值最多 40 字 —— 长路径/长命令要截，否则一行放不下
+    parts.push(`${k}=${s !== undefined && s.length > 40 ? `${s.slice(0, 40)}…` : s}`);
+    if (parts.length >= 3) break; // 最多 3 个键，多了不看了
+  }
+  const out = parts.join(' ');
+  return out.length > 80 ? `${out.slice(0, 80)}…` : out;
 }
 
 // ═══════════════════════════════════════════════════════════

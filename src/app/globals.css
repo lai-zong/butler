@@ -7,42 +7,237 @@
      · 强调色只用于**状态**与**可点击**，不用于装饰
      · 数字用等宽字体 —— 记忆条数、适应度这类要能对齐着看
      · 留白优先于线条：能用间距分组的就不用边框
-
-   ⚠️ 布局细节待用户确定后再调整；这里先把**色板与基础排版**定下来，
-      让后续所有页面有统一的底子。
    ============================================================ */
 
+/* ═══════════════════════════════════════════════════════════
+   ★★ 第 ① 层：静态色板
+   ═══════════════════════════════════════════════════════════
+
+   ⚠️ 这一层**只给颜色，不给用途**。
+
+   为什么要分三层（这是从 dsh 的令牌体系学来的，见
+   `docs/dsh-ui-reference.md`）：
+
+     ① 静态色板  --c-neutral-50      「50 号灰是什么颜色」
+     ② 语义别名  --label-secondary   「次要文字用什么颜色」
+     ③ 组件专用  --tool-row-fg       「工具行那一行文字用什么色」
+
+   ★ 好处：换主题/换色**只改第②层的映射**，所有组件一行不动。
+     我原先只有一层（`--text-sub: #6b6b6b`），
+     后果是**改一个颜色要全局搜替换**，而且做不了深色模式。
+
+   ⚠️ 数值取自实测的 dsh 令牌（见参考文档），但**保留本项目自己的
+      命名与视觉取向**（白底简约，不是照搬它的品牌色）。
+   ═══════════════════════════════════════════════════════════ */
+
 :root {
-  /* ── 中性色：白底上的层次靠极浅灰，不靠阴影 ── */
-  --bg: #ffffff;
-  --bg-subtle: #fafafa;
-  --bg-hover: #f5f5f5;
-  --line: #ebebeb;
-  --line-strong: #d9d9d9;
+  /* 中性色阶（数值对齐 dsh 实测值，便于对照） */
+  --c-neutral-0: #ffffff;
+  --c-neutral-25: #fcfcfd;
+  --c-neutral-50: #f9fafb;
+  --c-neutral-75: #f2f3f5;
+  --c-neutral-100: #ebebeb;
+  --c-neutral-150: #e4e5e7;
+  --c-neutral-200: #d9d9d9;
+  --c-neutral-300: #c4c6ca;
+  --c-neutral-400: #adb2b8;
+  --c-neutral-500: #81858c;
+  --c-neutral-550: #6b6f76;
+  --c-neutral-600: #61666b;
+  --c-neutral-700: #4a4d52;
+  --c-neutral-800: #2c2e33;
+  --c-neutral-900: #1a1c20;
+  --c-neutral-950: #0f1115;
 
-  /* ── 文字：三个层次足够，再多会乱 ── */
-  --text: #1a1a1a;
-  --text-sub: #6b6b6b;
-  --text-mute: #9b9b9b;
+  /* 深色侧（用于深色模式） */
+  --c-dark-950: #151517;
+  --c-dark-900: #1b1b1e;
+  --c-dark-850: #232326;
+  --c-dark-800: #2b2b2f;
+  --c-dark-750: #3a3a3f;
+  --c-jade-500: #16a34a;
+  --c-jade-400: #22c55e;
+  --c-jade-100: #f0fdf4;
+  --c-jade-900: #0d2a17;
+  --c-amber-600: #b45309;
+  --c-amber-500: #d97706;
+  --c-amber-400: #f59e0b;
+  --c-amber-100: #fffbeb;
+  --c-amber-900: #2e1f06;
+  --c-red-600: #dc2626;
+  --c-red-400: #f87171;
+  --c-red-100: #fef2f2;
+  --c-red-900: #2c0f10;
+  --c-blue-600: #4176e6; /* dsh 实测 state-business-primary */
+  --c-blue-500: #3b82f6;
+  --c-blue-400: #7aaaff; /* dsh 深色 state-business-primary */
+  --c-blue-100: #eff4ff;
+  --c-blue-900: #10203f;
 
-  /* ── 强调色：只用于状态与可点击 ── */
-  --accent: #2563eb;
-  --accent-subtle: #eff4ff;
+  /* ═══════════════════════════════════════════════════════════
+     ② 语义别名 —— 组件只准用这一层
+     ═══════════════════════════════════════════════════════════ */
 
-  /* ── 状态色：低饱和，避免破坏简约感 ── */
-  --ok: #16a34a;
-  --ok-subtle: #f0fdf4;
-  --warn: #d97706;
-  --warn-subtle: #fffbeb;
-  --danger: #dc2626;
-  --danger-subtle: #fef2f2;
+  /* 底：白 → 浅灰共 4 级，不用阴影表达层次 */
+  --bg-base: var(--c-neutral-0);
+  --bg-layer-1: var(--c-neutral-0);
+  --bg-layer-2: var(--c-neutral-25);
+  --bg-subtle: var(--c-neutral-50);
+  --bg-module: var(--c-neutral-75);
+  --bg-hover: var(--c-neutral-100);
+  --bg-active: var(--c-neutral-150);
 
+  /* 线：4 级，1 最淡 */
+  --border-l1: rgb(0 0 0 / 8%);
+  --border-l2: rgb(0 0 0 / 12%);
+  --border-l3: rgb(0 0 0 / 18%);
+  --border-l4: rgb(0 0 0 / 28%);
+
+  /* 文字：**三级足够**，再多会乱 */
+  --label-primary: var(--c-neutral-950);
+  --label-secondary: var(--c-neutral-600);
+  --label-tertiary: var(--c-neutral-500);
+  --label-caption: var(--c-neutral-400);
+  --label-dimmed: var(--c-neutral-300);
+  --label-foreground: var(--c-neutral-0);
+
+  /* 状态 */
+  --state-success: var(--c-jade-500);
+  --state-success-label: var(--c-jade-500);
+  --state-success-bg: var(--c-jade-100);
+  --state-warn: var(--c-amber-500);
+  --state-warn-label: var(--c-amber-600);
+  --state-warn-bg: var(--c-amber-100);
+  --state-error: var(--c-red-600);
+  --state-error-bg: var(--c-red-100);
+  --state-idle: var(--c-neutral-300);
+  --state-business: var(--c-blue-600);
+  --state-business-label: var(--c-blue-600);
+  --state-business-bg: var(--c-blue-100);
+
+  /* 交互 */
+  --interactive-bg-hover: var(--c-neutral-75);
+  --interactive-bg-active: var(--c-neutral-100);
+  --accent: var(--c-blue-600);
+  --accent-subtle: var(--c-blue-100);
+
+  /* 代码/终端类容器底（比页面底稍深一档） */
+  --code-bg: var(--c-neutral-50);
+  --code-border: var(--c-neutral-100);
+
+  /* ═══════════════════════════════════════════════════════════
+     ★ 尺寸轴 —— 字号可调且**布局不破**
+     ═══════════════════════════════════════════════════════════
+
+     ★★ 这是从 dsh 学到的、对"简洁"最关键的一条基础设施：
+
+       所有尺寸写成 `calc(基准 + var(--font-delta, 0px))`，
+       图标、行高、间距**一起**变。
+
+     ⚠️ 反例（我原先的做法）：字号 14px 硬编码、行高 1.65、
+        图标 7px —— 用户把字号调到 18，文字撑破布局，
+        图标还是那么小，整体比例失控。
+     ═══════════════════════════════════════════════════════════ */
+
+  --font-size-body: 14px;
+  --font-size-secondary: 13px;
+  --font-size-caption: 12px;
+  --font-size-tiny: 11px;
+  --font-delta: 0px;
+
+  --line-height-row: calc(24px + var(--font-delta)); /* 可折叠行 */
+  --line-height-body: calc(24px + var(--font-delta));
+  --icon-box: calc(16px + var(--font-delta)); /* 行首图标槽 */
+  --row-gap: 6px;
+
+  /* 圆角阶梯 —— 对齐 dsh 实测（xs 4 / sm 8 / md 12 / lg 16 / xl 20） */
+  --radius-xs: 4px;
   --radius: 8px;
-  --radius-sm: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* ★ 间距阶梯 —— dsh 只有 4 个数字（4/6/12/16）
+     ⚠️ 我原先各处随手写 3/5/7/9/11px，那是「看起来不整齐」的直接来源：
+        每个间距都差一点，整体就读不出节奏。 */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 12px;
+  --space-4: 16px;
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+
+  /* ⚠️ 兼容旧名 —— 其余样式还在用，逐个迁移完就删掉这一段。
+     新代码**只准**用上面的语义别名。 */
+  --bg: var(--bg-base);
+  --line: var(--border-l1);
+  --line-strong: var(--border-l2);
+  --text: var(--label-primary);
+  --text-sub: var(--label-secondary);
+  --text-mute: var(--label-tertiary);
+  --ok: var(--state-success);
+  --ok-subtle: var(--state-success-bg);
+  --warn: var(--state-warn-label);
+  --warn-subtle: var(--state-warn-bg);
+  --danger: var(--state-error);
+  --danger-subtle: var(--state-error-bg);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   深色模式 —— **只重映射第②层**，组件 CSS 一行不动
+   ═══════════════════════════════════════════════════════════
+
+   ★ 规律（实测 dsh 的做法）：
+     · 边框：深色用**白色低 alpha**，浅色用黑色低 alpha ——
+       这样同一个组件在不同底色上都有正确对比，不必写两套
+     · 状态色：深色下要**换浅一档**（red-600 → red-400），
+       否则在深底上看不清。这是最容易漏的一处。
+   ═══════════════════════════════════════════════════════════ */
+
+body[data-butler-dark] {
+  --bg-base: var(--c-dark-950);
+  --bg-layer-1: var(--c-dark-900);
+  --bg-layer-2: var(--c-dark-850);
+  --bg-subtle: var(--c-dark-900);
+  --bg-module: var(--c-dark-850);
+  --bg-hover: var(--c-dark-800);
+  --bg-active: var(--c-dark-750);
+
+  --border-l1: #ffffff0f;
+  --border-l2: #ffffff1f;
+  --border-l3: #ffffff29;
+  --border-l4: #fff3;
+
+  --label-primary: var(--c-neutral-50);
+  --label-secondary: #cfd3d6;
+  --label-tertiary: var(--c-neutral-400);
+  --label-caption: #8b9096;
+  --label-dimmed: var(--c-neutral-550);
+  --label-foreground: var(--c-dark-950);
+
+  --state-success: var(--c-jade-400);
+  --state-success-label: var(--c-jade-400);
+  --state-success-bg: var(--c-jade-900);
+  --state-warn: var(--c-amber-400);
+  --state-warn-label: var(--c-amber-400);
+  --state-warn-bg: var(--c-amber-900);
+  --state-error: var(--c-red-400);
+  --state-error-bg: var(--c-red-900);
+  --state-idle: var(--c-neutral-600);
+  --state-business: var(--c-blue-400);
+  --state-business-label: var(--c-blue-400);
+  --state-business-bg: var(--c-blue-900);
+
+  --interactive-bg-hover: var(--c-dark-800);
+  --interactive-bg-active: var(--c-dark-750);
+  --accent: var(--c-blue-400);
+  --accent-subtle: var(--c-blue-900);
+
+  --code-bg: var(--c-dark-900);
+  --code-border: var(--c-dark-800);
 }
 
 * {
@@ -817,176 +1012,341 @@ a {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   工具循环过程（思考 → 工具 → 再思考）
+   执行过程（思考 → 工具 → 再思考）
    ═══════════════════════════════════════════════════════════
 
-   ★ 这是 dsh / codex 那种画面的落点 ——
-     在此之前工具循环**完全不可见**，用户只能看到一行行进度文字。
+   ★★ 这一版按 dsh 的手法重排（参考 `docs/dsh-ui-reference.md`）。
 
-   ⚠️ 视觉上要能一眼看出"在干活"：
-     左侧竖线串起轮次，工具卡片用等宽字体，状态点用颜色区分
-     （未执行灰 / 执行中脉动 / 成功绿 / 失败黄 / 被拒红）。
+   旧版的问题（用户指出"太不简洁清晰"）与对应改法：
+
+   | 旧版 | 新版 | 依据 |
+   | 每次调用一张带边框卡片 | **一行**，无边框无底色 | dsh 的 `DisclosureRow` 高 24px |
+   | 工具名用正文色 | 用 **tertiary**，悬停提亮 | dsh 的 `.row { color: label-tertiary }` |
+   | 参数整段 JSON | `键=值` 短串，最多 3 个键 | 去掉 JSON 符号的噪音 |
+   | 常驻"结果"按钮 | 整行可点，**箭头悬停才出现** | dsh 的 `iconIdle/chevronHover` 叠放 |
+   | 状态点 + 文字标签 | 只用点；失败/被拒才补词 | dsh 的 `StateDot` |
+
+   ★ 层级用**左侧细线缩进**表达（轮 → 调用），
+     借用 dsh `subCalls` 的手法（`border-left: .5px` + `margin-left: 22px`）。
    ═══════════════════════════════════════════════════════════ */
 
-.agent {
-  margin-bottom: 20px;
-  border-left: 2px solid var(--line-strong);
+/* ★★ 收起态**固定一行高**（恰好 24px）
+   ⚠️ 这是 dsh 的核心手法：`.root:not([data-expanded]){ contain:size layout;
+      height:calc(24px + delta) }`。
+      不固定高度的话，内含的长文本仍会撑高容器（即使 overflow 隐藏），
+      收起态就不是「一行」，而是「一行的视线 + 一堆空白」。
+   ⚠️ `contain: size layout` 让浏览器不必为内部内容计算尺寸 ——
+      长对话里每一块都省一点，累积起来很可观。 */
+.exec {
+  margin: 2px 0 var(--space-3);
+}
+
+.exec:not([data-expanded]) {
+  contain: size layout;
+  height: var(--line-height-row);
+  overflow: hidden;
+}
+
+.exec-body {
+  padding-top: var(--space-1);
+}
+
+/* ── 面板头：本身就是一个 `.exec-row`（按钮）
+   ⚠️ 这里**只补它作为头部特有的部分** —— 高度、对齐、颜色都由
+      `.exec-row` 提供。重复写一遍必然与它漂移。 ── */
+
+.exec-head {
+  gap: var(--space-2);
+}
+
+.exec-head-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-secondary);
+}
+
+/* ── 运行中的文字流光（dsh 的 TextShimmer 手法）
+   ★ 为什么用流光而不是「加载中…」：
+     流光表达「还在动」，静止文字不表达；且它不占额外宽度，
+     标题长度不会因此跳变。 */
+.exec-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--label-tertiary) 0%,
+    var(--label-primary) 50%,
+    var(--label-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exec-shimmer {
+    background: none;
+    color: var(--label-secondary);
+    animation: none;
+  }
+}
+
+/* ⚠️ 分隔符是个 2px 小点，不是竖线也不是"·"字符 ——
+   dsh 的做法：`width: 2px; height: 2px; border-radius: 1px`。
+   字符"·"在不同字体下大小与基线位置都不同，会显得没对齐。 */
+.exec-sep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 8px;
+  border-radius: 1px;
+  background: var(--label-dimmed);
+}
+
+/* ── 通用行：24px 高、无边框、无底色 ── */
+
+.exec-row {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+  width: 100%;
+  min-width: 0;
+  height: var(--line-height-row);
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--font-size-secondary);
+  color: var(--label-tertiary);
+  text-align: left;
+  transition: color 100ms ease;
+}
+
+.exec-row-clickable {
+  cursor: pointer;
+}
+
+.exec-row-clickable:hover {
+  color: var(--label-secondary);
+}
+
+/* ── 箭头：**默认隐形，悬停才出现** ──
+
+   ★ 这是 dsh 的一个关键手法（.iconIdle / .chevronHover 叠放）：
+     不常驻一个「▸」，界面就干净一截 ——
+     因为多数行用户根本不点。
+
+   ⚠️ 但有两个必须常显的情形，漏掉任何一个都会让人以为「这行不能点」：
+     ① **已经展开的行** —— 否则用户看不到「点这里能收起」
+     ② **触屏设备** —— 没有 hover，(hover: none) 时一律常显
+
+   ⚠️ width 固定 10px：不可点的行也用 .exec-caret-none 占同样宽度，
+      否则**同一列里的标题会左右错开**。 */
+.exec-caret {
+  flex: none;
+  width: 10px;
+  font-size: 9px;
+  color: var(--label-dimmed);
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.exec-row-clickable:hover .exec-caret,
+.exec-row-clickable:focus-visible .exec-caret,
+.exec-row[data-open='true'] .exec-caret {
+  opacity: 1;
+}
+
+/* 触屏：没有悬停，箭头必须常显 */
+@media (hover: none) {
+  .exec-caret {
+    opacity: 1;
+  }
+}
+
+.exec-caret-none {
+  display: inline-block;
+}
+
+.exec-round-name {
+  flex: none;
+  font-weight: 400;
+}
+
+.exec-note {
+  flex: none;
+  font-size: var(--font-size-tiny);
+  color: var(--label-caption);
+}
+
+/* ── 工具调用：**一次一行**，缩进在轮之下 ── */
+
+.exec-calls {
+  display: flex;
+  flex-direction: column;
+  /* ★ 层级用左侧细线表达。0.5px 在高分屏上是发丝线，
+     比 1px 更"轻" —— 这正是它不显眼但却能被读到的原因。 */
+  border-left: 0.5px solid var(--border-l2);
+  margin: 2px 0 6px 14px;
   padding-left: 10px;
 }
 
-.agent-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+.exec-tool {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: inherit;
 }
 
-.agent-title {
-  font-size: 12px;
-  color: var(--text-sub);
-  font-weight: 600;
+/* 参数摘要：**继承父级颜色**（不自己提亮）——
+   否则一行里出现两个亮度，反而更乱 */
+.exec-args {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-tiny);
+  color: var(--label-caption);
 }
 
-.agent-meta {
-  font-size: 11px;
-  color: var(--text-mute);
-  margin-left: 6px;
-}
-
-.agent-round {
-  margin-bottom: 8px;
-}
-
-.agent-round-head {
-  display: flex;
+/* 右侧尾部：推到最右，**不抢视线** */
+.exec-tail {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  border: none;
+  flex: none;
+  margin-left: auto;
+}
+
+.exec-word {
+  flex: none;
+  font-size: var(--font-size-tiny);
+}
+
+.exec-word-deny {
+  color: var(--state-error);
+}
+
+.exec-word-fail {
+  color: var(--state-warn-label);
+}
+
+/* ── 状态点：10px 槽位内画 6px 实心圆 ──
+   ★ 用固定槽位（而不是让点自身尺寸随状态变）——
+     否则不同状态的行首会错开，整列看起来是歪的。 */
+
+.exec-dot {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+}
+
+.exec-dot::after {
+  content: '';
+  position: absolute;
+  inset: 20%;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.exec-dot-idle {
+  color: var(--state-idle);
+}
+
+.exec-dot-ok {
+  color: var(--state-success);
+}
+
+.exec-dot-fail {
+  color: var(--state-warn);
+}
+
+.exec-dot-deny {
+  color: var(--state-error);
+}
+
+/* 执行中：**旋转弧**而不是"加载中…"文字 ——
+   文字会随语言/宽度变化，弧不会。 */
+.exec-dot-run {
+  color: var(--state-business);
+}
+
+.exec-dot-run::after {
+  inset: 15%;
   background: none;
-  padding: 2px 0;
-  font-family: inherit;
-  font-size: 11.5px;
-  color: var(--text-mute);
-  cursor: pointer;
-  text-align: left;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
 }
 
-.agent-round-head:hover {
-  color: var(--text-sub);
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-.agent-round-label {
-  font-weight: 500;
-}
+/* ── 思考：默认收起。展开时限高可滚（一轮可能几千字）── */
 
-/* 思考：默认收起；展开时限高可滚 —— 一轮可能有几千字 */
-.agent-reasoning {
-  margin: 4px 0 6px 10px;
+.exec-reasoning {
+  margin: 4px 0 6px 24px;
   padding: 8px 10px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
-  font-size: 11.5px;
-  line-height: 1.7;
-  color: var(--text-sub);
   max-height: 240px;
   overflow-y: auto;
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-caption);
+  line-height: 1.7;
+  color: var(--label-tertiary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* ── 工具卡片 ── */
+/* ── 工具结果：等宽、可滚、有上限 ── */
 
-.agent-tool {
-  margin: 3px 0 3px 10px;
-  padding: 5px 8px;
-  border: 1px solid var(--line);
+.exec-output {
+  margin: 2px 0 6px 10px;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  background: var(--code-bg);
   border-radius: var(--radius-sm);
-  background: var(--bg);
-}
-
-.agent-tool-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.agent-tool-name {
-  font-size: 12px;
-  color: var(--text);
-  font-weight: 500;
-}
-
-.agent-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--line-strong);
-}
-
-.agent-dot-run {
-  background: var(--accent);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-.agent-dot-ok {
-  background: var(--ok);
-}
-
-.agent-dot-fail {
-  background: var(--warn);
-}
-
-.agent-dot-deny {
-  background: var(--danger);
-}
-
-.agent-tool-toggle {
-  margin-left: auto;
-  border: none;
-  background: none;
-  padding: 0 2px;
-  font-family: inherit;
-  font-size: 11px;
-  color: var(--accent);
-  cursor: pointer;
-}
-
-/* 参数：等宽字体才看得出 JSON 结构 */
-.agent-tool-args {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--text-mute);
-  word-break: break-all;
-}
-
-.agent-tool-result {
-  margin-top: 6px;
-  padding: 7px 9px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
-  font-size: 11.5px;
+  font-size: var(--font-size-tiny);
   line-height: 1.65;
-  color: var(--text-sub);
-  max-height: 220px;
-  overflow-y: auto;
+  color: var(--label-secondary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.agent-tool-result-bad {
-  background: var(--danger-subtle);
-}
-
-.agent-tool-denied {
-  color: var(--danger);
-  font-weight: 500;
+.exec-denied {
   margin-bottom: 4px;
+  color: var(--state-error);
+  font-weight: 500;
 }
 
+/* ⚠️ 尊重"减弱动画"偏好 —— dsh 每个带动画的组件都有这一条 */
+@media (prefers-reduced-motion: reduce) {
+  .exec-row {
+    transition: none;
+  }
+
+  .exec-dot-run::after {
+    animation: none;
+    border-right-color: currentColor;
+    opacity: 0.5;
+  }
+}
 /* ═══════════════════════════════════════════════════════════
    仆人面板（右栏）
    ═══════════════════════════════════════════════════════════
@@ -1146,88 +1506,112 @@ a {
   color: var(--text-mute);
 }
 
-/* ── 注入的约束（放在最上面：它是前提，不是脚注）── */
+/* ── 产出物 ──
+   ⚠️ 旧版给了 `border` + `background` + `padding`，每一行都成了卡片。
+      这与 dsh 的 `DisclosureRow` 相反：**一行就是一行，没有框**。
+      我上一版「太不简洁」的一大来源就是到处是框。
 
-.servant-constraint {
+   ⚠️ 这里原先还有 `.servant-constraint` / `.servant-instruction` /
+      `.tag-hard` / `.tag-soft` 四组规则 ——
+      它们渲染的是「已注入的约束」与「收到的指令」两块。
+      **用户明确说不想看这两块**，界面已删除，样式也已删除。
+      （删样式是必须的：留着会让人以为"界面上应该有"，
+      后来者会照着 CSS 把界面加回去。） */
+
+.servant-item {
+  margin-bottom: 2px;
+}
+
+/* ── 仆人面板里的一行（对齐 dsh 的 DisclosureRow）── */
+
+.servant-row {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 6px 8px;
-  margin-bottom: 4px;
-  background: var(--bg);
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  height: var(--line-height-row);
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: var(--font-size-secondary);
+  color: var(--label-secondary);
+  text-align: left;
+  transition: color 100ms ease;
+}
+
+.servant-row-clickable {
+  cursor: pointer;
+}
+
+.servant-row-clickable:hover {
+  color: var(--label-primary);
+}
+
+/* 箭头默认隐形、悬停才出现（与执行过程用同一套手法） */
+.servant-caret {
+  flex: none;
+  width: 10px;
+  font-size: 9px;
+  color: var(--label-dimmed);
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.servant-row-clickable:hover .servant-caret,
+.servant-row-clickable:focus-visible .servant-caret,
+.servant-row[data-open='true'] .servant-caret {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .servant-caret {
+    opacity: 1;
+  }
+}
+
+.servant-row-name {
+  flex: none;
+  font-weight: 500;
+  color: var(--label-primary);
+}
+
+.servant-tail {
+  margin-left: auto;
+}
+
+.servant-content {
+  margin: 2px 0 var(--space-2) 16px;
+  padding: var(--space-2) 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--code-bg);
   border-radius: var(--radius-sm);
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--text-sub);
-}
-
-/* 硬约束左侧加一道实线 —— 不可协商这件事要看得出来 */
-.servant-constraint-hard {
-  border-left: 3px solid var(--danger);
-}
-
-.tag-hard {
-  background: var(--danger-subtle);
-  color: var(--danger);
-}
-
-.tag-soft {
-  background: var(--bg-subtle);
-  color: var(--text-mute);
-}
-
-.servant-instruction {
-  font-size: 11.5px;
-  line-height: 1.65;
-  color: var(--text-sub);
-  padding: 7px 9px;
-  background: var(--bg);
-  border-radius: var(--radius-sm);
-}
-
-/* ── 产出物 ── */
-
-.servant-artifact {
-  margin-bottom: 8px;
-  padding: 7px 9px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-}
-
-.servant-artifact-kind {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--text-mute);
-  margin-bottom: 4px;
-}
-
-.servant-artifact-text {
-  font-size: 11.5px;
+  font-size: var(--font-size-tiny);
   line-height: 1.7;
-  color: var(--text-sub);
+  color: var(--label-secondary);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 320px;
-  overflow-y: auto;
 }
 
-/* ── 发现 ── */
+/* ── 发现：一条一段，用细线分隔 ──
+   ⚠️ 旧版给每条发现加了底色块，8 条发现就是 8 个色块。
+      改用 0.5px 分隔线（dsh 的做法）：
+      分组读得出来，但页面不脏。 */
 
 .servant-finding {
-  margin-bottom: 8px;
-  padding: 7px 9px;
-  background: var(--bg);
-  border-radius: var(--radius-sm);
-}
-
-.servant-finding-head {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-top: 0.5px solid var(--border-l1);
+}
+
+.servant-head + .servant-tabs + .servant-body > .servant-sec:first-child
+  .servant-item:first-child
+  .servant-finding {
+  border-top: none;
 }
 
 .finding-kind {
@@ -1255,20 +1639,9 @@ a {
 }
 
 .servant-finding-text {
-  font-size: 11.5px;
+  font-size: var(--font-size-caption);
   line-height: 1.65;
-  color: var(--text-sub);
-}
-
-.servant-evidence-toggle {
-  margin-top: 5px;
-  border: none;
-  background: none;
-  padding: 0;
-  font-family: inherit;
-  font-size: 10.5px;
-  color: var(--accent);
-  cursor: pointer;
+  color: var(--label-secondary);
 }
 
 .servant-evidence {
