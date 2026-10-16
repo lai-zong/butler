@@ -163,13 +163,18 @@ async function initRuntime(): Promise<ButlerRuntime> {
       /**
        * ★ 叙述用的流式模型**独立配置**，不复用 `cfg.model`。
        *
-       * ⚠️ 实测（三个模型逐一验证）：
-       *     `deepseek-chat`     **完全不产 `reasoning_content`**（只发 content）
-       *     `deepseek-flash`    产思考 + 正文，最快（1.6—2.4 秒）
-       *     `deepseek-v4-pro`   产思考 + 正文，但慢（约 11.8 秒）
+       * ★ 官方（Models & Pricing 文档）只有两个模型，两个都支持思考：
+       *     `deepseek-flash`    便宜约 4—5 倍、支持读图、快 —— 默认用它
+       *     `deepseek-v4-pro`   更贵、**不支持读图**
+       *
+       *   ⚠️ 这里原先列了一条 `deepseek-chat`「完全不产 reasoning_content」
+       *      的"实测结论"，**已删除** —— 该模型已不在官方清单，
+       *      且当时那条观测很可能是 API 把它静默路由到 flash 造成的假象。
+       *      模型已下线，无法复核，不能留着当依据。
        *
        *   接错模型的后果很隐蔽：**推理流永远是空的，而且不报错** ——
        *   界面上只是"什么都不显示"，看起来像功能没做。
+       *   所以选模型**以官方文档的能力表为准**。
        */
       streamModel = new DeepSeekStream({ ...cfg, model: modelConfig.narrationModel });
     }

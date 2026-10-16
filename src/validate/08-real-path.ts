@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     const session = chat.createSession('v8_session');
 
     const model = new DeepSeekModel(cfg);
-    /** ⚠️ 叙述用独立模型 —— 实测 deepseek-chat 不产思考分片 */
+    /** ⚠️ 叙述用独立模型 —— 轻活用便宜的即可（官方两个模型都支持思考） */
     const streamModel = new DeepSeekStream({ ...cfg, model: 'deepseek-flash' });
 
     const tools = new ToolFramework({ log, clock, policy: new AutoReadPolicy() });

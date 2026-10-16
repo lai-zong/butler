@@ -114,7 +114,7 @@ export const modelConfig = {
    *    现在收回集中管理。
    */
   get model(): string {
-    return str('DEEPSEEK_MODEL', 'deepseek-chat');
+    return str('DEEPSEEK_MODEL', 'deepseek-flash');
   },
   /** 单次模型调用超时（毫秒）。同样之前未登记。 */
   get timeoutMs(): number {
@@ -123,14 +123,23 @@ export const modelConfig = {
   /**
    * ★ 叙述（流式"边说边想"）用的模型。
    *
-   * ⚠️ 为什么**必须**与结构化调用分开：
-   *    实测（2026-10，三个模型逐一验证）：
-   *      `deepseek-chat`       **完全不产 `reasoning_content`**（只发 content）
-   *      `deepseek-flash`      产思考 + 正文，且最快（1.6—2.4s）
-   *      `deepseek-v4-pro`     产思考 + 正文，但慢（11.8s）
+   * ⚠️ 为什么与主模型分开配置：
+   *    叙述是"轻活"（短、快），用便宜快的模型就够。
    *
-   *    接错模型的后果很隐蔽：**推理流永远是空的，且不报错**。
-   *    所以这里默认给 `deepseek-flash`，并用注释把这个实测结论钉住。
+   * ★ 2026-08 按**官方 Models & Pricing 文档**更正：
+   *    官方只有两个模型 —— `deepseek-flash` 与 `deepseek-v4-pro`。
+   *    · flash   ：便宜约 4—5 倍、**支持 Vision**、支持思考
+   *    · v4-pro  ：贵、**不支持 Vision**、支持思考
+   *
+   * ⚠️ 这里原先写着 `deepseek-chat`「完全不产 reasoning_content」——
+   *    **那条结论已删除**，理由两条：
+   *      ① 该模型已不在官方清单里
+   *      ② 当时那条"实测"很可能是假象：它的请求被 API
+   *         **静默路由到 flash**，所以观测到的行为未必属于它。
+   *         模型已下线，无法复核 —— 不能留着当依据。
+   *
+   *    ⚠️ 接错模型的后果**很隐蔽**：推理流永远是空的，且不报错。
+   *       所以选模型要**以官方文档的能力表为准**，不要靠零散实测。
    */
   get narrationModel(): string {
     return str('NARRATION_MODEL', 'deepseek-flash');
@@ -141,10 +150,15 @@ export const modelConfig = {
  * 视觉模型（预留）。
  *
  * ⚠️ 这三个变量**当前未接入**，如实说明：
- *    多模态走的是主模型自身的视觉能力（实测 `deepseek-chat` 可读图，
- *    `deepseek-v4-pro` **不可** —— 见验证 3 的实测记录）。
+ *    多模态走的是**主模型自身的视觉能力** ——
+ *    按官方 Models & Pricing 文档：
+ *      · `deepseek-flash`   ✓ 支持读图
+ *      · `deepseek-v4-pro`  ✗ Not supported
  *
- *    留着它们是给"将来接独立视觉模型"预备位置。
+ *    ⚠️ 这段原先写的是"实测 `deepseek-chat` 可读图"——
+ *       该模型已不在官方清单里，那条观测无法复核，已更正为官方文档结论。
+ *
+ *    留着这三个变量是给"将来接独立视觉模型"预备位置。
  *    **写明"预留"比假装支持好** —— 后者会让人配了却不见效。
  */
 export const visionConfig = {

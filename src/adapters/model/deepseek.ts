@@ -34,7 +34,19 @@ export interface DeepSeekConfig {
   readonly maxStructuredRetries?: number;
 }
 
-export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-chat';
+/**
+ * 默认模型。
+ *
+ * ⚠️ 原先是 `'deepseek-chat'` —— **该模型已不在官方清单里**
+ *    （官方只剩 `deepseek-flash` 与 `deepseek-v4-pro`）。
+ *    留着它会让新用户照 `.env.example` 配好之后**直接不可用**。
+ *
+ * ★ 选 flash 而不是 v4-pro 的理由（官方数据）：
+ *    · flash 便宜约 4—5 倍（输入 $0.15 vs $0.66，输出 $0.6 vs $1.98，非高峰）
+ *    · flash **支持 Vision**，v4-pro **不支持**
+ *    · 两者能力项（Json / Tool Calls / Thinking / 1M 上下文）相同
+ */
+export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
 export const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
 /** 从环境变量读取配置。**缺失必填项时直接抛错**，不静默降级。 */
@@ -123,13 +135,34 @@ export class DeepSeekModel implements ModelPort {
   /**
    * 声明模型能力。
    *
-   * ★ 这张表的每条都是**实测**结论（2026-10，用真实 PNG 验证），不是照抄文档：
-   *   · `deepseek-chat`   ✓ 能读图 —— 回答「数字是7391，还有一个红色的圆形」（完全正确）
-   *   · `deepseek-flash`  ✓ 能读图
-   *   · `deepseek-v4-pro` ✗ **静默失效** —— HTTP 200，只回「抱歉，我无法查看这张图片」
+   * ★ 数据来源：**DeepSeek 官方 Models & Pricing 文档**（2026-08 版）。
+   *   官方表格里**只有两个模型**：
    *
-   * ⚠️ 最后一条就是本表存在的理由。若不在发请求前检查能力，
-   *    用户会以为 AI 看了图，实际图被整个忽略，而任务却报成功。
+   *   | | deepseek-flash | deepseek-v4-pro |
+   *   |---|---|---|
+   *   | Vision | **✓** | **Not supported** |
+   *   | Json Output / Tool Calls | ✓ / ✓ | ✓ / ✓ |
+   *   | Thinking Mode | ✓ | ✓ |
+   *   | 上下文 / 最大输出 | 1M / 384K | 1M / 384K |
+   *
+   * ⚠️ 官方脚注：`deepseek-v4-flash` 与 `deepseek-v4-flash-vision-exp`
+   *    这两个**旧名字仍被接受**，但对应的模型**已下线** ——
+   *    请求会被 V4.1-Flash 承接并按 Flash 计费。
+   *
+   * ⚠️ 本文件的旧版本里还有一条 `deepseek-chat`，且注释写着
+   *    「**静默失效** —— HTTP 200，只回抱歉我无法查看这张图片」。
+   *    **那条结论有两处错**：
+   *      ① `deepseek-v4-pro` 不支持 Vision 是**官方明确写的**
+   *         （Not supported），不是"静默失效" —— 那是我的误读；
+   *      ② `deepseek-chat` **已不在官方模型清单里**，而当时
+   *         「不产 reasoning_content」那条实测**很可能是被 API
+   *         静默路由到 flash 造成的假象**，不是该模型的行为。
+   *         现在该模型已下线，**永远无法复核** —— 所以那条结论必须删掉，
+   *         不能留着当"实测依据"。
+   *
+   * ★ 这张表的**唯一价值**是"发请求前的安全检查"：
+   *   若不在发请求前检查能力，用户会以为 AI 看了图，
+   *   实际图被整个忽略，而任务却报成功。
    */
   describe(): ModelDescription {
     return {
@@ -384,32 +417,46 @@ export class DeepSeekModel implements ModelPort {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 模型能力表（实测）
+// 模型能力表（官方文档）
 // ═══════════════════════════════════════════════════════════
 
 /**
  * 各模型的能力。
  *
- * ★ 数据来源：2026-10 用真实 PNG（含数字 7391 与红色圆点）实测。
- *   官方文档只说 deepseek-flash 支持图片，实测发现 deepseek-chat
- *   也被路由到 flash 因而同样能读图 —— 文档没写的也要实测确认。
+ * ★ 数据来源：**DeepSeek 官方 Models & Pricing 文档**。
+ *   官方表格里只有两个模型 —— 所以这里**只登记两个**。
+ *
+ * ⚠️ 这里原先还有一条 `deepseek-chat`，已删除。删除理由（两处都错）：
+ *   ① 该模型**已不在官方清单**里（官方只剩 flash 与 v4-pro）
+ *   ② 它的 `supportsThinking: false` 来自一次**不可信的观测** ——
+ *      当时 `deepseek-chat` 的请求**被 API 静默路由到 flash**，
+ *      所以"实测到不产 reasoning_content"很可能是 flash 的行为。
+ *      模型已下线，**无法复核** —— 留着就是把假结论当依据。
+ *
+ * ⚠️ `deepseek-v4-pro` 的 `supportsVision: false` **不是**测出来的，
+ *    是**官方明确写的** `Not supported`。
+ *    （旧注释写"静默失效"，那是误读：文档写了不支持，不是静默。）
  */
 const CAPABILITY_TABLE: Record<string, ModelCapabilities> = {
-  'deepseek-chat': {
-    supportsVision: true,
-    supportsStreaming: true,
-    supportsTools: true,
-    supportsThinking: false,
-  },
   'deepseek-flash': {
     supportsVision: true,
     supportsStreaming: true,
     supportsTools: true,
     supportsThinking: true,
   },
-  // 实测不能读图：收到图片不报错，只在正文里说无法查看
   'deepseek-v4-pro': {
     supportsVision: false,
+    supportsStreaming: true,
+    supportsTools: true,
+    supportsThinking: true,
+  },
+  /**
+   * ⚠️ 旧模型名**仍被官方接受**，请求由 V4.1-Flash 承接并按 Flash 计费
+   *    （官方脚注原文）。登记它们是为了让选择器能显示正确的能力，
+   *    而不是让用户以为在用另一个模型。
+   */
+  'deepseek-v4-flash': {
+    supportsVision: true,
     supportsStreaming: true,
     supportsTools: true,
     supportsThinking: true,

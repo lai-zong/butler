@@ -24,14 +24,17 @@ export interface ModelTextPart {
 /**
  * 图片内容块（多模态输入）。
  *
- * ★ 实测确认（2026-10，用真实 PNG 验证）：
- *   · `deepseek-chat`  ✓ 能读图（"数字是7391，还有一个红色的圆形"）
- *   · `deepseek-flash` ✓ 能读图
- *   · `deepseek-v4-pro` ✗ **静默失效** —— HTTP 200，但只回一句
- *     "抱歉，我无法查看这张图片"
+ * ★ 能力以**官方 Models & Pricing 文档**为准（2026-08 版，官方只有两个模型）：
+ *   · `deepseek-flash`   ✓ 支持读图
+ *   · `deepseek-v4-pro`  ✗ **Not supported**（官方明确写的）
  *
- *   ⚠️ 最后一条是个真风险：不报错、不降级提示，只是把图忽略了。
- *      所以模型配置里必须声明 `supportsVision`，不能靠试。
+ *   ⚠️ 这里原先写着 `deepseek-chat` ✓ 与 `deepseek-v4-pro`「**静默失效**」——
+ *      两处都已更正：
+ *        ① `deepseek-chat` 已不在官方清单里，那条观测无法复核，已删；
+ *        ② v4-pro 是**官方写了不支持**，不是"静默失效"（那是我的误读）。
+ *
+ *   ⚠️ 但**"把图静默忽略"这个风险依然真实**：模型不报错、不降级提示，
+ *      只是把图忽略了。所以模型配置里必须声明 `supportsVision`，不能靠试。
  *
  * 官方约束（api-docs.deepseek.com/guides/vision）：
  *   · 仅支持 JPEG / PNG / GIF / WebP，且**按文件内容识别**而非扩展名

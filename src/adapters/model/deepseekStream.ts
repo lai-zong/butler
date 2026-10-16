@@ -116,7 +116,9 @@ export class DeepSeekStream implements ModelStreamPort {
    *    否则调用方的 for-await 会挂住等一个永远不来的 done。
    */
   async *stream(call: StreamCall): AsyncIterable<ModelStreamChunk> {
-    const model = this.config.model ?? 'deepseek-chat';
+    // ⚠️ 兜底值必须与 `DEFAULT_DEEPSEEK_MODEL` 一致 ——
+    //    写成已下线的 `deepseek-chat` 会让未配置时静默用错模型。
+    const model = this.config.model ?? 'deepseek-flash';
     const caps = capabilitiesOf(model);
 
     // 模型不支持流式时**如实报错**，而不是假装流式（把全文一次吐出）

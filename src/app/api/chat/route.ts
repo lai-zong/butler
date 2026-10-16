@@ -118,8 +118,9 @@ export async function POST(req: NextRequest): Promise<Response> {
            *   所以叙述会在死时间里先说完，逐字推给界面。
            *
            * ⚠️ 用 `streamModel`（`NARRATION_MODEL`，默认 deepseek-flash），
-           *    **不是** `model` —— 实测 `deepseek-chat` 完全不产思考分片，
-           *    接它会得到一个永远空的推理流且不报错。
+           *    **不是** `model` —— 两者用途不同：叙述是"轻活"（短、快），
+           *    用便宜快的模型就够，不必占用主模型。
+           *    ⚠️ 接错模型的后果很隐蔽：**推理流永远是空的，且不报错**。
            */
           ...(rt.streamModel !== null ? { streamModel: rt.streamModel } : {}),
           onNarration: (s) =>

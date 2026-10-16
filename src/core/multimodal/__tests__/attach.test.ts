@@ -184,16 +184,19 @@ describe('② ★ 路由到正确的仆人', () => {
 });
 
 describe('③ ★ 模型能力必须显式声明', () => {
-  it('★★ deepseek-chat 声明支持视觉（实测结论）', () => {
-    expect(capabilitiesOf('deepseek-chat').supportsVision).toBe(true);
-  });
-
-  it('★★ deepseek-v4-pro **明确声明不支持**（实测：静默失效）', () => {
-    // 这是本能力表存在的理由：它收到图片不报错，只回一句"无法查看"
+  /**
+   * ⚠️ 这里原先断言 `deepseek-chat` 支持视觉，**已删除**。
+   *    该模型不在官方清单里，且当时那条"实测"很可能是假象
+   *    （请求被 API 静默路由到 flash）。模型已下线，无法复核。
+   *    现在能力表只登记官方在售的模型。
+   */
+  it('★★ deepseek-v4-pro **明确不声明读图**（官方文档 Not supported）', () => {
+    // ⚠️ 不是"实测发现静默失效"——官方文档明确写了 Not supported。
+    //    能力表的作用是发请求前拦住，避免用户以为 AI 看了图。
     expect(capabilitiesOf('deepseek-v4-pro').supportsVision).toBe(false);
   });
 
-  it('deepseek-flash 支持视觉', () => {
+  it('deepseek-flash 支持视觉（官方文档 ✓）', () => {
     expect(capabilitiesOf('deepseek-flash').supportsVision).toBe(true);
   });
 
@@ -209,9 +212,12 @@ describe('③ ★ 模型能力必须显式声明', () => {
     expect(CONSERVATIVE_CAPABILITIES.supportsStreaming).toBe(false);
   });
 
-  it('已知模型清单非空', () => {
+  it('★ 已知模型清单**只含官方在售的模型**', () => {
     expect(knownModels().length).toBeGreaterThan(0);
-    expect(knownModels()).toContain('deepseek-chat');
+    expect(knownModels()).toContain('deepseek-flash');
+    expect(knownModels()).toContain('deepseek-v4-pro');
+    // ⚠️ 已下线的模型不该在清单里 —— 留着会让用户选到一个用不了的模型
+    expect(knownModels()).not.toContain('deepseek-chat');
   });
 });
 
