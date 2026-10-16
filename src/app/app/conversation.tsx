@@ -401,7 +401,7 @@ export function Conversation({
   return (
     <>
       <div className="nv-scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="nv-scroll-inner nv-col">
+        <div className="nv-scroll-inner">
           {empty && (
             <div className="nv-empty">
               <div className="nv-empty-title">说说你想做什么</div>

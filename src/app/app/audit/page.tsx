@@ -47,7 +47,7 @@ export default async function AuditPage() {
 
   return (
       <div className="nv-scroll">
-        <div className="nv-scroll-inner nv-col">
+        <div className="nv-scroll-inner">
           <div style={{ marginBottom: 'var(--n-sp-4)' }}>
             <div style={{ fontSize: 16, fontWeight: 600 }}>结论的依据</div>
             <div

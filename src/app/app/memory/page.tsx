@@ -55,7 +55,7 @@ export default async function MemoryPage() {
 
   return (
       <div className="nv-scroll">
-        <div className="nv-scroll-inner nv-col">
+        <div className="nv-scroll-inner">
           <div style={{ marginBottom: 'var(--n-sp-4)' }}>
             <div style={{ fontSize: 16, fontWeight: 600 }}>它记住了什么</div>
             <div

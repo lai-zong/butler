@@ -27,7 +27,7 @@ export default async function SettingsPage() {
 
   return (
       <div className="nv-scroll">
-        <div className="nv-scroll-inner nv-col">
+        <div className="nv-scroll-inner">
           <Section title="模型">
             {info === null ? (
               <Row
