@@ -260,6 +260,26 @@ const FINDING_LABEL: Record<string, string> = {
 };
 
 /**
+ * 把所有产出物与依据的 key 都标成展开 —— 仅 `/ui-preview` 用。
+ *
+ * ⚠️ 这里的 key 规则必须与 `ServantPanel` 里用的**完全一致**
+ *    （`${taskId}_a${i}` 与 `${taskId}_f${i}`）。
+ *    不一致的话预览页会静默不展开 —— 而看起来像"组件坏了"。
+ */
+function allOpenKeys(reports: readonly ServantReport[]): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const r of reports) {
+    r.artifacts.forEach((_, i) => {
+      out[`${r.taskId}_a${i}`] = true;
+    });
+    r.findings.forEach((_, i) => {
+      out[`${r.taskId}_f${i}`] = true;
+    });
+  }
+  return out;
+}
+
+/**
  * 从历史消息里找出**最近一轮**的仆人产出。
  *
  * ★ 为什么只取最近一条，而不是汇总全部轮次：
@@ -355,12 +375,24 @@ export function ConversationView({
   sessionId: initialSessionId,
   modelConfigured,
   restoreSummary,
+  previewExpand,
 }: {
   readonly initialMessages: readonly Message[];
   readonly sessionId: string | null;
   readonly modelConfigured: boolean;
   readonly restoreSummary: string;
+  /**
+   * ⚠️ **仅 /ui-preview 用**：初始展开过程与仆人面板。
+   *    生产路径没有它 —— 用户要求过程默认收起。
+   */
+  readonly previewExpand?: boolean;
 }) {
+  /**
+   * ⚠️ `exactOptionalPropertyTypes` 下，可选属性**不接受显式 `undefined`** ——
+   *    在解构处归一到 `false`，往下传的就是确定的布尔值。
+   */
+  const preview = previewExpand === true;
+
   const [messages, setMessages] = useState<Message[]>([...initialMessages]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -795,7 +827,7 @@ export function ConversationView({
               )}
 
               {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
+                <MessageBubble key={m.id} message={m} previewExpand={preview} />
               ))}
 
               {/* ── 实时进度（真实的阶段与步骤，不是伪造的逐字动画）── */}
@@ -928,12 +960,17 @@ export function ConversationView({
 function ServantPanel({
   reports,
   busy,
+  initialExpanded = false,
 }: {
   readonly reports: readonly ServantReport[];
   readonly busy: boolean;
+  /** 仅 /ui-preview 用：初始把产出物与依据都展开 */
+  readonly initialExpanded?: boolean;
 }) {
   const [active, setActive] = useState(0);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [open, setOpen] = useState<Record<string, boolean>>(
+    initialExpanded ? allOpenKeys(reports) : {},
+  );
   const toggle = (k: string): void => setOpen((s) => ({ ...s, [k]: s[k] !== true }));
 
   // ⚠️ 选中项可能越界（新一轮仆人数量变少）—— 兜底回第一条
@@ -1252,7 +1289,19 @@ function NarrationBlock({
  *   · **状态用点 + 颜色**，但不加文字标签（dsh 的做法），
  *     失败/被拒才补一个词，因为那时用户必须知道。
  */
-function AgentTraceView({ trace }: { readonly trace: AgentTrace }) {
+function AgentTraceView({
+  trace,
+  initialExpanded = false,
+}: {
+  readonly trace: AgentTrace;
+  /**
+   * 初始是否展开。
+   *
+   * ⚠️ 只给 /ui-preview 用（那里要看展开态的排版）。
+   *    生产路径一律用默认值 alse —— 用户要求过程默认收起。
+   */
+  readonly initialExpanded?: boolean;
+}) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const toggle = (k: string): void => setOpen((s) => ({ ...s, [k]: s[k] !== true }));
 
@@ -1272,7 +1321,7 @@ function AgentTraceView({ trace }: { readonly trace: AgentTrace }) {
    *   我这里是"执行了 4 轮 · 8 次工具调用" ——
    *   信息等价，但**是散文而不是标签**。
    */
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initialExpanded);
 
   const f = trace.finished;
   const totalCalls = trace.rounds.reduce((n, r) => n + r.toolCalls.length, 0);
@@ -1462,7 +1511,14 @@ function summarizeArgs(raw: string): string {
 // 子组件
 // ═══════════════════════════════════════════════════════════
 
-function MessageBubble({ message }: { readonly message: Message }) {
+function MessageBubble({
+  message,
+  previewExpand,
+}: {
+  readonly message: Message;
+  /** 仅 /ui-preview 用：初始展开过程与仆人面板 */
+  readonly previewExpand?: boolean;
+}) {
   if (message.role === 'user') {
     return (
       <div className="msg msg-user">
@@ -1479,14 +1535,17 @@ function MessageBubble({ message }: { readonly message: Message }) {
       </div>
       {/* ★ 工具循环过程：随消息持久化，刷新后仍能看到「它读了哪个文件」 */}
       {message.agentTrace !== undefined && message.agentTrace.rounds.length > 0 && (
-        <AgentTraceView trace={normalizeTrace(message.agentTrace)} />
+        <AgentTraceView
+          trace={normalizeTrace(message.agentTrace)}
+          initialExpanded={previewExpand ?? false}
+        />
       )}
 
       {/* ── ★ 仆人产出：这一轮的仆人各自说了什么 ──
            右侧栏显示的是**最近一轮**（那是"当前在执行什么"），
            历史轮次的产出收在这里，收起以免淹没收官家的回复。 */}
       {message.servantReports !== undefined && message.servantReports.length > 0 && (
-        <details className="msg-servants">
+        <details className="msg-servants" open={previewExpand === true}>
           <summary>
             本轮 {message.servantReports.length} 位仆人：
             {message.servantReports
@@ -1494,7 +1553,11 @@ function MessageBubble({ message }: { readonly message: Message }) {
               .join(' · ')}
           </summary>
           <div className="msg-servants-body">
-            <ServantPanel reports={message.servantReports} busy={false} />
+            <ServantPanel
+              reports={message.servantReports}
+              busy={false}
+              initialExpanded={previewExpand ?? false}
+            />
           </div>
         </details>
       )}
