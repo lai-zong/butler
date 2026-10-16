@@ -202,6 +202,20 @@ export interface ServantReport {
   readonly taskId: string;
   readonly servant: ServantId;
   readonly status: 'done' | 'failed' | 'blocked';
+  /**
+   * ★★ 该对**用户**说的那段话（自然语言）。
+   *
+   * ⚠️ 与 `artifacts` / `findings` 的分工必须分清：
+   *   · `reply`     —— 给用户看。界面上仆人说的话就是它。
+   *   · `artifacts` —— 给管家核对用的结构化产出。
+   *   · `findings`  —— 给管家裁决用的发现与证据。
+   *
+   * ★ 为什么两套都要：结构删了就没法做机械硬约束校验
+   *   （方案 § 2.2 要求 `verifyHardConstraints` 是确定性判定，
+   *   不能靠模型判断），也没法在失败时打回重做。
+   *   所以不是「用 reply 替换结构」，而是**两者并存、各司其职**。
+   */
+  readonly reply: string;
   readonly artifacts: readonly ServantArtifact[];
   /** 本次用到了哪些记忆（可审计） */
   readonly memoryRefs: readonly string[];

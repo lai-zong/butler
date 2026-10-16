@@ -198,6 +198,18 @@ function normalizeNeedsDecision(v: string | boolean | null | undefined): string 
 }
 
 export const servantReportSchema = z.object({
+  /**
+   * ★★ 给**用户**看的那段话 —— 界面上显示的主体。
+   *
+   * ⚠️ 这一步原先缺失：仆人只交结构化报告，从不说话。
+   *    于是界面只能把它显示成报表，而用户要的是
+   *    「仆人窗口与管家窗口一样，是一段段话」。
+   *
+   * ⚠️ `.default('')` 而不是 `.min(1)`：
+   *    旧数据与旧测试没有这个字段，收紧会让它们全部失败。
+   *    空串时界面退回只显示结构化部分（见 `servantMessageText`）。
+   */
+  reply: z.string().default('').describe('对用户说的那段话（自然语言，非结构说明）'),
   status: z.enum(['done', 'failed', 'blocked']),
   artifacts: z.array(artifactSchema).describe('产出物，可为空数组'),
   /** 诚实声明不确定的地方，而不是硬着头皮给答案 */

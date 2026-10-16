@@ -2212,3 +2212,26 @@ h3 {
 .composer-servant .composer-input {
   font-size: 12px;
 }
+
+/* ── 仆人详情块（默认收起）──
+   ⚠️ 用与执行过程**同一套行样式**（`.exec-row`）——
+      两处各写一套必然漂移，而"看起来不一致"正是这次要修的问题。 */
+.servant-details {
+  margin-top: var(--space-3);
+}
+
+/* ⚠️ 无 reply 时的兜底文案：用**弱化色**，
+   因为它是系统说明，不是仆人说的话。 */
+.servant-no-reply {
+  color: var(--label-tertiary);
+  font-size: var(--font-size-caption);
+}
+
+/* 仆人面板里的消息分区（复用管家的 .chat-inner 间距） */
+.servant-body .chat-inner {
+  padding: 0;
+}
+
+.servant-body .msg + .msg {
+  margin-top: var(--space-3);
+}

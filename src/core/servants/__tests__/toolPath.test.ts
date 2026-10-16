@@ -94,6 +94,14 @@ function setup(turns: readonly Turn[]) {
 }
 
 const REPORT = {
+  /**
+   * ⚠️ `reply` 是**必填**（给用户看的那段话）。
+   *
+   *   把它设成必填是有意的：仆人必须说一句完整的话，
+   *   否则界面上它就只是一张报表 —— 而用户要的是「一个在对话的人」。
+   *   设成可选会让模型偷懒不写，那这个字段就等于不存在。
+   */
+  reply: '糙米 300g、北豆腐 2 盒已经列好了。聚餐人数我不知道，所以份量按两人份给的。',
   status: 'done',
   artifacts: [{ kind: 'list', content: '糙米 300g\n北豆腐 2 盒' }],
   uncertainties: ['不知道聚餐人数'],

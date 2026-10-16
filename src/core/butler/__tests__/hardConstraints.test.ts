@@ -65,6 +65,7 @@ function report(
     taskId: `t_${servant}`,
     servant,
     status: opts.status ?? 'done',
+    reply: `（${servant} 的汇报）`,
     artifacts: (opts.artifacts ?? []).map((c) => ({ kind: 'text' as const, content: c })),
     memoryRefs: [],
     uncertainties: [],

@@ -441,6 +441,15 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
         taskId: step.stepId,
         servant: step.servant,
         status: 'blocked',
+        /**
+         * ⚠️ 这里给的是**一句人话**，而不是空串。
+         *
+         *   其它 blocked 分支（模型没提交汇报）给空串是对的 ——
+         *   那种情况确实"仆人没说话"。
+         *   但这一步是**抛异常了**，用户必须知道发生了什么，
+         *   否则界面上这个仆人会显示成一片空白，看起来像卡住了。
+         */
+        reply: `这一步没能完成：${reason}`,
         artifacts: [],
         findings: [],
         uncertainties: [`执行失败：${reason}`],

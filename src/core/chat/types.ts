@@ -107,8 +107,32 @@ export interface ServantReportData {
   readonly servant: string;
   readonly taskId: string;
   readonly status: 'done' | 'failed' | 'blocked';
-  /** 指令 —— 界面要知道「让它干什么」 */
+  /**
+   * ★★ 该对**用户**说的那段话 —— 界面上仆人消息的正文。
+   *
+   * ⚠️ 与 `artifacts` / `findings` 的分工：
+   *   · `reply`     —— 给人看的（界面主体）
+   *   · `artifacts` —— 给管家核对用的结构化产出
+   *   · `findings`  —— 给管家裁决用的发现
+   *
+   *   结构**不能删**：管家做机械硬约束校验靠它，
+   *   失败打回重做也靠它。两者并存、各司其职。
+   */
+  readonly reply: string;
+  /** 指令 —— 引擎内部用；**界面不显示**（用户不关心调度细节） */
   readonly instruction: string;
+  /**
+   * ★ 这个仆人的**工具循环过程**（思考 + 工具调用）。
+   *
+   * ⚠️ 它是仆人窗口里「折叠的过程块」的数据源 ——
+   *    有了它，仆人窗口才与管家窗口结构一致
+   *    （先过程、再最终回复）。
+   *
+   * ⚠️ 当前实现是**整轮的 trace**（见 eports.ts 的说明），
+   *    因为 AgentProgressEvent 里没有仆人标识。
+   *    要按仆人拆分，需要给事件加 servant 字段。
+   */
+  readonly agentTrace?: AgentTraceData;
   readonly artifacts: readonly {
     readonly kind: string;
     /** 已截断的正文（清单类已合并成字符串） */

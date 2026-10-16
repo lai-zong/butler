@@ -33,6 +33,7 @@ function report(over: Partial<ServantReport> = {}): ServantReport {
     taskId: 'step1',
     servant: 'life',
     status: 'done',
+    reply: '推荐了 3 家清淡口味的家常菜馆。',
     artifacts: [{ kind: 'text', content: '推荐了 3 家清淡口味的家常菜馆' }],
     memoryRefs: [],
     uncertainties: ['不知道用户住址'],

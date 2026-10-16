@@ -183,6 +183,7 @@ async function main(): Promise<void> {
     taskId: 's1',
     servant: 'life',
     status: 'done',
+    reply: '菜单已出：全素无花生，三菜一饭，主食杂粮饭。采购清单也列好了。',
     artifacts: [
       { kind: 'plan', content: ['全素无花生菜单', '番茄炖菜、清炒西兰花、杂粮饭', '明确排除花生油与花生酱'] },
       { kind: 'list', content: ['糙米 300g', '北豆腐 2 盒', '西兰花 2 颗'] },
@@ -214,6 +215,7 @@ async function main(): Promise<void> {
     taskId: 's2',
     servant: 'health',
     status: 'done',
+    reply: '12 道菜逐条核对过：无花生、无花生油、无花生酱。豆瓣酱是交叉污染的风险点，要留意。',
     artifacts: [{ kind: 'text', content: '逐条核对 12 道菜：无花生、无花生油、无花生酱。豆瓣酱为交叉污染风险点。' }],
     memoryRefs: [mAllergy, mFat],
     uncertainties: ['预包装调味料的配料表无法核实'],

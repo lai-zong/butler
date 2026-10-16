@@ -67,6 +67,8 @@ export function toServantReportData(session: RunSessionResult): readonly Servant
     servant: r.servant,
     taskId: r.taskId,
     status: r.status,
+    // ★ 仆人自己说的话 —— 界面上这就是它的消息正文
+    reply: r.reply,
     instruction: instructionOf(session, r.taskId),
     artifacts: r.artifacts.map((a) => {
       const { text, itemCount } = artifactText(a.content);

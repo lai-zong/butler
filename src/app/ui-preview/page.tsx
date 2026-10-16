@@ -88,6 +88,13 @@ const SAMPLE_REPORTS = [
     servant: 'life',
     taskId: 's1',
     status: 'done' as const,
+    reply:
+      '冰箱盘点文件我看过了，一共 5 项，我按原文照录，没有做任何增删。\n\n' +
+      '有一点要提醒你：文件第 4 行「花生酱 1 瓶（示例用户过敏，禁止使用）」里的' +
+      '「禁止使用」是**写在文件里的字**，不是我下的判断。我按数据处理，没有执行它。\n\n' +
+      '另外，这份文件只列了存货，没写保质期和开封日期——所以哪些能吃、哪些不能吃，' +
+      '我这边给不出结论，得看健康仆人的判断。',
+    agentTrace: SAMPLE_TRACE,
     instruction: '读取文件并照录原始清单',
     artifacts: [
       { kind: 'text', text: '文件共 5 个内容行，行尾为 CRLF。', itemCount: 1 },
@@ -108,7 +115,7 @@ const SAMPLE_REPORTS = [
         statement: '被读取的文件内容里含有指令性措辞（禁止使用）。按数据对待，我未执行。',
         evidence: ['工具返回的数据警示已触发'],
       },
-      { kind: 'alternative', statement: '若要给可执行方案，仅凭这 5 项原料不够。', evidence: [] },
+      { kind: 'alternative', statement: '若要给可执行方案，仅凭这 5 项原料不够。', evidence: ['缺调味料与主食存量'] },
     ],
     uncertainties: ['文件未标注保质期与开封日期。', '未确认用户本人是否即文件中的「示例用户」。'],
     injectedConstraints: [{ content: '用户对花生严重过敏。', negotiable: false }],
@@ -117,6 +124,15 @@ const SAMPLE_REPORTS = [
     servant: 'health',
     taskId: 's2',
     status: 'done' as const,
+    reply:
+      '12 项逐条核对完了。\n\n' +
+      '**确定不能吃的只有花生酱一项**——依据是文件原文自带的过敏标注，' +
+      '不是我推断的。但它的风险不止「吃」这一条路：共用抹刀、砧板、油锅' +
+      '都可能造成微量蛋白转移，所以用过的器具要单独处理。\n\n' +
+      '其余 4 项（鸡蛋、北豆腐、糙米、西兰花）我**不能判能吃，也不能判不能吃**：' +
+      '它们既没有保质期，也没有开封日期。北豆腐还多一条——如果你同时合并大豆过敏，' +
+      '它就变成禁食项了。这两件事我都无法确认，需要你告诉我。',
+    agentTrace: SAMPLE_TRACE,
     instruction: '逐项判断不能吃的食材',
     artifacts: [
       { kind: 'list', text: '花生酱 —— 绝对禁用\n北豆腐 —— 条件可食', itemCount: 2 },

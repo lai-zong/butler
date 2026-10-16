@@ -73,7 +73,8 @@ interface AuditRange {
 /**
  * 流式叙述状态（与 core/stream/narrate.ts 的 NarrationState 一致）。
  *
- * ⚠️ easoning 可能为空 —— 实测模型思考量波动很大（0—844 字，
+ * ⚠️ 
+easoning 可能为空 —— 实测模型思考量波动很大（0—844 字，
  *    偶发为 0）。**界面不能假设一定有思考**，要按空处理。
  */
 interface NarrationState {
@@ -216,6 +217,21 @@ interface ServantReport {
   readonly servant: string;
   readonly taskId: string;
   readonly status: 'done' | 'failed' | 'blocked';
+  /**
+   * ★★ 该对**用户**说的那段话 —— 仆人窗口里消息的正文。
+   *
+   * ⚠️ 这是这一版新增的。在此之前仆人只交结构化报告、从不说完整的话，
+   *    于是界面只能把它显示成一张报表 ——
+   *    而用户要的是「仆人窗口与管家窗口一样，是一段段话」。
+   */
+  readonly reply: string;
+  /**
+   * ★ 这个仆人的工具循环过程（思考 + 工具调用）。
+   *
+   * ★ 有了它，仆人窗口才能与管家窗口**结构一致**：
+   *   先过程（可折叠）→ 再最终回复。
+   */
+  readonly agentTrace?: PersistedTrace;
   readonly instruction: string;
   readonly artifacts: readonly {
     readonly kind: string;
@@ -957,6 +973,34 @@ export function ConversationView({
  *    点开才看正文。理由：一次可能 4—5 个产出物、每个几百字，
  *    全展开会把面板变成一面墙（这正是用户说"不简洁"的原因之一）。
  */
+/**
+ * 仆人面板 —— 与管家窗口**同一套结构**：消息流 + 输入框。
+ *
+ * ★★ 这一版是**重写**的，起因是用户的两条意见：
+ *
+ *   ① 「仆人窗口应该与管家窗口一模一样，
+ *      而不是分产出、发现等等内容」
+ *   ② 「像 dsh 一样：先流式输出思考内容、工具调用，
+ *      这些结束后，再输出最终回复」
+ *
+ * ⚠️ 我之前的做法（错在哪）：
+ *   把仆人产出做成了**结构化报表** —— 产出/发现/依据/不确定/请求裁决
+ *   各自一栏。用户看到的是一张报表，不是一个人在说话。
+ *
+ * ★ 现在的做法：
+ *     思考 + 工具调用（可折叠的过程块）
+ *     ──────────────────────────────
+ *     仆人说的话（自然语言正文）      ← 与管家的回复同样是消息正文
+ *     ──────────────────────────────
+ *     结构化细节（默认收起，可展开）
+ *
+ *   ⚠️ 结构化细节**保留但收起**，不删除：
+ *      它是「可审计」的落点 —— 用户想核对"清单里到底写了什么"
+ *      必须能查到。但默认不占视线。
+ *
+ *   ⚠️ 「指令」不再显示：那是引擎的调度细节，
+ *      用户不关心"系统让它干什么"，只关心"它做出了什么"。
+ */
 function ServantPanel({
   reports,
   busy,
@@ -964,7 +1008,7 @@ function ServantPanel({
 }: {
   readonly reports: readonly ServantReport[];
   readonly busy: boolean;
-  /** 仅 /ui-preview 用：初始把产出物与依据都展开 */
+  /** 仅 /ui-preview 用：初始展开过程与细节 */
   readonly initialExpanded?: boolean;
 }) {
   const [active, setActive] = useState(0);
@@ -1003,135 +1047,66 @@ function ServantPanel({
         ))}
       </div>
 
-      <div className="servant-body">
-        {/* ── 产出物 ── */}
-        {cur.artifacts.length > 0 && (
-          <section className="servant-sec">
-            <div className="servant-sec-title">产出</div>
-            {cur.artifacts.map((a, i) => {
-              const key = `${cur.taskId}_a${i}`;
-              const isOpen = open[key] === true;
-              return (
-                <div key={key} className="servant-item">
-                  {/* 一行：类型 + 规模 + 展开。**没有边框没有底色** */}
-                  <button
-                    type="button"
-                    className="servant-row servant-row-clickable"
-                    onClick={() => toggle(key)}
-                    aria-expanded={isOpen}
-                    data-open={isOpen ? 'true' : undefined}
-                  >
-                    <span className="servant-caret" aria-hidden>
-                      {isOpen ? '▾' : '▸'}
-                    </span>
-                    <span className="servant-row-name">{ARTIFACT_LABEL[a.kind] ?? a.kind}</span>
-                    {a.itemCount > 1 && (
-                      <>
-                        <span className="servant-sep" />
-                        <span className="servant-note">{a.itemCount} 条</span>
-                      </>
-                    )}
-                    <span className="servant-note servant-tail">{a.text.length} 字</span>
-                  </button>
-                  {isOpen && <div className="servant-content">{a.text}</div>}
-                </div>
-              );
-            })}
-          </section>
-        )}
+      {/*
+        ⚠️ 消息流容器用与管家**同一套类名**（`.chat-scroll` / `.chat-inner` /
+        `.msg` / `.msg-body`）—— 这样两栏的排版天然一致。
+        另起一套类名必然漂移，而"长得不一样"正是用户这次的意见。
+      */}
+      <div className="servant-body chat-scroll">
+        <div className="chat-inner">
+          {/* ── ① 过程：思考 + 工具调用（可折叠，与管家窗口同一组件）── */}
+          {cur.agentTrace !== undefined && cur.agentTrace.rounds.length > 0 && (
+            <AgentTraceView
+              trace={normalizeTrace(cur.agentTrace)}
+              initialExpanded={initialExpanded}
+            />
+          )}
 
-        {/* ── 发现（带证据）── */}
-        {cur.findings.length > 0 && (
-          <section className="servant-sec">
-            <div className="servant-sec-title">
-              发现
-              <span className="servant-sec-note">只陈述，不裁决</span>
+          {/* ── ② 仆人说的话：与管家回复同样是消息正文 ── */}
+          {cur.reply.length > 0 ? (
+            <div className="msg msg-butler">
+              <div className="msg-role">{SERVANT_NAME[cur.servant] ?? cur.servant}</div>
+              <div className="msg-body">
+                <RichContent text={cur.reply} />
+              </div>
             </div>
-            {cur.findings.map((f, i) => {
-              const key = `${cur.taskId}_f${i}`;
-              const isOpen = open[key] === true;
-              return (
-                <div key={key} className="servant-item">
-                  <div className="servant-finding">
-                    {/* ⚠️ 行首加一个小竖标 —— 否则「发现」与「产出」的行
-                        长得一样，用户分不清哪一行是哪一类的 */}
-                    <span className={`finding-kind finding-kind-${f.kind}`}>
-                      {FINDING_LABEL[f.kind] ?? f.kind}
-                    </span>
-                    <span className="servant-finding-text">{f.statement}</span>
-                  </div>
-                  {/* 依据：**只在有证据时才出现**，且默认收起。
-                      有多条证据时可直接扫读条数。 */}
-                  {f.evidence.length > 0 && (
-                    <>
-                      <button
-                        type="button"
-                        className="servant-row servant-row-clickable"
-                        onClick={() => toggle(key)}
-                        aria-expanded={isOpen}
-                        data-open={isOpen ? 'true' : undefined}
-                      >
-                        <span className="servant-caret" aria-hidden>
-                          {isOpen ? '▾' : '▸'}
-                        </span>
-                        <span className="servant-note">依据</span>
-                      </button>
-                      {isOpen && (
-                        <ul className="servant-evidence">
-                          {f.evidence.map((e, j) => (
-                            <li key={j}>{e}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </section>
-        )}
-
-        {/* ── 不确定声明：保留且不弱化 ──
-            ⚠️ 删掉它等于鼓励模型少说 ——
-               而用户看不到不确定，就会把推测当结论用。 */}
-        {cur.uncertainties.length > 0 && (
-          <section className="servant-sec">
-            <div className="servant-sec-title">
-              它声明不确定的地方
-              <span className="servant-sec-note">{cur.uncertainties.length} 条</span>
+          ) : (
+            /* ⚠️ 没有 reply 时**如实说明**，而不是显示空白 ——
+               空白会让用户以为界面坏了或仆人卡住了。 */
+            <div className="msg msg-butler">
+              <div className="msg-role">{SERVANT_NAME[cur.servant] ?? cur.servant}</div>
+              <div className="msg-body servant-no-reply">
+                这个仆人这次没有留下说明（状态：{cur.status}）。
+              </div>
             </div>
-            <ul className="servant-uncertain">
-              {cur.uncertainties.map((u, i) => (
-                <li key={i}>{u}</li>
-              ))}
-            </ul>
-          </section>
-        )}
+          )}
 
-        {/* ── 需要管家裁决 ── */}
-        {cur.needsButlerDecision !== undefined && (
-          <section className="servant-sec">
-            <div className="servant-sec-title">请求管家裁决</div>
-            <div className="servant-escalate-text">{cur.needsButlerDecision}</div>
-          </section>
-        )}
+          {/* ── ③ 结构化细节：默认收起 ──
+              ⚠️ 保留但收起（不是删除）：它是「可审计」的落点 ——
+                 用户要核对"清单里到底写了什么"必须查得到。 */}
+          <ServantDetails
+            report={cur}
+            open={open}
+            onToggle={toggle}
+            initialExpanded={initialExpanded}
+          />
+        </div>
       </div>
 
       {/**
-       * ★★ 右栏的输入框 —— 按**图二**「两侧各有输入框」补。
+       * ★★ 输入框 —— 按**图二**「两侧各有输入框」。
        *
-       * ⚠️ 必须说清它的性质，否则会被当成装饰：
-       *   它目前是**留位**。真正的「直接与仆人对话」需要一条
-       *   独立的通路（用户 → 指定仆人 → 产出回填），而那一步还没做。
+       * ★ 用户已明确定下规则（本注释是它的落点，实现时必须遵守）：
        *
-       *   ★ 但即使只是留位，也**不能做成能输入却发不出去的样子** ——
-       *     那是最糟的一种：用户可以打字、点发送、然后什么也不发生。
-       *     所以这里 `disabled` + 明确说明。
+       *   · 所有对话窗口（含管家与仆人）都支持直接对话
+       *   · **直接与管家对话时**：管家负责验收结果
+       *   · **直接与仆人对话、或先管家后仆人时**：
+       *     管家**退回提醒**，**不得直接截断仆人进程**
        *
-       * ★ 已定好的规则（后面接通路时必须遵守）：
-       *     直接与仆人对话时，**管家可以提醒但不得拦截仆人进程**。
+       * ⚠️ 这条通路尚未接通。它 `disabled` 而不是做成可输入 ——
+       *    能打字、能点发送、然后什么也不发生，是最糟的一种。
        */}
-      <div className="composer composer-servant">
+      <div className="composer">
         <div className="composer-row">
           <input
             className="composer-input"
@@ -1144,6 +1119,165 @@ function ServantPanel({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 仆人的结构化细节（默认收起）。
+ *
+ * ⚠️ 与「正文」的分工要清楚：
+ *   正文（`reply`）是给人读的；这里是给**核对**用的原始结构。
+ *   所以它整体收起，标题写「细节」而不是「产出」——
+ *   「产出」听起来像是主内容，而主内容已经是上面那段话了。
+ */
+function ServantDetails({
+  report,
+  open,
+  onToggle,
+  initialExpanded,
+}: {
+  readonly report: ServantReport;
+  readonly open: Record<string, boolean>;
+  readonly onToggle: (k: string) => void;
+  readonly initialExpanded: boolean;
+}) {
+  const counts: string[] = [];
+  if (report.artifacts.length > 0) counts.push(`${report.artifacts.length} 项产出`);
+  if (report.findings.length > 0) counts.push(`${report.findings.length} 条发现`);
+  if (report.uncertainties.length > 0) counts.push(`${report.uncertainties.length} 条不确定`);
+  if (report.needsButlerDecision !== undefined) counts.push('1 项待裁决');
+
+  if (counts.length === 0) return null;
+
+  const headKey = `${report.taskId}_details`;
+  const isOpen = initialExpanded || open[headKey] === true;
+
+  return (
+    <div className="servant-details">
+      <button
+        type="button"
+        className="exec-row exec-row-clickable"
+        onClick={() => onToggle(headKey)}
+        aria-expanded={isOpen}
+        data-open={isOpen ? 'true' : undefined}
+      >
+        <span className="exec-caret" aria-hidden>
+          {isOpen ? '▾' : '▸'}
+        </span>
+        <span className="exec-head-label">
+          细节
+          <span className="exec-sep" />
+          {counts.join(' · ')}
+        </span>
+      </button>
+
+      {isOpen && (
+        <div className="exec-body">
+          {report.artifacts.length > 0 && (
+            <section className="servant-sec">
+              <div className="servant-sec-title">产出</div>
+              {report.artifacts.map((a, i) => {
+                const key = `${report.taskId}_a${i}`;
+                const o = open[key] === true || initialExpanded;
+                return (
+                  <div key={key} className="servant-item">
+                    <button
+                      type="button"
+                      className="servant-row servant-row-clickable"
+                      onClick={() => onToggle(key)}
+                      aria-expanded={o}
+                      data-open={o ? 'true' : undefined}
+                    >
+                      <span className="servant-caret" aria-hidden>
+                        {o ? '▾' : '▸'}
+                      </span>
+                      <span className="servant-row-name">{ARTIFACT_LABEL[a.kind] ?? a.kind}</span>
+                      {a.itemCount > 1 && (
+                        <>
+                          <span className="servant-sep" />
+                          <span className="servant-note">{a.itemCount} 条</span>
+                        </>
+                      )}
+                      <span className="servant-note servant-tail">{a.text.length} 字</span>
+                    </button>
+                    {o && <div className="servant-content">{a.text}</div>}
+                  </div>
+                );
+              })}
+            </section>
+          )}
+
+          {report.findings.length > 0 && (
+            <section className="servant-sec">
+              <div className="servant-sec-title">
+                发现
+                <span className="servant-sec-note">只陈述，不裁决</span>
+              </div>
+              {report.findings.map((f, i) => {
+                const key = `${report.taskId}_f${i}`;
+                const o = open[key] === true || initialExpanded;
+                return (
+                  <div key={key} className="servant-item">
+                    <div className="servant-finding">
+                      <span className={`finding-kind finding-kind-${f.kind}`}>
+                        {FINDING_LABEL[f.kind] ?? f.kind}
+                      </span>
+                      <span className="servant-finding-text">{f.statement}</span>
+                    </div>
+                    {/* 依据：整行可点。**加一个可点的提示**（常显的「依据 N 条」）——
+                        ⚠️ 之前只有隐形的箭头，用户根本不知道这里能点。 */}
+                    {f.evidence.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="servant-row servant-row-clickable"
+                          onClick={() => onToggle(key)}
+                          aria-expanded={o}
+                          data-open={o ? 'true' : undefined}
+                        >
+                          <span className="servant-caret" aria-hidden>
+                            {o ? '▾' : '▸'}
+                          </span>
+                          <span className="servant-note">依据 {f.evidence.length} 条</span>
+                        </button>
+                        {o && (
+                          <ul className="servant-evidence">
+                            {f.evidence.map((e, j) => (
+                              <li key={j}>{e}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </section>
+          )}
+
+          {report.uncertainties.length > 0 && (
+            <section className="servant-sec">
+              <div className="servant-sec-title">
+                它声明不确定的地方
+                <span className="servant-sec-note">{report.uncertainties.length} 条</span>
+              </div>
+              <ul className="servant-uncertain">
+                {report.uncertainties.map((u, i) => (
+                  <li key={i}>{u}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {report.needsButlerDecision !== undefined && (
+            <section className="servant-sec">
+              <div className="servant-sec-title">请求管家裁决</div>
+              <div className="servant-escalate-text">{report.needsButlerDecision}</div>
+            </section>
+          )}
+        </div>
+      )}
     </div>
   );
 }

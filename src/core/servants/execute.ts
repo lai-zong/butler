@@ -14,6 +14,15 @@ import { msg, type ModelMessage, type ModelPort } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { ModelStreamPort } from '../ports/stream.js';
 import { runAgentLoop, type AgentProgressEvent } from '../tools/agentLoop.js';
+
+/**
+ * 仆人「对用户说的话」的最大长度。
+ *
+ * ⚠️ 它是**给用户看的正文**，不是数据 —— 截太短会切断半句话，
+ *    而它比结构化字段更不可替代（结构化字段用户根本看不到）。
+ *    4000 字足够一段完整汇报，又能防住模型失控输出。
+ */
+export const SERVANT_REPLY_LIMIT = 4000;
 import { extractReport, submitReportTool } from '../tools/builtin/report.js';
 import type { ToolFramework } from '../tools/framework.js';
 import type { ActionTier } from '../tools/types.js';
@@ -195,6 +204,14 @@ export async function runServant(args: {
     taskId: args.taskId,
     servant: args.servant,
     status: raw.status,
+    /**
+     * ★ 对用户说的那段话。
+     *
+     * ⚠️ 只截断、不改写 —— 这是**仆人自己的措辞**，
+     *    系统替它重写就等于"仆人被管家代言了"，
+     *    而那与「仆人只提交发现、管家才做裁决」的边界不符。
+     */
+    reply: raw.reply.trim().slice(0, SERVANT_REPLY_LIMIT),
     artifacts,
     memoryRefs: args.injectedConstraints.map((c) => c.memoryId),
     uncertainties: raw.uncertainties,
@@ -209,6 +226,8 @@ export async function runServant(args: {
     payload: {
       taskId: args.taskId,
       status: report.status,
+      // ★ 对用户说的那段话也要落盘 —— 否则重启后界面上仆人变成没说话
+      reply: report.reply,
       artifacts: report.artifacts,
       findings: report.findings,
       uncertainties: report.uncertainties,
@@ -300,6 +319,8 @@ async function runWithTools(
     return {
       raw: {
         status: 'blocked',
+        // ⚠️ 空串 = 没有话要说。界面据此退回只显示结构化部分
+        reply: '',
         artifacts: [],
         uncertainties: [
           loop.hitRoundLimit
@@ -318,6 +339,7 @@ async function runWithTools(
     return {
       raw: {
         status: 'blocked',
+        reply: '',
         artifacts: [],
         uncertainties: [`提交的汇报格式不合规：${parsed.error.issues[0]?.message ?? '未知'}`],
         findings: [],

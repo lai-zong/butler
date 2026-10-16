@@ -26,6 +26,35 @@ export function submitReportTool(): ToolSpec {
     parameters: {
       type: 'object',
       properties: {
+        /**
+         * ★★ 你要对用户说的**那段话** —— 这是界面上显示的主体。
+         *
+         * ⚠️ 为什么必须有这个字段（原先没有，是一个真实的设计缺口）：
+         *
+         *   服务端本来有 `reply`（叙述流），但那是**管家**在仆人干活
+         *   期间说的。**仆人自己从没说过一句完整的话** ——
+         *   它只交了一份结构化报告。
+         *
+         *   于是界面上没法把仆人显示成「一个在对话的人」，
+         *   只能显示成一张报表（产出/发现/不确定分栏）。
+         *   而用户要的是：**仆人窗口跟管家窗口一样，是一段段话**。
+         *
+         * ★ 与其它字段的分工（必须写清，否则模型会写重复）：
+         *   · `reply`         —— 给**用户**看。自然语言，讲结论与理由。
+         *   · `artifacts`     —— 给**管家核对**用的结构化产出（清单/方案）。
+         *   · `findings`      —— 给**管家裁决**用的发现与证据。
+         *   · `uncertainties` —— 给**管家判断可信度**用。
+         *
+         * ⚠️ `reply` **不是**把 artifacts 抄一遍：
+         *    它是「我会怎么跟用户讲这件事」，可以有取舍、有轻重。
+         */
+        reply: {
+          type: 'string',
+          description:
+            '你对用户说的那段话（自然语言，像同事汇报那样）。' +
+            '说清：你做了什么、结论是什么、有哪些不确定。' +
+            '**不要写「以上是产出物」这类结构说明** —— 那是给机器看的格式，不是给人看的。',
+        },
         status: {
           type: 'string',
           enum: ['done', 'failed', 'blocked'],
@@ -75,7 +104,7 @@ export function submitReportTool(): ToolSpec {
           description: '需要管家裁决的问题（可选）',
         },
       },
-      required: ['status', 'artifacts', 'uncertainties', 'findings'],
+      required: ['reply', 'status', 'artifacts', 'uncertainties', 'findings'],
     },
     tier: 'readOnly',
     summarize: (args) => {
