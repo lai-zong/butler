@@ -17,6 +17,7 @@
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { ServantId } from '../servants/types.js';
+import { parseAgentTrace, parseServantReports } from './parse.js';
 
 // ═══════════════════════════════════════════════════════════
 // 消息
@@ -128,7 +129,8 @@ export interface ServantReportData {
    *    有了它，仆人窗口才与管家窗口结构一致
    *    （先过程、再最终回复）。
    *
-   * ⚠️ 当前实现是**整轮的 trace**（见 eports.ts 的说明），
+   * ⚠️ 当前实现是**整轮的 trace**（见 
+eports.ts 的说明），
    *    因为 AgentProgressEvent 里没有仆人标识。
    *    要按仆人拆分，需要给事件加 servant 字段。
    */
@@ -612,6 +614,23 @@ export function replaySessions(
       if (typeof messageId !== 'string') continue;
       const role = p['role'];
       const trace = p['agentTrace'];
+      /**
+       * ⚠️ 这两处**必须走解析器，不能用 as 断言**。
+       *
+       *   事故记录：给仆人产出加必填字段 reply 之后，首页直接 500 ——
+       *   旧落盘数据里没有该字段，而 as ServantReportData[] 只贴类型标签、
+       *   不做任何检查，于是 cur.reply.length 在运行时炸掉。
+       *
+       *   ★ 纪律：**跨持久化边界的数据是不可信输入。**
+       *     旧版本代码写下的数据，与新版本的假设必然不一致。
+       *
+       * ⚠️ 取局部变量再判定：`exactOptionalPropertyTypes` 下，
+       *    在 spread 里**就地调用函数不会触发收窄** ——
+       *    于是 { agentTrace: X | undefined } 不满足 { agentTrace?: X }。
+       */
+      const replayedTrace = parseAgentTrace(trace);
+      const replayedReports = parseServantReports(p['servantReports']);
+
       messages.push({
         id: messageId,
         sessionId,
@@ -619,13 +638,8 @@ export function replaySessions(
         text: typeof p['text'] === 'string' ? p['text'] : '',
         status: (typeof p['status'] === 'string' ? p['status'] : 'done') as MessageStatus,
         createdAt: e.createdAt,
-        // ★ 工具循环过程也要重放 —— 否则重启后「它干了什么」就查不到了
-        ...(typeof trace === 'object' && trace !== null
-          ? { agentTrace: trace as AgentTraceData }
-          : {}),
-        ...(Array.isArray(p['servantReports'])
-          ? { servantReports: p['servantReports'] as ServantReportData[] }
-          : {}),
+        ...(replayedTrace !== undefined ? { agentTrace: replayedTrace } : {}),
+        ...(replayedReports !== undefined ? { servantReports: replayedReports } : {}),
       });
       touch(sessions, sessionId, e.createdAt);
       continue;
