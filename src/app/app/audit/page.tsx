@@ -19,7 +19,6 @@
  */
 
 import { getRuntime } from '../../runtime.js';
-import { Shell } from '../shell.js';
 import { Row, Tag } from '../ui.js';
 
 export const dynamic = 'force-dynamic';
@@ -47,7 +46,6 @@ export default async function AuditPage() {
   const turns = buildTurns(events);
 
   return (
-    <Shell>
       <div className="nv-scroll">
         <div className="nv-scroll-inner nv-col">
           <div style={{ marginBottom: 'var(--n-sp-4)' }}>
@@ -77,7 +75,6 @@ export default async function AuditPage() {
           ))}
         </div>
       </div>
-    </Shell>
   );
 }
 

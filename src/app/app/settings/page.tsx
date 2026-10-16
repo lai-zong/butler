@@ -17,7 +17,6 @@
  */
 
 import { getRuntime } from '../../runtime.js';
-import { Shell } from '../shell.js';
 import { Row } from '../ui.js';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +26,6 @@ export default async function SettingsPage() {
   const info = rt.model?.describe() ?? null;
 
   return (
-    <Shell>
       <div className="nv-scroll">
         <div className="nv-scroll-inner nv-col">
           <Section title="模型">
@@ -120,7 +118,6 @@ export default async function SettingsPage() {
           </Section>
         </div>
       </div>
-    </Shell>
   );
 }
 

@@ -19,12 +19,12 @@
 
 'use client';
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { RichContent } from '../rich-content.js';
 import { ProcessView, type TraceView } from './process.js';
 import { ServantPane } from './servant-pane.js';
-import { Shell } from './shell.js';
+import { useRightPane } from './shell.js';
 import { Row, Sep, type TagTone, Tag, VERDICT_WORD } from './ui.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -106,6 +106,18 @@ export function Conversation({
    *    这个坑我踩过一次，症状是"DOM 里搜不到该类名"。
    */
   const [reports, setReports] = useState<readonly ServantOut[]>(initialReports);
+
+  /**
+   * ★ 直接与仆人对话的历史（按仆人分）。
+   *
+   * ⚠️ 为什么放在**这个组件的状态**里而不是只靠服务端：
+   *    服务端一个仆人一个固定会话（servant_life 等）——
+   *    那是**持久化**；这里是**本次页面会话的即时视图**。
+   *    刷新后由 /api/chat/servant/history 拉回来。
+   */
+  const [servantMsgs, setServantMsgs] = useState<
+    Record<string, readonly import('./servant-pane.js').PaneMsg[]>
+  >({});
 
   const sessionRef = useRef<string | null>(initialSession);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -239,6 +251,116 @@ export function Conversation({
     }
   }, [input, busy, modelConfigured]);
 
+  /**
+   * 直接对某个仆人说话（不经管家派发）。
+   *
+   * ★ 规则（用户定的）：
+   *   · 不派发、**不验收** —— 用户说什么，仆人就直接做什么
+   *   · 管家只能在事后提醒，**不得截断仆人进程**
+   *   · ⚠️ 但硬约束照样注入、权限闸门照样生效 ——
+   *     「不拦截」讲的是**流程**，不是安全底线让步
+   */
+  const sendToServant = useCallback(async (servant: string, text: string) => {
+    setErr(null);
+    setBusy(true);
+
+    const uid = `su_${Date.now().toString(36)}`;
+    const push = (
+      m: import('./servant-pane.js').PaneMsg,
+    ): void =>
+      setServantMsgs((prev) => ({ ...prev, [servant]: [...(prev[servant] ?? []), m] }));
+
+    push({ id: uid, role: 'user', text });
+
+    let trace: TraceView = { rounds: [], finished: null };
+    let replyText = '';
+    let status = 'done';
+    const replyId = `sr_${Date.now().toString(36)}`;
+
+    try {
+      const res = await fetch('/api/chat/servant', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ servant, text }),
+      });
+      if (!res.ok || res.body === null) throw new Error(`请求失败：HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+
+        let idx = buf.indexOf('\n\n');
+        while (idx >= 0) {
+          const chunk = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          idx = buf.indexOf('\n\n');
+
+          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+          if (line === undefined) continue;
+
+          let e: Record<string, unknown>;
+          try {
+            e = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          const type = String(e['type'] ?? '');
+          if (type === 'agent') {
+            trace = applyAgentEvent(trace, e);
+            // ⚠️ 过程**边跑边显示**：先挂一条空的仆人消息，随事件更新
+            setServantMsgs((prev) => {
+              const list = [...(prev[servant] ?? [])];
+              const i = list.findIndex((m) => m.id === replyId);
+              const next: import('./servant-pane.js').PaneMsg = {
+                id: replyId,
+                role: 'servant',
+                text: '',
+                trace,
+                status: 'running',
+              };
+              if (i < 0) list.push(next);
+              else list[i] = next;
+              return { ...prev, [servant]: list };
+            });
+          } else if (type === 'reply') {
+            replyText = String(e['text'] ?? '');
+            const rs = e['reports'];
+            if (Array.isArray(rs)) setReports(rs as ServantOut[]);
+          } else if (type === 'error') {
+            setErr(String(e['message'] ?? '未知错误'));
+            status = 'failed';
+          }
+        }
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      status = 'failed';
+    } finally {
+      // 收尾：把过程与最终回复定稿
+      setServantMsgs((prev) => {
+        const list = [...(prev[servant] ?? [])];
+        const i = list.findIndex((m) => m.id === replyId);
+        const next: import('./servant-pane.js').PaneMsg = {
+          id: replyId,
+          role: 'servant',
+          text: replyText.length > 0 ? replyText : '（它这次没有留下说明）',
+          trace,
+          status,
+        };
+        if (i < 0 && trace.rounds.length > 0) list.push(next);
+        else if (i >= 0) list[i] = next;
+        return { ...prev, [servant]: list };
+      });
+      setBusy(false);
+    }
+  }, []);
+
   const onKey = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // Enter 发送；Shift+Enter 换行（与主流聊天工具一致）
@@ -252,10 +374,32 @@ export function Conversation({
 
   const empty = msgs.length === 0 && live === null && liveText.length === 0;
 
+  /**
+   * ★ 把右栏**发布**给外壳渲染（`useRightPane`）。
+   *
+   * ⚠️ 两个必须遵守的点，漏一个右栏就会闪或重复：
+   *
+   *   ① 用 `useMemo` 包住 —— 否则每次渲染都是新元素对象，
+   *      `useRightPane` 的 effect 会反复「撤下 → 发布」。
+   *   ② 没有仆人时发布 `null`（不是空片段）——
+   *      外壳据此**整体不渲染右栏**（默认单栏纯对话）。
+   */
+  const rightPane = useMemo(
+    () =>
+      reports.length > 0 || Object.values(servantMsgs).some((v) => v.length > 0) ? (
+        <ServantPane
+          reports={reports}
+          busy={busy}
+          history={servantMsgs}
+          onSend={(s, txt) => void sendToServant(s, txt)}
+        />
+      ) : null,
+    [reports, busy, servantMsgs, sendToServant],
+  );
+  useRightPane(rightPane);
+
   return (
-    <Shell
-      {...(reports.length > 0 ? { right: <ServantPane reports={reports} busy={busy} /> } : {})}
-    >
+    <>
       <div className="nv-scroll" ref={scrollRef} onScroll={onScroll}>
         <div className="nv-scroll-inner nv-col">
           {empty && (
@@ -330,7 +474,7 @@ export function Conversation({
           </div>
         </div>
       </div>
-    </Shell>
+    </>
   );
 }
 

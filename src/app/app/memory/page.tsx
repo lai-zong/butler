@@ -24,7 +24,6 @@
  */
 
 import { getRuntime } from '../../runtime.js';
-import { Shell } from '../shell.js';
 /**
  * ⚠️ 这里分了**两个**导入来源，不能合并：
  *
@@ -55,7 +54,6 @@ export default async function MemoryPage() {
   const others = all.filter((m) => m.lifecycle !== 'active');
 
   return (
-    <Shell>
       <div className="nv-scroll">
         <div className="nv-scroll-inner nv-col">
           <div style={{ marginBottom: 'var(--n-sp-4)' }}>
@@ -115,7 +113,6 @@ export default async function MemoryPage() {
           )}
         </div>
       </div>
-    </Shell>
   );
 }
 
