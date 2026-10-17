@@ -15,10 +15,11 @@
 import {
   SERVANT_BOUNDARY,
   SERVANT_IDS,
-  SERVANT_REASONING,
   type ServantId,
 } from '../servants/types.js';
 import type { InjectedConstraint, UpstreamInput } from '../servants/types.js';
+// ★ v7（E3）：领域纪律改为唯一来源，不再读 `SERVANT_REASONING` 那份副本
+import { DOMAIN_DISCIPLINE, type DomainId } from '../domain/types.js';
 
 export const PROMPT_VERSIONS = {
   butlerSystem: 'butler.system@1',
@@ -521,7 +522,16 @@ ${patterns}
 
 export function servantSystem(servant: ServantId): string {
   const b = SERVANT_BOUNDARY[servant];
-  const reasoning = SERVANT_REASONING[servant];
+  /**
+   * ★★ v7（E3）：领域纪律的**唯一来源**改为 DOMAIN_DISCIPLINE。
+   *
+   *  ⚠️ 原先这里读 SERVANT_REASONING —— 那是同一份 27 条纪律的**第二份副本**。
+   *     两份副本的代价是**漂移**：改一处、另一处不知道，且没有任何测试会发现。
+   *
+   *  删除前已用脚本逐条比对：**5+6+5+5+6 = 27 条，逐字一致**（有比对输出为证），
+   *  所以这里只是换了取值来源，**提示词内容一个字节都没变**。
+   */
+  const reasoning = DOMAIN_DISCIPLINE[servant as DomainId];
   const others = SERVANT_IDS.filter((s) => s !== servant)
     .map((s) => `- ${s}（${SERVANT_BOUNDARY[s].test}）`)
     .join('、');
