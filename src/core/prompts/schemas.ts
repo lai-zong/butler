@@ -91,27 +91,7 @@ export type RoutingDecision = z.infer<typeof routingSchema>;
 // 管家 · 任务分解
 // ═══════════════════════════════════════════════════════════
 
-export const dispatchPlanSchema = z.object({
-  steps: z
-    .array(
-      z.object({
-        stepId: z.string().min(1).describe('步骤标识，如 step1'),
-        // 注意：这里允许 'butler' —— 管家汇总类步骤由自己执行，不派发给仆人。
-        // 与 servantIdSchema 区分开，因为"谁能被派发"和"谁在执行"是两个集合。
-        servant: z
-          .enum(['life', 'health', 'study', 'work', 'code', 'butler'])
-          .describe('这一步交给哪个仆人；管家自己汇总的步骤填 butler'),
-        instruction: z.string().min(1).describe('给这个仆人的具体指令'),
-        dependsOn: z.array(z.string()).describe('依赖哪些步骤的产出；无依赖填空数组'),
-      }),
-    )
-    .min(1)
-    .max(5)
-    .describe('任务分解，最多 5 步'),
-  reasoning: z.string().min(1).describe('为什么这样分解'),
-});
 
-export type DispatchPlan = z.infer<typeof dispatchPlanSchema>;
 
 // ═══════════════════════════════════════════════════════════
 // 任务契约（v7 · D-5）—— 替代 dispatchPlanSchema

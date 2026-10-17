@@ -23,7 +23,6 @@ import type { InjectedConstraint, UpstreamInput } from '../servants/types.js';
 export const PROMPT_VERSIONS = {
   butlerSystem: 'butler.system@1',
   routerTask: 'butler.task.route@1',
-  dispatchTask: 'butler.task.dispatch@1',
   /** v7：写任务契约（替代 routerTask + dispatchTask 的合并产物） */
   contractTask: 'butler.task.contract@1',
   /** v7：管家自己干（替代 servantTask） */
@@ -255,36 +254,6 @@ ${constraints}
      只陈述发现，**不做裁决**。
 
 ⚠️ 不要问用户、不要等他确认。不确定就按最可能的理解做完，把假设写进 \`uncertainties\`。`;
-}
-
-export function dispatchTask(args: {
-  readonly userGoal: string;
-  readonly primaryServant: string;
-  readonly recalledMemories: readonly { id: string; content: string; memClass: string }[];
-}): string {
-  const memBlock =
-    args.recalledMemories.length === 0
-      ? '（本次没有召回任何记忆）'
-      : args.recalledMemories
-          .map((m) => `- [${m.id}] (${m.memClass}) ${m.content}`)
-          .join('\n');
-
-  return `## 任务：把用户目标分解为可执行的步骤
-
-用户说：「${args.userGoal}」
-初步判断主责仆人是：\`${args.primaryServant}\`
-
-### 已召回的记忆
-
-${memBlock}
-
-### 分解要求
-
-- 每一步指派一个仆人，**管家自己汇总时用 \`butler\`**
-- 步骤之间有先后依赖时，用 dependsOn 标明（引用 stepId）
-- 最多 5 步；如果一件事就能做完，就只输出 1 步
-- instruction 要具体到"这个仆人该产出什么"，而不是复述用户原话
-- 若某个召回的记忆与本次任务相关，在 instruction 里明确指出要遵守它`;
 }
 
 export function supervisionTask(args: {
