@@ -256,43 +256,112 @@ ${constraints}
 ⚠️ 不要问用户、不要等他确认。不确定就按最可能的理解做完，把假设写进 \`uncertainties\`。`;
 }
 
+/**
+ * 监督复核提示词（v7 · D-7 三视角改造）
+ *
+ * ★★ 与旧版的根本区别：**核对对象从"仆人之间"变成"产出与契约之间"**。
+ *
+ * ═══ 为什么必须改（这是有实测依据的）═══
+ *
+ *   旧提示词让监督者找 `crossServant`（跨领域矛盾）。
+ *   实测：唯一一次检查报的是「结论一致、无实质冲突」——
+ *   原因很实际：两个 Agent 都被要求「只提交发现、不做裁决」，
+ *   它们会各自说得保守，**反而不冲突**。
+ *
+ *   ★ 更要紧的是它**查不出「答非所问」**：
+ *     两个仆人都答对了各自的题，但整体答偏了 —— 这种错没人看得见。
+ *     契约给了核对标准，这个盲区才补上。
+ *
+ * ═══ 三个视角的分工（写进提示词，因为直接影响能查出什么）═══
+ *
+ *   · **契约视角**：逐条核对 criteria。**每一条都要核对，不能漏、不能合并**。
+ *     这是最硬的一关 —— 判据是管家自己写下的承诺。
+ *   · **领域视角**：拿专业纪律复核。纪律由调用方按 `domains` 选好传进来。
+ *     ⚠️ 不要用常识替代纪律 —— 纪律里的具体数字（如"油 ≤ 5g/人/餐"）
+ *        才是这一视角的价值所在。
+ *   · **全局视角**：硬约束、记忆一致性、原则违背。
+ *
+ * ⏱ 6 分钟前的旧实现是"四个 kind 混在一起"，模型容易只挑好查的那个报。
+ */
 export function supervisionTask(args: {
   readonly userGoal: string;
-  readonly reports: readonly { servant: string; summary: string }[];
+  /** 契约渲染文本（由 `renderContractForReview` 产出） */
+  readonly contractText: string;
+  /** 产出摘要（管家自己干出来的东西） */
+  readonly outputSummary: string;
   readonly hardConstraints: readonly string[];
+  /** 按 domains 选好的领域纪律 */
+  readonly disciplines: readonly { readonly domain: string; readonly rules: readonly string[] }[];
 }): string {
-  const reportBlock = args.reports.map((r) => `- [${r.servant}] ${r.summary}`).join('\n');
   const constBlock =
     args.hardConstraints.length === 0
       ? '（无）'
       : args.hardConstraints.map((c) => `- ${c}`).join('\n');
 
-  return `## 任务：监督校验
+  const disciplineBlock =
+    args.disciplines.length === 0
+      ? '（本次没有匹配到专业纪律 —— 领域视角跳过，只做契约与全局两视角）'
+      : args.disciplines
+          .map(
+            (d) =>
+              `**${d.domain}**\n${d.rules.map((r) => `- ${r}`).join('\n')}`,
+          )
+          .join('\n\n');
 
-用户目标：「${args.userGoal}」
+  return `## 任务：复核这次干活的结果
 
-### 各仆人的产出
+用户原话：「${args.userGoal}」
 
-${reportBlock}
+${args.contractText}
 
-### 全局硬约束（不可协商）
+## 实际产出
+
+${args.outputSummary}
+
+## 全局硬约束（违反即不合格）
 
 ${constBlock}
 
-### 你要检查四类问题
+## 专业纪律（领域视角的核对标准）
 
-1. **omission（遗漏）**：是否漏掉了某个必须遵守的硬约束？例如用户对花生过敏，但推荐里没排除花生类
-2. **crossServant（跨领域矛盾）**：不同仆人的建议是否互相冲突？例如一个推荐火锅、另一个要求低油
-3. **memoryInconsistency（记忆矛盾）**：产出是否与已知记忆冲突？
-4. **principleViolation（原则违背）**：是否违背了已生效的行为原则？
+${disciplineBlock}
 
-### 严重性判定
+---
+
+## 你要用三个视角各查一遍
+
+### ① 契约视角 —— 逐条核对判据
+
+把上面「判据」里的每一条，**逐条**判"做到了 / 没做到"，填进 \`criteriaChecks\`。
+
+- ⚠️ **每一条都要填，不能漏、不能合并** —— 漏一条就等于放过一个未验证的承诺
+- ⚠️ 判"没做到"时要写 \`note\` 说明**差在哪**（不是"不够好"，而是"缺了 X"）
+- ★ 这是**唯一能发现"答非所问"**的视角：
+  产出可能很丰富，但没有回答判据要求的那件事
+
+### ② 领域视角 —— 拿专业纪律复核
+
+用上面「专业纪律」里的具体条目核对产出。
+
+- ⚠️ **不要用常识替代纪律** —— 纪律里的具体数字才是这一视角的价值
+  （如「油 ≤ 5g/人/餐」而不是「注意少油」）
+- 纪律没覆盖的方面不要臆造问题
+- 没有匹配到纪律时，这一视角跳过
+
+### ③ 全局视角 —— 硬约束 / 记忆 / 原则
+
+- 硬约束有没有被违反（尤其是"看起来没提但其实含有"的情况，如花生酱含花生）
+- 产出与已知记忆是否矛盾
+- 有没有违背已生效的行为原则
+
+## 严重性
 
 - \`block\`：命中硬约束，必须拦截
-- \`warn\`：软约束冲突，需上报用户裁决
+- \`warn\`：判据未满足，或领域纪律明显违背
 - \`info\`：仅提示
 
-没有发现问题时，conflicts 填空数组，summary 说明"未发现冲突"。`;
+⚠️ **没有问题就如实填空数组** —— 不要为了显得尽责而编造问题。
+   复核的价值在于"发现问题"，不在于"发现了很多问题"。`;
 }
 
 // ═══════════════════════════════════════════════════════════

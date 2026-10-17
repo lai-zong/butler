@@ -198,7 +198,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
           servant: r.servant as ServantId,
           summary: summarizeReport(r),
         })),
-        conflicts: (args.session.supervision.conflicts ?? []).map((c) => ({
+        conflicts: (args.session.supervision.findings ?? []).map((c) => ({
           message: c.message,
           severity: 'advisory',
         })),

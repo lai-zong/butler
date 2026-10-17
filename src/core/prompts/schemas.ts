@@ -307,18 +307,46 @@ export type ReflectionOutput = z.infer<typeof reflectionSchema>;
 // 管家 · 监督校验
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 监督复核的输出（v7 · D-7 三视角改造）
+ *
+ * ★★ 与旧版的根本区别：
+ *
+ *   | | 旧（crossServant）| 新（三视角 + 契约核对）|
+ *   |---|---|---|
+ *   | 核对对象 | **仆人与仆人之间是否矛盾** | **产出与契约之间是否对得上** |
+ *   | 视角 | 一个（全局看一遍）| **三个**（契约 / 领域 / 全局）|
+ *   | 为什么改 | 实测走不通：两个 Agent 都被要求「只提交发现、不做裁决」，各自说得保守，**反而不冲突** | 契约是成文标准，可逐条核对 |
+ *
+ * ⚠️ 三个视角**是分工，不是修辞**：
+ *   · `contract` 契约视角 —— 逐条核对 criteria。**唯一能查「答非所问」**的视角
+ *     （旧交叉检查查不出：两个仆人都答对了各自的题，但整体答偏了，没人看得见）
+ *   · `domain`   领域视角 —— 用 `DOMAIN_DISCIPLINE` 的专业纪律复核
+ *     （如「油 ≤ 5g/人/餐」这种具体标准，全局视角看不出问题）
+ *   · `global`   全局视角 —— 硬约束、记忆一致性、原则违背
+ */
 export const supervisionSchema = z.object({
-  conflicts: z
+  criteriaChecks: z
     .array(
       z.object({
-        kind: z.enum(['crossServant', 'memoryInconsistency', 'principleViolation', 'omission']),
-        severity: z.enum(['info', 'warn', 'block']),
-        message: z.string().min(1).describe('冲突是什么'),
-        parties: z.array(servantIdSchema).describe('涉及哪些仆人'),
-        evidence: z.array(z.string()).describe('证据'),
+        criterion: z.string().min(1).describe('复述契约里的某一条判据（原文）'),
+        met: z.boolean().describe('这条判据满足了吗'),
+        note: z.string().optional().describe('没满足时说明差在哪；满足了就省略'),
       }),
     )
-    .describe('发现的冲突；没有就填空数组'),
+    .describe('契约里每一条判据都要核对一次，不能漏。判据为 0 条时填空数组'),
+  findings: z
+    .array(
+      z.object({
+        viewpoint: z
+          .enum(['contract', 'domain', 'global'])
+          .describe('contract=契约视角；domain=领域纪律；global=硬约束/记忆/原则'),
+        severity: z.enum(['info', 'warn', 'block']),
+        message: z.string().min(1).describe('问题是什么，一句话'),
+        evidence: z.array(z.string()).describe('支撑证据（引用产出里的原话）'),
+      }),
+    )
+    .describe('三个视角发现的问题；没有问题就填空数组'),
   summary: z.string().min(1).describe('整体结论，一句话'),
 });
 

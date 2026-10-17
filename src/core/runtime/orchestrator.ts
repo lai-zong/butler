@@ -513,12 +513,14 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     now: args.clock.now(),
   });
 
-  // ── ⑦ 管家监督（LLM：软约束、跨领域矛盾等需要理解力的判断）──
+  // ── ⑦ 管家监督（v7 · D-7 三视角：契约 / 领域 / 全局）──
   stage('supervise', '监督与审查');
   const sup = await supervise({
     model: args.model,
     log,
     userGoal: args.userGoal,
+    // ★ 契约是核对的唯一标准 —— 没有它，监督员只能凭感觉评价
+    contract,
     reports,
     hardConstraints: hardConstraintMemories.map((x) => x.memory.content),
     now: args.clock.now(),

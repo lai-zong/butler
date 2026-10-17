@@ -138,10 +138,23 @@ function makeStubModel(opts: {
         });
       }
 
-      // ④ 监督
+      /**
+       * ④ 监督复核
+       *
+       * ⚠️ v7（D-7）：监督输出结构变了 —— 从 `conflicts` 改为
+       *     `criteriaChecks`（契约逐条核对）+ `findings`（三视角发现）。
+       *
+       *     桩模型必须跟着变，否则 `criteriaChecks` 是 undefined，
+       *     `supervise()` 里 `.filter` 直接崩 —— 而崩溃点离桩很远，
+       *     看起来像生产代码的 bug。
+       */
       if (name === 'SupervisionOutput') {
         return Promise.resolve({
-          value: { conflicts: [], summary: '无冲突' } as unknown as T,
+          value: {
+            criteriaChecks: [],
+            findings: [],
+            summary: '未发现问题',
+          } as unknown as T,
           usage,
           attempts: 1,
           promptVersion: 'test',

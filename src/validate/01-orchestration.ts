@@ -225,14 +225,32 @@ async function main(): Promise<void> {
   );
 
   // ── 条件 ⑥ LLM 监督 ──
-  hr('⑥ 管家监督校验（LLM：软约束与跨领域矛盾）');
+  hr('⑥ 管家监督复核（v7 · 三视角：契约 / 领域 / 全局）');
   line(`  结论：${result.supervision.summary}`);
-  for (const c of result.supervision.conflicts) {
-    const icon = c.severity === 'block' ? '⛔' : c.severity === 'warn' ? '⚠️' : 'ℹ️';
-    line(`  ${icon} [${c.severity}/${c.kind}] ${c.message.slice(0, 62)}`);
-    if (c.parties.length) line(`      涉及：${c.parties.join(', ')}`);
+
+  // ★ 判据核对 —— 这是唯一能发现「答非所问」的地方
+  const criteriaChecks = result.supervision.criteriaChecks;
+  const metCount = criteriaChecks.filter((c) => c.met).length;
+  line(`  判据核对：${metCount}/${criteriaChecks.length} 条满足`);
+  for (const c of criteriaChecks) {
+    line(`    ${c.met ? '✓' : '✗'} ${c.criterion.slice(0, 56)}${c.note !== undefined ? `  — ${c.note.slice(0, 40)}` : ''}`);
+  }
+
+  const VIEWPOINT_NAME: Record<string, string> = {
+    contract: '契约',
+    domain: '领域',
+    global: '全局',
+  };
+  for (const f of result.supervision.findings) {
+    const icon = f.severity === 'block' ? '⛔' : f.severity === 'warn' ? '⚠️' : 'ℹ️';
+    line(`  ${icon} [${VIEWPOINT_NAME[f.viewpoint] ?? f.viewpoint}/${f.severity}] ${f.message.slice(0, 58)}`);
   }
   check('⑥ 监督完成并给出结论', result.supervision.summary.length > 0);
+  check(
+    '⑥ ★ 契约判据被逐条核对（不是笼统评价）',
+    criteriaChecks.length === (result.contract?.criteria.length ?? 0),
+    `${criteriaChecks.length} 条核对 / 契约 ${result.contract?.criteria.length ?? 0} 条`,
+  );
 
   // ── 汇总 ──
   hr('结果汇总');

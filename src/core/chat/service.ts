@@ -605,8 +605,8 @@ export function buildVerdict(args: {
     });
   }
 
-  // ── ③ 跨领域冲突 → advisory（软约束可协商）──
-  for (const c of args.session.supervision.conflicts ?? []) {
+  // ── ③ 监督复核发现的问题 → advisory（只告知，不阻断）──
+  for (const c of args.session.supervision.findings ?? []) {
     issues.push({
       severity: 'advisory',
       kind: 'conflict',
