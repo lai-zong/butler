@@ -201,7 +201,7 @@ export function mergeMemories(args: {
       // 证据链累加（去重）
       evidence: [...new Set([...keep.evidence, ...absorb.evidence])],
       lifecycle: 'active',
-      ...(keep.domain !== undefined ? { domainOwner: keep.domain } : {}),
+      ...(keep.domain !== undefined ? { domain: keep.domain } : {}),
       ...(keep.subject !== undefined ? { subject: keep.subject } : {}),
     },
   );

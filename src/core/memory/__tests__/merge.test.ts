@@ -45,7 +45,7 @@ function seed(
     memClass?: MemoryClass;
     confidence?: number;
     evidence?: readonly string[];
-    domainOwner?: 'life' | 'health' | 'work' | 'code' | 'study';
+    domain?: 'life' | 'health' | 'work' | 'code' | 'study';
     lifecycle?: 'candidate' | 'active';
     principle?: { condition: string; action: string };
   },
@@ -58,7 +58,7 @@ function seed(
     confidence: args.confidence ?? 0.8,
     evidence: args.evidence ?? ['evt_1'],
     lifecycle: args.lifecycle ?? 'active',
-    ...(args.domainOwner !== undefined ? { domainOwner: args.domainOwner } : {}),
+    ...(args.domain !== undefined ? { domain: args.domain } : {}),
   });
   if (!r.ok) throw new Error(`建档失败 ${args.id}：${r.reason}`);
   if (args.principle) store.setPrincipleDetail(args.id, args.principle);
@@ -155,15 +155,15 @@ describe('② 找可合并的组合', () => {
 
   it('不同仆人的领域记忆不合并', () => {
     const { store } = setup();
-    seed(store, { id: 'a', content: '用户喜欢清淡口味', memClass: 'domain', domainOwner: 'life' });
-    seed(store, { id: 'b', content: '用户喜欢清淡口味', memClass: 'domain', domainOwner: 'health' });
+    seed(store, { id: 'a', content: '用户喜欢清淡口味', memClass: 'domain', domain: 'life' });
+    seed(store, { id: 'b', content: '用户喜欢清淡口味', memClass: 'domain', domain: 'health' });
     expect(findMergeCandidates(store)).toHaveLength(0);
   });
 
   it('同仆人的领域记忆可以合并', () => {
     const { store } = setup();
-    seed(store, { id: 'a', content: '用户喜欢清淡口味的菜', memClass: 'domain', domainOwner: 'life' });
-    seed(store, { id: 'b', content: '用户喜欢清淡口味的菜，不爱油腻', memClass: 'domain', domainOwner: 'life' });
+    seed(store, { id: 'a', content: '用户喜欢清淡口味的菜', memClass: 'domain', domain: 'life' });
+    seed(store, { id: 'b', content: '用户喜欢清淡口味的菜，不爱油腻', memClass: 'domain', domain: 'life' });
     expect(findMergeCandidates(store).length).toBeGreaterThan(0);
   });
 

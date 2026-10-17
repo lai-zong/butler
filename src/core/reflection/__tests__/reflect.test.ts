@@ -163,7 +163,7 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
     for (const c of r.candidates) {
       // ★ 领域反思不可能产出全局层候选 —— 这是类型与构造共同保证的
       expect(c.scope.memClass).toBe('domain');
-      expect(c.scope.domainOwner).toBe('life');
+      expect(c.scope.domain).toBe('life');
       expect(c.layer).toBe('servant');
       expect(c.by).toBe('life');
     }

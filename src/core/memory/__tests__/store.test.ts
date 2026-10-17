@@ -44,7 +44,7 @@ function seed(
   store: MemoryStore,
   memClass: 'global_constraint' | 'global_shared' | 'sensitive' | 'domain',
   content: string,
-  domainOwner?: ServantId,
+  domain?: ServantId,
 ): string {
   const r = store.create(butler, {
     memClass,
@@ -53,7 +53,7 @@ function seed(
     confidence: 0.9,
     evidence: ['evt_1'],
     lifecycle: 'active',
-    ...(domainOwner !== undefined ? { domainOwner } : {}),
+    ...(domain !== undefined ? { domain } : {}),
   });
   if (!r.ok) throw new Error(`seed 失败：${r.reason}`);
   return r.entry.id;
@@ -164,7 +164,7 @@ describe('M2 · 领域标签（不是权限边界）', () => {
       content: '喜欢靠窗座位',
       confidence: 0.7,
       evidence: [],
-      domainOwner: 'life',
+      domain: 'life',
     });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.entry.domain).toBe('life');

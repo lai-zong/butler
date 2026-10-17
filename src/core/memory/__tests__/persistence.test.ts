@@ -496,7 +496,7 @@ describe('⑥ ★★ 重放等价 —— 跨重启存活的标准', () => {
     s.store.create(butler, {
       id: 'm_domain', memClass: 'domain', kind: 'preference',
       content: '你偏好清淡口味', confidence: 0.8, evidence: ['e4'],
-      lifecycle: 'active', domainOwner: 'life',
+      lifecycle: 'active', domain: 'life',
     });
     s.store.create(butler, {
       id: 'm_principle', memClass: 'global_shared', kind: 'principle',

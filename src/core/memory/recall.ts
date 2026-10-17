@@ -15,7 +15,7 @@
  */
 
 import type { RandomPort } from '../ports/clock.js';
-import type { ServantId } from '../servants/types.js';
+import type { DomainId } from '../domain/types.js';
 import { isRelevant } from '../text/keywords.js';
 import { adaptThreshold, DEFAULT_PARAMS, type EvolutionParams } from './fitness.js';
 import type { MemoryEntry, MemoryKind } from './types.js';
@@ -65,7 +65,7 @@ export interface RecallArgs {
   readonly random: RandomPort;
   readonly params?: EvolutionParams;
   /** 偏向某个仆人的领域记忆（路由结果）*/
-  readonly favoredServant?: ServantId;
+  readonly favoredDomain?: DomainId;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -98,16 +98,16 @@ export function relevanceOf(memory: MemoryEntry, query: string): number {
 export function scoreMemory(
   memory: MemoryEntry,
   query: string,
-  favoredServant?: ServantId,
+  favoredDomain?: DomainId,
 ): Omit<ScoredMemory, 'exploratory' | 'why'> {
   let relevance = relevanceOf(memory, query);
 
   // 路由已确定主责仆人时，该仆人的领域记忆获得相关性加成 ——
   // 但**不加成硬约束**（它已经是 1.0，且不该被领域偏好挤掉）
   if (
-    favoredServant !== undefined &&
+    favoredDomain !== undefined &&
     memory.memClass === 'domain' &&
-    memory.domain === favoredServant
+    memory.domain === favoredDomain
   ) {
     relevance = Math.min(1, relevance + 0.15);
   }
@@ -144,7 +144,7 @@ export function recall(args: RecallArgs): RecallResult {
 
   // ── ② 打分并按分数降序（同分时按 id 保证确定性）──
   const scored = eligible
-    .map((m) => ({ ...scoreMemory(m, args.query, args.favoredServant), exploratory: false, why: '' }))
+    .map((m) => ({ ...scoreMemory(m, args.query, args.favoredDomain), exploratory: false, why: '' }))
     .filter((s) => s.relevance > 0)
     .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id));
 

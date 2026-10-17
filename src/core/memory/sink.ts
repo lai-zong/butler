@@ -77,7 +77,7 @@ export function sinkCandidates(
     }
 
     // ② 落库。actor 用管家 —— 反思产出的建档动作由管家执行，
-    //    但归属由 candidate.scope.domainOwner 决定（见 store.canCreateDomain）
+    //    但归属由 candidate.scope.domain 决定（见 store.canCreateDomain）
     const res = opts.store.create(
       { kind: 'butler', userId: ownerUserId(cand) },
       {
@@ -88,7 +88,7 @@ export function sinkCandidates(
         evidence: cand.evidence,
         // ★ 一律候选状态，等用户审核
         lifecycle: 'candidate',
-        ...(cand.scope.domainOwner !== undefined ? { domainOwner: cand.scope.domainOwner } : {}),
+        ...(cand.scope.domain !== undefined ? { domain: cand.scope.domain } : {}),
       },
     );
 
@@ -126,7 +126,7 @@ export function sinkCandidates(
         hasPrincipleDetail: cand.principle !== undefined,
         candidateId: cand.id,
         memClass: cand.scope.memClass,
-        domainOwner: cand.scope.domainOwner ?? null,
+        domain: cand.scope.domain ?? null,
       },
       createdAt: opts.clock.now(),
     });
@@ -162,7 +162,7 @@ export function isDuplicate(existing: MemoryEntry, cand: MemoryCandidate): boole
      *   原写法：
      *     const ownerServant = existing.owner.kind === 'servant'
      *       ? existing.owner.servant : undefined;
-     *     if (ownerServant !== cand.scope.domainOwner) return false;
+     *     if (ownerServant !== cand.scope.domain) return false;
      *
      *   当 `MemoryOwner` 里的 `servant` 分支被去掉后，`ownerServant` 恒为
      *   `undefined`，与 `'life'` 不等 → **永远判为"不重复"** →
@@ -171,7 +171,7 @@ export function isDuplicate(existing: MemoryEntry, cand: MemoryCandidate): boole
      *   上一轮我改 owner 时正是踩了这个 —— 测试抓到了 4 个去重用例失败。
      *   当时的判断是"回退查清"，现在查清了：**去重靠的是领域，不是归属**。
      */
-    if (existing.domain !== cand.scope.domainOwner) return false;
+    if (existing.domain !== cand.scope.domain) return false;
   }
 
   return similarity(existing.content, cand.content) >= DUPLICATE_SIMILARITY;

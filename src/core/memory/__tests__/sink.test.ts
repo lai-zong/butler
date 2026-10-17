@@ -33,7 +33,7 @@ function cand(over: Partial<MemoryCandidate> = {}): MemoryCandidate {
     content: '用户偏好清淡口味的家常菜',
     confidence: 0.65,
     evidence: ['用户三次提到想吃清淡的'],
-    scope: { memClass: 'domain', domainOwner: 'life' },
+    scope: { memClass: 'domain', domain: 'life' },
     rationale: '本次会话反复出现',
     layer: 'servant',
     by: 'life',
@@ -68,7 +68,7 @@ describe('sinkCandidates · 落库', () => {
 
   it('领域候选归属管家，领域写成标签', () => {
     const { log, store, clock } = setup();
-    const r = sinkCandidates({ log, store, clock }, [cand({ scope: { memClass: 'domain', domainOwner: 'health' } })]);
+    const r = sinkCandidates({ log, store, clock }, [cand({ scope: { memClass: 'domain', domain: 'health' } })]);
 
     const e = r.created[0];
     /**
@@ -111,14 +111,14 @@ describe('sinkCandidates · 落库', () => {
       fromReflection: 'servant',
       reflectedBy: 'life',
       rationale: '因为用户三次提到',
-      domainOwner: 'life',
+      domain: 'life',
     });
   });
 
   /**
    * ⚠️ v7（A2）：这条用例的**语义反转**了 —— 属于"设计变化"，不是"测不过所以改"。
    *
-   * 旧行为：领域候选没有 `domainOwner` → **建档被拒**
+   * 旧行为：领域候选没有 `domain` → **建档被拒**
    *   理由：旧架构要求"领域记忆必须有归属的仆人"
    *
    * 新行为：**允许建档**，只是没有领域标签（`domain` 为 undefined）
@@ -129,7 +129,7 @@ describe('sinkCandidates · 落库', () => {
   it('领域候选缺领域标签时仍可建档（只是没有标签）', () => {
     const { log, store, clock } = setup();
     const r = sinkCandidates({ log, store, clock }, [
-      cand({ scope: { memClass: 'domain' } }), // 没有 domainOwner
+      cand({ scope: { memClass: 'domain' } }), // 没有 domain
     ]);
 
     expect(r.created).toHaveLength(1);
@@ -180,9 +180,9 @@ describe('★ 去重 · 防止候选灌满记忆库', () => {
 
   it('不同领域的内容不算重复（即便文字相近）', () => {
     const { log, store, clock } = setup();
-    sinkCandidates({ log, store, clock }, [cand({ scope: { memClass: 'domain', domainOwner: 'life' } })]);
+    sinkCandidates({ log, store, clock }, [cand({ scope: { memClass: 'domain', domain: 'life' } })]);
     const r2 = sinkCandidates({ log, store, clock }, [
-      cand({ id: 'c2', scope: { memClass: 'domain', domainOwner: 'health' } }),
+      cand({ id: 'c2', scope: { memClass: 'domain', domain: 'health' } }),
     ]);
     expect(r2.created).toHaveLength(1);
   });

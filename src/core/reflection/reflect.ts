@@ -27,6 +27,7 @@ import { msg, type ModelPort } from '../ports/model.js';
 import { PROMPT_VERSIONS, reflectionButlerTask, reflectionServantTask } from '../prompts/butler.js';
 import { reflectionSchema } from '../prompts/schemas.js';
 import type { MemoryClass, MemoryKind } from '../memory/types.js';
+import type { DomainId } from '../domain/types.js';
 import { SERVANT_BOUNDARY, type ServantId, type ServantReport } from '../servants/types.js';
 import type { ClockPort } from '../ports/clock.js';
 
@@ -39,7 +40,7 @@ export interface CandidateScope {
   /** 领域反思 → 'domain'；跨领域复盘 → 全局层 */
   readonly memClass: MemoryClass;
   /** 领域反思必填：属于哪个仆人 */
-  readonly domainOwner?: ServantId;
+  readonly domain?: DomainId;
 }
 
 export interface MemoryCandidate {
@@ -151,7 +152,7 @@ export async function reflectServant(args: {
   });
 
   const candidates = result.value.candidates
-    .map((c, i) => toCandidate(c, i, { memClass: 'domain', domainOwner: servant }, 'servant', servant, now))
+    .map((c, i) => toCandidate(c, i, { memClass: 'domain', domain: servant }, 'servant', servant, now))
     .filter((c): c is MemoryCandidate => c !== null);
 
   args.log.append({

@@ -34,7 +34,8 @@ import { MemoryStore } from '../core/memory/store.js';
 import type { MemoryCandidate } from '../core/reflection/reflect.js';
 import { buildServantReflectionInput, reflectButler, reflectServant } from '../core/reflection/reflect.js';
 import { FixedClock, SeededRandom } from '../core/ports/clock.js';
-import type { ServantId, ServantReport } from '../core/servants/types.js';
+import type { DomainId } from '../core/domain/types.js';
+import type { ServantReport } from '../core/servants/types.js';
 
 const T0 = 1_760_000_000_000;
 const DAY = 86_400_000;
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
     kind: Parameters<typeof store.create>[1]['kind'],
     content: string,
     confidence: number,
-    domainOwner?: ServantId,
+    domain?: DomainId,
   ): string => {
     const r = store.create(butler, {
       memClass,
@@ -92,7 +93,7 @@ async function main(): Promise<void> {
       confidence,
       evidence: ['evt_seed'],
       lifecycle: 'active',
-      ...(domainOwner !== undefined ? { domainOwner } : {}),
+      ...(domain !== undefined ? { domain } : {}),
     });
     if (!r.ok) throw new Error(`seed 失败：${r.reason}`);
     return r.entry.id;
@@ -135,7 +136,7 @@ async function main(): Promise<void> {
     limit: 6,
     now: clock.now(),
     random,
-    favoredServant: 'life',
+    favoredDomain: 'life',
   });
 
   line(`  单执行者可见 ${lifeVisible.length} 条（敏感域仍被隔离）`);
@@ -453,7 +454,7 @@ async function main(): Promise<void> {
       userGoal: USER_GOAL,
       ownReports: [lifeReport],
       ownDomainMemories: store
-        .list({ memClass: 'domain', domainOwner: 'life' })
+        .list({ memClass: 'domain', domain: 'life' })
         .map((m) => ({ id: m.id, kind: m.kind, content: m.content, lifecycle: m.lifecycle })),
     }),
   });
@@ -461,7 +462,7 @@ async function main(): Promise<void> {
   line(`  生活仆人反思产出 ${lifeReflect.candidates.length} 条候选`);
   for (const c of lifeReflect.candidates) {
     line(`    · [${c.kind}] ${c.content}`);
-    line(`      作用域 ${c.scope.memClass}${c.scope.domainOwner ? ` / ${c.scope.domainOwner}` : ''}`);
+    line(`      作用域 ${c.scope.memClass}${c.scope.domain ? ` / ${c.scope.domain}` : ''}`);
   }
 
   const sawSensitive = mock.sawText('心理咨询');
@@ -477,7 +478,7 @@ async function main(): Promise<void> {
   check('D 仆人反思未见全局记忆', !sawGlobalConstraint);
   check(
     'D 领域候选作用域正确',
-    lifeReflect.candidates.every((c) => c.scope.memClass === 'domain' && c.scope.domainOwner === 'life'),
+    lifeReflect.candidates.every((c) => c.scope.memClass === 'domain' && c.scope.domain === 'life'),
   );
 
   // ── 管家复盘（应能看到全局，这正是区别）──

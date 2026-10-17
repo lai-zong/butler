@@ -87,7 +87,7 @@ export interface CreateMemoryInput {
    * 领域标签（v7）。字段名是历史命名，语义已从「归属哪个仆人」变为「关于哪个领域」。
    * 改名（→ `domain`）归入 A2b。
    */
-  readonly domainOwner?: DomainId;
+  readonly domain?: DomainId;
   /** 初始生命周期，默认 candidate（需审核） */
   readonly lifecycle?: MemoryLifecycle;
 }
@@ -96,7 +96,7 @@ export interface ListQuery {
   readonly memClass?: MemoryClass;
   readonly lifecycle?: MemoryLifecycle;
   readonly kind?: MemoryKind;
-  readonly domainOwner?: ServantId;
+  readonly domain?: DomainId;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -161,8 +161,8 @@ export class MemoryStore {
         (q.memClass === undefined || e.memClass === q.memClass) &&
         (q.lifecycle === undefined || e.lifecycle === q.lifecycle) &&
         (q.kind === undefined || e.kind === q.kind) &&
-        (q.domainOwner === undefined ||
-          (e.domain === q.domainOwner)),
+        (q.domain === undefined ||
+          (e.domain === q.domain)),
     );
   }
 
@@ -237,7 +237,7 @@ export class MemoryStore {
    *
    * ⚠️ 注意"写"分两种动作，权限不同：
    *   · **建档**（create）：管家可以代仆人建候选 —— 反思产出的是候选，
-   *     建档动作由管家执行，但归属明确标为那个仆人（`domainOwner`）。
+   *     建档动作由管家执行，但归属明确标为那个仆人（`domain`）。
    *     见 `canCreateDomain`。
    *   · **改动**（revise / review / forget）：只有所属仆人或用户能做。
    *     管家对领域记忆是**只读** —— 它靠注入约束影响仆人，而不是替仆人改记忆。
@@ -314,7 +314,7 @@ export class MemoryStore {
    * M5：越权不抛异常，而是记 `memory.writeAttempted` 后返回失败 ——
    * 这样"仆人试图写全局记忆"这件事会留在审计里。
    *
-   * ⚠️ 领域记忆的 owner 由 **domainOwner 决定**，不由 actor 决定 ——
+   * ⚠️ 领域记忆的 owner 由 **domain 决定**，不由 actor 决定 ——
    *    因为管家也会代表仆人的反思结果去建档（反思产出的是候选，
    *    建档动作由管家执行，但归属是那个仆人）。
    *    写入权限校验仍然针对 actor，不会被这个便利绕过。
@@ -351,7 +351,7 @@ export class MemoryStore {
        * 分三步的理由：任何一步单独出问题都能独立定位，
        * 而且**中间状态的行为与改造前完全一致**（两个字段同值）。
        */
-      ...(input.domainOwner !== undefined ? { domain: input.domainOwner } : {}),
+      ...(input.domain !== undefined ? { domain: input.domain } : {}),
       version: 1,
       ...(input.memClass === 'sensitive' ? { grants: [] } : {}),
       createdAt: now,
@@ -875,7 +875,7 @@ export class MemoryStore {
   /**
    * 解析归属。
    *
-   * 领域记忆的归属**只看 domainOwner**（管家代建档时也要显式指定），
+   * 领域记忆的归属**只看 domain**（管家代建档时也要显式指定），
    * 不从 actor 推断 —— 否则管家建的领域记忆归属就会含糊不清，
    * 而"每条记忆有 owner，审计时能说清是哪个角色写的"是清单要求。
    */

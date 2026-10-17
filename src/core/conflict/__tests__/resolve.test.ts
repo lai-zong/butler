@@ -81,7 +81,7 @@ describe('① 用户裁决落地', () => {
       confidence: 0.8,
       evidence: [],
       lifecycle: 'active',
-      domainOwner: 'life',
+      domain: 'life',
     });
     const healthMem = store.create(butler, {
       id: 'm_health',
@@ -91,7 +91,7 @@ describe('① 用户裁决落地', () => {
       confidence: 0.85,
       evidence: [],
       lifecycle: 'active',
-      domainOwner: 'health',
+      domain: 'health',
     });
     expect(lifeMem.ok && healthMem.ok).toBe(true);
 
@@ -131,7 +131,7 @@ describe('① 用户裁决落地', () => {
       confidence: 0.8,
       evidence: [],
       lifecycle: 'active',
-      domainOwner: 'life',
+      domain: 'life',
     });
 
     applyVerdict({

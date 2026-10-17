@@ -47,20 +47,20 @@ function addPrinciple(
     content: string;
     condition: string;
     action: string;
-    domainOwner?: 'life' | 'health' | 'work' | 'code' | 'study';
+    domain?: 'life' | 'health' | 'work' | 'code' | 'study';
     applied?: number;
     succeeded?: number;
   },
 ): string {
   const r = store.create(butler, {
     id: args.id,
-    memClass: args.domainOwner !== undefined ? 'domain' : 'global_shared',
+    memClass: args.domain !== undefined ? 'domain' : 'global_shared',
     kind: 'principle',
     content: args.content,
     confidence: 0.8,
     evidence: ['evt_1'],
     lifecycle: 'active',
-    ...(args.domainOwner !== undefined ? { domainOwner: args.domainOwner } : {}),
+    ...(args.domain !== undefined ? { domain: args.domain } : {}),
   });
   if (!r.ok) throw new Error(`建档失败：${r.reason}`);
 
@@ -232,7 +232,7 @@ describe('② ★ 效果好的优先，效果差的不排除', () => {
       content: '推荐餐厅前确认忌口',
       condition: '推荐餐厅时',
       action: '确认忌口',
-      domainOwner: 'life',
+      domain: 'life',
     });
     const withServant = selectPrinciples({ store, task: '推荐餐厅', servant: 'life' });
     const without = selectPrinciples({ store, task: '推荐餐厅' });

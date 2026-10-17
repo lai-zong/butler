@@ -154,7 +154,7 @@ async function main(): Promise<void> {
     store1.create(butler, {
       id: 'm_light', memClass: 'domain', kind: 'preference',
       content: '你偏好清淡口味', confidence: 0.8, evidence: ['e_light'],
-      lifecycle: 'active', domainOwner: 'life',
+      lifecycle: 'active', domain: 'life',
     });
 
     // ④ 原则（带条件、动作、效果跟踪）
