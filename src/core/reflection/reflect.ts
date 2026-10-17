@@ -56,7 +56,7 @@ export interface MemoryCandidate {
   /** 反思者的理由 —— 用户审核时要能看到"你为什么这么认为" */
   readonly rationale: string;
   /** 由哪一层反思产出 */
-  readonly layer: 'servant' | 'butler';
+  readonly layer: 'domain' | 'butler';
   /** 仆人层反思时是哪个仆人 */
   readonly by: ServantId | 'butler';
   readonly createdAt: number;
@@ -70,7 +70,7 @@ export interface MemoryCandidate {
 }
 
 export interface ReflectionRunResult {
-  readonly layer: 'servant' | 'butler';
+  readonly layer: 'domain' | 'butler';
   readonly by: ServantId | 'butler';
   readonly candidates: readonly MemoryCandidate[];
   /** 本次反思观察到的协作问题（管家层） */
@@ -119,7 +119,7 @@ export async function reflectServant(args: {
     actor: 'servant',
     servantId: servant,
     payload: {
-      layer: 'servant',
+      layer: 'domain',
       materials: {
         ownReports: args.input.ownReports.length,
         ownDomainMemories: args.input.ownDomainMemories.length,
@@ -154,7 +154,9 @@ export async function reflectServant(args: {
   });
 
   const candidates = result.value.candidates
-    .map((c, i) => toCandidate(c, i, { memClass: 'domain', domain: servant }, 'servant', servant, now))
+    // ★ v7（批次1）：候选的层标识从 `'servant'` 改为 `'domain'` ——
+    //   反思现在按**领域**分层，不再有"仆人层"。变量名 `servant` 暂留（E1 再改名）。
+    .map((c, i) => toCandidate(c, i, { memClass: 'domain', domain: servant }, 'domain', servant, now))
     .filter((c): c is MemoryCandidate => c !== null);
 
   args.log.append({
@@ -162,7 +164,7 @@ export async function reflectServant(args: {
     actor: 'servant',
     servantId: servant,
     payload: {
-      layer: 'servant',
+      layer: 'domain',
       candidateCount: candidates.length,
       candidates: candidates.map((c) => ({ kind: c.kind, content: c.content, confidence: c.confidence })),
       usage: result.usage,
@@ -172,7 +174,7 @@ export async function reflectServant(args: {
   });
 
   return {
-    layer: 'servant',
+    layer: 'domain',
     by: servant,
     candidates,
     collaborationIssues: [],
@@ -415,7 +417,7 @@ function toCandidate(
   c: RawReflectionCandidate,
   index: number,
   scope: CandidateScope,
-  layer: 'servant' | 'butler',
+  layer: 'domain' | 'butler',
   by: ServantId | 'butler',
   now: number,
 ): MemoryCandidate | null {

@@ -164,7 +164,7 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
       // ★ 领域反思不可能产出全局层候选 —— 这是类型与构造共同保证的
       expect(c.scope.memClass).toBe('domain');
       expect(c.scope.domain).toBe('life');
-      expect(c.layer).toBe('servant');
+      expect(c.layer).toBe('domain');
       expect(c.by).toBe('life');
     }
   });
@@ -232,7 +232,7 @@ describe('仆人反思 · 产出与事件', () => {
     expect(log.byType('reflection.started')).toHaveLength(1);
     const done = log.byType('reflection.done');
     expect(done).toHaveLength(1);
-    expect(done[0]?.payload).toMatchObject({ layer: 'servant', candidateCount: 1 });
+    expect(done[0]?.payload).toMatchObject({ layer: 'domain', candidateCount: 1 });
     expect(done[0]?.servantId).toBe('life');
     // 提示词版本要记录（方案 § 5.2 可复现信息）
     expect((done[0]?.payload as { promptVersion?: string }).promptVersion).toContain('reflection.servant');

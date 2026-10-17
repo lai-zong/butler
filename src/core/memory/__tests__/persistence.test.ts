@@ -52,7 +52,7 @@ function candidate(over: Partial<MemoryCandidate> = {}): MemoryCandidate {
     evidence: ['用户说：我对花生过敏'],
     scope: { memClass: 'global_shared' },
     rationale: '用户明确陈述',
-    layer: 'servant',
+    layer: 'domain',
     by: 'health',
     createdAt: T0,
     ...over,

@@ -35,7 +35,7 @@ function cand(over: Partial<MemoryCandidate> = {}): MemoryCandidate {
     evidence: ['用户三次提到想吃清淡的'],
     scope: { memClass: 'domain', domain: 'life' },
     rationale: '本次会话反复出现',
-    layer: 'servant',
+    layer: 'domain',
     by: 'life',
     createdAt: T0,
     ...over,
@@ -108,7 +108,7 @@ describe('sinkCandidates · 落库', () => {
     const derived = log.byType('principle.derived');
     expect(derived).toHaveLength(1);
     expect(derived[0]?.payload).toMatchObject({
-      fromReflection: 'servant',
+      fromReflection: 'domain',
       reflectedBy: 'life',
       rationale: '因为用户三次提到',
       domain: 'life',
