@@ -57,8 +57,20 @@ export interface MemoryCandidate {
   readonly rationale: string;
   /** 由哪一层反思产出 */
   readonly layer: 'domain' | 'butler';
-  /** 仆人层反思时是哪个仆人 */
-  readonly by: ServantId | 'butler';
+  /**
+   * 由什么产出的标识。
+   *
+   * ★ v7：领域层反思时这里是**领域**（`DomainId`），管家层时是 `'butler'`。
+   *
+   * ⚠️ 类型曾是 `ServantId | 'butler'` —— 名字错但值没错，
+   *    因为 `ServantId` 与 `DomainId` 的字面量集合**完全相同**
+   *    （都是 `'life'|'health'|'study'|'work'|'code'`）。
+   *    所以这是**纯类型名修正，零运行时差异**。
+   *
+   *    ★ 但错名会误导：读代码的人会以为这里装的是"哪个仆人"，
+   *      从而写出依赖"仆人归属"的新代码 —— 而那个概念已经不存在了。
+   */
+  readonly by: DomainId | 'butler';
   readonly createdAt: number;
   /**
    * 原则专属：适用条件与行为要求。
@@ -71,7 +83,7 @@ export interface MemoryCandidate {
 
 export interface ReflectionRunResult {
   readonly layer: 'domain' | 'butler';
-  readonly by: ServantId | 'butler';
+  readonly by: DomainId | 'butler';
   readonly candidates: readonly MemoryCandidate[];
   /** 本次反思观察到的协作问题（管家层） */
   readonly collaborationIssues: readonly string[];
@@ -437,7 +449,7 @@ function toCandidate(
   index: number,
   scope: CandidateScope,
   layer: 'domain' | 'butler',
-  by: ServantId | 'butler',
+  by: DomainId | 'butler',
   now: number,
 ): MemoryCandidate | null {
   const content = c.content.trim();
