@@ -45,7 +45,19 @@ export type EventType =
 
   // ── 族 2 · 路由与派发（管家 → 仆人）──
   | 'route.decided'
+  /**
+   * @deprecated 用 `route.assumed` 取代（v7 · D-4）。
+   *
+   * ★ 为什么改名：旧语义是"**停下来问用户**"（clarify），
+   *   而现在是"**带着最可能的假设继续干**"（assume）。
+   *   保留旧名会让审计视图与实现语义脱节 ——
+   *   看到 `route.clarify` 的人会以为这轮什么都没做。
+   *
+   * ⚠️ 保留类型是为了能读**历史事件**（旧数据里确实有它）。
+   */
   | 'route.clarify'
+  /** 置信度不足，但**不阻断** —— 记录"按什么假设继续干的" */
+  | 'route.assumed'
   | 'route.rerouted'
   | 'dispatch.created'
   | 'dispatch.stepStarted'
@@ -163,6 +175,7 @@ export const EVENT_FAMILIES = {
   routing: [
     'route.decided',
     'route.clarify',
+    'route.assumed',
     'route.rerouted',
     'dispatch.created',
     'dispatch.stepStarted',

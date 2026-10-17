@@ -87,7 +87,15 @@ export function routerTask(userGoal: string): string {
 判断顺序：
   ① 先看这句话本身够不够判断
   ② 不够 → **再读上文**（上文能补上就不算信息不足）
-  ③ 上文也补不上（例如这是本会话第一句）→ 才转澄清`;
+  ③ 上文也补不上（例如这是本会话第一句）→ 仍然**选最可能的那个**，
+     把 confidence 打到 0.6 以下，并在 clarifyingQuestion 里写出
+     「如果我理解偏了，你其实想问的是什么」
+
+⚠️ **绝不要输出"无法判断"然后停下** —— 你**必须**给出一个 servant，
+   哪怕不确定。程序会用这个 servant **照常干活**，并把你的
+   clarifyingQuestion 作为"假设"告诉用户，让他一眼能纠正。
+   什么都不做的代价，比"按最可能的理解做错"更高。
+`;
 }
 
 export function dispatchTask(args: {

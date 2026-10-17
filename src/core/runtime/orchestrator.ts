@@ -141,7 +141,21 @@ export type ProgressEvent =
 export interface RunSessionResult {
   readonly log: EventLog;
   readonly routing: RoutingDecision;
+  /** 置信度是否达阈值。⚠️ `false` **不再意味着没干活** —— 见 `assumption` */
   readonly confident: boolean;
+  /**
+   * 置信度不足时"按什么假设继续干的"（v7 · D-4）。
+   *
+   * ★ 与旧的"停下来问用户"不同：这里是**已经干完了**，
+   *   只是要把假设告诉用户，让他知道"如果我理解偏了，说一声就重来"。
+   *
+   * `undefined` 表示置信度足够，没有假设需要说明。
+   */
+  readonly assumption?: {
+    readonly servant: string;
+    readonly confidence: number;
+    readonly note: string;
+  };
   readonly steps: readonly DispatchStep[];
   readonly reports: readonly ServantReport[];
   readonly supervision: SupervisionOutput;
@@ -159,6 +173,44 @@ export interface RunSessionResult {
   readonly modelInfo: { readonly provider: string; readonly model: string };
   readonly startedAt: number;
   readonly endedAt: number;
+}
+
+/**
+ * 构造"低置信度时按什么假设继续干"的说明（v7 · D-4）。
+ *
+ * ★ 抽成纯函数的好处：
+ *   ① 可单元测试（`runSession` 依赖真实模型，难测）
+ *   ② 文案集中一处，改措辞不用碰编排逻辑
+ *
+ * ★★ 措辞的三条纪律：
+ *   ① **不用内部术语** —— 不说"置信度不足 0.72"，用户不关心我们的概率
+ *   ② **先说干了什么** —— "先按 X 处理了"，让他知道不是什么都没做
+ *   ③ **给出纠正入口** —— "不对的话直接说"，而不是反问他"你到底想要什么"
+ *      （反问等于把球踢回去，而用户可能已经去忙别的了）
+ */
+export function buildRouteAssumption(
+  confident: boolean,
+  decision: {
+    readonly servant: string;
+    readonly confidence: number;
+    // ⚠️ `exactOptionalPropertyTypes` 下必须写成 `| undefined`，
+    //    否则调用方传 `clarifyingQuestion: undefined` 会被判类型错
+    readonly clarifyingQuestion?: string | undefined;
+  },
+): RunSessionResult['assumption'] {
+  if (confident) return undefined;
+
+  const asked = decision.clarifyingQuestion?.trim() ?? '';
+  const head = `我不太确定你的意思，先按「${decision.servant}」这件事处理了。`;
+
+  return {
+    servant: decision.servant,
+    confidence: decision.confidence,
+    note:
+      asked.length > 0
+        ? `${head}如果我理解偏了，你其实是想问「${asked}」—— 直接说，我重来。`
+        : `${head}不对的话直接说，我重来。`,
+  };
 }
 
 export async function runSession(args: RunSessionArgs): Promise<RunSessionResult> {
@@ -234,32 +286,49 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     createdAt: args.clock.now(),
   });
 
-  if (!r.confident) {
+  /**
+   * ── ★ 低置信度：记录假设，**但不阻断**（v7 · D-4）──
+   *
+   * ★★ 这里原先是一道**硬门**：
+   *
+   *     if (!r.confident) {
+   *       return { steps: [], reports: [], … };   // 不派发、不执行、什么都不干
+   *     }
+   *
+   *   后果（用户实测撞到过）：回复是一句
+   *   「置信度不足，已转入澄清提问，未执行派发。」
+   *   然后整轮就这么结束了 —— 用户去干别的回来一看，**什么也没做**。
+   *
+   * ⚠️ 这与项目目标直接冲突：
+   *   · 产品目标是「自主完成，不要用户逐次审核」
+   *   · 而这道门把"我不确定"变成了"我不干活"
+   *   · **不确定 ≠ 不能干** —— 路由本来就已经给出了最可能的判断
+   *
+   * ★ 改成：**照最可能的理解先干，把假设明说出来，给一条纠正的路**。
+   *   这样用户回来看到的是**结果 + 假设**，而不是**一个未回答的问题**。
+   *
+   * ⚠️ 例外（不适用本条）：**权限类**决定不能这样处理 ——
+   *    判断错了可以改，删掉的文件回不来。见方案 D-17。
+   */
+  const assumption = buildRouteAssumption(r.confident, r.decision);
+
+  if (assumption !== undefined) {
     log.append({
-      type: 'route.clarify',
+      type: 'route.assumed',
       actor: 'butler',
       payload: {
-        question: r.decision.clarifyingQuestion ?? '(模型未给出澄清问题)',
-        confidence: r.decision.confidence,
+        servant: assumption.servant,
+        confidence: assumption.confidence,
+        note: assumption.note,
+        // ⚠️ 事件名从 route.clarify 改为 route.assumed ——
+        //    "clarify" 意味着"停下来问"，而现在的语义是"带着假设继续干"。
+        //    保留旧名会让审计视图与实现语义脱节。
+        ...(r.decision.clarifyingQuestion !== undefined
+          ? { wouldHaveAsked: r.decision.clarifyingQuestion }
+          : {}),
       },
       createdAt: args.clock.now(),
     });
-    // 低置信度不猜测 —— 返回，交由上层向用户提问
-    return {
-      log,
-      routing: r.decision,
-      confident: false,
-      steps: [],
-      reports: [],
-      supervision: { conflicts: [], summary: '置信度不足，已转入澄清提问，未执行派发。' },
-      hardConstraints: { verdicts: [], mustBlock: false },
-      principles: { injected: [], checks: [], violated: [] },
-      artifacts: [],
-      totalUsage: { inputTokens, outputTokens },
-      modelInfo: args.model.describe(),
-      startedAt,
-      endedAt: args.clock.now(),
-    };
   }
 
   // ── ④ 任务分解（内部完成约束注入）──
@@ -588,7 +657,11 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   return {
     log,
     routing: r.decision,
-    confident: true,
+    // ⚠️ 这里用**真实的** `r.confident`，不是写死 true ——
+    //    低置信度时这一轮**确实干完活了**，只是带着一个假设。
+    //    写死 true 会让上层无法把假设告诉用户。
+    confident: r.confident,
+    ...(assumption !== undefined ? { assumption } : {}),
     steps: dispatch.decomposition,
     reports,
     supervision: sup.output,

@@ -366,9 +366,25 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   });
 
   // ── ⑤ 汇报（通过）或告知（打回）──
-  const replyText = verdict.outcome === 'accepted'
+  const baseReply = verdict.outcome === 'accepted'
     ? buildAcceptedReply(session, verdict)
     : buildRejectedReply(session, verdict);
+
+  /**
+   * ★ 置信度不足时，把"按什么假设干的"**明确告诉用户**（v7 · D-4）。
+   *
+   * ⚠️ 放在**最前面**而不是末尾：
+   *   放在末尾用户会先读一大段产出、最后才发现前提可能是错的，
+   *   等于白读。放在开头，他一眼就知道"哦它理解成这样了"。
+   *
+   * ⚠️ 措辞刻意不用"置信度不足"这种内部术语 ——
+   *   用户不关心我们的概率，只关心"它理解得对不对"。
+   */
+  const assumptionLine =
+    session.assumption !== undefined
+      ? `> ${session.assumption.note}\n\n`
+      : '';
+  const replyText = `${assumptionLine}${baseReply}`;
 
   /**
    * ★ 仆人产出**只转换一次** —— 下面两个地方复用它
