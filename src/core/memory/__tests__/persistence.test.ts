@@ -613,6 +613,27 @@ describe('⑥ ★★ 重放等价 —— 跨重启存活的标准', () => {
     expect(d?.owner.kind === 'servant' ? d.owner.servant : null).toBe('life');
   });
 
+  /**
+   * ★★ 这条测试是补一个**真实发生过的静默缺口**。
+   *
+   *   A1 给 `MemoryEntry` 加了 `domain` 字段，但**忘了同步**：
+   *     · `snapshot.ts` 的 `snapshotOf`
+   *     · `replay.ts` 的字段重建
+   *
+   *   症状完全符合 `snapshot.ts` 文件开头的警告：
+   *   「漏加的后果不是报错，而是**重放后字段悄悄丢失**」
+   *   而当时**没有任何测试依赖"重启后 domain 还在"**，所以测试全绿。
+   *
+   *   ★ 教训：给持久化实体加字段 = 改 snapshot + 改 replay + **加这条测试**，
+   *     三件事缺一不可。缺了测试，缺口就是静默的。
+   */
+  it('★★ 领域标签 domain 重启后仍在（A1 曾漏加 snapshot/replay）', () => {
+    const { log } = buildRealisticStore();
+    const replayed = replayMemory(log.all());
+    const d = replayed.entries.find((e) => e.id === 'm_domain');
+    expect(d?.domain).toBe('life');
+  });
+
   it('★ 全局硬约束被恢复（安全约束绝不能丢）', () => {
     const { log } = buildRealisticStore();
     const replayed = replayMemory(log.all());

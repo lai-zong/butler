@@ -29,6 +29,7 @@ import {
   type MemoryRevision,
   type PrincipleDetail,
 } from './types.js';
+import type { DomainId } from '../domain/types.js';
 import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -85,8 +86,11 @@ export interface CreateMemoryInput {
   readonly confidence: number;
   readonly evidence: readonly string[];
   readonly subject?: string;
-  /** 领域记忆必填：归属哪个仆人 */
-  readonly domainOwner?: ServantId;
+  /**
+   * 领域标签（v7）。字段名是历史命名，语义已从「归属哪个仆人」变为「关于哪个领域」。
+   * 改名（→ `domain`）归入 A2b。
+   */
+  readonly domainOwner?: DomainId;
   /** 初始生命周期，默认 candidate（需审核） */
   readonly lifecycle?: MemoryLifecycle;
 }
@@ -329,6 +333,19 @@ export class MemoryStore {
       hitCount: 0,
       revivedCount: 0,
       scope: input.memClass === 'domain' ? 'domain' : 'global',
+      /**
+       * ★ v7（A2 前置步）：把领域标签**真的写进 entry**。
+       *
+       * ⚠️ 这是一个必要的中间状态：
+       *   · 旧代码用 `owner.servant` 当"领域标识"（去重、合并、原则过滤都靠它）
+       *   · 本步先把同一信息写进独立的 `domain` 字段
+       *   · **下一步**才把所有读取 `owner.servant` 的地方改为读 `domain`
+       *   · 再下一步才删 `owner.servant`
+       *
+       * 分三步的理由：任何一步单独出问题都能独立定位，
+       * 而且**中间状态的行为与改造前完全一致**（两个字段同值）。
+       */
+      ...(input.domainOwner !== undefined ? { domain: input.domainOwner } : {}),
       version: 1,
       ...(input.memClass === 'sensitive' ? { grants: [] } : {}),
       createdAt: now,

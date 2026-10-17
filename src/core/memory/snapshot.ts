@@ -53,5 +53,16 @@ export function snapshotOf(e: MemoryEntry | undefined): Record<string, unknown> 
     hitCount: e.hitCount ?? 0,
     useCount: e.useCount ?? 0,
     scope: e.scope,
+    /**
+     * ★ v7：领域标签。
+     *
+     * ⚠️ 这个字段是"A1 加了 `MemoryEntry.domain` 却忘了加这里"的补救 ——
+     *    症状正是本节开头警告的那种：**不报错，但重放后字段悄悄丢失**。
+     *    当时没有任何测试依赖"重启后 domain 还在"，所以测试全绿。
+     *
+     *    教训：**给持久化实体加字段，必须同时改 snapshot + replay + 加一条
+     *    「重启后该字段还在」的测试**。三件事缺一不可，否则缺口是静默的。
+     */
+    domain: e.domain ?? null,
   };
 }

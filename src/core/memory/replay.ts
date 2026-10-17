@@ -232,6 +232,8 @@ function parseEntry(raw: unknown): MemoryEntry | null {
     ...opt('mergedFrom', o['mergedFrom'], (v) => Array.isArray(v)),
     revivedCount: num(o['revivedCount'], 0),
     scope: (typeof o['scope'] === 'string' ? o['scope'] : 'global') as MemoryEntry['scope'],
+    // ★ v7：领域标签（与 `snapshotOf` 的 `domain` 对应）
+    ...opt('domain', o['domain'], (v) => typeof v === 'string'),
     version: num(o['version'], 1),
     ...opt('effectiveness', o['effectiveness'], isObject),
     ...opt('principle', o['principle'], isObject),
