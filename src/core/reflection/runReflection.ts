@@ -26,6 +26,7 @@ import type { ClockPort } from '../ports/clock.js';
 import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ServantId, ServantReport } from '../servants/types.js';
+import type { DomainId } from '../domain/types.js';
 import { buildServantReflectionInput, reflectButler, reflectServant } from './reflect.js';
 import type { MemoryCandidate } from './reflect.js';
 import { sinkCandidates } from '../memory/sink.js';
@@ -121,11 +122,24 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
         ],
   );
 
-  // ── ② 仆人层反思：每个参与过的仆人各一次 ──
+  // ── ② 领域层反思：本次涉及的每个领域各一次 ──
   //
-  // ★ 顺序：按 `SERVANT_IDS` 稳定排序，而不是按 reports 的出现顺序 ——
-  //   否则同一批产出换个顺序会产生不同的候选集，破坏可复现性。
-  const servants = [...new Set(args.session.reports.map((r) => r.servant))].sort();
+  // ★★ v7（E4）：分组依据从 `report.servant` 改为**契约里的领域**。
+  //
+  //   ⚠️ 为什么必须改（这是我自己的缺陷，不是原有问题）：
+  //      B-wire 时我写了 `servant: contract.domains[0] ?? 'life'` ——
+  //      当契约为空领域（判不出领域）时，会把**与生活毫无关系**的任务
+  //      的反思产出归到「生活」领域下。**归属是编的。**
+  //
+  //   ★ 正确做法：领域来源只有一个 —— 契约的 `domains`。
+  //     没有领域 → **不做领域层反思**（只有管家层），
+  //     因为"在哪个领域反思"这件事本身没有答案时，任何归属都是编造。
+  const domains: DomainId[] =
+    args.session.contract !== undefined
+      ? // ★ 去重 + 稳定排序：同一领域写两遍只反思一次；
+        //   固定顺序保证同一批产出每次得到相同候选集（可复现性）
+        ([...new Set(args.session.contract.domains)].sort() as DomainId[])
+      : [];
 
   const servantCandidates: MemoryCandidate[] = [];
   let inputTokens = 0;
@@ -133,8 +147,8 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
   let failed = false;
   let failureReason: string | undefined;
 
-  for (const servant of servants) {
-    const ownReports = args.session.reports.filter((r) => r.servant === servant);
+  for (const domain of domains) {
+    const ownReports = args.session.reports;
     /**
      * ⚠️ 领域记忆的可见性由 store.canRead 决定，这里**不能**
      *    自己按 memClass 过滤 —— 权限判定只有一处实现，
@@ -142,18 +156,18 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
      */
     const ownDomainMemories = args.store
       .visibleTo({ kind: 'butler', userId: args.userId })
-      .filter((m) => m.memClass === 'domain' && m.domain === servant)
+      .filter((m) => m.memClass === 'domain' && m.domain === domain)
       .map((m) => ({ id: m.id, kind: m.kind, content: m.content, lifecycle: m.lifecycle }));
 
     const input = buildServantReflectionInput({
-      servant: servant as ServantId,
+      servant: domain as unknown as ServantId,
       userGoal: args.userGoal,
       ownReports,
       ownDomainMemories,
       feedback,
     });
 
-    trace(`仆人层反思：${servant}（${ownReports.length} 份产出）`);
+    trace(`领域层反思：${domain}（${ownReports.length} 份产出）`);
     const r = await reflectServant({
       model: args.model,
       log: args.log,
