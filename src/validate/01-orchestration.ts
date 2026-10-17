@@ -112,34 +112,38 @@ async function main(): Promise<void> {
   );
   check('① 置信度达到阈值', result.confident, result.confident ? '可继续派发' : '转入澄清');
 
-  // ── 条件 ② 任务分解 ──
-  hr('② 结构化任务分解');
-  check('② 分解出步骤', result.steps.length > 0, `${result.steps.length} 步`);
-  for (const s of result.steps) {
-    line(
-      `  ${s.stepId.padEnd(7)} [${String(s.servant).padEnd(7)}] ${s.instruction.slice(0, 40)}` +
-        (s.dependsOn.length ? `  ← 依赖 ${s.dependsOn.join(',')}` : ''),
-    );
+  // ── 条件 ② 任务契约（v7 · D-5，取代旧的"任务分解"）──
+  //
+  // ⚠️ v7：这里原本检查 `result.steps`（拆解出的多步派发），
+  //    现在只有一个执行者，没有"步骤"这回事。
+  //    改为检查**契约** —— 它才是"要做什么"的权威描述。
+  hr('② 任务契约（取代旧的"任务分解"）');
+  const contract = result.contract;
+  check('② 契约已写下', contract !== undefined);
+  if (contract !== undefined) {
+    line(`  交付物：${contract.deliverable}`);
+    line(`  判据  ：${contract.criteria.length} 条`);
+    for (const c of contract.criteria) line(`    · ${c}`);
+    if (contract.mustObey.length > 0) {
+      line(`  硬约束：${contract.mustObey.length} 条`);
+      for (const c of contract.mustObey) line(`    · ${c}`);
+    }
+    line(`  涉及领域：${contract.domains.join(', ') || '（无）'}`);
   }
-  const allDepsValid = result.steps.every((s) => {
-    const known = new Set(result.steps.map((x) => x.stepId));
-    return s.dependsOn.every((d) => known.has(d) && d !== s.stepId);
-  });
-  check('② 依赖引用合法', allDepsValid, allDepsValid ? '无悬空/自引用' : '存在非法依赖');
+  check('② 交付物非空', (contract?.deliverable.length ?? 0) > 4);
+  check('② 判据至少 1 条', (contract?.criteria.length ?? 0) >= 1, `${contract?.criteria.length ?? 0} 条`);
 
   // ── 条件 ②b 约束注入 ──
   const injectedEvents = result.log.byType('constraint.injected');
-  const totalInjected = result.steps.reduce((n, s) => n + s.injectedConstraints.length, 0);
+  const totalInjected = result.injectedConstraints.length;
   hr('②b 约束注入（可审计）');
   line(`  注入事件  : ${injectedEvents.length} 条`);
-  for (const s of result.steps) {
-    for (const c of s.injectedConstraints) {
-      line(`  ${s.stepId} ← ${c.negotiable ? '⚠️ 可协商' : '🔒 不可覆盖'}  ${c.content}`);
-    }
+  for (const c of result.injectedConstraints) {
+    line(`  ← ${c.negotiable ? '⚠️ 可协商' : '🔒 不可覆盖'}  ${c.content}`);
   }
-  check('②b 硬约束被注入到相关步骤', totalInjected > 0, `${totalInjected} 条约束`);
-  const hardInjected = result.steps.some((s) =>
-    s.injectedConstraints.some((c) => !c.negotiable && c.content.includes('花生')),
+  check('②b 约束被注入', totalInjected > 0, `${totalInjected} 条约束`);
+  const hardInjected = result.injectedConstraints.some(
+    (c) => !c.negotiable && c.content.includes('花生'),
   );
   check('②b 花生过敏（硬约束）已送达', hardInjected, hardInjected ? '不可覆盖' : '未送达');
 

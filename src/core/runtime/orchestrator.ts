@@ -7,12 +7,12 @@
  * UI 只是把这个流程的事件流渲染出来，不额外承载业务逻辑。
  */
 
-import { decompose } from '../butler/dispatch.js';
 import { route } from '../butler/router.js';
+import { writeContract } from '../butler/contract.js';
+import { runButler } from '../butler/execute.js';
 import { verifyHardConstraints, type HardConstraintReport } from '../butler/hardConstraints.js';
 import { supervise } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
-import { runServant } from '../servants/execute.js';
 import { SERVANT_BOUNDARY } from '../servants/types.js';
 import type { ToolFramework } from '../tools/framework.js';
 import type { MemoryStore } from '../memory/store.js';
@@ -25,14 +25,8 @@ import {
   type PrincipleCandidate,
   type PrincipleCheck,
 } from '../memory/principles.js';
-import type {
-  DispatchStep,
-  Finding,
-  ServantArtifact,
-  ServantId,
-  ServantReport,
-  UpstreamInput,
-} from '../servants/types.js';
+import type { DispatchStep, InjectedConstraint, ServantId, ServantReport } from '../servants/types.js';
+import type { TaskContract } from '../butler/contract.js';
 import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
@@ -156,7 +150,30 @@ export interface RunSessionResult {
     readonly confidence: number;
     readonly note: string;
   };
+  /**
+   * @deprecated v7：**恒为空数组**。
+   *
+   * 旧架构把任务拆成多步、每步派给一个仆人，`steps` 就是那份拆解。
+   * 现在只有一个执行者，没有「步骤」这回事（见 `contract`）。
+   *
+   * ⚠️ 保留字段只为不破坏既有调用方（界面/验证脚本）。
+   *    **新代码请用 `contract`** —— 它才是「要做什么」的权威描述。
+   */
   readonly steps: readonly DispatchStep[];
+  /**
+   * 任务契约（v7 · D-5）—— 取代 `steps` 的权威描述。
+   *
+   * ★ 里面写着：交付物、判据、硬约束、涉及领域。
+   *   监督员用它当核对标准，界面用它展示「这次答应做什么」。
+   */
+  readonly contract?: TaskContract;
+  /**
+   * 实际注入给执行的约束（v7）。
+   *
+   * ⚠️ 旧架构从 `steps[].injectedConstraints` 取，但那是「每步各自的约束」。
+   *    现在只有一次执行 —— 约束是**整轮一份**，直接挂在结果上。
+   */
+  readonly injectedConstraints: readonly InjectedConstraint[];
   readonly reports: readonly ServantReport[];
   readonly supervision: SupervisionOutput;
   /** 硬约束机械校验结果（确定性判定，见 hardConstraints.ts） */
@@ -331,238 +348,155 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     });
   }
 
-  // ── ④ 任务分解（内部完成约束注入）──
-  stage('decompose', '拆解任务');
-  const { dispatch } = await decompose({
+  // ── ④ 写任务契约（v7 · D-5，替代原来的 route + decompose）──
+  //
+  // ★★ 这里合并了两件旧事：
+  //   ① `route()`  —— 判断该派给谁。**砍掉**（D-3）：实测 4/4 全判同一个领域，
+  //      没有信息量；真正的多领域由"拆解"完成。
+  //   ② `decompose()` —— 拆成多步派发。**改为写契约**（D-2）：
+  //      只有一个执行者，拆步骤没有意义。
+  //
+  //   ★ 但保留了 `decompose` 里真正有价值的部分：
+  //     按相关性筛选要注入的约束（管家自己干同样需要知道哪些约束相关）。
+  stage('contract', '写任务契约');
+  const written = await writeContract({
     model: args.model,
     log,
     sessionId: args.sessionId,
     userGoal: args.userGoal,
-    primaryServant: r.decision.servant,
     recalled: args.recalled,
     now: args.clock.now(),
     ...(args.history !== undefined ? { history: args.history } : {}),
   });
+  inputTokens += written.usage.inputTokens;
+  outputTokens += written.usage.outputTokens;
+  const contract = written.contract;
 
-  // ── ⑤ 逐步派发（含依赖检查与上游产出传递）──
-  stage('dispatch', '派发给仆人');
+  // ── ⑤ 管家自己干（v7 · D-2 / B6）──
+  //
+  // ★★ 这一步替代了原来的"逐步派发"循环（220 行）。
+  //    旧循环做的事（依赖检查、上游产出传递、逐步骤事件）全都消失了 ——
+  //    因为只有一个执行者，没有"步骤之间"这回事。
+  //
+  //   ⚠️ 保留了两样东西，它们与"多仆人"无关、但仍然需要：
+  //     · **原则注入**（§8.8「学了要用」）—— 反思产出的原则要被执行
+  //     · **进度事件** —— 界面「边说边想」画面的来源
+  stage('execute', '开始执行');
+
   const reports: ServantReport[] = [];
-  const done = new Set<string>();
   /** 本次会话实际注入过的原则（收尾时做违背检测） */
   const injectedPrinciples: PrincipleCandidate[] = [];
-  /** stepId → 该步骤的产出，供下游步骤使用 */
-  const outputs = new Map<string, { servant: string; artifacts: ServantArtifact[]; findings: Finding[] }>();
 
-  for (const step of dispatch.decomposition) {
-    const missing = step.dependsOn.filter((d) => !done.has(d));
-    if (missing.length > 0) {
-      log.append({
-        type: 'dispatch.stepFailed',
-        actor: 'butler',
-        payload: { stepId: step.stepId, reason: `依赖未满足：${missing.join(', ')}` },
-        createdAt: args.clock.now(),
-      });
-      continue;
-    }
+  // ★ 原则注入：挑出本次任务适用的已生效原则
+  //   没有这一步，反思产出的原则永远不会被执行，principle.applied 也永远不会发出。
+  const principleCandidates =
+    args.store !== undefined
+      ? selectPrinciples({
+          store: args.store,
+          task: args.userGoal,
+          // ⚠️ 单执行者下"哪个仆人"这个参数改成"主领域" ——
+          //    原则仍按领域加权（本领域的原则更相关），只是没有仆人身份了。
+          ...(contract.domains[0] !== undefined ? { servant: contract.domains[0] } : {}),
+        })
+      : [];
 
-    // 汇总上游产出 —— 这一步让 dependsOn 从"顺序控制"变成真正的"数据流"
-    const inputs: UpstreamInput[] = step.dependsOn.flatMap((d) => {
-      const o = outputs.get(d);
-      if (!o) return [];
-      return [{ stepId: d, servant: o.servant, artifacts: o.artifacts, findings: o.findings }];
+  if (args.store !== undefined && principleCandidates.length > 0) {
+    recordInjection({
+      log,
+      store: args.store,
+      clock: args.clock,
+      taskId: args.sessionId,
+      candidates: principleCandidates,
     });
+    injectedPrinciples.push(...principleCandidates);
+  }
 
-    // 管家自己汇总的步骤不派发
-    if (step.servant === 'butler') {
-      log.append({
-        type: 'dispatch.stepDone',
-        actor: 'butler',
-        payload: {
-          stepId: step.stepId,
-          by: 'butler',
-          note: '由管家汇总',
-          inputCount: inputs.length,
-        },
-        createdAt: args.clock.now(),
-      });
-      done.add(step.stepId);
-      continue;
-    }
+  // ★ 界面进度：开始执行（一步，不是多步）
+  progress({
+    kind: 'stepStarted',
+    stepId: 'execute',
+    servant: contract.domains[0] ?? 'life',
+    instruction: contract.deliverable,
+    index: 1,
+    total: 1,
+  });
 
-    // ★ 原则注入：挑出本次任务适用的已生效原则（方案 § 8.8「学了要用」）
-    //   没有这一步，反思产出的原则永远不会被执行，principle.applied 也永远不会发出。
-    const principleCandidates =
-      args.store !== undefined
-        ? selectPrinciples({
-            store: args.store,
-            task: `${args.userGoal}\n${step.instruction}`,
-            servant: step.servant,
-          })
-        : [];
+  const injectedConstraints = written.constraints.map((c) => ({
+    memoryId: c.memoryId,
+    content: c.content,
+    source: c.source,
+    negotiable: c.negotiable,
+  }));
 
-    if (args.store !== undefined && principleCandidates.length > 0) {
-      // 记 applied +1 并落 principle.applied 事件
-      recordInjection({
-        log,
-        store: args.store,
-        clock: args.clock,
-        taskId: step.stepId,
-        candidates: principleCandidates,
-      });
-      injectedPrinciples.push(...principleCandidates);
-    }
-
-    log.append({
-      type: 'dispatch.stepStarted',
-      actor: 'butler',
-      payload: {
-        stepId: step.stepId,
-        servant: step.servant,
-        instruction: step.instruction,
-        injectedConstraints: step.injectedConstraints,
-        // 可审计：这一步拿到了哪些上游产出
-        upstream: inputs.map((i) => i.stepId),
-      },
-      createdAt: args.clock.now(),
+  let run: Awaited<ReturnType<typeof runButler>>;
+  try {
+    run = await runButler({
+      model: args.model,
+      log,
+      clock: args.clock,
+      taskId: args.sessionId,
+      contract,
+      injectedConstraints,
+      userGoal: args.userGoal,
+      ...(args.servantHistory !== undefined ? { history: args.servantHistory } : {}),
+      ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
+      ...(args.onAgentProgress !== undefined ? { onAgentProgress: args.onAgentProgress } : {}),
+      ...(args.tools !== undefined ? { tools: args.tools } : {}),
+      now: args.clock.now(),
     });
-
-    // ★ 界面进度：这一步开始了
-    progress({
-      kind: 'stepStarted',
-      stepId: step.stepId,
-      servant: step.servant,
-      instruction: step.instruction,
-      index: dispatch.decomposition.indexOf(step) + 1,
-      total: dispatch.decomposition.length,
-    });
-
+  } catch (err) {
     /**
-     * ★★ 单步失败**不能拖垮整轮**。
+     * ⚠️ 执行抛异常 — **不让整轮失败**，而是产出一份"失败的汇报"。
      *
-     *   ⚠️ 原实现让 `runServant` 的异常直接冒泡 ——
-     *      一次真实对话因此中断在第三个仆人上：
-     *      前两个仆人的产出、全部进度、以及最重要的**审查结论**
-     *      都没能产生，用户看到的是「任务失败」而不是「哪一步失败了」。
-     *
-     *   而方案 § 13.4 明确要求：
-     *     「仆人执行失败 → 该步骤标红 + 「重派」按钮，**不影响其他步骤**」
-     *
-     *   所以这里把异常收敛成一条 `blocked` 报告：
-     *   它照样进 reports，于是审查层能看到"这一步没做成"，
-     *   验收卡上也会如实标出来。
+     *   理由（与旧实现一致）：用户必须知道发生了什么，
+     *   否则界面上会显示成一片空白，看起来像卡住了。
      */
-    let run: Awaited<ReturnType<typeof runServant>>;
-    try {
-      run = await runServant({
-        model: args.model,
-        log,
-        clock: args.clock,
-        servant: step.servant,
-        taskId: step.stepId,
-        instruction: step.instruction,
-        injectedConstraints: step.injectedConstraints,
-        ...(inputs.length > 0 ? { inputs } : {}),
-        ...(principleCandidates.length > 0
-          ? {
-              principles: principleCandidates.map((pc) => ({
-                content: pc.principle.content,
-                action: pc.principle.principle?.action ?? pc.principle.content,
-                why: pc.why,
-              })),
-            }
-          : {}),
-        ...(args.tools !== undefined ? { tools: args.tools } : {}),
-        // 仆人用**精简历史**（只有用户本轮原话）——它需要的是上游产出，
-        // 不是对话的来龙去脉
-        ...(args.servantHistory !== undefined ? { history: args.servantHistory } : {}),
-        // ★ 工具循环的流式（给出才走）
-        ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
-        ...(args.onAgentProgress !== undefined
-          ? { onAgentProgress: args.onAgentProgress }
-          : {}),
-        now: args.clock.now(),
-      });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-
-      log.append({
-        type: 'dispatch.stepFailed',
-        actor: 'servant',
-        servantId: step.servant,
-        payload: {
-          stepId: step.stepId,
-          servant: step.servant,
-          reason,
-          note: '单步失败已收敛，不影响其它步骤与审查',
-        },
-        createdAt: args.clock.now(),
-      });
-
-      progress({
-        kind: 'stepFailed',
-        stepId: step.stepId,
-        servant: step.servant,
-        reason,
-      });
-
-      // 收敛成一条 blocked 报告 —— 让审查层能看见「这一步没做成」
-      reports.push({
-        taskId: step.stepId,
-        servant: step.servant,
-        status: 'blocked',
-        /**
-         * ⚠️ 这里给的是**一句人话**，而不是空串。
-         *
-         *   其它 blocked 分支（模型没提交汇报）给空串是对的 ——
-         *   那种情况确实"仆人没说话"。
-         *   但这一步是**抛异常了**，用户必须知道发生了什么，
-         *   否则界面上这个仆人会显示成一片空白，看起来像卡住了。
-         */
-        reply: `这一步没能完成：${reason}`,
+    const reason = err instanceof Error ? err.message : String(err);
+    run = {
+      report: {
+        taskId: args.sessionId,
+        servant: (contract.domains[0] ?? 'life') as ServantReport['servant'],
+        status: 'failed',
+        reply: `这次没能完成：${reason}`,
         artifacts: [],
         findings: [],
         uncertainties: [`执行失败：${reason}`],
         memoryRefs: [],
-      });
-      continue;
-    }
-    inputTokens += run.usage.inputTokens;
-    outputTokens += run.usage.outputTokens;
-    reports.push(run.report);
+      },
+      raw: {
+        reply: `这次没能完成：${reason}`,
+        status: 'failed',
+        artifacts: [],
+        findings: [],
+        uncertainties: [`执行失败：${reason}`],
+      },
+      usage: { inputTokens: 0, outputTokens: 0 },
+      attempts: 0,
+      promptVersions: [],
+    };
+  }
 
-    outputs.set(step.stepId, {
-      servant: step.servant,
-      artifacts: [...run.report.artifacts],
-      findings: [...(run.report.findings ?? [])],
+  inputTokens += run.usage.inputTokens;
+  outputTokens += run.usage.outputTokens;
+  reports.push(run.report);
+
+  // ★ 界面进度：执行结束（带产出数量，界面据此显示"产出 2 项"）
+  if (run.report.status === 'done') {
+    progress({
+      kind: 'stepDone',
+      stepId: 'execute',
+      servant: contract.domains[0] ?? 'life',
+      ok: true,
+      artifactCount: run.report.artifacts.length,
+      findingCount: run.report.findings?.length ?? 0,
     });
-
-    log.append({
-      type: run.report.status === 'done' ? 'dispatch.stepDone' : 'dispatch.stepFailed',
-      actor: 'butler',
-      payload: { stepId: step.stepId, servant: step.servant, status: run.report.status },
-      createdAt: args.clock.now(),
+  } else {
+    progress({
+      kind: 'stepFailed',
+      stepId: 'execute',
+      servant: contract.domains[0] ?? 'life',
+      reason: run.report.uncertainties?.[0] ?? `状态：${run.report.status}`,
     });
-
-    // ★ 界面进度：这一步结束了（带产出数量，界面据此显示"产出 2 项"）
-    if (run.report.status === 'done') {
-      progress({
-        kind: 'stepDone',
-        stepId: step.stepId,
-        servant: step.servant,
-        ok: true,
-        artifactCount: run.report.artifacts.length,
-        findingCount: run.report.findings?.length ?? 0,
-      });
-    } else {
-      progress({
-        kind: 'stepFailed',
-        stepId: step.stepId,
-        servant: step.servant,
-        reason: run.report.uncertainties?.[0] ?? `状态：${run.report.status}`,
-      });
-    }
-
-    if (run.report.status === 'done') done.add(step.stepId);
   }
 
   // ── ⑥ 硬约束机械校验（确定性，先于 LLM 监督）──
@@ -662,7 +596,9 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     //    写死 true 会让上层无法把假设告诉用户。
     confident: r.confident,
     ...(assumption !== undefined ? { assumption } : {}),
-    steps: dispatch.decomposition,
+    steps: [],
+    contract,
+    injectedConstraints,
     reports,
     supervision: sup.output,
     hardConstraints: hardReport,

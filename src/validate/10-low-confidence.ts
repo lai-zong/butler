@@ -103,19 +103,18 @@ function makeStubModel(opts: {
         });
       }
 
-      // ② 分解 → 给一步最小任务
-      if (name === 'DispatchPlan') {
+      // ② 任务契约（v7 · D-5，取代旧的 DispatchPlan）
+      //
+      // ⚠️ v7：这里原先是 `DispatchPlan`（拆解成多步派发）。
+      //    现在只有一个执行者，改为契约 —— 桩模型必须跟着变，
+      //    否则 `writeContract` 拿不到 `criteria`，会在 `.filter` 上崩。
+      if (name === 'TaskContract') {
         return Promise.resolve({
           value: {
-            steps: [
-              {
-                stepId: 's1',
-                servant: 'life',
-                instruction: '给一个最简单可行的建议',
-                dependsOn: [],
-              },
-            ],
-            reasoning: '任务很糊，先给一个最小可行步骤',
+            deliverable: '给一个最简单可行的建议',
+            criteria: ['给出一条可执行的建议'],
+            mustObey: [],
+            domains: ['none'],
           } as unknown as T,
           usage,
           attempts: 1,
@@ -210,21 +209,21 @@ try {
 }
 
 check('runSession 没有抛异常', threw === undefined, threw?.slice(0, 40));
-check('确实调了路由与分解', lowModel.calls.includes('RoutingDecision') && lowModel.calls.includes('DispatchPlan'), lowModel.calls.join(','));
+check('确实调了路由与契约', lowModel.calls.includes('RoutingDecision') && lowModel.calls.includes('TaskContract'), lowModel.calls.join(','));
 
 if (result !== undefined) {
   check(
-    '★★ 低置信度**仍然有执行步骤**（旧实现这里是 0）',
-    result.steps.length > 0,
-    `steps=${result.steps.length}`,
+    '★★ 低置信度**仍然写了契约**（旧实现这里 0 步、什么都不干）',
+    result.contract !== undefined,
+    result.contract !== undefined ? 'contract 已写下' : 'contract 缺失',
   );
   check(
-    '★★ 低置信度**仍然有仆人产出**（旧实现这里是 0）',
+    '★★ 低置信度**仍然有执行产出**（旧实现这里是 0）',
     result.reports.length > 0,
     `reports=${result.reports.length}`,
   );
   check('confident 如实为 false（不写死 true）', result.confident === false);
-  check('★★ assumption 存在且带 servant', result.assumption?.servant === 'life');
+  check('★★ assumption 存在（把假设告诉用户，而不是停下来问）', result.assumption !== undefined);
   check('★ 假设把 clarifyingQuestion 转成了纠正入口', result.assumption?.note.includes('你其实是想问') === true);
 }
 
@@ -255,7 +254,7 @@ const high = await runSession({
 check('高置信度时 assumption 为空', high.assumption === undefined);
 check('高置信度时 confident 为 true', high.confident === true);
 check('高置信度时不落 route.assumed', log2.byType('route.assumed').length === 0);
-check('高置信度时照常执行', high.steps.length > 0);
+check('高置信度时照常执行', high.reports.length > 0 && high.contract !== undefined, `${high.reports.length} 份汇报`);
 
 // ═══════════════════════════════════════════════════════════
 hr('结果');

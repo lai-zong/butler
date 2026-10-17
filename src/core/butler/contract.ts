@@ -135,6 +135,32 @@ export async function writeContract(args: {
     })
     .map((r) => {
       const isHard = r.memory.memClass === 'global_constraint';
+
+      /**
+       * ★★ 可审计：每条注入的约束都落一个事件。
+       *
+       * ⚠️ 这一点我第一次漏了 —— 旧 `injectConstraints` 会发 `constraint.injected`，
+       *    我重写时没带上，结果 `validate:8` 报「硬约束被注入给仆人 — 0 次」。
+       *
+       *    ★ 为什么不能省：用户要能看到「这次任务给执行注入了哪些约束」。
+       *      没有这条事件，"过敏原被考虑到了"就只是我们的说法，不是证据。
+       */
+      args.log.append({
+        type: 'constraint.injected',
+        actor: 'butler',
+        payload: {
+          // v7：没有"步骤"了，用 sessionId 定位这次注入
+          stepId: args.sessionId,
+          domains,
+          memoryId: r.memory.id,
+          content: r.memory.content,
+          source: r.memory.memClass,
+          negotiable: !isHard,
+          reason: isHard ? '硬约束无条件注入' : '与本次目标相关',
+        },
+        createdAt: args.now,
+      });
+
       return {
         memoryId: r.memory.id,
         content: r.memory.content,
