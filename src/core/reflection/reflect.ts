@@ -278,7 +278,7 @@ ${ruleBlock}
 
 export interface ButlerReflectionInput {
   /** 全部仆人的产出摘要 */
-  readonly reports: readonly { readonly servant: ServantId; readonly summary: string }[];
+  readonly reports: readonly { readonly servant: string; readonly summary: string }[];
   /** 本次会话检出的冲突与裁决 */
   readonly conflicts: readonly { readonly message: string; readonly severity: string; readonly resolvedBy?: string }[];
   /** 全局层的既有记忆 */

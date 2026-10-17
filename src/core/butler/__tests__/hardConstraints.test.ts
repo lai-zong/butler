@@ -54,7 +54,7 @@ function constraint(content: string, id = 'm_hard'): ScoredMemory {
 }
 
 function report(
-  servant: ServantReport['servant'],
+  domain: NonNullable<ServantReport['domain']>,
   opts: {
     artifacts?: string[];
     findings?: ServantReport['findings'];
@@ -62,10 +62,10 @@ function report(
   } = {},
 ): ServantReport {
   return {
-    taskId: `t_${servant}`,
-    servant,
+    taskId: `t_${domain}`,
+    domain,
     status: opts.status ?? 'done',
-    reply: `（${servant} 的汇报）`,
+    reply: `（${domain} 的汇报）`,
     artifacts: (opts.artifacts ?? []).map((c) => ({ kind: 'text' as const, content: c })),
     memoryRefs: [],
     uncertainties: [],

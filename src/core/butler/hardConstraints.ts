@@ -116,7 +116,7 @@ export function verifyHardConstraints(args: {
     for (const rep of args.reports) {
       // 状态为 failed 的仆人没有产出，不算"未处理"
       if (rep.status === 'failed') continue;
-      if (!handledBy(rep, hc.memory.content, hc.memory.id)) unhandledBy.push(rep.servant);
+      if (!handledBy(rep, hc.memory.content, hc.memory.id)) unhandledBy.push(rep.domain ?? '未标注领域');
     }
 
     const satisfied = unhandledBy.length === 0;

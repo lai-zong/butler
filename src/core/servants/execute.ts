@@ -10,6 +10,7 @@
  */
 
 import { EventLog } from '../events/log.js';
+import type { DomainId } from '../domain/types.js';
 import { msg, type ModelMessage, type ModelPort } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { ModelStreamPort } from '../ports/stream.js';
@@ -202,7 +203,8 @@ export async function runServant(args: {
 
   const report: ServantReport = {
     taskId: args.taskId,
-    servant: args.servant,
+    // legacy 路径：仆人的领域标识即其领域（ServantId 与 DomainId 同值）
+    domain: args.servant as unknown as DomainId,
     status: raw.status,
     /**
      * ★ 对用户说的那段话。

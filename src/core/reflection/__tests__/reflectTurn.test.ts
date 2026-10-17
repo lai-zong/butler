@@ -46,7 +46,7 @@ function report(): ServantReport {
     taskId: 't1',
     // ⚠️ 这个字段在 v7 里已经没有语义（E5 会删）。测试里随便填，
     //    因为**分组不该再看它** —— 这正是本文件要证明的事。
-    servant: 'life',
+    domain: 'life',
     status: 'done',
     reply: '给了三套方案',
     artifacts: [{ kind: 'text', content: '方案一：清蒸鲈鱼' }],

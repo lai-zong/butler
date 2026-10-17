@@ -46,7 +46,6 @@ import { buildHistoryMessages, buildServantHistoryMessages } from './history.js'
 import { planHistory, summarizeOlder } from './compaction.js';
 import { createTraceCollector } from './trace.js';
 import { toServantReportData } from './reports.js';
-import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
 // 一轮的执行
@@ -621,7 +620,7 @@ export function buildVerdict(args: {
     issues.push({
       severity: rep.status === 'blocked' ? 'blocking' : 'advisory',
       kind: 'omission',
-      statement: `${rep.servant} 这一步没能完成：${rep.uncertainties[0] ?? rep.status}`,
+      statement: `${rep.domain ?? ''} 这一步没能完成：${rep.uncertainties[0] ?? rep.status}`,
       suggestion: '可以让我换个思路重试',
     });
   }
@@ -631,7 +630,7 @@ export function buildVerdict(args: {
 
   const steps = args.session.reports.map((r) => ({
     stepId: r.taskId,
-    servant: r.servant as ServantId,
+    servant: r.domain ?? '',
     ok: r.status === 'done',
   }));
 

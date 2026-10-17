@@ -242,7 +242,7 @@ export interface Verdict {
   readonly summary: string;
   readonly issues: readonly VerdictIssue[];
   /** 本次实际执行了哪些步骤 */
-  readonly steps: readonly { readonly stepId: string; readonly servant: ServantId; readonly ok: boolean }[];
+  readonly steps: readonly { readonly stepId: string; readonly servant: string; readonly ok: boolean }[];
   readonly durationMs: number;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   /** 产出物 id（可点开查看） */

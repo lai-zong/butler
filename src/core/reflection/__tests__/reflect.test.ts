@@ -31,7 +31,7 @@ const T0 = 1_760_000_000_000;
 function report(over: Partial<ServantReport> = {}): ServantReport {
   return {
     taskId: 'step1',
-    servant: 'life',
+    domain: 'life',
     status: 'done',
     reply: '推荐了 3 家清淡口味的家常菜馆。',
     artifacts: [{ kind: 'text', content: '推荐了 3 家清淡口味的家常菜馆' }],
@@ -114,7 +114,7 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
       input: buildServantReflectionInput({
         servant: 'health',
         userGoal: '安排饮食',
-        ownReports: [report({ servant: 'health' })],
+        ownReports: [report({ domain: 'health' })],
         ownDomainMemories: [],
       }),
     });
@@ -335,7 +335,7 @@ describe('仆人反思 · 产出与事件', () => {
       input: buildServantReflectionInput({
         servant: 'health',
         userGoal: 'g',
-        ownReports: [report({ servant: 'health', status: 'failed' })],
+        ownReports: [report({ domain: 'health', status: 'failed' })],
         ownDomainMemories: [],
       }),
     });

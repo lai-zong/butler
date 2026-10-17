@@ -12,6 +12,8 @@
 // 仆人身份
 // ═══════════════════════════════════════════════════════════
 
+import type { DomainId } from '../domain/types.js';
+
 export type ServantId = 'life' | 'health' | 'study' | 'work' | 'code';
 
 export const SERVANT_IDS: readonly ServantId[] = ['life', 'health', 'study', 'work', 'code'];
@@ -124,7 +126,22 @@ export interface Finding {
 
 export interface ServantReport {
   readonly taskId: string;
-  readonly servant: ServantId;
+  /**
+   * 这件事属于哪个领域。
+   *
+   * ★★ v7（批次2）：由 `readonly servant: ServantId` 改来，两点理由：
+   *
+   *   ① **值本来就是领域**：`runButler` 写的是 `contract.domains[0]`。
+   *      字段名说「哪个仆人」，装的是「哪个领域」—— 数据在撒谎。
+   *
+   *   ② **改为可选**：`contract.domains` 可以为空（判不出领域）。
+   *      旧写法 `?? 'life'` 会**编造**归属，把无关任务挂到「生活」名下。
+   *      可选 = 诚实：没有领域就说没有。
+   *
+   * ⚠️ 类型名仍叫 `ServantReport` —— 改名会波及 50+ 引用，
+   *    与字段语义修正混在一起会让 diff 无法审阅。类型名单独一次改。
+   */
+  readonly domain?: DomainId;
   readonly status: 'done' | 'failed' | 'blocked';
   /**
    * ★★ 该对**用户**说的那段话（自然语言）。

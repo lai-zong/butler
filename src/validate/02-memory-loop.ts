@@ -192,7 +192,7 @@ async function main(): Promise<void> {
   log.append({ type: 'dispatch.stepStarted', actor: 'butler', payload: { stepId: 's1', servant: 'life' }, createdAt: at(5) });
   const lifeReport: ServantReport = {
     taskId: 's1',
-    servant: 'life',
+    domain: 'life',
     status: 'done',
     reply: '菜单已出：全素无花生，三菜一饭，主食杂粮饭。采购清单也列好了。',
     artifacts: [
@@ -224,7 +224,7 @@ async function main(): Promise<void> {
   log.append({ type: 'dispatch.stepStarted', actor: 'butler', payload: { stepId: 's2', servant: 'health' }, createdAt: at(9) });
   const healthReport: ServantReport = {
     taskId: 's2',
-    servant: 'health',
+    domain: 'health',
     status: 'done',
     reply: '12 道菜逐条核对过：无花生、无花生油、无花生酱。豆瓣酱是交叉污染的风险点，要留意。',
     artifacts: [{ kind: 'text', content: '逐条核对 12 道菜：无花生、无花生油、无花生酱。豆瓣酱为交叉污染风险点。' }],
@@ -513,7 +513,7 @@ async function main(): Promise<void> {
     input: {
       userGoal: USER_GOAL,
       reports: reportsForReflection.map((r) => ({
-        servant: r.servant,
+        servant: r.domain ?? '',
         summary: r.artifacts.map((a) => (Array.isArray(a.content) ? a.content.join('；') : a.content)).join(' | '),
       })),
       conflicts: [{ message: '蛋白摄入是否加量', severity: 'warn', resolvedBy: '用户选择加量' }],

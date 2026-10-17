@@ -153,7 +153,7 @@ async function main(): Promise<void> {
   let findingCount = 0;
   let uncertaintyCount = 0;
   for (const rep of result.reports) {
-    line(`  [${rep.servant}] status=${rep.status}  产出物=${rep.artifacts.length}`);
+    line(`  [${rep.domain ?? ''}] status=${rep.status}  产出物=${rep.artifacts.length}`);
     for (const a of rep.artifacts) {
       const text = Array.isArray(a.content) ? a.content.join('；') : String(a.content);
       line(`     · ${a.kind}: ${text.slice(0, 60)}`);
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     const findingsWellFormed = (rep.findings ?? []).every(
       (f) => typeof f.statement === 'string' && Array.isArray(f.evidence),
     );
-    check(`③ ${rep.servant} 的 findings 结构合法`, findingsWellFormed);
+    check(`③ ${rep.domain ?? ''} 的 findings 结构合法`, findingsWellFormed);
   }
   line(`  合计 findings ${findingCount} 条 · uncertainties ${uncertaintyCount} 条`);
 

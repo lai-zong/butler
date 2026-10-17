@@ -146,7 +146,8 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
      *    ★ 下一步会把 `servant` 从 `ServantReport` 里彻底删掉、改为 `domain`。
      *      现在填领域而不是随便填一个仆人，是为了**让数据不撒谎**。
      */
-    servant: (mainDomain ?? 'life') as ServantReport['servant'],
+    // ★ 诚实：没有领域就不写（旧写法 `?? 'life'` 会编造归属）
+    ...(mainDomain !== undefined ? { domain: mainDomain } : {}),
     status: raw.status,
     reply: raw.reply.trim().slice(0, BUTLER_REPLY_LIMIT),
     artifacts,

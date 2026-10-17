@@ -64,7 +64,11 @@ function artifactText(content: ServantReport['artifacts'][number]['content']): {
  */
 export function toServantReportData(session: RunSessionResult): readonly ServantReportData[] {
   return session.reports.map((r) => ({
-    servant: r.servant,
+    /**
+     * ⚠️ 下游 `ServantReportData` 的字段名仍是 `servant`（遗留），此处传领域值。
+     *    改名它的类型是一次独立改动（批次2b）。
+     */
+    servant: (r.domain ?? '') as never,
     taskId: r.taskId,
     status: r.status,
     // ★ 仆人自己说的话 —— 界面上这就是它的消息正文

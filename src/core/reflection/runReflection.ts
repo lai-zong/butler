@@ -209,7 +209,8 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
       clock: args.clock,
       input: {
         reports: args.session.reports.map((r) => ({
-          servant: r.servant as ServantId,
+          // ⚠️ 下游参数的字段名仍是 servant（遗留），此处传领域值
+          servant: r.domain ?? '',
           summary: summarizeReport(r),
         })),
         conflicts: (args.session.supervision.findings ?? []).map((c) => ({
@@ -402,7 +403,7 @@ function summarizeReport(r: ServantReport): string {
     parts.push(`不确定：${r.uncertainties.slice(0, 2).join('；')}`);
   }
 
-  return parts.join(' | ').slice(0, 600) || `（${r.servant} 无产出）`;
+  return parts.join(' | ').slice(0, 600) || `（${r.domain ?? ''} 无产出）`;
 }
 
 /**

@@ -13,7 +13,7 @@ import { runButler } from '../butler/execute.js';
 import { verifyHardConstraints, type HardConstraintReport } from '../butler/hardConstraints.js';
 import { supervise, type NormalizedSupervisionOutput } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
-import { SERVANT_BOUNDARY } from '../servants/types.js';
+import { domainName } from '../domain/types.js';
 import type { ToolFramework } from '../tools/framework.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ScoredMemory } from '../memory/recall.js';
@@ -454,7 +454,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     run = {
       report: {
         taskId: args.sessionId,
-        servant: (contract.domains[0] ?? 'life') as ServantReport['servant'],
+        // ★ 诚实：领域为空就不写，不编造
+        ...(contract.domains[0] !== undefined ? { domain: contract.domains[0] } : {}),
         status: 'failed',
         reply: `这次没能完成：${reason}`,
         artifacts: [],
@@ -542,7 +543,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     const check = checkPrinciples({
       injected: injectedPrinciples,
       reports: reports.map((r) => ({
-        servant: r.servant,
+        // ⚠️ checkPrinciples 的参数名仍是 servant（遗留），此处传领域值
+        servant: r.domain ?? '',
         text: JSON.stringify(r.artifacts) + JSON.stringify(r.findings ?? []),
       })),
     });
@@ -557,8 +559,16 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   const artifacts: { readonly id: string; readonly label: string; readonly stepId: string }[] = [];
   for (const rep of reports) {
     for (const [i, art] of rep.artifacts.entries()) {
-      const id = `art_${rep.servant}_${rep.taskId}_${i}`;
-      const label = `${SERVANT_BOUNDARY[rep.servant].name}产出 ${i + 1}`;
+      const id = `art_${rep.domain ?? ''}_${rep.taskId}_${i}`;
+      /**
+       * ★ v7（批次2）：产出物的显示标签不再查 `SERVANT_BOUNDARY`。
+       *
+       * ⚠️ 原来写 `SERVANT_BOUNDARY[rep.servant].name` —— 用领域值去查
+       *    「仆人边界表」的名字。领域为空时还会直接抛 TypeError（查 undefined）。
+       *
+       * ✅ 改为直接用领域名；没有领域就写「未标注领域」——**不编造**。
+       */
+      const label = `${rep.domain !== undefined ? domainName(rep.domain) : '未标注领域'}产出 ${i + 1}`;
       artifacts.push({ id, label, stepId: rep.taskId });
       log.append({
         type: 'artifact.created',
@@ -567,7 +577,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
           artifactId: id,
           label,
           stepId: rep.taskId,
-          servant: rep.servant,
+          // ⚠️ 产出物事件的字段名仍是 servant（属事件线格式，批次1b 统一处理）`n          servant: rep.domain ?? '',
           kind: art.kind,
           // 只记大小不记内容：内容体积大且不属于"状态"，
           // 状态由事件流表达（见 ADR 0002 与检查点设计）
