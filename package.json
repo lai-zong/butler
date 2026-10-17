@@ -28,7 +28,8 @@
     "validate:8": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/08-real-path.ts",
     "validate:9": "node node_modules/tsx/dist/cli.mjs src/validate/09-context-compaction.ts",
     "validate:10": "node node_modules/tsx/dist/cli.mjs src/validate/10-low-confidence.ts",
-    "validate:11": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/11-contract.ts"
+    "validate:11": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/11-contract.ts",
+    "validate:12": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/12-butler-execute.ts"
   },
   "dependencies": {
     "next": "15",

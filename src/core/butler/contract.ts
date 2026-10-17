@@ -62,7 +62,7 @@ export interface WriteContractResult {
   readonly constraints: readonly {
     readonly memoryId: string;
     readonly content: string;
-    readonly source: string;
+    readonly source: 'global_constraint' | 'global_shared' | 'sensitive' | 'domain';
     readonly negotiable: boolean;
   }[];
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
