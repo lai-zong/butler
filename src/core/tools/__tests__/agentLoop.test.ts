@@ -13,7 +13,7 @@ import { MemoryFileSystem } from '../../../adapters/fs/memory.js';
 import { MockModel } from '../../../adapters/model/mock.js';
 import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
-import { msg, type ModelCall, type ModelResponse, type ModelPort } from '../../ports/model.js';
+import { msg, type ModelCall, type ModelMessage, type ModelResponse, type ModelPort } from '../../ports/model.js';
 import { fileTools } from '../builtin/file.js';
 import { ToolFramework } from '../framework.js';
 import {
@@ -476,10 +476,36 @@ describe('④ ★ 循环有界（防止烧光 token）', () => {
 
     trimHistory(messages);
 
+    // ★ v7：超出 5 条 → 较新的 3 条「剪枝」（短内容无需变，但仍走剪枝档），
+    //   更老的 2 条才占位。旧实现是 5 条全占位 —— **信息全丢**。
     const placeholders = JSON.stringify(messages).match(/已省略以控制上下文/g) ?? [];
-    expect(placeholders).toHaveLength(5);
+    expect(placeholders).toHaveLength(2);
     // 最近的结果仍然完整
     expect(JSON.stringify(messages)).toContain(`结果 ${MAX_TOOL_RESULTS_IN_HISTORY + 4}`);
+  });
+
+  it('★★ 剪枝档保住头尾（旧实现会全丢，导致模型重复踩坑）', () => {
+    const messages: ModelMessage[] = [msg.user('起点')];
+    // 前 2 条会被占位，接着 3 条会被剪枝 —— 全都给长内容
+    // ⚠️ 标记用 `TAIL#i#` 而不是 `TAIL_i` —— 后者会让 `TAIL_1` 成为
+    //    `TAIL_10` 的子串，测试假通过/假失败（这个坑我踩过一次）
+    const mark = (i: number): string => `TAIL#${i}#`;
+    for (let i = 0; i < MAX_TOOL_RESULTS_IN_HISTORY + 5; i++) {
+      messages.push(msg.toolResult(`c${i}`, `${'H'.repeat(800)}${mark(i)}`));
+    }
+
+    trimHistory(messages);
+
+    const flat = JSON.stringify(messages);
+    // 最老的 2 条：占位，原文不在了
+    expect(flat).not.toContain(mark(0));
+    expect(flat).not.toContain(mark(1));
+    // ★ 接着 3 条：剪枝但**尾部结论还在**
+    expect(flat).toContain(mark(2));
+    expect(flat).toContain(mark(4));
+    expect(flat).toContain('中间略去');
+    // 最近的一批：完整
+    expect(flat).toContain(mark(MAX_TOOL_RESULTS_IN_HISTORY + 4));
   });
 
   it('裁剪不影响没有超量的历史', () => {

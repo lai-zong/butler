@@ -183,6 +183,7 @@ export class DeepSeekModel implements ModelPort {
     if (call.maxOutputTokens !== undefined) body['max_tokens'] = call.maxOutputTokens;
     const tools = toApiTools(call.tools);
     if (tools) body['tools'] = tools;
+    applyThinking(body, call);
 
     const data = await this.request(body);
     const choice = data.choices?.[0];
@@ -258,6 +259,21 @@ export class DeepSeekModel implements ModelPort {
         max_tokens: call.maxOutputTokens ?? 2048,
       };
       if (call.temperature !== undefined) body['temperature'] = call.temperature;
+      /**
+       * ★★ 结构化调用**默认关思考**。
+       *
+       * 理由（实测到的真实故障）：
+       *   思考内容也算在 `max_tokens` 里。结构化调用本来就要一段完整 JSON，
+       *   预算被思考吃掉一半后，JSON 会在中途断掉 —— 而残缺的 JSON **必然解析失败**，
+       *   重试也还是断（因为每轮思考都会吃预算）。
+       *
+       * 实测复现：`decompose`（1024 token）+ 默认开思考
+       *   → 「结构化输出重试 3 次后仍被长度上限截断」，整个任务失败。
+       *
+       * 调用方要思考可以显式传 `thinking: 'enabled'`，
+       * 但那时应当同时给足 `maxOutputTokens`。
+       */
+      applyThinking(body, call, 'disabled');
 
       const data = await this.request(body);
       const choice = data.choices?.[0];
@@ -462,6 +478,40 @@ const CAPABILITY_TABLE: Record<string, ModelCapabilities> = {
     supportsThinking: true,
   },
 };
+
+/**
+ * 把思考模式的两个官方参数写进请求体。
+ *
+ * 官方文档（api-docs.deepseek.com/guides/thinking_mode）：
+ * ```
+ *   {"thinking": {"type": "enabled" | "disabled"}}
+ *   {"reasoning_effort": "low" | "high" | "max"}
+ * ```
+ * 思考模式**默认 enabled，effort 默认 high**。
+ *
+ * ★ 为什么这件事必须由我们显式管：
+ *   思考产生的内容**计入 `max_tokens`**。对结构化调用，
+ *   预算被思考吃掉就会产出残缺 JSON —— 而残缺 JSON 必然解析失败，
+ *   且重试也救不回来（每轮思考都会再吃一次）。
+ *   实测故障：`decompose` 1024 token + 默认思考 → 重试 3 次全截断 → 任务失败。
+ *
+ * ★ 另一条官方限制（也必须知道）：
+ *   思考模式下 `temperature` / `presence_penalty` / `frequency_penalty`
+ *   **不生效且不报错**。所以开思考时，我们精心调的 temperature 是白设的。
+ *
+ * @param fallback 调用方没显式指定时用的默认值
+ */
+export function applyThinking(
+  body: Record<string, unknown>,
+  call: Pick<ModelCall, 'thinking' | 'reasoningEffort'>,
+  fallback: 'enabled' | 'disabled' = 'enabled',
+): void {
+  const mode = call.thinking ?? fallback;
+  body['thinking'] = { type: mode };
+  if (call.reasoningEffort !== undefined) {
+    body['reasoning_effort'] = call.reasoningEffort;
+  }
+}
 
 /**
  * 查表；未知模型按保守默认。

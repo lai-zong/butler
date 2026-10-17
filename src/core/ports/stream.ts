@@ -23,6 +23,16 @@ export interface StreamCall {
   readonly tools?: readonly ModelToolSpec[];
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
+  /**
+   * 思考模式开关。流式路径**默认 enabled** —— 因为这里需要思考：
+   * 叙述要产出 `reasoning_content`（思考过程可视化是评分点），
+   * 工具循环也要靠推理才能正确选工具。
+   *
+   * ⚠️ 与结构化路径相反（那边默认 disabled，见适配器里的说明）。
+   */
+  readonly thinking?: 'enabled' | 'disabled';
+  /** 思考强度（官方 `reasoning_effort`），默认 high。 */
+  readonly reasoningEffort?: 'low' | 'high' | 'max';
   /** 用于取消（用户点了"停止"、或切换了会话） */
   readonly signal?: AbortSignal;
 }

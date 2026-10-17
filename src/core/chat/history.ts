@@ -33,25 +33,31 @@
 
 import type { ChatMessage } from '../chat/types.js';
 import { msg, type ModelMessage } from '../ports/model.js';
+import { HISTORY_TOKEN_BUDGET, planHistory } from './compaction.js';
 
 // ═══════════════════════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════════════════════
 
 /**
- * 最多带几轮历史。
+ * 单条历史消息的最大字符数（超出则截断头部保留尾部）。
  *
- * ⚠️ 4 轮是权衡的结果，不是随手定的：
- *   · 太少（1—2 轮）无法处理"那个""按你说的"这类跨轮指代
- *   · 太多（10+ 轮）会让每条 prompt 都背上几千 token，
- *     而第 8 轮的细节对第 10 轮几乎无用
- *   · 真正需要长期记住的东西**该进记忆库**，不是靠堆历史 ——
- *     那是本项目记忆系统的职责，历史只是短期指代上下文
+ * ⚠️ **这个常量现在只是兜底**，不再是主要的分层依据。
+ *    主依据是 `HISTORY_TOKEN_BUDGET`（按 token 装，约 30—60 轮）。
+ *    保留它是因为**单条超长消息**仍需截断 —— 否则一条 5 万字的回复
+ *    会独占全部预算，把别的轮次全挤出去。
+ */
+export const MAX_HISTORY_CHARS = 800;
+
+/**
+ * @deprecated 用 `compaction.ts` 的 `HISTORY_TOKEN_BUDGET` 取代。
+ *
+ * ★ 为什么废弃：**固定轮数是错误的判据**。
+ *   · 4 轮 × 800 字 ≈ 3K token，而上下文有 1M —— **主动丢掉了大量有用信息**
+ *   · 实测后果：用户说"那今晚就按你说的做"，模型答"我看不到那个方案"
+ *   ⚠️ 保留导出仅为不破坏既有引用（`buildServantHistoryMessages` 不用它）。
  */
 export const MAX_HISTORY_TURNS = 4;
-
-/** 单条历史消息的最大字符数（超出则截断头部保留尾部）。 */
-export const MAX_HISTORY_CHARS = 800;
 
 // ═══════════════════════════════════════════════════════════
 // 构造
@@ -71,38 +77,105 @@ export const MAX_HISTORY_CHARS = 800;
  *   又不改变它当前的任务性质。
  *
  * ⚠️ 不含本轮的用户消息 —— 调用方自己会带上，重复会出现两遍。
+ *
+ * ★ 分层结构（v7，见 `compaction.ts`）：
+ * ```
+ * ## 更早的摘要（较早的 N 条已压缩）    ← 层②，或"未压缩"的如实标注
+ *   …（摘要文本）
+ *
+ * ## 本次会话的最近对话                ← 层①，预算内原样保留
+ *   用户：…
+ *   管家：…
+ *
+ * ⚠️ 上面是**背景**。你现在要处理的是下面这条新消息…
+ * ```
  */
+/**
+ * `buildHistoryMessages` 的选项。
+ *
+ * ⚠️ 从 v7 起**不再有 `maxTurns`** —— 固定轮数是错误的判据
+ *    （4 轮 ≈ 3K token，而上下文有 1M，等于主动丢信息）。
+ *    改为按 token 预算分层，见 `compaction.ts`。
+ */
+export interface HistoryOptions {
+  /** 预算（token）。默认 `HISTORY_TOKEN_BUDGET`（24K，约 30—60 轮）。 */
+  readonly budgetTokens?: number;
+  readonly excludeLast?: boolean;
+  /**
+   * 更老历史的**摘要**（由层②压缩产生）。
+   *
+   * 给了它就放在最近对话之前，标注为"更早的摘要"；
+   * 不给且确实有更老的历史时，会**如实标注"较早内容未压缩"** ——
+   * 让模型知道自己漏了什么，比假装完整更有用。
+   */
+  readonly olderSummary?: string;
+}
+
 export function buildHistoryMessages(
   messages: readonly ChatMessage[],
-  opts?: { readonly maxTurns?: number; readonly excludeLast?: boolean },
+  opts?: HistoryOptions,
 ): readonly ModelMessage[] {
-  const maxTurns = opts?.maxTurns ?? MAX_HISTORY_TURNS;
-  const excludeLast = opts?.excludeLast ?? true;
+  const plan = planHistory(messages, {
+    budgetTokens: opts?.budgetTokens ?? HISTORY_TOKEN_BUDGET,
+    excludeLast: opts?.excludeLast ?? true,
+  });
 
-  // 去掉本轮用户消息（调用方会带）与未完成的消息
-  const pool = excludeLast
-    ? messages.filter((m) => m.status === 'done').slice(0, -1)
-    : messages.filter((m) => m.status === 'done');
+  if (plan.recent.length === 0 && plan.older.length === 0) return [];
 
-  if (pool.length === 0) return [];
+  const parts: string[] = [];
 
-  // 取最后 N 轮（一轮 = 用户问 + 管家答）
-  const recent = pool.slice(-maxTurns * 2);
+  // ── 层②：更老历史的摘要 ──
+  if (plan.older.length > 0) {
+    const summary = opts?.olderSummary;
+    if (summary !== undefined && summary.trim().length > 0) {
+      parts.push(`## 更早的摘要（较早的 ${plan.older.length} 条已压缩）\n\n${summary}`);
+    } else {
+      // ⚠️ 如实标注，不假装完整 —— 模型知道自己漏了什么，反而会收敛表述
+      parts.push(
+        `## 更早的内容（未压缩）\n\n` +
+          `此前还有 ${plan.older.length} 条对话（约 ${(plan.olderTokens / 1000).toFixed(1)}K token），` +
+          `未纳入本次上下文。如果用户的指代指向那些内容，**直接问清是哪一个** —— ` +
+          `不要猜，也不要声称"看不到全部"。`,
+      );
+    }
+  }
 
+  // ── 层①：预算内的最近对话 ──
   const lines: string[] = [];
-  for (const m of recent) {
+  for (const m of plan.recent) {
     const who = m.role === 'user' ? '用户' : m.role === 'butler' ? '管家' : m.role;
     lines.push(`${who}：${truncateHead(m.text, MAX_HISTORY_CHARS)}`);
   }
+  if (lines.length > 0) {
+    parts.push(`## 本次会话的最近对话（供你理解指代，不是当前任务）\n\n${lines.join('\n\n')}`);
+  }
 
-  return [
-    msg.system(
-      `## 本次会话的最近对话（供你理解指代，不是当前任务）\n\n` +
-        lines.join('\n\n') +
-        `\n\n⚠️ 上面是**背景**。你现在要处理的是下面这条新消息，` +
-        `不要回答上面已经回答过的问题。`,
-    ),
-  ];
+  parts.push(
+    `⚠️ 上面是**背景**。你现在要处理的是下面这条新消息，` +
+      `不要回答上面已经回答过的问题。`,
+  );
+
+  return [msg.system(parts.join('\n\n'))];
+}
+
+/** 供调用方/界面查看当前历史的 token 占用（不构造消息）。 */
+export function historyUsage(
+  messages: readonly ChatMessage[],
+  opts?: { readonly budgetTokens?: number },
+): {
+  readonly recentTokens: number;
+  readonly olderTokens: number;
+  readonly layered: boolean;
+  readonly budget: number;
+} {
+  const budget = opts?.budgetTokens ?? HISTORY_TOKEN_BUDGET;
+  const plan = planHistory(messages, { budgetTokens: budget });
+  return {
+    recentTokens: plan.recentTokens,
+    olderTokens: plan.olderTokens,
+    layered: plan.layered,
+    budget,
+  };
 }
 
 /**

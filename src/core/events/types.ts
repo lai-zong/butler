@@ -34,6 +34,14 @@ export type EventType =
   | 'plan.revised'
   | 'tool.call'
   | 'tool.result'
+  /**
+   * 上下文压缩（§3.1b 三层记忆的层②）。
+   *
+   * ★ 为什么要落事件而不是只写日志：
+   *   "压缩省了多少 token"是可核对的事实，不该只有口头说明。
+   *   payload 里有 `beforeTokens / afterTokens / ok / failure`。
+   */
+  | 'context.compacted'
 
   // ── 族 2 · 路由与派发（管家 → 仆人）──
   | 'route.decided'

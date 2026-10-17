@@ -43,6 +43,7 @@ import {
   type VerdictIssue,
 } from './types.js';
 import { buildHistoryMessages, buildServantHistoryMessages } from './history.js';
+import { planHistory, summarizeOlder } from './compaction.js';
 import { createTraceCollector } from './trace.js';
 import { toServantReportData } from './reports.js';
 import type { ServantId } from '../servants/types.js';
@@ -159,7 +160,47 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    *    不排除会出现两遍）；仆人的历史要**包含**它（要知道用户本轮说了什么）。
    */
   const priorMessages = chat.messagesOf(sessionId);
-  const history = buildHistoryMessages(priorMessages, { excludeLast: true });
+
+  /**
+   * ── ①a′ ★ 层②：更老的历史先压成摘要（只在超预算时发生）──
+   *
+   * ★ 为什么"只在超预算时"：
+   *   历史预算 24K token（约 30—60 轮），一般会话根本用不满。
+   *   所以这一步**绝大多数轮次是空转**（`older` 为空，直接跳过）——
+   *   不会为每轮对话多付一次模型调用。
+   *
+   * ⚠️ **压缩失败绝不让对话失败** —— 压缩是优化，不是主路径。
+   *    失败时摘要为空，`buildHistoryMessages` 会**如实标注"较早内容未压缩"**，
+   *    而不是假装完整（假装完整会让模型自信地用错前提）。
+   */
+  let olderSummary: string | undefined;
+  {
+    const plan = planHistory(priorMessages, { excludeLast: true });
+    if (plan.older.length > 0 && args.model !== undefined && args.model !== null) {
+      const compacted = await summarizeOlder({ model: args.model, older: plan.older });
+      if (compacted.summary !== undefined) {
+        olderSummary = compacted.summary;
+      }
+      // 尺寸轨迹落事件 —— "压缩省了多少"要可核对，不能只有我口头说
+      args.log.append({
+        type: 'context.compacted',
+        actor: 'butler',
+        payload: {
+          compactedCount: compacted.compactedCount,
+          beforeTokens: compacted.beforeTokens,
+          afterTokens: compacted.afterTokens,
+          ok: compacted.summary !== undefined,
+          ...(compacted.failure !== undefined ? { failure: compacted.failure } : {}),
+        },
+        createdAt: args.clock.now(),
+      });
+    }
+  }
+
+  const history = buildHistoryMessages(priorMessages, {
+    excludeLast: true,
+    ...(olderSummary !== undefined ? { olderSummary } : {}),
+  });
   const servantHistory = buildServantHistoryMessages(priorMessages);
 
   /**

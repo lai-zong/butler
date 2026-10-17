@@ -111,6 +111,36 @@ export interface ModelCall {
   readonly tools?: readonly ModelToolSpec[];
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
+  /**
+   * 思考模式开关（官方 API：`{"thinking":{"type":"enabled|disabled"}}`）。
+   *
+   * ★★ 为什么需要这个字段 —— 一条实测到的真实故障：
+   *
+   *   `deepseek-flash` **默认开启思考模式**（effort=high）。
+   *   而思考产生的内容**也算在 `max_tokens` 里**，于是：
+   *
+   *     maxOutputTokens=1024 的结构化调用 → 思考吃掉大部分预算
+   *     → JSON 被截断 → 重试 3 次仍截断 → **整个任务失败**
+   *
+   *   实测复现：`validate:1` 在 `decompose`（1024 token）处
+   *   报「结构化输出重试 3 次后仍被长度上限截断」。
+   *
+   * ★ 另一条官方限制：**思考模式下 `temperature` 不生效**
+   *   （"setting these parameters will not trigger an error but will also have no effect"）。
+   *   所以对需要稳定 JSON 的调用，开思考反而让我们精心调的 temperature 白设。
+   *
+   * ★ 因此按用途分开：
+   *   · 结构化产出（路由/分解/提取/监督）→ `disabled`：要的是确定性的 JSON
+   *   · 工具执行（servant）              → `enabled`：需要推理才能正确用工具
+   *   · 叙述（narration）                → `enabled`：**我们就是要让用户看到思考**
+   */
+  readonly thinking?: 'enabled' | 'disabled';
+  /**
+   * 思考强度（官方 API：`reasoning_effort`）。默认 `high`。
+   *
+   * ⚠️ 官方映射：`minimal`/`low` → low · `medium`/`high` → high · `max`/`ultra` → max
+   */
+  readonly reasoningEffort?: 'low' | 'high' | 'max';
 }
 
 /**
@@ -124,6 +154,7 @@ export type ModelPurpose =
   | 'servant' // 仆人执行
   | 'reflection' // 反思
   | 'memoryExtraction' // 记忆提取
+  | 'compaction' // 上下文摘要压缩（把更老的历史压成摘要）
   | 'translation'; // 英文思考增量翻译
 
 export interface ModelUsage {

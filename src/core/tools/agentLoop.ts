@@ -725,8 +725,25 @@ function wrapToolOutput(args: {
  *
  * 为什么必须做：一个读文件的工具返回几千字符，
  * 八轮下来上下文就爆了 —— 而且早期结果对后续决策价值递减。
- * 用占位替换既保住了"这里发生过一次工具调用"的事实，
- * 又不让体积无限增长。
+ *
+ * ★★ v7 改进：从"直接抹掉"改成"**分三档压缩**"（§3.1b 层①）。
+ *
+ *   旧做法：超出 N 条的一律替换成 `（较早的工具结果已省略…）` —— **信息全丢**。
+ *   后果很隐蔽：那批结果里可能正好有"这个文件不存在"这种关键结论，
+ *   抹掉之后模型会**重复踩同一个坑**（再读一次、再失败一次）。
+ *
+ *   新做法（三档，按新旧程度）：
+ *   ```
+ *   最近 N 条        → 完整保留
+ *   中间那批         → 剪枝成「头 + 中略 + 尾」（**保住结论**）
+ *   最老的（再 N 条外）→ 占位符（此时确实已无决策价值）
+ *   ```
+ *
+ *   ⚠️ 为什么保留**尾部**：命令/文件的结论常在最末
+ *      （`EXIT 0`、`共 12 项`、`未找到`）。剪掉尾巴等于剪掉答案。
+ *
+ *   ⚠️ **原文不受影响**：完整结果已在 `tool.result` 事件里落盘，
+ *      审计视图与精确重放读的都是事件而非这里的消息数组。
  */
 export function trimHistory(messages: ModelMessage[]): void {
   const resultIndexes: number[] = [];
@@ -739,25 +756,56 @@ export function trimHistory(messages: ModelMessage[]): void {
   const excess = resultIndexes.length - MAX_TOOL_RESULTS_IN_HISTORY;
   if (excess <= 0) return;
 
+  // 超出部分里，**较新的那一半剪枝**（保结论），**更老的那一半才占位**
+  const pruneCount = Math.ceil(excess / 2);
+
   for (let i = 0; i < excess; i++) {
     const idx = resultIndexes[i];
     if (idx === undefined) continue;
     const m = messages[idx];
     if (!m) continue;
+
+    const shouldPrune = i >= excess - pruneCount;
+
     messages[idx] = {
       role: m.role,
-      content: m.content.map((p) =>
-        p.kind === 'toolResult'
-          ? {
-              kind: 'toolResult' as const,
-              callId: p.callId,
-              result: '（较早的工具结果已省略以控制上下文）',
-              isError: p.isError ?? false,
-            }
-          : p,
-      ),
+      content: m.content.map((p) => {
+        if (p.kind !== 'toolResult') return p;
+        if (!shouldPrune) {
+          return {
+            kind: 'toolResult' as const,
+            callId: p.callId,
+            result: '（较早的工具结果已省略以控制上下文 · 原文见审计）',
+            isError: p.isError ?? false,
+          };
+        }
+        // 剪枝：保住头尾
+        const flat = typeof p.result === 'string' ? p.result : JSON.stringify(p.result ?? null);
+        return {
+          kind: 'toolResult' as const,
+          callId: p.callId,
+          result: shrinkResult(flat, 600),
+          isError: p.isError ?? false,
+        };
+      }),
     };
   }
+}
+
+/**
+ * 把一段工具结果缩成「头 + 中略 + 尾」。
+ *
+ * ⚠️ 与 `core/chat/compaction.ts` 的 `pruneToolOutput` 同构，
+ *    但这里是**消息内**的体积控制，阈值更小（默认 600 字）。
+ *    没有复用那个函数是因为它面向 `ChatMessage`，这里是 `ModelMessage` 的内容块，
+ *    强行统一会把两处都拧成不自然的样子。
+ */
+function shrinkResult(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const half = Math.max(100, Math.floor((maxChars - 40) / 2));
+  const head = text.slice(0, half);
+  const tail = text.slice(-half);
+  return `${head}\n（中间略去 ${text.length - head.length - tail.length} 字 · 原文见审计）\n${tail}`;
 }
 
 function truncate(text: string, limit: number): string {
