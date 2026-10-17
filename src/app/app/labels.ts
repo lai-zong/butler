@@ -76,13 +76,31 @@ export const VERDICT_WORD: Record<string, string> = {
   clarifying: '需要你补充信息',
 };
 
-/** 仆人 → 中文名 */
+// ★ v7（F3）：领域名的唯一来源是核心模块，界面不自己维护一份
+import { domainName } from '@/core/domain/types.js';
+
+/**
+ * 领域 → 中文名（v7 · F3）
+ *
+ * ★★ 改了两件事：
+ *
+ *   ① **值去掉「仆人」**：'生活仆人' → '生活'
+ *      ⚠️ 单执行者架构下没有仆人。界面继续写「生活仆人」等于
+ *         告诉用户一个不存在的东西 —— 这是**界面在撒谎**，不只是措辞旧。
+ *
+ *   ② **不再自己维护一张表**，改为委托 `domainName()`
+ *      ⚠️ 原先 `core/domain/types.ts` 与这里各有一份领域名映射。
+ *         两份表的代价是**漂移**：改一处另一处不知道（E3 已踩过同类问题）。
+ *
+ *   ⚠️ 常量名仍是 `SERVANT_NAME` —— 它有 13 处引用，
+ *      改名与「值修正」混在一起会让 diff 无法审阅。名字单独一次改。
+ */
 export const SERVANT_NAME: Record<string, string> = {
-  life: '生活仆人',
-  health: '健康仆人',
-  study: '学习仆人',
-  work: '办公仆人',
-  code: '代码仆人',
+  life: domainName('life'),
+  health: domainName('health'),
+  study: domainName('study'),
+  work: domainName('work'),
+  code: domainName('code'),
   butler: '管家',
 };
 
