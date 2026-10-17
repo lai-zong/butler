@@ -154,8 +154,24 @@ export function isDuplicate(existing: MemoryEntry, cand: MemoryCandidate): boole
   if (existing.memClass !== cand.scope.memClass) return false;
 
   if (cand.scope.memClass === 'domain') {
-    const ownerServant = existing.owner.kind === 'servant' ? existing.owner.servant : undefined;
-    if (ownerServant !== cand.scope.domainOwner) return false;
+    /**
+     * ★★ v7（A2）：把"领域标识"从 `owner.servant` 改为独立的 `domain` 标签。
+     *
+     * ⚠️ 这一行是**一个真实 bug 的修复**，不是单纯重构。
+     *
+     *   原写法：
+     *     const ownerServant = existing.owner.kind === 'servant'
+     *       ? existing.owner.servant : undefined;
+     *     if (ownerServant !== cand.scope.domainOwner) return false;
+     *
+     *   当 `MemoryOwner` 里的 `servant` 分支被去掉后，`ownerServant` 恒为
+     *   `undefined`，与 `'life'` 不等 → **永远判为"不重复"** →
+     *   **候选无限堆积，去重完全失效**。
+     *
+     *   上一轮我改 owner 时正是踩了这个 —— 测试抓到了 4 个去重用例失败。
+     *   当时的判断是"回退查清"，现在查清了：**去重靠的是领域，不是归属**。
+     */
+    if (existing.domain !== cand.scope.domainOwner) return false;
   }
 
   return similarity(existing.content, cand.content) >= DUPLICATE_SIMILARITY;

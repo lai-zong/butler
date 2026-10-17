@@ -76,11 +76,13 @@ export function selectPrinciples(args: {
     const successRate = applied === 0 ? 0.5 : succeeded / applied;
 
     // 该领域的领域原则额外加权（领域原则本来就为该领域场景提炼）
+    //
+    // ★ v7（A2）：判定依据从 `owner.servant` 改为 `domain` 标签 ——
+    //   "这条原则属于哪个领域"与"谁写的"是两件事（单执行者下 owner 恒为管家）。
     const domainBonus =
       args.servant !== undefined &&
       p.memClass === 'domain' &&
-      p.owner.kind === 'servant' &&
-      p.owner.servant === args.servant
+      p.domain === args.servant
         ? 0.15
         : 0;
 

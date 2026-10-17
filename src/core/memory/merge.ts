@@ -201,7 +201,7 @@ export function mergeMemories(args: {
       // 证据链累加（去重）
       evidence: [...new Set([...keep.evidence, ...absorb.evidence])],
       lifecycle: 'active',
-      ...(keep.owner.kind === 'servant' ? { domainOwner: keep.owner.servant } : {}),
+      ...(keep.domain !== undefined ? { domainOwner: keep.domain } : {}),
       ...(keep.subject !== undefined ? { subject: keep.subject } : {}),
     },
   );
@@ -315,9 +315,9 @@ function compatible(a: MemoryEntry, b: MemoryEntry): boolean {
   if (a.memClass !== b.memClass) return false;
   if (a.kind !== b.kind) return false;
   if (a.memClass === 'domain') {
-    const sa = a.owner.kind === 'servant' ? a.owner.servant : undefined;
-    const sb = b.owner.kind === 'servant' ? b.owner.servant : undefined;
-    if (sa !== sb) return false;
+    // ★ v7（A2）：「同一归属」改为「同一领域标签」——
+    //   合并池的边界是领域，不是谁写的（单执行者下 owner 恒为管家）。
+    if (a.domain !== b.domain) return false;
   }
   // 原则合并要特别小心：条件不同的原则不该合并
   if (a.kind === 'principle') {
