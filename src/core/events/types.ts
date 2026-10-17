@@ -45,6 +45,8 @@ export type EventType =
 
   // ── 族 2 · 路由与派发（管家 → 仆人）──
   | 'route.decided'
+  /** v7：任务契约已写下（监督员核对的唯一标准，本身也要可审计） */
+  | 'contract.written'
   /**
    * @deprecated 用 `route.assumed` 取代（v7 · D-4）。
    *
@@ -174,6 +176,7 @@ export const EVENT_FAMILIES = {
   ],
   routing: [
     'route.decided',
+    'contract.written',
     'route.clarify',
     'route.assumed',
     'route.rerouted',

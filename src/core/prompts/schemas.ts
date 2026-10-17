@@ -114,6 +114,48 @@ export const dispatchPlanSchema = z.object({
 export type DispatchPlan = z.infer<typeof dispatchPlanSchema>;
 
 // ═══════════════════════════════════════════════════════════
+// 任务契约（v7 · D-5）—— 替代 dispatchPlanSchema
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 任务契约 —— 干活前先写下的"要做什么"。
+ *
+ * ★★ 与 `dispatchPlanSchema` 的**根本区别**：
+ *
+ *   | | dispatchPlan（旧）| contract（新）|
+ *   |---|---|---|
+ *   | 产物 | **分几步、每步派给谁** | **要做什么、怎样算做好** |
+ *   | 用途 | 指挥多个执行者 | **给监督员当核对标准** |
+ *   | 为什么改 | 只有一个执行者，拆步骤没意义 | 契约可以被逐条核对 |
+ *
+ * ⚠️ 刻意**不包含"步骤"与"派给谁"** ——
+ *   那两样只在"多个执行者"的前提下才有意义。
+ */
+export const contractSchema = z.object({
+  deliverable: z
+    .string()
+    .min(1)
+    .describe('一句话说清交付物是什么（用户拿到什么）。不要写过程，写结果'),
+  criteria: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(6)
+    .describe(
+      '判据：怎样算做好了。每条都要能被逐条核对（是/否），不要写"尽量""努力"这类无法判定的词',
+    ),
+  mustObey: z
+    .array(z.string().min(1))
+    .max(6)
+    .describe('必须遵守的硬约束（过敏原、预算上限、截止时间等）。没有就填空数组'),
+  domains: z
+    .array(z.enum(['life', 'health', 'study', 'work', 'code', 'none']))
+    .min(1)
+    .describe('这件事涉及哪些领域（可多选）。判不出就填 none —— 不要硬猜'),
+});
+
+export type TaskContractPlan = z.infer<typeof contractSchema>;
+
+// ═══════════════════════════════════════════════════════════
 // 仆人 · 汇报
 // ═══════════════════════════════════════════════════════════
 

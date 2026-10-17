@@ -24,6 +24,8 @@ export const PROMPT_VERSIONS = {
   butlerSystem: 'butler.system@1',
   routerTask: 'butler.task.route@1',
   dispatchTask: 'butler.task.dispatch@1',
+  /** v7：写任务契约（替代 routerTask + dispatchTask 的合并产物） */
+  contractTask: 'butler.task.contract@1',
   servantSystem: 'servant.system@1',
   servantTask: 'servant.task.execute@1',
   supervisorTask: 'butler.task.supervise@1',
@@ -96,6 +98,84 @@ export function routerTask(userGoal: string): string {
    clarifyingQuestion 作为"假设"告诉用户，让他一眼能纠正。
    什么都不做的代价，比"按最可能的理解做错"更高。
 `;
+}
+
+/**
+ * 任务契约提示词（v7 · D-5）。
+ *
+ * ★★ 这个提示词**替代**了 `routerTask` 与 `dispatchTask` 两个。
+ *
+ * ═══ 合并的理由 ═══
+ *
+ *   旧流程：先 `router()` 判断"该派给谁"，再 `decompose()` 拆成多步派发。
+ *   实测：路由 4/4 全判同一个领域（置信度 0.72—0.85）—— **没有信息量**；
+ *         真正的多领域协作是"拆解"阶段做的。
+ *   新流程：**一次调用**产出契约，其中包含"涉及哪些领域"。
+ *
+ *   ★ 少一次 LLM 调用，且领域判断与交付物定义在同一次思考里完成 ——
+ *     比"先猜领域、再拆步骤"更连贯。
+ *
+ * ═══ 三条写作纪律（写进提示词，因为直接影响契约质量）═══
+ *
+ *   ① **判据必须可判定**（是/否），不许写"尽量""努力"
+ *      —— 否则监督员无法逐条核对，契约就失去了意义
+ *   ② **判不出领域就填 none**，不要硬猜
+ *      —— 错误的领域标签会让监督员用错纪律复核
+ *   ③ **不写步骤、不写派给谁** —— 只有一个执行者，那两样没有意义
+ */
+export function contractTask(args: {
+  readonly userGoal: string;
+  readonly recalledMemories: readonly { id: string; content: string; memClass: string }[];
+}): string {
+  const memBlock =
+    args.recalledMemories.length === 0
+      ? '（本次没有召回任何记忆）'
+      : args.recalledMemories
+          .map((m) => `- [${m.id}] (${m.memClass}) ${m.content}`)
+          .join('\n');
+
+  return `用户说：「${args.userGoal}」
+
+## 你想起的相关记忆
+
+${memBlock}
+
+## 你的任务：先写一份**任务契约**，然后自己去干
+
+契约是一份**成文的标准** —— 干完之后，会有一个监督员拿着它**逐条核对**你的产出。
+所以它写得清不清楚，直接决定你能不能通过核对。
+
+### 交付物（deliverable）
+
+一句话说清**用户拿到什么**。写结果，不写过程。
+
+- ✓ 「三套可直接执行的晚餐方案，每套列出食材与做法」
+- ✗ 「我先分析冰箱，然后比较几个方案」（这是过程）
+
+### 判据（criteria）
+
+**怎样算做好了**。每条都要能被判定为"做到了 / 没做到"。
+
+- ✓ 「每套方案都不含花生」
+- ✓ 「给出具体食材用量，不是"适量"」
+- ✗ 「方案要尽量合理」（**无法判定**，监督员没法核对）
+
+### 必须遵守（mustObey）
+
+从上面的记忆里提取**硬约束**（过敏原、预算上限、截止时间等）。
+⚠️ 只写**记忆里明确有依据**的，不要凭常识补充 —— 编造约束会让正确方案被否掉。
+
+### 涉及领域（domains）
+
+这件事涉及哪些领域（可多选）：life 生活 / health 健康 / study 学习 / work 办公 / code 代码。
+
+⚠️ **判不出来就填 none**，不要硬猜。
+领域标签只用于两件事：监督员选哪套专业纪律来复核、反思时划分作用域。
+它**不影响你怎么干活**，所以填错比填 none 的害处更大。
+
+---
+
+现在写出契约。**写完契约你就直接开始干** —— 不要问用户，不要等他确认。`;
 }
 
 export function dispatchTask(args: {
