@@ -9,6 +9,7 @@
  *   3. 演化：fitness + lifecycle，淘汰只降权不删除
  */
 
+import type { DomainId } from '../domain/types.js';
 import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -128,7 +129,35 @@ export interface EvolutionEvent {
 // 记忆条目
 // ═══════════════════════════════════════════════════════════
 
-/** 记忆归属：管家（全局层）或某个仆人（领域层）。 */
+/**
+ * 记忆归属 —— **谁写的这条记忆**。
+ *
+ * ⚠️ **当前仍保留 `kind: 'servant'`**，但它在 v7 目标架构里是**待删除**的
+ *    （「管家+仆人」→「管家+监督员」的 A2 步，见 `docs/refactor-plan.md`）。
+ *
+ * ═══ 为什么这一步单独做，不塞进别的提交 ═══
+ *
+ *   实测：把 `servant` 从这个联合里去掉，会引发 **38 处类型错误、分布在 10 个文件**。
+ *   其中 `store.ts` 的 `canRead` / `canWrite` 是**安全核心**。
+ *
+ *   那不是"改一个类型"，是**一整块权限模型的替换**：
+ *     · `domain_not_owner` 拒绝原因要消失
+ *     · 领域记忆不再有权限边界（单执行者，管家读写全部）
+ *     · 敏感域授权要重写（`grantedTo` 没有主体了）
+ *
+ *   ★ 这类改动**必须单独一次做完并单独验证** ——
+ *     塞进别的提交里，出问题时无法归因。
+ *
+ * ═══ 目标形态（已定，等 A2 执行）═══
+ *
+ *   ```ts
+ *   export type MemoryOwner = { readonly kind: 'butler'; readonly userId: string };
+ *   ```
+ *
+ *   ★ 关键区分：`owner`（谁写的）与 `domain`（关于哪个领域）是**两件正交的事**。
+ *     旧模型把它们挤在 `owner` 里，因为旧架构假设"领域 = 某个执行者的地盘"。
+ *     目标形态拆开：`domain` 已成为 `MemoryEntry` 的独立字段（本步已加）。
+ */
 export type MemoryOwner =
   | { readonly kind: 'butler'; readonly userId: string }
   | { readonly kind: 'servant'; readonly userId: string; readonly servant: ServantId };
@@ -138,6 +167,9 @@ export type MemoryOwner =
  *
  * **逐次授权 + 按任务失效**：不做长期免授权（§ 2.2⑥）。
  * 每次授权与读取都写审计事件（grant.used）。
+ *
+ * ⚠️ `grantedTo` 在目标架构里也应删除（单执行者下"授权给谁"只有一个答案），
+ *    与 `MemoryOwner` 一起归入 A2 步。
  */
 export interface MemoryGrant {
   readonly taskId: string;
@@ -148,6 +180,7 @@ export interface MemoryGrant {
   /** 授权用途，供审计展示 */
   readonly purpose: string;
 }
+
 
 /** 凭证类记忆："可用不可见"。 */
 export interface CredentialCapability {
@@ -231,6 +264,24 @@ export interface MemoryEntry {
   readonly revivedCount: number;
 
   readonly scope: 'global' | 'domain' | 'session';
+
+  /**
+   * 领域标签 —— **这条记忆关于哪个领域**（v7 新增）。
+   *
+   * ★ 它替代了旧模型里「`owner.kind: 'servant'` 的 servant 字段」，
+   *   但语义完全不同：
+   *     · 旧：这条记忆**属于某个仆人**（权限边界 —— 别的仆人看不到）
+   *     · 新：这条记忆**关于某个领域**（标签 —— 用于反思作用域与召回过滤）
+   *
+   * ⚠️ 为什么还需要它（不能干脆删掉领域概念）：
+   *   ① 创新点①（分层反思）的隔离靠它 —— 每份领域反思只喂本领域记忆
+   *   ② 监督员的"领域视角"复核要知道该用哪套纪律（`DOMAIN_DISCIPLINE`）
+   *   ③ 召回时可按领域过滤（"这次是做饭的事，优先看健康与生活"）
+   *
+   * `undefined` 表示"不特定于某个领域"（如全局事实）。
+   */
+  readonly domain?: DomainId;
+
   readonly version: number;
 
   /** 原则专属：效果跟踪 */
