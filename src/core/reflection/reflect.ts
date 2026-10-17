@@ -116,10 +116,27 @@ export async function reflectServant(args: {
 
   args.log.append({
     type: 'reflection.started',
-    actor: 'servant',
-    servantId: servant,
+    /**
+     * ★★ v7（批次1b 前置）：`actor` 从 `'servant'` 改为 `'butler'`。
+     *
+     * ⚠️ 这是一个**数据撒谎**的修复，不是美化命名：
+     *    E4 之后 `servant` 这个变量装的是**领域值**（'life'/'health'…），
+     *    而 `actor: 'servant'` + `servantId: 'life'` 读起来是
+     *    「仆人 life 开始反思了」—— **但那个意义上没有仆人**。
+     *
+     *    领域信息改放 payload.domain，语义就对了：
+     *    「管家在 life 这个领域做了一次反思」。
+     *
+     * ★ 为什么不直接改成 `actor: 'domain'`：
+     *    `EventActor` 是个封闭枚举，加值会牵动 I4 鉴权不变量
+     *    以及 replay/bootstrap 的序列化。那是一次事件模型改动，
+     *    单独做、单独验证 —— 不塞进这一小步。
+     */
+    actor: 'butler',
     payload: {
       layer: 'domain',
+      /** v7：这次反思针对哪个领域（取代原来语义错误的 servantId） */
+      domain: servant,
       materials: {
         ownReports: args.input.ownReports.length,
         ownDomainMemories: args.input.ownDomainMemories.length,
@@ -161,10 +178,12 @@ export async function reflectServant(args: {
 
   args.log.append({
     type: 'reflection.done',
-    actor: 'servant',
-    servantId: servant,
+    // ★ 同 `reflection.started`：actor 不再是 'servant'（没有仆人了）
+    actor: 'butler',
     payload: {
       layer: 'domain',
+      /** v7：这次反思针对哪个领域 */
+      domain: servant,
       candidateCount: candidates.length,
       candidates: candidates.map((c) => ({ kind: c.kind, content: c.content, confidence: c.confidence })),
       usage: result.usage,

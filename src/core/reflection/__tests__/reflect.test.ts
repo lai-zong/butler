@@ -233,7 +233,20 @@ describe('仆人反思 · 产出与事件', () => {
     const done = log.byType('reflection.done');
     expect(done).toHaveLength(1);
     expect(done[0]?.payload).toMatchObject({ layer: 'domain', candidateCount: 1 });
-    expect(done[0]?.servantId).toBe('life');
+
+    /**
+     * ★★ v7（批次1b 前置）：断言随事实修正。
+     *
+     * ⚠️ 旧断言是 `done[0]?.servantId === 'life'` ——
+     *    但 E4 之后那个值装的是**领域**，事件却声称"仆人 life 干的"，
+     *    **是数据在撒谎**。所以改成断言真实语义：
+     *      · actor 是 butler（没有仆人了）
+     *      · 领域放在 payload.domain
+     */
+    expect(done[0]?.actor).toBe('butler');
+    expect(done[0]?.servantId).toBeUndefined();
+    expect((done[0]?.payload as { domain?: string }).domain).toBe('life');
+
     // 提示词版本要记录（方案 § 5.2 可复现信息）
     expect((done[0]?.payload as { promptVersion?: string }).promptVersion).toContain('reflection.servant');
   });
