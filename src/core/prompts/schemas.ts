@@ -342,7 +342,19 @@ export const supervisionSchema = z.object({
           .enum(['contract', 'domain', 'global'])
           .describe('contract=契约视角；domain=领域纪律；global=硬约束/记忆/原则'),
         severity: z.enum(['info', 'warn', 'block']),
-        message: z.string().min(1).describe('问题是什么，一句话'),
+        /**
+         * ⚠️ 这里**接受三个字段名**，是因为实测撞到过：
+         *    模型在同一个项目里见过 `servantReportSchema.findings`
+         *    （字段叫 `statement`），于是写监督结果时也用了 `statement`，
+         *    导致 `message` 缺失、整次调用重试 3 次后失败。
+         *
+         * ★ 这是项目里已有的做法（见 `findingSchema` 也接受 statement/content）：
+         *   不是放宽校验，而是**承认模型会混用同义字段名**，
+         *   再由 `normalizeSupervisionFinding` 收敛成一个。
+         */
+        message: z.string().min(1).optional().describe('问题是什么，一句话'),
+        statement: z.string().min(1).optional().describe('message 的别名'),
+        content: z.string().min(1).optional().describe('message 的别名'),
         evidence: z.array(z.string()).describe('支撑证据（引用产出里的原话）'),
       }),
     )

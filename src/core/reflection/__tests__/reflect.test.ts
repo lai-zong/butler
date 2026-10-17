@@ -20,7 +20,7 @@ import {
   buildServantReflectionInput,
   reflectButler,
   reflectServant,
-  servantReflectionSystem,
+  domainReflectionSystem,
   summarizeReport,
 } from '../reflect.js';
 
@@ -169,13 +169,31 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
     }
   });
 
-  it('系统提示明确了边界，且要求"提不出就返回空"', () => {
-    const sys = servantReflectionSystem('life');
-    expect(sys).toContain('不可越界');
-    expect(sys).toContain('不要评价别的仆人');
-    expect(sys).toContain('宁可少提');
-    // 空答案是允许的 —— 否则模型会为了"有产出"而编造
+  /**
+   * ★ v7（E2）：断言随提示词重写更新。
+   *
+   * ⚠️ 旧断言检查的是「不可越界」「不要评价别的仆人」——
+   *    那是**仆人架构**的边界表述（隐含"有别的仆人在别处干别的"）。
+   *    新架构没有仆人，那句话会诱导模型去找一个不存在的交付对象。
+   *
+   * ✅ 新断言检查新提示词的三个实质保证：
+   *    ① 隔离靠「不在入参里」，而不是靠叮嘱"别越界"
+   *    ② 领域纪律被真的写进提示词（不是空泛的"注意专业"）
+   *    ③ 空答案被明确允许（否则模型会为了有产出而编造）
+   */
+  it('系统提示写明了隔离机制、领域纪律与「可以什么都不提」', () => {
+    const sys = domainReflectionSystem('life');
+
+    // ① 隔离机制：讲的是入参裁剪
+    expect(sys).toContain('不在你的输入里');
+    expect(sys).toContain('刻意的设计');
+
+    // ② 领域纪律被真的写进去
+    expect(sys).toContain('这个领域的专业纪律');
+
+    // ③ 空答案是允许的
     expect(sys).toContain('空数组');
+    expect(sys).toContain('宁可少提');
   });
 });
 

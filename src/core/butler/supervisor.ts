@@ -37,8 +37,29 @@ import { renderContractForReview, type TaskContract } from './contract.js';
 import { DOMAIN_DISCIPLINE, domainName } from '../domain/types.js';
 import type { ServantReport } from '../servants/types.js';
 
+/**
+ * 归一化后的发现 —— message **必定存在**。
+ *
+ * ⚠️ schema 里 message 是可选（为了容忍模型用 statement/content），
+ *    但**出了 supervise() 之后就不该再有可选的 message** ——
+ *    否则每个消费方都要处理 undefined，而那个分支永远不该发生。
+ */
+export interface SupervisionFinding {
+  readonly viewpoint: 'contract' | 'domain' | 'global';
+  readonly severity: 'info' | 'warn' | 'block';
+  readonly message: string;
+  readonly evidence: readonly string[];
+}
+
+/** 归一化后的监督输出：findings 的 message 必有值。 */
+export interface NormalizedSupervisionOutput {
+  readonly criteriaChecks: SupervisionOutput['criteriaChecks'];
+  readonly findings: readonly SupervisionFinding[];
+  readonly summary: string;
+}
+
 export interface SupervisionResult {
-  readonly output: SupervisionOutput;
+  readonly output: NormalizedSupervisionOutput;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   readonly promptVersion: string;
 }
@@ -111,7 +132,37 @@ export async function supervise(args: {
     ],
   });
 
-  const output = result.value;
+  const raw = result.value;
+
+  /**
+   * ⚠️ 归一化 findings：模型可能用 `statement` / `content` 而不是 `message`
+   *    （它在本项目里见过 `servantReportSchema` 的同类字段）。
+   *    实测撞到过：`message` 缺失 → 整次监督调用重试 3 次后失败。
+   *
+   * ★ 缺 message 的条目**直接丢弃并记数**，不编造内容 ——
+   *   一条没有描述的问题对对账毫无用处，留着只会让摘要变噪。
+   */
+  let droppedFindings = 0;
+  const normalizedFindings = raw.findings.flatMap((f) => {
+    const message = (f.message ?? f.statement ?? f.content ?? '').trim();
+    if (message.length === 0) {
+      droppedFindings += 1;
+      return [];
+    }
+    return [
+      {
+        viewpoint: f.viewpoint,
+        severity: f.severity,
+        message,
+        evidence: f.evidence,
+      },
+    ];
+  });
+
+  const output = {
+    ...raw,
+    findings: normalizedFindings,
+  };
 
   // ═══════════════════════════════════════════════════════════
   // ★★ 补齐漏核的判据（fail-closed）
@@ -163,6 +214,8 @@ export async function supervise(args: {
     actor: 'supervisor',
     payload: {
       findingCount: output.findings.length,
+      /** 因缺 message 被丢弃的条目数（非 0 说明模型输出不规范） */
+      droppedFindings,
       /** 判据总数 / 满足数 —— 界面可直接显示「5/6 条判据满足」 */
       criteriaTotal: args.contract.criteria.length,
       criteriaChecked: criteriaChecks.length,

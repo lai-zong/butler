@@ -11,7 +11,7 @@ import { route } from '../butler/router.js';
 import { writeContract } from '../butler/contract.js';
 import { runButler } from '../butler/execute.js';
 import { verifyHardConstraints, type HardConstraintReport } from '../butler/hardConstraints.js';
-import { supervise } from '../butler/supervisor.js';
+import { supervise, type NormalizedSupervisionOutput } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { SERVANT_BOUNDARY } from '../servants/types.js';
 import type { ToolFramework } from '../tools/framework.js';
@@ -30,7 +30,6 @@ import type { TaskContract } from '../butler/contract.js';
 import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
-import type { SupervisionOutput } from '../prompts/schemas.js';
 import type { RoutingDecision } from '../prompts/schemas.js';
 
 export interface RunSessionArgs {
@@ -175,7 +174,7 @@ export interface RunSessionResult {
    */
   readonly injectedConstraints: readonly InjectedConstraint[];
   readonly reports: readonly ServantReport[];
-  readonly supervision: SupervisionOutput;
+  readonly supervision: NormalizedSupervisionOutput;
   /** 硬约束机械校验结果（确定性判定，见 hardConstraints.ts） */
   readonly hardConstraints: HardConstraintReport;
   /** 原则注入与违背检测结果（方案 § 8.8 效果验证） */

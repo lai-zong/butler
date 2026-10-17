@@ -27,7 +27,9 @@ import { msg, type ModelPort } from '../ports/model.js';
 import { PROMPT_VERSIONS, reflectionButlerTask, reflectionServantTask } from '../prompts/butler.js';
 import { reflectionSchema } from '../prompts/schemas.js';
 import type { MemoryClass, MemoryKind } from '../memory/types.js';
-import type { DomainId } from '../domain/types.js';
+// ★ v7（E2）：反思改用领域纪律（`DOMAIN_DISCIPLINE`），
+//   不再依赖旧 `SERVANT_BOUNDARY[...].test`（那个字段在新域模块里已废除）。
+import { DOMAIN_DISCIPLINE, domainName, type DomainId } from '../domain/types.js';
 import { SERVANT_BOUNDARY, type ServantId, type ServantReport } from '../servants/types.js';
 import type { ClockPort } from '../ports/clock.js';
 
@@ -134,7 +136,7 @@ export async function reflectServant(args: {
     temperature: 0.3,
     maxOutputTokens: 2048,
     messages: [
-      msg.system(servantReflectionSystem(servant)),
+      msg.system(domainReflectionSystem(servant as unknown as DomainId)),
       msg.user(
         reflectionServantTask({
           servant: `${SERVANT_BOUNDARY[servant].name}（${servant}）`,
@@ -180,20 +182,46 @@ export async function reflectServant(args: {
   };
 }
 
-/** 仆人反思的系统提示。 */
-export function servantReflectionSystem(servant: ServantId): string {
-  const b = SERVANT_BOUNDARY[servant];
-  return `你是「${b.name}」，现在做**会话后的自我反思**。
+/**
+ * 反思的系统提示（v7 · E2：改为按领域）
+ *
+ * ★★ 与旧 `servantReflectionSystem` 的两处实质区别：
+ *
+ *   ① **不再用 `SERVANT_BOUNDARY[servant].test`**
+ *      ⚠️ `test` 是旧架构的「路由判据」（"什么请求该分给这个仆人"）。
+ *         A1 的 `DOMAIN_INFO` 已刻意**删掉 test** —— 没路由了，判据没有边界可划。
+ *         而反思提示词仍在读它，等于依赖一个**新模块里已不存在的概念**。
+ *
+ *      ✅ 改为 `DOMAIN_DISCIPLINE`：那 27 条**执行纪律**（如「油 ≤ 5g/人/餐」）。
+ *         反思要的正是"这个领域的专业标准是什么"，不是"什么请求归我"。
+ *
+ *   ② **措辞从「你是某个仆人」改为「你在某个领域做反思」**
+ *      ⚠️ 旧措辞隐含"有别的仆人在别处干别的"，这个前提已经不存在了。
+ *         留着会诱导模型写"这超出我的领域，交给别的仆人"—— 但没有别人可交。
+ *
+ *   ★ 隔离仍然完整（创新点①的根本）：
+ *     "不进参就看不见" —— 隔离靠**入参裁剪**，不靠提示词叮嘱"不要越界"。
+ */
+export function domainReflectionSystem(domain: DomainId): string {
+  const rules = DOMAIN_DISCIPLINE[domain];
+  const name = domainName(domain);
+  const ruleBlock =
+    rules.length === 0
+      ? '（这个领域没有专门纪律，按通用标准反思）'
+      : rules.map((r) => `- ${r}`).join('\n');
 
-## 你的反思范围（不可越界）
+  return `你在「${name}」这个领域做**会话后的反思**。
 
-你的领域是：${b.domain}
-判据：${b.test}
+## 你的反思范围
 
-**你只能反思你自己领域内的事。** 关于其它领域：
-- 不要提建议（那是别的仆人的职责）
-- 不要评价别的仆人做得对不对
-- 如果发现某件事"看起来跨领域"，写进 uncertainties，交由管家处理
+本次只给你**这个领域**的产出与记忆 —— 其它领域的内容**不在你的输入里**，
+所以你也无从被它们影响。这是刻意的设计。
+
+⚠️ 如果某件事看起来跨领域，写进 uncertainties 交出去，**不要自己延伸**。
+
+## 这个领域的专业纪律（判断"做得好不好"的标准）
+
+${ruleBlock}
 
 ## 反思要产出什么
 
