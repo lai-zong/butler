@@ -128,7 +128,7 @@ async function main(): Promise<void> {
 
   hr('① 召回（分权过滤 + 适应度加权 + 硬约束恒召回）');
 
-  const lifeVisible = store.visibleTo({ kind: 'servant', userId: USER, servant: 'life' });
+  const lifeVisible = store.visibleTo({ kind: 'butler', userId: USER });
   const lifeRecall = recall({
     query: USER_GOAL,
     candidates: lifeVisible,
@@ -138,21 +138,31 @@ async function main(): Promise<void> {
     favoredServant: 'life',
   });
 
-  line(`  生活仆人可见 ${lifeVisible.length} 条（已过滤敏感域与他域）`);
+  line(`  单执行者可见 ${lifeVisible.length} 条（敏感域仍被隔离）`);
   for (const s of lifeRecall.selected) {
     line(`    · ${s.memory.content.slice(0, 34)}  [${s.score.toFixed(2)}]${s.exploratory ? ' 🔍探索' : ''}`);
   }
 
   check('① 硬约束被召回', lifeRecall.selected.some((s) => s.memory.id === mAllergy), '花生过敏');
   check(
-    '① 敏感域未进入仆人可见集合',
+    '① 敏感域未进入可见集合（安全底线）',
     !lifeVisible.some((m) => m.id === sensitiveId),
     '心理咨询内容被隔离',
   );
+  /**
+   * ⚠️ v7（A2）：这条检查的**语义变了**。
+   *
+   * 旧：「他域记忆未进入可见集合」—— 领域是权限边界
+   * 新：「领域标签被正确保留，但**不构成**隔离」
+   *
+   *   ★ 不能简单删掉这条检查 —— 它会失去"领域标签有没有被正确记录"的覆盖。
+   *     改为断言相反方向：他域记忆**看得见**，且标签正确。
+   */
   check(
-    '① 他域记忆未进入可见集合',
-    !lifeVisible.some((m) => m.id === mCom),
-    'COM 接口偏好属于代码域',
+    '① 领域标签保留但不构成隔离（v7：领域已降级为标签）',
+    lifeVisible.some((m) => m.id === mCom) &&
+      lifeVisible.find((m) => m.id === mCom)?.domain === 'code',
+    'COM 接口偏好属代码域，标签正确且可见',
   );
   line(`  召回阈值 ${lifeRecall.threshold.toFixed(2)}（随库规模自适应）`);
 
@@ -546,7 +556,7 @@ async function main(): Promise<void> {
   // 候选不该被召回
   const recallWithCandidates = recall({
     query: USER_GOAL,
-    candidates: store.visibleTo({ kind: 'servant', userId: USER, servant: 'life' }),
+    candidates: store.visibleTo({ kind: 'butler', userId: USER }),
     limit: 10,
     now: clock.now(),
     random,

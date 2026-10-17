@@ -39,13 +39,11 @@ import type { ServantId } from '../servants/types.js';
 /** 谁在操作记忆。管家与仆人的权限不同。 */
 export type MemoryActor =
   | { readonly kind: 'butler'; readonly userId: string }
-  | { readonly kind: 'servant'; readonly userId: string; readonly servant: ServantId }
   | { readonly kind: 'user'; readonly userId: string };
 
 /** 读取被拒的原因。 */
 export type ReadDenyReason =
   | 'sensitive_no_grant' // 敏感域且无有效授权
-  | 'domain_not_owner' // 领域记忆且非所属仆人
   | 'not_found';
 
 export type ReadResult =
@@ -55,8 +53,7 @@ export type ReadResult =
 /** 写入被拒的原因。 */
 export type WriteDenyReason =
   | 'global_butler_only' // 全局层只能管家写
-  | 'domain_not_owner' // 领域记忆只能所属仆人写
-  | 'hard_constraint_immutable' // 硬约束不可被仆人改动
+  | 'hard_constraint_immutable' // 硬约束不可被改动
   /**
    * ⚠️ 这条是**后补的** —— 原先漏了它。
    *
@@ -165,7 +162,7 @@ export class MemoryStore {
         (q.lifecycle === undefined || e.lifecycle === q.lifecycle) &&
         (q.kind === undefined || e.kind === q.kind) &&
         (q.domainOwner === undefined ||
-          (e.owner.kind === 'servant' && e.owner.servant === q.domainOwner)),
+          (e.domain === q.domainOwner)),
     );
   }
 
@@ -179,12 +176,48 @@ export class MemoryStore {
    * 某个主体能否**看见**某条记忆。
    *
    * 这是 M1—M3 的统一入口 —— 所有读取路径都必须经过它。
+   *
+   * ★★ v7（A2）关键改动：**敏感域检查提到了"管家直接放行"之前**。
+   *
+   * ═══ 为什么必须提前（这是一处真实的安全漏洞）═══
+   *
+   *   旧顺序：
+   *     ① user  → 放行
+   *     ② butler → **放行全部**     ← 敏感域检查在它后面，永远轮不到
+   *     ③ 硬约束/共享 → 放行
+   *     ④ sensitive → 需要有授权
+   *
+   *   旧架构里这个顺序是"对的"，因为敏感域的隔离对象是**仆人**：
+   *   管家本来就该能读全部，仆人必须持授权。
+   *
+   *   ⚠️ 但单执行者下**没有仆人了**，所有读取都走管家那一条 →
+   *     第 ④ 步**永远不执行** → **敏感域隔离变成空壳**。
+   *
+   *   ★ 而 D-8 讨论时已经确认过这条产品判断：
+   *     「哪怕只有一个 Agent，用户也不希望心理记录出现在买菜建议的上下文里。
+   *       隔离的对象从来不是'哪个仆人'，而是'哪类任务该加载哪些记忆'。」
+   *
+   *   所以正确顺序是：**敏感域先拦，谁都不例外**（用户本人除外）。
    */
   canRead(actor: MemoryActor, entry: MemoryEntry): ReadDenyReason | null {
     // 用户本人永远能看自己的数据
     if (actor.kind === 'user') return null;
 
-    // 管家对全部四类都有读取权（权限矩阵：管家对敏感域是"读写"）
+    // ── 敏感域：默认完全隔离，必须有未过期的任务授权 ──
+    //
+    // ⚠️ **这一段必须在"管家放行"之前** —— 理由见上方注释。
+    //    这是安全核心：删掉或挪后，敏感域隔离就会静默失效。
+    if (entry.memClass === 'sensitive') {
+      const grants = entry.grants ?? [];
+      const now = this.clock.now();
+      // ★ v7：旧代码比对 `g.grantedTo === actor.servant`（单执行者下无意义），
+      //   改为只看授权是否仍有效 —— 范围由 `taskId` 界定，有效性由 `expiresAt` 保证。
+      const valid = grants.some((g) => g.expiresAt > now);
+      if (!valid) return 'sensitive_no_grant';
+      return null;
+    }
+
+    // 管家对其余三类有读取权
     if (actor.kind === 'butler') return null;
 
     // 全局硬约束：对所有角色强制可见
@@ -192,20 +225,6 @@ export class MemoryStore {
 
     // 全局共享：可按需检索
     if (isSearchableByAll(entry.memClass)) return null;
-
-    // 敏感域：默认完全隔离，必须有未过期且授予本人的授权
-    if (entry.memClass === 'sensitive') {
-      const grants = entry.grants ?? [];
-      const now = this.clock.now();
-      const valid = grants.some((g) => g.grantedTo === actor.servant && g.expiresAt > now);
-      return valid ? null : 'sensitive_no_grant';
-    }
-
-    // 领域记忆：只有所属仆人可见
-    if (entry.memClass === 'domain') {
-      if (entry.owner.kind !== 'servant') return 'domain_not_owner';
-      return entry.owner.servant === actor.servant ? null : 'domain_not_owner';
-    }
 
     return null;
   }
@@ -230,10 +249,7 @@ export class MemoryStore {
       return actor.kind === 'butler' ? null : 'global_butler_only';
     }
 
-    // domain 改动：只有所属仆人
-    if (actor.kind !== 'servant') return 'domain_not_owner';
-    if (entry.owner.kind !== 'servant') return 'domain_not_owner';
-    return entry.owner.servant === actor.servant ? null : 'domain_not_owner';
+    return null;
   }
 
   /**
@@ -242,16 +258,8 @@ export class MemoryStore {
    * 管家可以为**明确指定了归属**的领域记忆建档 —— 否则反思的产出无处落地。
    * 但管家不能给"归属不明"的领域记忆建档，那个缺口会走 `canWrite` 被拒。
    */
-  private canCreateDomain(actor: MemoryActor, input: CreateMemoryInput): WriteDenyReason | null {
-    if (actor.kind === 'user') return null;
-    if (actor.kind === 'servant') {
-      // 仆人只能建自己领域的
-      return input.domainOwner === undefined || input.domainOwner === actor.servant
-        ? null
-        : 'domain_not_owner';
-    }
-    // 管家：必须显式指定归属，不能建"无主的领域记忆"
-    return input.domainOwner !== undefined ? null : 'domain_not_owner';
+  private canCreateDomain(_actor: MemoryActor, _input: CreateMemoryInput): WriteDenyReason | null {
+    return null;
   }
 
   // ── 读（带审计）──
@@ -269,7 +277,6 @@ export class MemoryStore {
       this.log.append({
         type: 'grant.denied',
         actor: actor.kind === 'user' ? 'user' : actor.kind,
-        ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
         payload: {
           memoryId: id,
           memClass: entry.memClass,
@@ -282,11 +289,10 @@ export class MemoryStore {
     }
 
     // 审计：敏感域的实际读取要单独留痕（"谁在什么时候读了什么"）
-    if (entry.memClass === 'sensitive' && actor.kind === 'servant') {
+    if (entry.memClass === 'sensitive' && actor.kind === 'butler') {
       this.log.append({
         type: 'grant.used',
-        actor: 'servant',
-        servantId: actor.servant,
+        actor: 'butler',
         payload: { memoryId: id, memClass: entry.memClass, content: entry.content },
         createdAt: this.clock.now(),
       });
@@ -363,7 +369,6 @@ export class MemoryStore {
       this.log.append({
         type: 'memory.writeAttempted',
         actor: actor.kind === 'user' ? 'user' : actor.kind,
-        ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
         payload: {
           rejected: true,
           reason: deny,
@@ -380,7 +385,6 @@ export class MemoryStore {
     this.log.append({
       type: entry.lifecycle === 'candidate' ? 'memory.candidate' : 'memory.approved',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
-      ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
       payload: {
         memoryId: id,
         memClass: entry.memClass,
@@ -423,7 +427,6 @@ export class MemoryStore {
     this.log.append({
       type: 'memory.created',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
-      ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
       payload: {
         // 完整条目 —— 重放器直接用它恢复，不做任何推断
         entry: {
@@ -465,14 +468,13 @@ export class MemoryStore {
     reason: string,
   ): WriteResult {
     const before = this.entries.get(id);
-    if (!before) return { ok: false, reason: 'domain_not_owner' };
+    if (!before) return { ok: false, reason: 'not_found' };
 
     const deny = this.canWrite(actor, before);
     if (deny) {
       this.log.append({
         type: 'memory.writeAttempted',
         actor: actor.kind === 'user' ? 'user' : actor.kind,
-        ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
         payload: { rejected: true, reason: deny, memoryId: id, op: 'revise' },
         createdAt: this.clock.now(),
       });
@@ -502,7 +504,6 @@ export class MemoryStore {
     this.log.append({
       type: 'memory.revised',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
-      ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
       payload: { memoryId: id, version: after.version, patch, reason },
       createdAt: now,
     });
@@ -551,7 +552,6 @@ export class MemoryStore {
     this.log.append({
       type: decision === 'approve' ? 'memory.approved' : 'memory.rejected',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
-      ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
       payload: {
         memoryId: id,
         decision,
@@ -601,7 +601,6 @@ export class MemoryStore {
     this.log.append({
       type: 'intervention.forgotten',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
-      ...(actor.kind === 'servant' ? { servantId: actor.servant } : {}),
       payload: { memoryId: id, memClass: entry.memClass, hardConstraint: false },
       createdAt: this.clock.now(),
     });
@@ -625,9 +624,6 @@ export class MemoryStore {
     readonly ttlMs: number;
   }): { ok: boolean; reason?: string } {
     // 只有管家或用户能授权
-    if (args.actor.kind === 'servant') {
-      return { ok: false, reason: 'only_butler_or_user_can_grant' };
-    }
 
     const entry = this.entries.get(args.memoryId);
     if (!entry) return { ok: false, reason: 'not_found' };
@@ -883,17 +879,7 @@ export class MemoryStore {
    * 不从 actor 推断 —— 否则管家建的领域记忆归属就会含糊不清，
    * 而"每条记忆有 owner，审计时能说清是哪个角色写的"是清单要求。
    */
-  private resolveOwner(actor: MemoryActor, input: CreateMemoryInput): MemoryOwner {
-    if (input.memClass === 'domain') {
-      if (input.domainOwner !== undefined) {
-        return { kind: 'servant', userId: this.userId, servant: input.domainOwner };
-      }
-      if (actor.kind === 'servant') {
-        return { kind: 'servant', userId: this.userId, servant: actor.servant };
-      }
-      // 领域记忆没给归属：不猜，交给 canWrite 判定失败
-      return { kind: 'butler', userId: this.userId };
-    }
+  private resolveOwner(_actor: MemoryActor, _input: CreateMemoryInput): MemoryOwner {
     return { kind: 'butler', userId: this.userId };
   }
 

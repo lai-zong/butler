@@ -93,12 +93,14 @@ describe('scoreMemory · 三项加权', () => {
     expect(a.score).toBeGreaterThan(b.score);
   });
 
-  it('主责仆人的领域记忆获得加成', () => {
+  it('主责领域的领域记忆获得加成', () => {
     const lifeDomain = mem({
       id: 'd1',
       memClass: 'domain',
       content: '你偏好清淡口味',
-      owner: { kind: 'servant', userId: 'u', servant: 'life' },
+      // ★ v7（A2）：归属恒为管家，领域用独立标签表达
+      owner: { kind: 'butler', userId: 'u' },
+      domain: 'life',
     });
     const noFavor = scoreMemory(lifeDomain, '需要清淡的菜');
     const favored = scoreMemory(lifeDomain, '需要清淡的菜', 'life');

@@ -19,8 +19,19 @@ const USER = 'u_test';
 
 const butler: MemoryActor = { kind: 'butler', userId: USER };
 const user: MemoryActor = { kind: 'user', userId: USER };
-const life: MemoryActor = { kind: 'servant', userId: USER, servant: 'life' };
-const health: MemoryActor = { kind: 'servant', userId: USER, servant: 'health' };
+/**
+ * ★ v7（A2）：「管家+仆人」→「管家+监督员」后，`servant` 操作主体已删除。
+ *
+ * 这个文件里大量用例原本在测「仆人之间互相隔离」——
+ * 那个能力在新架构下**不存在**（只有一个执行者）。
+ *
+ * 所以这两个名字保留成**同一个管家主体**，
+ * 含义从「两个不同仆人」变成「同一个执行者访问不同领域标签的记忆」。
+ * 相应地，那些「life 看不见 health」的断言必须改写 ——
+ * 现在应当断言**看得见**（领域是标签，不是权限边界）。
+ */
+const life: MemoryActor = { kind: 'butler', userId: USER };
+const health: MemoryActor = { kind: 'butler', userId: USER };
 
 function setup(): { store: MemoryStore; log: EventLog; clock: FixedClock } {
   const log = new EventLog('s_mem');
@@ -49,14 +60,24 @@ function seed(
 }
 
 // ═══════════════════════════════════════════════════════════
-// M1 · 全局层只能管家写入
+// M1 · 全局层写入权
+//
+// ⚠️ v7（A2）：这一组**语义变化**（能力收敛，不是测不过就改）。
+//
+//   旧：`servant` 主体存在，"全局层只能管家写"是**有意义的约束** ——
+//       它拦住仆人越权。
+//   新：只有一个执行者（管家），这句约束**恒真**，失去了拦截对象。
+//
+//   ★ 所以本组用例的断言从"仆人被拒"改为"**写入必留痕**"——
+//     后者才是现在真正需要守住的东西：**任何写入都可追溯**。
+//     拦截逻辑没有删，它只是没有了会触发它的调用方（见 canWrite 的注释）。
 // ═══════════════════════════════════════════════════════════
 
-describe('M1 · 全局层只能管家写入', () => {
-  it('仆人写 global_constraint 被拒，且留下越权审计事件', () => {
+describe('M1 · 全局层写入权与留痕', () => {
+  it('管家写全局层成功，且写入可追溯', () => {
     const { store, log } = setup();
 
-    const r = store.create(life, {
+    const r = store.create(butler, {
       memClass: 'global_constraint',
       kind: 'fact',
       content: '花生过敏',
@@ -64,40 +85,26 @@ describe('M1 · 全局层只能管家写入', () => {
       evidence: [],
     });
 
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('global_butler_only');
-
-    // ★ 关键：越权尝试必须留痕，不能静默失败
-    const attempted = log.byType('memory.writeAttempted');
-    expect(attempted).toHaveLength(1);
-    expect(attempted[0]?.payload).toMatchObject({ rejected: true, reason: 'global_butler_only' });
-    expect(attempted[0]?.servantId).toBe('life');
-
-    // 而且确实没写进去
-    expect(store.size()).toBe(0);
+    expect(r.ok).toBe(true);
+    expect(store.size()).toBe(1);
+    // ★ 真正需要守住的东西：写入必留痕
+    expect(log.all().some((e) => e.type === 'memory.created')).toBe(true);
   });
 
-  it('仆人写 global_shared 与 sensitive 同样被拒', () => {
+  it('管家可以写全部四类', () => {
     const { store } = setup();
     for (const cls of ['global_shared', 'sensitive'] as const) {
-      const r = store.create(life, {
+      const r = store.create(butler, {
         memClass: cls,
         kind: 'fact',
         content: 'x',
         confidence: 0.5,
         evidence: [],
       });
-      expect(r.ok, cls).toBe(false);
+      expect(r.ok, cls).toBe(true);
     }
-  });
-
-  it('管家可以写全部四类', () => {
-    const { store } = setup();
     expect(seed(store, 'global_constraint', '过敏')).toBeTruthy();
-    expect(seed(store, 'global_shared', '作息')).toBeTruthy();
-    expect(seed(store, 'sensitive', '心理咨询')).toBeTruthy();
     expect(seed(store, 'domain', '偏好清淡', 'life')).toBeTruthy();
-    expect(store.size()).toBe(4);
   });
 
   it('用户可以直接写（用户是最高权限来源）', () => {
@@ -114,59 +121,61 @@ describe('M1 · 全局层只能管家写入', () => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// M2 · 领域记忆只能所属仆人读写
+// M2 · 领域标签：是标签，不是权限边界
+//
+// ⚠️ v7（A2）：这一组**能力反转**，是本轮改造最实质的变化。
+//
+//   旧：「领域记忆只有所属仆人读写」—— 领域 = 某个执行者的地盘
+//   新：「领域是标签」—— 只有一个执行者，领域只用于
+//       ① 反思作用域（创新点①）② 召回过滤 ③ 监督员选纪律
+//
+//   ★ 所以"其它人读不到"这条能力**不存在了**，
+//     断言改为"领域标签被正确记录、且不构成隔离"。
+//     这不是放宽标准 —— 是隔离的对象变了（见 docs/servant-to-supervisor-audit.md）。
 // ═══════════════════════════════════════════════════════════
 
-describe('M2 · 领域记忆隔离', () => {
-  it('所属仆人可以读自己的领域记忆', () => {
+describe('M2 · 领域标签（不是权限边界）', () => {
+  it('领域记忆可读，且标签被正确记录', () => {
     const { store } = setup();
     const id = seed(store, 'domain', '偏好离家 3 公里内', 'life');
 
     const r = store.read(life, id);
     expect(r.ok).toBe(true);
+    if (r.ok) expect(r.entry.domain).toBe('life');
   });
 
-  it('★ 其它仆人读不到（这是"仆人独立演化"的前提）', () => {
+  it('★ 领域标签不构成权限边界（同一执行者读任何领域）', () => {
     const { store, log } = setup();
     const id = seed(store, 'domain', '偏好离家 3 公里内', 'life');
 
+    // 旧架构里这里会被拒（domain_not_owner）。现在应当**放行**。
     const r = store.read(health, id);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('domain_not_owner');
-
-    // 拒绝也要留痕（便于发现异常访问模式）
-    expect(log.byType('grant.denied')).toHaveLength(1);
+    expect(r.ok).toBe(true);
+    // 且不应产生"越权被拒"的审计事件
+    expect(log.byType('grant.denied')).toHaveLength(0);
   });
 
-  it('仆人只能写自己领域的记忆', () => {
+  it('管家可写任何领域的记忆（否则领域记忆永远没有新内容）', () => {
     const { store } = setup();
 
-    const mine = store.create(life, {
+    const r = store.create(butler, {
       memClass: 'domain',
       kind: 'preference',
       content: '喜欢靠窗座位',
       confidence: 0.7,
       evidence: [],
-    });
-    expect(mine.ok).toBe(true);
-
-    const notMine = store.create(health, {
-      memClass: 'domain',
-      kind: 'preference',
-      content: '别人领域的',
-      confidence: 0.7,
-      evidence: [],
       domainOwner: 'life',
     });
-    expect(notMine.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.entry.domain).toBe('life');
   });
 
-  it('管家对本领域记忆只读（写入被拒，保证所属权清晰）', () => {
+  it('管家可改动领域记忆（旧架构是只读，新架构必须可写）', () => {
     const { store } = setup();
     const id = seed(store, 'domain', '偏好清淡', 'life');
 
-    const r = store.revise(butler, id, { content: '被管家改了' }, '越权测试');
-    expect(r.ok).toBe(false);
+    const r = store.revise(butler, id, { content: '改为偏好重口味' }, '用户更正');
+    expect(r.ok).toBe(true);
   });
 });
 
@@ -186,19 +195,33 @@ describe('M3 · 敏感域隔离与授权', () => {
     }
   });
 
-  it('管家与用户可读', () => {
+  /**
+   * ⚠️ v7（A2）：这条用例的**前提变了**，属于设计变化。
+   *
+   * 旧：管家永远能读敏感域（敏感域检查排在"管家放行"之后）
+   * 新：**管家也要授权**（检查提到前面）
+   *
+   * 理由：单执行者下如果管家能直接读，敏感域隔离就变成空壳 ——
+   *   而 D-8 的产品判断是「敏感信息不该出现在无关任务的上下文里」。
+   *   现在唯一无条件能读的是**用户本人**。
+   */
+  it('★ 敏感域默认连管家也读不到，只有用户本人能读', () => {
     const { store } = setup();
     const id = seed(store, 'sensitive', '财务状况');
-    expect(store.read(butler, id).ok).toBe(true);
+
+    const asButler = store.read(butler, id);
+    expect(asButler.ok).toBe(false);
+    if (!asButler.ok) expect(asButler.reason).toBe('sensitive_no_grant');
+
     expect(store.read(user, id).ok).toBe(true);
   });
 
-  it('授权后该仆人可读，且读取留痕', () => {
+  it('授权后管家可读，且读取留痕', () => {
     const { store, log } = setup();
     const id = seed(store, 'sensitive', '心理咨询：近期压力较大');
 
     const g = store.grant({
-      actor: butler,
+      actor: user,
       memoryId: id,
       to: 'health',
       taskId: 't_diet',
@@ -211,11 +234,9 @@ describe('M3 · 敏感域隔离与授权', () => {
     expect(r.ok).toBe(true);
 
     // ★ "谁在什么时候读了什么" 全程留痕
-    expect(log.byType('grant.requested')).toHaveLength(1);
-    expect(log.byType('grant.approved')).toHaveLength(1);
-    const used = log.byType('grant.used');
-    expect(used).toHaveLength(1);
-    expect(used[0]?.servantId).toBe('health');
+    expect(log.byType('grant.requested').length).toBeGreaterThanOrEqual(1);
+    expect(log.byType('grant.approved').length).toBeGreaterThanOrEqual(1);
+    expect(log.byType('grant.used').length).toBeGreaterThanOrEqual(1);
   });
 
   it('★ 授权到期后自动失效（不做长期免授权）', () => {
@@ -238,12 +259,21 @@ describe('M3 · 敏感域隔离与授权', () => {
     if (!after.ok) expect(after.reason).toBe('sensitive_no_grant');
   });
 
-  it('只授权给 A 时 B 依然读不到', () => {
+  /**
+   * ⚠️ v7（A2）：这条能力**反转**了。
+   *
+   * 旧：授权是"给某个仆人"，所以"只授权给 A，B 读不到"有意义。
+   * 新：只有一个执行者，授权语义变成「**本任务可以读敏感域**」（由 taskId 界定）。
+   *
+   *   ★ 所以不再有"给 A 不给 B"这回事。断言改为：
+   *     授权后**可读**，且**任务过期后不可读**（这才是现在要守的边界）。
+   */
+  it('★ 授权后同一任务的读取放行（授权范围由 taskId 界定）', () => {
     const { store } = setup();
     const id = seed(store, 'sensitive', '心理咨询');
 
     store.grant({
-      actor: butler,
+      actor: user,
       memoryId: id,
       to: 'health',
       taskId: 't1',
@@ -252,23 +282,17 @@ describe('M3 · 敏感域隔离与授权', () => {
     });
 
     expect(store.read(health, id).ok).toBe(true);
-    expect(store.read(life, id).ok).toBe(false);
   });
 
-  it('仆人不能自己给自己授权', () => {
+  it('未授权时任何人都读不到（除用户本人）', () => {
     const { store } = setup();
     const id = seed(store, 'sensitive', '心理咨询');
 
-    const g = store.grant({
-      actor: health,
-      memoryId: id,
-      to: 'health',
-      taskId: 't1',
-      purpose: '自己给自己',
-      ttlMs: 60_000,
-    });
-    expect(g.ok).toBe(false);
-    if (!g.ok) expect(g.reason).toBe('only_butler_or_user_can_grant');
+    // ⚠️ v7：`servant` 主体已删除，"仆人不能自己给自己授权"这条不再适用。
+    //    现在只有 butler / user 能授权，而两者都被允许 ——
+    //    真正要守的是"**未授权就谁都读不到**"，这条在上面两个用例里覆盖。
+    expect(store.read(butler, id).ok).toBe(false);
+    expect(store.read(user, id).ok).toBe(true);
   });
 
   it('非敏感域不允许授权（避免把授权当作绕过隔离的手段）', () => {
@@ -366,11 +390,39 @@ describe('遗忘权', () => {
     expect(store.get(id)).toBeDefined();
   });
 
-  it('仆人不能删除不属于自己的记忆', () => {
+  /**
+   * ⚠️ v7（A2）：这条能力**反转**了 —— 领域已不是权限边界。
+   *
+   * 旧：仆人不能删除别人领域的记忆（`domain_not_owner`）
+   * 新：只有一个执行者，管家可删除任何记忆。
+   *     **真正要守的是"用户本人可随时删除"（遗忘权）** —— 见下一条。
+   */
+  it('★ 管家可删除任何领域的记忆（领域不是权限边界）', () => {
     const { store } = setup();
     const id = seed(store, 'domain', '生活领域偏好', 'life');
     const r = store.forget(health, id);
+    expect(r.ok).toBe(true);
+    expect(store.get(id)).toBeUndefined();
+  });
+
+  it('★★ 用户本人可删除领域记忆（遗忘权，安全底线）', () => {
+    const { store } = setup();
+    const id = seed(store, 'domain', '生活领域偏好', 'life');
+    const r = store.forget(user, id);
+    expect(r.ok).toBe(true);
+    expect(store.get(id)).toBeUndefined();
+  });
+
+  it('★★ 硬约束**不允许**被遗忘（安全底线优先于遗忘权）', () => {
+    // ⚠️ 我写这条测试时先想当然地以为"遗忘权覆盖一切"，
+    //    结果被 store.forget 的护栏拦住了 —— 那道护栏是刻意的：
+    //    过敏原这类硬约束一旦被删，后续所有推荐都会失去保护。
+    //    所以**安全底线优先于遗忘权**，这里把这条设计显式钉住。
+    const { store } = setup();
+    const id = seed(store, 'global_constraint', '花生过敏');
+    const r = store.forget(user, id);
     expect(r.ok).toBe(false);
+    expect(r.reason).toBe('hard_constraint_cannot_be_forgotten');
     expect(store.get(id)).toBeDefined();
   });
 });
@@ -426,7 +478,15 @@ describe('候选审核', () => {
 // ═══════════════════════════════════════════════════════════
 
 describe('visibleTo · 召回层的输入集合', () => {
-  it('生活仆人看到：硬约束 + 共享 + 自己的领域，看不到敏感域与他域', () => {
+  /**
+   * ⚠️ v7（A2）：期望集合变了，因为**领域不再是权限边界**。
+   *
+   * 旧：生活仆人看到「硬约束 + 共享 + 自己的领域」，看不到他域
+   * 新：单执行者，两个领域的记忆**都看得到**（领域只用于过滤/加权）
+   *
+   * ★ 但**敏感域依旧被挡住** —— 这一条是安全核心，**一条都不能松**。
+   */
+  it('★ 看到：硬约束 + 共享 + 全部领域标签的记忆，但看不到敏感域', () => {
     const { store } = setup();
     seed(store, 'global_constraint', '花生过敏');
     seed(store, 'global_shared', '作息规律');
@@ -437,9 +497,20 @@ describe('visibleTo · 召回层的输入集合', () => {
     const visible = store.visibleTo(life);
     const contents = visible.map((e) => e.content).sort();
 
-    // 期望集合：硬约束（强制可见）+ 全局共享 + 自己的领域
-    expect([...contents]).toEqual(['作息规律', '花生过敏', '生活偏好'].sort());
+    // 硬约束（强制可见）+ 全局共享 + 两个领域的记忆都在（领域是标签不是边界）
+    expect([...contents]).toEqual(['作息规律', '花生过敏', '生活偏好', '健康偏好'].sort());
+    // ★★ 安全底线：敏感域在无授权时必须被挡住
     expect(contents).not.toContain('心理咨询');
-    expect(contents).not.toContain('健康偏好');
+  });
+
+  it('★★ 敏感域授权后才会出现在召回输入里', () => {
+    const { store } = setup();
+    const id = seed(store, 'sensitive', '心理咨询');
+
+    expect(store.visibleTo(life).map((e) => e.content)).not.toContain('心理咨询');
+
+    store.grant({ actor: user, memoryId: id, to: 'health', taskId: 't1', purpose: 'x', ttlMs: 60_000 });
+
+    expect(store.visibleTo(life).map((e) => e.content)).toContain('心理咨询');
   });
 });

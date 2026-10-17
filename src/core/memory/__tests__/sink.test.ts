@@ -66,13 +66,18 @@ describe('sinkCandidates · 落库', () => {
     expect(store.visibleTo({ kind: 'user', userId: USER })).toHaveLength(1);
   });
 
-  it('领域候选归属到指定仆人', () => {
+  it('领域候选归属管家，领域写成标签', () => {
     const { log, store, clock } = setup();
     const r = sinkCandidates({ log, store, clock }, [cand({ scope: { memClass: 'domain', domainOwner: 'health' } })]);
 
     const e = r.created[0];
-    expect(e?.owner.kind).toBe('servant');
-    if (e?.owner.kind === 'servant') expect(e.owner.servant).toBe('health');
+    /**
+     * ★ v7（A2）：归属与领域分开了。
+     *   · 归属恒为管家（只有一个执行者）
+     *   · 领域是独立标签 `domain`（用于反思作用域与召回过滤）
+     */
+    expect(e?.owner.kind).toBe('butler');
+    expect(e?.domain).toBe('health');
   });
 
   it('管家层候选进全局共享层，归属管家', () => {
@@ -110,15 +115,26 @@ describe('sinkCandidates · 落库', () => {
     });
   });
 
-  it('领域候选缺归属时被拒，且不静默丢弃', () => {
+  /**
+   * ⚠️ v7（A2）：这条用例的**语义反转**了 —— 属于"设计变化"，不是"测不过所以改"。
+   *
+   * 旧行为：领域候选没有 `domainOwner` → **建档被拒**
+   *   理由：旧架构要求"领域记忆必须有归属的仆人"
+   *
+   * 新行为：**允许建档**，只是没有领域标签（`domain` 为 undefined）
+   *   理由：领域已是**标签**而非权限边界，"不特定于某个领域"是合法状态
+   *
+   * ★ 断言从"被拒"改为"建成且无标签"，并在标题里写明为什么。
+   */
+  it('领域候选缺领域标签时仍可建档（只是没有标签）', () => {
     const { log, store, clock } = setup();
     const r = sinkCandidates({ log, store, clock }, [
       cand({ scope: { memClass: 'domain' } }), // 没有 domainOwner
     ]);
 
-    expect(r.created).toHaveLength(0);
-    expect(r.skipped).toHaveLength(1);
-    expect(r.skipped[0]?.reason).toContain('建档被拒');
+    expect(r.created).toHaveLength(1);
+    expect(r.created[0]?.domain).toBeUndefined();
+    expect(r.skipped).toHaveLength(0);
   });
 });
 

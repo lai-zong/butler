@@ -107,8 +107,7 @@ export function scoreMemory(
   if (
     favoredServant !== undefined &&
     memory.memClass === 'domain' &&
-    memory.owner.kind === 'servant' &&
-    memory.owner.servant === favoredServant
+    memory.domain === favoredServant
   ) {
     relevance = Math.min(1, relevance + 0.15);
   }

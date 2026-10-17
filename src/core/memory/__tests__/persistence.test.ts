@@ -610,7 +610,7 @@ describe('⑥ ★★ 重放等价 —— 跨重启存活的标准', () => {
     const replayed = replayMemory(log.all());
     const d = replayed.entries.find((e) => e.id === 'm_domain');
     expect(d?.memClass).toBe('domain');
-    expect(d?.owner.kind === 'servant' ? d.owner.servant : null).toBe('life');
+    expect(d?.domain).toBe('life');
   });
 
   /**

@@ -78,8 +78,8 @@ export function captureProfile(args: {
     perServant[s] = { memories: 0, principles: 0 };
   }
   for (const m of active) {
-    if (m.memClass !== 'domain' || m.owner.kind !== 'servant') continue;
-    const key = m.owner.servant;
+    if (m.memClass !== 'domain' || m.domain === undefined) continue;
+    const key = m.domain;
     const cur = perServant[key];
     if (!cur) continue;
     cur.memories += 1;

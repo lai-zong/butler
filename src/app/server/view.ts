@@ -87,7 +87,7 @@ export function toMemoryCard(
   autonomousIds: ReadonlySet<string>,
 ): MemoryCard {
   const e = entry;
-  const sv = e.owner.kind === 'servant' ? e.owner.servant : null;
+  const sv = e.domain ?? null;
 
   return {
     id: e.id,
@@ -295,7 +295,7 @@ export function buildOverview(rt: BootstrapResult, opts: { readonly model: strin
       avgSuccessPercent: Math.round(stats.avgSuccessRate * 100),
     },
     servants: SERVANT_IDS.map((id) => {
-      const mine = all.filter((m) => m.memClass === 'domain' && m.owner.kind === 'servant' && m.owner.servant === id);
+      const mine = all.filter((m) => m.memClass === 'domain' && m.domain === id);
       return {
         id,
         name: SERVANT_BOUNDARY[id].name,

@@ -141,8 +141,8 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
      *    多写一处必然与它漂移（那是分权失效的常见成因）。
      */
     const ownDomainMemories = args.store
-      .visibleTo({ kind: 'servant', servant: servant as ServantId, userId: args.userId })
-      .filter((m) => m.memClass === 'domain')
+      .visibleTo({ kind: 'butler', userId: args.userId })
+      .filter((m) => m.memClass === 'domain' && m.domain === servant)
       .map((m) => ({ id: m.id, kind: m.kind, content: m.content, lifecycle: m.lifecycle }));
 
     const input = buildServantReflectionInput({

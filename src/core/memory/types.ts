@@ -158,9 +158,7 @@ export interface EvolutionEvent {
  *     旧模型把它们挤在 `owner` 里，因为旧架构假设"领域 = 某个执行者的地盘"。
  *     目标形态拆开：`domain` 已成为 `MemoryEntry` 的独立字段（本步已加）。
  */
-export type MemoryOwner =
-  | { readonly kind: 'butler'; readonly userId: string }
-  | { readonly kind: 'servant'; readonly userId: string; readonly servant: ServantId };
+export type MemoryOwner = { readonly kind: 'butler'; readonly userId: string };
 
 /**
  * 敏感域跨域授权。

@@ -292,9 +292,9 @@ async function main(): Promise<void> {
 
     const light = store2.get('m_light');
     line(`  · 领域记忆：「${light?.content ?? '（丢了）'}」`);
-    line(`    归属 ${light?.owner.kind === 'servant' ? light.owner.servant : '?'} · 生命周期 ${light?.lifecycle ?? '?'} · 适应度 ${light?.fitness ?? '?'}`);
-    check('③ ★ 领域归属存活（生活仆人的记忆没跑到健康名下）',
-      light?.owner.kind === 'servant' && light.owner.servant === 'life');
+    line(`    领域标签 ${light?.domain ?? '?'} · 生命周期 ${light?.lifecycle ?? '?'} · 适应度 ${light?.fitness ?? '?'}`);
+    check('③ ★ 领域标签存活（重启后仍在 —— A1 曾漏加 snapshot/replay）',
+      light?.domain === 'life');
 
     // 休眠状态
     const dormant = store2.all().filter((e) => e.lifecycle === 'dormant');
