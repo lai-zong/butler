@@ -35,6 +35,14 @@ export interface RunSessionArgs {
   readonly clock: ClockPort;
   readonly sessionId: string;
   readonly userGoal: string;
+  /**
+   * 本轮附带的图片（**只在这一轮有效**，不落历史、不进事件）。
+   * 见 `ButlerRunArgs.images` 的说明。
+   */
+  readonly images?: readonly {
+    readonly url: string;
+    readonly detail?: 'low' | 'high' | 'original' | 'auto';
+  }[];
   readonly recalled: readonly ScoredMemory[];
   /**
    * 工具框架。给出时仆人走工具循环（能读写文件、跑命令）；
@@ -415,6 +423,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       contract,
       injectedConstraints,
       userGoal: args.userGoal,
+      // ★ 本轮图片透传给管家执行层（模型在那里才真正看到图）
+      ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
       ...(args.domainHistory !== undefined ? { history: args.domainHistory } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
       ...(args.onAgentProgress !== undefined ? { onAgentProgress: args.onAgentProgress } : {}),

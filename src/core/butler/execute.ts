@@ -65,6 +65,18 @@ export interface ButlerRunArgs {
   readonly injectedConstraints: readonly InjectedConstraint[];
   /** 用户原话（供指代理解） */
   readonly userGoal: string;
+  /**
+   * 本轮附带的图片（data URL 或 http 链接）。
+   *
+   * ★ 只有**本轮**有效：图片不进历史、不进事件、不写长期记忆。
+   *   理由：`session.message` 事件只存文本（还截断 2000 字），
+   *   把图片塞进真相源会撑爆事件文件；而存旁路文件又会让导出/导入静默丢图。
+   *   顺带符合"不持久化用户照片"的隐私取向。
+   */
+  readonly images?: readonly {
+    readonly url: string;
+    readonly detail?: 'low' | 'high' | 'original' | 'auto';
+  }[];
   /** 对话历史（精简版） */
   readonly history?: readonly ModelMessage[];
   readonly streamPort?: ModelStreamPort;
@@ -91,17 +103,43 @@ export interface ButlerRunResult {
  *   有 `tools` → 工具循环（能读写文件、跑命令）
  *   无 `tools` → 单次结构化输出（省一轮 token，验证脚本与纯推理用它）
  */
+/**
+ * 构造发给模型的**用户消息**（带图/不带图）。
+ *
+ * ★ 抽成独立函数是为了**可测**：这是"图片到底有没有进模型输入"的最后一环，
+ *   留在 `runButler` 内部就只能靠端到端黑盒验证。
+ *
+ * ⚠️ 图片**只能放 user 消息**（协议限制），所以这里不提供 system/assistant 版本。
+ */
+export function buildButlerUserMessage(args: {
+  readonly userGoal: string;
+  readonly contract: TaskContract;
+  readonly injectedConstraints: readonly InjectedConstraint[];
+  readonly images?: readonly {
+    readonly url: string;
+    readonly detail?: 'low' | 'high' | 'original' | 'auto';
+  }[];
+}): ModelMessage {
+  const task = butlerExecuteTask({
+    userGoal: args.userGoal,
+    contract: args.contract,
+    injectedConstraints: args.injectedConstraints,
+  });
+  return args.images !== undefined && args.images.length > 0
+    ? msg.userWithImages(task, args.images)
+    : msg.user(task);
+}
+
 export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   const baseMessages: ModelMessage[] = [
     msg.system(BUTLER_SYSTEM),
     ...(args.history ?? []),
-    msg.user(
-      butlerExecuteTask({
-        userGoal: args.userGoal,
-        contract: args.contract,
-        injectedConstraints: args.injectedConstraints,
-      }),
-    ),
+    buildButlerUserMessage({
+      userGoal: args.userGoal,
+      contract: args.contract,
+      injectedConstraints: args.injectedConstraints,
+      ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
+    }),
   ];
 
   const { raw, usage, attempts } = args.tools

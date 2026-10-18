@@ -24,6 +24,7 @@ import type { NextRequest } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
 import { runTurn } from '@/core/chat/service.js';
+import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
 import type { ProgressEvent } from '@/core/runtime/orchestrator.js';
 
 export const dynamic = 'force-dynamic';
@@ -34,7 +35,20 @@ export const maxDuration = 300;
 interface ChatBody {
   readonly sessionId?: string;
   readonly text?: string;
+  /**
+   * 本轮图片：`data:image/png;base64,...` 或 http(s) 链接。
+   *
+   * ⚠️ 只对**这一轮**有效 —— 不落历史、不进事件、不写长期记忆。
+   *    界面刷新后图片不会回来（消息文本仍在）。
+   */
+  readonly images?: readonly {
+    readonly url?: unknown;
+    readonly detail?: unknown;
+  }[];
 }
+
+
+// 图片校验已移到 core（路由文件不允许导出其它符号）：见 `core/multimodal/requestImages.ts`
 
 export async function POST(req: NextRequest): Promise<Response> {
   const rt = await getRuntime();
@@ -47,7 +61,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const text = (body.text ?? '').trim();
-  if (text.length === 0) {
+  const imageCheck = normalizeRequestImages(body.images);
+  if (!imageCheck.ok) {
+    return Response.json({ error: imageCheck.error }, { status: 400 });
+  }
+  const images = imageCheck.images;
+
+  // 只有图片、没有文字也允许（"这张图里是什么"是最常见的问法）
+  if (text.length === 0 && images.length === 0) {
     return Response.json({ error: '消息内容为空' }, { status: 400 });
   }
 
@@ -100,6 +121,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         const result = await runTurn({
           sessionId: session.id,
           userText: text,
+    // ★ 本轮图片（只这一次有效，不落历史）
+    ...(images.length > 0 ? { images } : {}),
           userId: session.userId,
           model: rt.model!,
           random: rt.random,

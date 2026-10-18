@@ -88,6 +88,29 @@ export const msg = {
     role: 'user',
     content: [{ kind: 'toolResult', callId, result, isError }],
   }),
+  /**
+   * 带图片的用户消息。
+   *
+   * ★ 图片**只能放 user 消息**（协议限制），所以刻意不提供 `systemWithImages`。
+   * ★ 顺序：文本在前、图片在后 —— 先说要干什么，再看图。
+   */
+  userWithImages: (
+    text: string,
+    images: readonly {
+      readonly url: string;
+      readonly detail?: 'low' | 'high' | 'original' | 'auto';
+    }[],
+  ): ModelMessage => ({
+    role: 'user',
+    content: [
+      { kind: 'text', text },
+      ...images.map((img) => ({
+        kind: 'image' as const,
+        url: img.url,
+        ...(img.detail !== undefined ? { detail: img.detail } : {}),
+      })),
+    ],
+  }),
 } as const;
 
 // ═══════════════════════════════════════════════════════════

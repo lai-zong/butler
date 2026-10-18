@@ -14,7 +14,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { toApiMessages } from '../adapters/model/convert.js';
+import { buildButlerUserMessage } from '../core/butler/execute.js';
 import { classifyAttachment, detectMime, isVisionReadable } from '../core/multimodal/attach.js';
+import { normalizeRequestImages } from '../core/multimodal/requestImages.js';
 
 let passed = 0;
 let failed = 0;
@@ -88,8 +90,45 @@ async function main(): Promise<void> {
     }
     check('★★ 图片放进 system 消息 → 明确报错（协议不允许）', threw);
 
-    hr('② 输入侧：真实字节的类型识别（不靠扩展名）');
+    hr('② 上传入口：请求图片校验（E4）');
 
+    const okNorm = normalizeRequestImages([{ url: dataUrl, detail: 'high' }]);
+    check('★ 合法图片通过校验', okNorm.ok);
+    const badFormat = normalizeRequestImages([{ url: 'data:application/pdf;base64,AAAA' }]);
+    check('★★ 非图片格式被整轮拒绝（不静默丢图）', !badFormat.ok);
+    const noUrl = normalizeRequestImages([{ url: dataUrl }, {}]);
+    check('★ 缺 url 被拒绝并指明第几张', !noUrl.ok && noUrl.error.includes('第 2 张'));
+
+    hr('③ 装配 → 转换：图片真的进了模型输入');
+
+    /**
+     * ★ 这条串起**整条链路**：
+     *   请求校验 → 管家消息装配 → 协议转换。
+     *   任一环把图片丢掉，这里就会失败。
+     */
+    const built = buildButlerUserMessage({
+      userGoal: '这张图是什么颜色？只回答颜色词。',
+      contract: {
+        deliverable: '一个颜色词',
+        criteria: ['答出颜色'],
+        mustObey: [],
+        domains: [],
+        confidence: 0.9,
+        raw: { deliverable: '一个颜色词', criteria: ['答出颜色'], mustObey: [], domains: [], confidence: 0.9 },
+      } as never,
+      injectedConstraints: [],
+      images: [{ url: dataUrl, detail: 'high' }],
+    });
+    check('★ 装配层产出 文本+图片 两个片段', built.content.length === 2, `${built.content.length}`);
+
+    const apiMsgs = toApiMessages([built]);
+    const apiParts = apiMsgs[0]?.content;
+    check(
+      '★★ 转换层把它变成 image_url 数组（模型真能收到）',
+      Array.isArray(apiParts) && apiParts.some((p) => p.type === 'image_url'),
+    );
+
+    hr('④ 输入侧：真实字节的类型识别（不靠扩展名）');
     const pngPath = join(dir, 'red.png');
     const made = makeSolidPng(pngPath, [255, 0, 0]);
     check('测试图片已生成', made, pngPath);
@@ -113,7 +152,7 @@ async function main(): Promise<void> {
       );
     }
 
-    hr('③ 真实调用：模型到底看没看到图');
+    hr('⑤ 真实调用：模型到底看没看到图');
 
     const envPath = join(process.cwd(), '.env.local');
     let key = process.env['DEEPSEEK_API_KEY'] ?? '';

@@ -58,6 +58,15 @@ export const RECALL_LIMIT = 8;
 export interface RunTurnArgs {
   readonly sessionId: string;
   readonly userText: string;
+  /**
+   * 本轮附带的图片（**只在当前这一轮有效**）。
+   *
+   * ★ 不进历史、不进事件、不写长期记忆 —— 见 `ButlerRunArgs.images` 的说明。
+   */
+  readonly images?: readonly {
+    readonly url: string;
+    readonly detail?: 'low' | 'high' | 'original' | 'auto';
+  }[];
   /** 记忆归属的用户 */
   readonly userId: string;
   readonly random: RandomPort;
@@ -336,6 +345,8 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     clock: args.clock,
     sessionId,
     userGoal: userText,
+    // ★ 本轮图片（只这一次有效，不落历史）
+    ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
     recalled,
     log: args.log,
     store: args.store,
