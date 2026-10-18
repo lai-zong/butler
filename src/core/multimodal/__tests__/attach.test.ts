@@ -284,6 +284,44 @@ describe('④ ★ 多模态信息进记忆（增分点）', () => {
     });
     expect(cands.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('★★ 同一规则命中多个同义字段 → 只产出一条（真实调用抓到过重复）', () => {
+    /**
+     * ⚠️ 真实场景：模型同时给了 `merchant: "STARBUCKSCOFFEE"` 与 `brand: "Starbucks"`，
+     *    两者都匹配规则 `品牌|商家|brand|merchant`，修之前会产出**两条**"常购品牌"。
+     *    方案 §5.3 预期的是一条。
+     */
+    const cands = extractMemoryCandidates({
+      parsed: parsed({ merchant: 'STARBUCKSCOFFEE', brand: 'Starbucks' }),
+    });
+    const brandCands = cands.filter((c) => c.content.startsWith('常购品牌'));
+    expect(brandCands).toHaveLength(1);
+  });
+
+  it('★★ 取值确定：值更短优先（干净的品牌名压过 OCR 拼串）', () => {
+    const cands = extractMemoryCandidates({
+      parsed: parsed({ merchant: 'STARBUCKSCOFFEE', brand: 'Starbucks' }),
+    });
+    expect(cands[0]?.content).toBe('常购品牌：Starbucks');
+  });
+
+  it('★★ 与模型给出的键顺序无关（重跑结果一致）', () => {
+    const a = extractMemoryCandidates({
+      parsed: parsed({ merchant: 'STARBUCKSCOFFEE', brand: 'Starbucks' }),
+    });
+    const b = extractMemoryCandidates({
+      // 顺序反过来
+      parsed: parsed({ brand: 'Starbucks', merchant: 'STARBUCKSCOFFEE' }),
+    });
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it('★ 合并时在理由里说明（用户看得出为什么只有一条）', () => {
+    const cands = extractMemoryCandidates({
+      parsed: parsed({ merchant: 'STARBUCKSCOFFEE', brand: 'Starbucks' }),
+    });
+    expect(cands[0]?.rationale).toContain('已合并');
+  });
 });
 
 describe('⑤ 上限（防御性）', () => {

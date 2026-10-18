@@ -400,17 +400,45 @@ export function extractMemoryCandidates(args: {
 }): readonly MemoryCandidateFromAttachment[] {
   const out: MemoryCandidateFromAttachment[] = [];
 
-  for (const [key, value] of Object.entries(args.parsed.fields)) {
-    const v = value.trim();
-    if (v.length === 0 || v.length > 60) continue;
-    const rule = MEMORY_WORTHY.find((r) => r.field.test(key));
-    if (!rule) continue;
+  /**
+   * ★★ **每条规则最多产出一条候选**（v8.2 修正）。
+   *
+   * ⚠️ 修之前的真实缺陷（真实调用抓到）：模型对同一件事给了两个键 ——
+   *    `merchant: "STARBUCKSCOFFEE"` 与 `brand: "Starbucks"` ——
+   *    而规则 `品牌|商家|brand|merchant` **两个都命中**，
+   *    于是产出**两条"常购品牌"候选**（同一件事重复成两条）。
+   *    而方案 §5.3 预期的是一条：「生成记忆候选：偏好 · 「常购品牌 A 的咖啡」」。
+   *
+   * ★ 取值**必须确定**：模型给出的键顺序不稳定，若直接"取第一个匹配"，
+   *   同一张图重跑两次可能得到不同候选。所以按
+   *   **值更短优先**（更像干净的品牌名），**再按字典序兜底** ——
+   *   同一组字段永远得到同一个结果。
+   */
+  for (const rule of MEMORY_WORTHY) {
+    const hits: { readonly key: string; readonly value: string }[] = [];
+    for (const [key, value] of Object.entries(args.parsed.fields)) {
+      const v = value.trim();
+      if (v.length === 0 || v.length > 60) continue;
+      if (!rule.field.test(key)) continue;
+      hits.push({ key, value: v });
+    }
+    if (hits.length === 0) continue;
+
+    hits.sort((a, b) => {
+      if (a.value.length !== b.value.length) return a.value.length - b.value.length;
+      return a.value < b.value ? -1 : a.value > b.value ? 1 : 0;
+    });
+    const picked = hits[0];
+    if (picked === undefined) continue;
+
     out.push({
       kind: rule.kind,
-      content: rule.make(v),
+      content: rule.make(picked.value),
       confidence: rule.confidence,
-      evidence: [`attachment:${args.parsed.attachmentId}`, `field:${key}`],
-      rationale: `从「${KIND_LABEL[args.parsed.kind]}」中解析出的字段「${key}」。` +
+      evidence: [`attachment:${args.parsed.attachmentId}`, `field:${picked.key}`],
+      rationale:
+        `从「${KIND_LABEL[args.parsed.kind]}」中解析出的字段「${picked.key}」。` +
+        (hits.length > 1 ? `（另有 ${hits.length - 1} 个同义字段，已合并，避免重复候选）` : '') +
         '**推断证据弱于用户直接陈述**，故置信度偏低，需用户确认后才生效。',
     });
   }
