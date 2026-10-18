@@ -14,7 +14,7 @@
  *
  *     ```ts
  *     ...(Array.isArray(p['servantReports'])
- *       ? { servantReports: p['servantReports'] as ServantReportData[] }
+ *       ? { servantReports: p['servantReports'] as ExecutionReportData[] }
  *       : {}),
  *     ```
  *
@@ -37,7 +37,7 @@
  *    丢弃一条历史消息，比显示一条字段不全的消息更糟。
  */
 
-import type { AgentTraceData, ServantReportData } from './types.js';
+import type { AgentTraceData, ExecutionReportData } from './types.js';
 
 /** 判断是不是普通对象（不是 null、不是数组）。 */
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -66,10 +66,10 @@ function strArray(v: unknown): string[] {
  * ⚠️ 返回 `undefined` 的语义是「这条消息里没有（或读不出）仆人产出」——
  *    界面据此**整块不渲染**，而不是渲染一堆空字段。
  */
-export function parseServantReports(v: unknown): ServantReportData[] | undefined {
+export function parseExecutionReports(v: unknown): ExecutionReportData[] | undefined {
   if (!Array.isArray(v)) return undefined;
 
-  const out: ServantReportData[] = [];
+  const out: ExecutionReportData[] = [];
   for (const raw of v) {
     if (!isRecord(raw)) continue;
 

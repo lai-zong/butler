@@ -15,11 +15,11 @@ import { MockModel, respondJson, respondJsonWhen, type MockModelOptions } from '
 import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
 import { reflectionSchema } from '../../prompts/schemas.js';
-import type { ServantReport } from '../../servants/types.js';
+import type { ExecutionReport } from '../../execution/types.js';
 import {
-  buildServantReflectionInput,
+  buildDomainReflectionInput,
   reflectButler,
-  reflectServant,
+  reflectDomain,
   domainReflectionSystem,
   summarizeReport,
 } from '../reflect.js';
@@ -28,7 +28,7 @@ const T0 = 1_760_000_000_000;
 
 // ── 夹具 ──
 
-function report(over: Partial<ServantReport> = {}): ServantReport {
+function report(over: Partial<ExecutionReport> = {}): ExecutionReport {
   return {
     taskId: 'step1',
     domain: 'life',
@@ -66,12 +66,12 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
       script: [respondJson(reflectionResponse([]))],
     });
 
-    await reflectServant({
+    await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'life',
+      input: buildDomainReflectionInput({
+        domain: 'life',
         userGoal: '请朋友吃饭',
         ownReports: [report()],
         ownDomainMemories: [{ id: 'd1', kind: 'preference', content: '偏好清淡口味', lifecycle: 'active' }],
@@ -87,12 +87,12 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
       script: [respondJson(reflectionResponse([]))],
     });
 
-    await reflectServant({
+    await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'life',
+      input: buildDomainReflectionInput({
+        domain: 'life',
         userGoal: '请朋友吃饭',
         ownReports: [report()],
         ownDomainMemories: [{ id: 'd1', kind: 'preference', content: '偏好清淡口味', lifecycle: 'active' }],
@@ -107,12 +107,12 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
       script: [respondJson(reflectionResponse([]))],
     });
 
-    await reflectServant({
+    await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'health',
+      input: buildDomainReflectionInput({
+        domain: 'health',
         userGoal: '安排饮食',
         ownReports: [report({ domain: 'health' })],
         ownDomainMemories: [],
@@ -124,12 +124,12 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
   });
 
   it('★ 隔离是**结构性**的：函数签名里就没有传别的领域材料的入口', () => {
-    // 这个断言是编译期的：buildServantReflectionInput 的参数列表里
-    // 根本没有 globalMemories / otherServantReports / sensitiveMemories。
+    // 这个断言是编译期的：buildDomainReflectionInput 的参数列表里
+    // 根本没有 globalMemories / otherExecutionReports / sensitiveMemories。
     // 用运行时断言把这条设计意图固化下来，防止以后有人"顺手"加参数。
-    const params = buildServantReflectionInput.length;
+    const params = buildDomainReflectionInput.length;
     expect(params).toBe(1); // 只有一个对象参数
-    const src = buildServantReflectionInput.toString();
+    const src = buildDomainReflectionInput.toString();
     expect(src).not.toContain('globalMemories');
     expect(src).not.toContain('otherServant');
     expect(src).not.toContain('sensitive');
@@ -147,12 +147,12 @@ describe('★ 仆人反思的作用域隔离（创新点 ① 的核心主张）'
       ],
     });
 
-    const r = await reflectServant({
+    const r = await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'life',
+      input: buildDomainReflectionInput({
+        domain: 'life',
         userGoal: '请朋友吃饭',
         ownReports: [report()],
         ownDomainMemories: [],
@@ -213,12 +213,12 @@ describe('仆人反思 · 产出与事件', () => {
       ],
     });
 
-    const r = await reflectServant({
+    const r = await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'life',
+      input: buildDomainReflectionInput({
+        domain: 'life',
         userGoal: '请朋友吃饭',
         ownReports: [report()],
         ownDomainMemories: [],
@@ -254,12 +254,12 @@ describe('仆人反思 · 产出与事件', () => {
   it('★ 空候选是合法结果（诚实，不凑数）', async () => {
     const { log, clock, model } = setup({ script: [respondJson(reflectionResponse([]))] });
 
-    const r = await reflectServant({
+    const r = await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'life',
+      input: buildDomainReflectionInput({
+        domain: 'life',
         userGoal: '随便聊聊',
         ownReports: [],
         ownDomainMemories: [],
@@ -282,11 +282,11 @@ describe('仆人反思 · 产出与事件', () => {
       ],
     });
 
-    const r = await reflectServant({
+    const r = await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({ servant: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
+      input: buildDomainReflectionInput({ domain: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
     });
 
     expect(r.candidates).toHaveLength(1);
@@ -308,11 +308,11 @@ describe('仆人反思 · 产出与事件', () => {
     });
 
     await expect(
-      reflectServant({
+      reflectDomain({
         model,
         log,
         clock,
-        input: buildServantReflectionInput({ servant: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
+        input: buildDomainReflectionInput({ domain: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
       }),
     ).rejects.toThrow(/不合规/);
   });
@@ -328,12 +328,12 @@ describe('仆人反思 · 产出与事件', () => {
 
   it('产出状态由报告推导，与 schema 一致', async () => {
     const { log, clock, model } = setup({ script: [respondJson(reflectionResponse([]))] });
-    await reflectServant({
+    await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({
-        servant: 'health',
+      input: buildDomainReflectionInput({
+        domain: 'health',
         userGoal: 'g',
         ownReports: [report({ domain: 'health', status: 'failed' })],
         ownDomainMemories: [],
@@ -360,8 +360,8 @@ describe('管家复盘 · 跨领域视角', () => {
       input: {
         userGoal: '请朋友吃饭',
         reports: [
-          { servant: 'life', summary: '推荐了 3 家餐厅' },
-          { servant: 'health', summary: '指出火锅高油高盐' },
+          { domain: 'life', summary: '推荐了 3 家餐厅' },
+          { domain: 'health', summary: '指出火锅高油高盐' },
         ],
         conflicts: [{ message: '火锅 vs 减脂', severity: 'warn' }],
         globalMemories: [{ id: 'g1', kind: 'fact', content: '用户对花生严重过敏', lifecycle: 'active' }],
@@ -482,14 +482,14 @@ describe('★ 两层反思的分工（方案 § 2.2④）', () => {
     expect(servantOut.candidates).toHaveLength(1);
 
     // 领域层 → domain；管家层 → global_shared。两者互不越界。
-    const input = buildServantReflectionInput({
-      servant: 'life',
+    const input = buildDomainReflectionInput({
+      domain: 'life',
       userGoal: 'g',
       ownReports: [],
       ownDomainMemories: [],
     });
-    expect(input.servant).toBe('life');
-    expect(Object.keys(input)).not.toContain('reports'); // 管家才有多仆人 reports
+    expect(input.domain).toBe('life');
+    expect(Object.keys(input)).not.toContain('reports'); // 领域反思不该看到全局 reports
   });
 
   it('摘要函数会截断过长产出（控制 prompt 体积）', () => {
@@ -519,11 +519,11 @@ describe('MockModel · 测试基础设施自检', () => {
     const log = new EventLog('s');
     const clock = new FixedClock(T0);
 
-    await reflectServant({
+    await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({ servant: 'life', userGoal: '目标ABC', ownReports: [], ownDomainMemories: [] }),
+      input: buildDomainReflectionInput({ domain: 'life', userGoal: '目标ABC', ownReports: [], ownDomainMemories: [] }),
     });
 
     expect(model.countByPurpose('reflection')).toBe(1);
@@ -536,11 +536,11 @@ describe('MockModel · 测试基础设施自检', () => {
     const clock = new FixedClock(T0);
 
     await expect(
-      reflectServant({
+      reflectDomain({
         model,
         log,
         clock,
-        input: buildServantReflectionInput({ servant: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
+        input: buildDomainReflectionInput({ domain: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
       }),
     ).rejects.toThrow(/不合规/);
   });
@@ -555,11 +555,11 @@ describe('MockModel · 测试基础设施自检', () => {
     const log = new EventLog('s');
     const clock = new FixedClock(T0);
 
-    const r = await reflectServant({
+    const r = await reflectDomain({
       model,
       log,
       clock,
-      input: buildServantReflectionInput({ servant: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
+      input: buildDomainReflectionInput({ domain: 'life', userGoal: 'g', ownReports: [], ownDomainMemories: [] }),
     });
     expect(r.candidates[0]?.content).toBe('来自生活分支');
   });

@@ -23,8 +23,9 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { RichContent } from '../rich-content.js';
 import { ProcessView, type TraceView } from './process.js';
-import { ServantPane } from './servant-pane.js';
 import { useRightPane } from './shell.js';
+import { domainName } from '@/core/domain/types.js';
+import { Dot } from './ui.js';
 import { Row, Sep, type TagTone, Tag, VERDICT_WORD } from './ui.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -48,14 +49,24 @@ interface VerdictIssue {
 interface Verdict {
   readonly outcome: string;
   readonly issues: readonly VerdictIssue[];
+  /**
+   * ★ v8（批次D）：监督员对契约判据的**逐条核对**。
+   *
+   * 旧结论（v8 之前落的 `session.verdict`）没有这个字段 → 按空数组处理。
+   */
+  readonly criteriaChecks?: readonly {
+    readonly criterion: string;
+    readonly met: boolean;
+    readonly note?: string;
+  }[];
 }
 
-/** 一个仆人的产出（与落盘形状一致）。 */
-export interface ServantOut {
+/** 一次执行的产出（与落盘形状一致）。 */
+export interface ExecutionOut {
   readonly servant: string;
   readonly taskId: string;
   readonly status: string;
-  /** ★ 该对用户说的那段话 —— 仆人窗口里消息的正文 */
+  /** ★ 该对用户说的那段话 —— 右栏消息的正文 */
   readonly reply: string;
   readonly artifacts: readonly {
     readonly kind: string;
@@ -76,8 +87,8 @@ export interface StartProps {
   readonly sessionId: string | null;
   readonly initialMessages: readonly Msg[];
   readonly modelConfigured: boolean;
-  /** 本轮各仆人的产出 —— 右栏「仆人窗口」的数据 */
-  readonly initialReports: readonly ServantOut[];
+  /** 本轮各次执行的产出 —— 右栏「监督与执行」的数据 */
+  readonly initialReports: readonly ExecutionOut[];
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -97,7 +108,7 @@ export function Conversation({
   const [liveText, setLiveText] = useState('');
   const [err, setErr] = useState<string | null>(null);
   /**
-   * 本轮各仆人的产出 —— 右栏「仆人窗口」。
+   * 本轮各次执行的产出 —— 右栏「监督与执行」。
    *
    * ★ 初值由服务端给（刷新后仍在），流式期间由 `reports` 事件更新。
    * ⚠️ 用 `useState` 惰性初值而**不是** `useEffect`：
@@ -105,19 +116,14 @@ export function Conversation({
    *    右栏在首屏 HTML 里根本不出现（截图看不到）。
    *    这个坑我踩过一次，症状是"DOM 里搜不到该类名"。
    */
-  const [reports, setReports] = useState<readonly ServantOut[]>(initialReports);
-
+  const [reports, setReports] = useState<readonly ExecutionOut[]>(initialReports);
   /**
-   * ★ 直接与仆人对话的历史（按仆人分）。
+   * ★ v8（批次D）：最近一次的审查结论 —— 右栏「判据核对」的数据源。
    *
-   * ⚠️ 为什么放在**这个组件的状态**里而不是只靠服务端：
-   *    服务端一个仆人一个固定会话（servant_life 等）——
-   *    那是**持久化**；这里是**本次页面会话的即时视图**。
-   *    刷新后由 /api/chat/servant/history 拉回来。
+   * ⚠️ 为什么单独存一份而不是从 msgs 里翻：msgs 里每轮都带一个 verdict，
+   *    右栏要的是**最新一轮**。翻数组再取末项在渲染期做，不如在事件到达时存一次。
    */
-  const [servantMsgs, setServantMsgs] = useState<
-    Record<string, readonly import('./servant-pane.js').PaneMsg[]>
-  >({});
+  const [latestVerdict, setLatestVerdict] = useState<Verdict | null>(null);
 
   const sessionRef = useRef<string | null>(initialSession);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -218,15 +224,17 @@ export function Conversation({
             replyText = String(e['text'] ?? '');
           } else if (type === 'reports') {
             /**
-             * ★ 各仆人产出 —— 右栏数据。
+             * ★ 各次执行产出 —— 右栏数据。
              * ⚠️ 与落进消息的那一份是**同一个对象**（服务端只转换一次），
              *    否则会出现「界面上看到的」与「刷新后看到的」不一致。
              */
             const rs = e['reports'];
-            if (Array.isArray(rs)) setReports(rs as ServantOut[]);
+            if (Array.isArray(rs)) setReports(rs as ExecutionOut[]);
           } else if (type === 'verdict') {
             const v = e['verdict'] as Verdict | undefined;
             if (v !== undefined) {
+              // ★ v8（批次D）：右栏的判据核对数据源
+              setLatestVerdict(v);
               setMsgs((m) => [
                 ...m,
                 {
@@ -251,116 +259,6 @@ export function Conversation({
     }
   }, [input, busy, modelConfigured]);
 
-  /**
-   * 直接对某个仆人说话（不经管家派发）。
-   *
-   * ★ 规则（用户定的）：
-   *   · 不派发、**不验收** —— 用户说什么，仆人就直接做什么
-   *   · 管家只能在事后提醒，**不得截断仆人进程**
-   *   · ⚠️ 但硬约束照样注入、权限闸门照样生效 ——
-   *     「不拦截」讲的是**流程**，不是安全底线让步
-   */
-  const sendToServant = useCallback(async (servant: string, text: string) => {
-    setErr(null);
-    setBusy(true);
-
-    const uid = `su_${Date.now().toString(36)}`;
-    const push = (
-      m: import('./servant-pane.js').PaneMsg,
-    ): void =>
-      setServantMsgs((prev) => ({ ...prev, [servant]: [...(prev[servant] ?? []), m] }));
-
-    push({ id: uid, role: 'user', text });
-
-    let trace: TraceView = { rounds: [], finished: null };
-    let replyText = '';
-    let status = 'done';
-    const replyId = `sr_${Date.now().toString(36)}`;
-
-    try {
-      const res = await fetch('/api/chat/servant', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ servant, text }),
-      });
-      if (!res.ok || res.body === null) throw new Error(`请求失败：HTTP ${res.status}`);
-
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-
-        let idx = buf.indexOf('\n\n');
-        while (idx >= 0) {
-          const chunk = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          idx = buf.indexOf('\n\n');
-
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (line === undefined) continue;
-
-          let e: Record<string, unknown>;
-          try {
-            e = JSON.parse(line.slice(6)) as Record<string, unknown>;
-          } catch {
-            continue;
-          }
-
-          const type = String(e['type'] ?? '');
-          if (type === 'agent') {
-            trace = applyAgentEvent(trace, e);
-            // ⚠️ 过程**边跑边显示**：先挂一条空的仆人消息，随事件更新
-            setServantMsgs((prev) => {
-              const list = [...(prev[servant] ?? [])];
-              const i = list.findIndex((m) => m.id === replyId);
-              const next: import('./servant-pane.js').PaneMsg = {
-                id: replyId,
-                role: 'servant',
-                text: '',
-                trace,
-                status: 'running',
-              };
-              if (i < 0) list.push(next);
-              else list[i] = next;
-              return { ...prev, [servant]: list };
-            });
-          } else if (type === 'reply') {
-            replyText = String(e['text'] ?? '');
-            const rs = e['reports'];
-            if (Array.isArray(rs)) setReports(rs as ServantOut[]);
-          } else if (type === 'error') {
-            setErr(String(e['message'] ?? '未知错误'));
-            status = 'failed';
-          }
-        }
-      }
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      status = 'failed';
-    } finally {
-      // 收尾：把过程与最终回复定稿
-      setServantMsgs((prev) => {
-        const list = [...(prev[servant] ?? [])];
-        const i = list.findIndex((m) => m.id === replyId);
-        const next: import('./servant-pane.js').PaneMsg = {
-          id: replyId,
-          role: 'servant',
-          text: replyText.length > 0 ? replyText : '（它这次没有留下说明）',
-          trace,
-          status,
-        };
-        if (i < 0 && trace.rounds.length > 0) list.push(next);
-        else if (i >= 0) list[i] = next;
-        return { ...prev, [servant]: list };
-      });
-      setBusy(false);
-    }
-  }, []);
-
   const onKey = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // Enter 发送；Shift+Enter 换行（与主流聊天工具一致）
@@ -377,25 +275,88 @@ export function Conversation({
   /**
    * ★ 把右栏**发布**给外壳渲染（`useRightPane`）。
    *
+   * ★★ v8（批次A）：原来是 `ServantPane`（多仆人标签页 + 直接对仆人说话）。
+   *    那个组件依赖 `/api/chat/servant` 端点 —— 而该端点跑的是**已废弃的
+   *    多执行者架构**（`runServant` → `servantSystem`）。断链后它不能再用。
+   *
+   * ✅ **v8（批次D）：右栏 = 监督员面板**（方案 F1）。
+   *
+   *    主体是**契约判据的逐条核对**：契约写了几条，就逐条给出「满足 / 差在哪」。
+   *    ⚠️ 这是「可核对」在界面上的落点 —— 用户不必相信管家的自述。
+   *
+   *    次要部分是**执行产出摘要**（按领域），保留是因为
+   *    「它到底做了什么」和「做到没做到」是两个问题，都要能看。
+   *
    * ⚠️ 两个必须遵守的点，漏一个右栏就会闪或重复：
    *
    *   ① 用 `useMemo` 包住 —— 否则每次渲染都是新元素对象，
    *      `useRightPane` 的 effect 会反复「撤下 → 发布」。
-   *   ② 没有仆人时发布 `null`（不是空片段）——
+   *   ② 什么都没有时发布 `null`（不是空片段）——
    *      外壳据此**整体不渲染右栏**（默认单栏纯对话）。
    */
-  const rightPane = useMemo(
-    () =>
-      reports.length > 0 || Object.values(servantMsgs).some((v) => v.length > 0) ? (
-        <ServantPane
-          reports={reports}
-          busy={busy}
-          history={servantMsgs}
-          onSend={(s, txt) => void sendToServant(s, txt)}
-        />
-      ) : null,
-    [reports, busy, servantMsgs, sendToServant],
-  );
+  const rightPane = useMemo(() => {
+    const checks = latestVerdict?.criteriaChecks ?? [];
+    if (reports.length === 0 && checks.length === 0) return null;
+
+    return (
+      <aside className="nv-pane" aria-label="监督与执行">
+        <div className="nv-pane-head">
+          <span className="nv-pane-title">监督与执行</span>
+          {busy && <Dot state="run" />}
+        </div>
+        <div className="nv-pane-body">
+          {checks.length > 0 && (
+            <section className="nv-pane-card">
+              <div className="nv-pane-card-head">
+                <span className="nv-pane-card-title">判据核对</span>
+                <span className="nv-pane-card-status">
+                  {checks.filter((c) => c.met).length}/{checks.length}
+                </span>
+              </div>
+              <ul className="nv-pane-list nv-pane-checks">
+                {checks.map((c, i) => (
+                  <li key={i} data-met={c.met ? '' : undefined}>
+                    <span className="nv-pane-check-mark">{c.met ? '✓' : '✗'}</span>
+                    <span>{c.criterion}</span>
+                    {c.note !== undefined && c.note.length > 0 && (
+                      <span className="nv-pane-check-note">{c.note}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {reports.map((r) => (
+            <section key={r.taskId} className="nv-pane-card">
+              <div className="nv-pane-card-head">
+                {/* ⚠️ `servant` 字段名是遗留（传的是领域值），批次 E 改名 */}
+                <span className="nv-pane-card-title">{domainName(r.servant)}</span>
+                <span className="nv-pane-card-status">{r.status}</span>
+              </div>
+              {r.reply.length > 0 && <p className="nv-pane-text">{r.reply}</p>}
+              {r.artifacts.length > 0 && (
+                <ul className="nv-pane-list">
+                  {r.artifacts.map((a, i) => (
+                    <li key={i}>
+                      {a.text.length > 120 ? `${a.text.slice(0, 120)}…` : a.text}
+                      {a.itemCount > 0 ? `（${a.itemCount} 项）` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {r.uncertainties.length > 0 && (
+                <ul className="nv-pane-list nv-pane-uncertain">
+                  {r.uncertainties.map((u, i) => (
+                    <li key={i}>{u}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ))}
+        </div>
+      </aside>
+    );
+  }, [reports, busy, latestVerdict]);
   useRightPane(rightPane);
 
   return (
@@ -406,8 +367,8 @@ export function Conversation({
             <div className="nv-empty">
               <div className="nv-empty-title">说说你想做什么</div>
               <div className="nv-empty-sub">
-                管家会先判断该由谁来做、需要用到你的哪些信息，
-                再把任务交给对应的仆人。过程中做了什么，你都能看到。
+                管家会先判断这件事涉及什么、需要用到你的哪些信息，
+                然后自己动手去做。过程中做了什么，你都能看到。
               </div>
             </div>
           )}

@@ -36,8 +36,8 @@ import {
   normalizeArtifact as normalizeArtifactShape,
   normalizeFinding as normalizeFindingShape,
   normalizeReport,
-  servantReportSchema,
-  type ServantReportOutput,
+  executionReportSchema,
+  type ExecutionReportOutput,
 } from '../prompts/schemas.js';
 import { BUTLER_SYSTEM, butlerExecuteTask, PROMPT_VERSIONS } from '../prompts/butler.js';
 import type { TaskContract } from './contract.js';
@@ -45,9 +45,9 @@ import type { DomainId } from '../domain/types.js';
 import type {
   Finding,
   InjectedConstraint,
-  ServantArtifact,
-  ServantReport,
-} from '../servants/types.js';
+  ExecutionArtifact,
+  ExecutionReport,
+} from '../execution/types.js';
 
 /** 管家回复的长度上限（与仆人一致，避免超长正文挤掉工具过程）。 */
 export const BUTLER_REPLY_LIMIT = 4_000;
@@ -74,9 +74,9 @@ export interface ButlerRunArgs {
 }
 
 export interface ButlerRunResult {
-  /** 汇报（形状与 `ServantReport` 兼容，但**不带仆人身份**，改带领域标签） */
-  readonly report: ServantReport;
-  readonly raw: ServantReportOutput;
+  /** 汇报（形状与 `ExecutionReport` 兼容，但**不带仆人身份**，改带领域标签） */
+  readonly report: ExecutionReport;
+  readonly raw: ExecutionReportOutput;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   readonly attempts: number;
   readonly promptVersions: readonly string[];
@@ -110,7 +110,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   // ⚠️ 复用 `schemas.ts` 里现成的实现，不自己重写 ——
   //    那两个函数处理了模型的各种别名（kind/type、statement/content、items 嵌套对象），
   //    重写必然漏掉其中某一种，而漏掉的表现是"产出悄悄少了一条"。
-  const artifacts: ServantArtifact[] = [];
+  const artifacts: ExecutionArtifact[] = [];
   for (const a of raw.artifacts) {
     const n = normalizeArtifactShape(a);
     if (!n) continue; // 空产出直接丢弃，不制造空条目
@@ -136,14 +136,14 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
 
   const mainDomain: DomainId | undefined = args.contract.domains[0];
 
-  const report: ServantReport = {
+  const report: ExecutionReport = {
     taskId: args.taskId,
     /**
-     * ⚠️ 过渡字段：`ServantReport.servant` 仍是必填（旧类型），
+     * ⚠️ 过渡字段：`ExecutionReport.servant` 仍是必填（旧类型），
      *    但管家没有"仆人身份"。这里填契约的主领域 —— 语义从
      *    "哪个仆人在干"变成"这件事属于哪个领域"。
      *
-     *    ★ 下一步会把 `servant` 从 `ServantReport` 里彻底删掉、改为 `domain`。
+     *    ★ 下一步会把 `servant` 从 `ExecutionReport` 里彻底删掉、改为 `domain`。
      *      现在填领域而不是随便填一个仆人，是为了**让数据不撒谎**。
      */
     // ★ 诚实：没有领域就不写（旧写法 `?? 'life'` 会编造归属）
@@ -189,11 +189,11 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
 async function runSingleShot(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
-): Promise<{ raw: ServantReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
+): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
   const result = await args.model.completeStructured({
-    purpose: 'servant',
-    schema: servantReportSchema,
-    schemaName: 'ServantReport',
+    purpose: 'execution',
+    schema: executionReportSchema,
+    schemaName: 'ExecutionReport',
     thinking: 'disabled',
     temperature: 0.2,
     maxOutputTokens: 3_072,
@@ -205,7 +205,7 @@ async function runSingleShot(
 async function runWithTools(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
-): Promise<{ raw: ServantReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
+): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
   const tools = args.tools;
   if (!tools) throw new Error('runWithTools 需要 tools');
 
@@ -258,7 +258,7 @@ async function runWithTools(
     };
   }
 
-  const parsed = servantReportSchema.safeParse(submitted);
+  const parsed = executionReportSchema.safeParse(submitted);
   if (!parsed.success) {
     return {
       raw: {

@@ -6,7 +6,7 @@
  * ★ 这一页的回答顺序是刻意的：
  *   ① 它记得你多少（数字，一眼看到）
  *   ② 有没有需要你处理的事（待审核）
- *   ③ 它在哪些方面了解你（仆人分布）
+ *   ③ 它在哪些方面了解你（领域分布）
  *   ④ 它学到的东西有没有用（原则效果）
  *   ⑤ 它的"经验"（记忆化执行 / 行为规律）
  *
@@ -38,7 +38,7 @@ export default async function OverviewPage() {
     model: rt.model !== null ? rt.model.describe().model : null,
   });
 
-  const { memory, principles, resume, servants, patterns, operations } = view;
+  const { memory, principles, resume, domains, patterns, operations } = view;
 
   return (
     <Shell title="总览" subtitle="它现在知道什么，以及它的判断有多少依据">
@@ -152,22 +152,24 @@ export default async function OverviewPage() {
         </>
       )}
 
-      {/* ── ③ 仆人分布 ── */}
+      {/* ── ③ 领域分布（v8：原「仆人分布」；「职责边界」列改为「专业纪律」）── */}
       <h2>它在哪些方面了解你</h2>
       <table className="table">
         <thead>
           <tr>
-            <th>仆人</th>
-            <th>职责边界</th>
+            <th>领域</th>
+            <th>专业纪律</th>
             <th style={{ textAlign: 'right' }}>记忆</th>
             <th style={{ textAlign: 'right' }}>原则</th>
           </tr>
         </thead>
         <tbody>
-          {servants.map((s) => (
+          {domains.map((s) => (
             <tr key={s.id}>
               <td style={{ whiteSpace: 'nowrap' }}>{s.name}</td>
-              <td style={{ color: 'var(--text-mute)', fontSize: 12 }}>{s.test}</td>
+              <td style={{ color: 'var(--text-mute)', fontSize: 12 }}>
+                {s.disciplineCount > 0 ? `${s.disciplineCount} 条` : '—'}
+              </td>
               <td className="mono" style={{ textAlign: 'right' }}>
                 {s.memories}
               </td>

@@ -15,7 +15,7 @@ import type { ScoredMemory } from '../../memory/recall.js';
 import type { MemoryEntry } from '../../memory/types.js';
 import { coreOf } from '../../text/keywords.js';
 import { extractKeywords, verifyHardConstraints } from '../hardConstraints.js';
-import type { ServantReport } from '../../servants/types.js';
+import type { ExecutionReport } from '../../execution/types.js';
 
 // ── 测试夹具 ──
 
@@ -54,13 +54,13 @@ function constraint(content: string, id = 'm_hard'): ScoredMemory {
 }
 
 function report(
-  domain: NonNullable<ServantReport['domain']>,
+  domain: NonNullable<ExecutionReport['domain']>,
   opts: {
     artifacts?: string[];
-    findings?: ServantReport['findings'];
-    status?: ServantReport['status'];
+    findings?: ExecutionReport['findings'];
+    status?: ExecutionReport['status'];
   } = {},
-): ServantReport {
+): ExecutionReport {
   return {
     taskId: `t_${domain}`,
     domain,

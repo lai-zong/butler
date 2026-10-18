@@ -35,7 +35,7 @@ import { BUTLER_SYSTEM, PROMPT_VERSIONS, supervisionTask } from '../prompts/butl
 import { supervisionSchema, type SupervisionOutput } from '../prompts/schemas.js';
 import { renderContractForReview, type TaskContract } from './contract.js';
 import { DOMAIN_DISCIPLINE, domainName } from '../domain/types.js';
-import type { ServantReport } from '../servants/types.js';
+import type { ExecutionReport } from '../execution/types.js';
 
 /**
  * 归一化后的发现 —— message **必定存在**。
@@ -72,7 +72,7 @@ export interface SupervisionResult {
  */
 const SUMMARY_CHAR_LIMIT = 1_800;
 
-function summarize(report: ServantReport): string {
+function summarize(report: ExecutionReport): string {
   const arts = report.artifacts
     .map((a) => (Array.isArray(a.content) ? a.content.join('；') : String(a.content)))
     .join(' | ');
@@ -104,7 +104,7 @@ export async function supervise(args: {
   readonly userGoal: string;
   /** 任务契约 —— 监督员核对的唯一标准 */
   readonly contract: TaskContract;
-  readonly reports: readonly ServantReport[];
+  readonly reports: readonly ExecutionReport[];
   readonly hardConstraints: readonly string[];
   readonly now: number;
 }): Promise<SupervisionResult> {

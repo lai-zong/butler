@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
-import type { ServantId } from '../../servants/types.js';
+import type { DomainId } from '../../execution/types.js';
 import { MemoryStore, type MemoryActor } from '../store.js';
 
 // ── 夹具 ──
@@ -44,7 +44,7 @@ function seed(
   store: MemoryStore,
   memClass: 'global_constraint' | 'global_shared' | 'sensitive' | 'domain',
   content: string,
-  domain?: ServantId,
+  domain?: DomainId,
 ): string {
   const r = store.create(butler, {
     memClass,

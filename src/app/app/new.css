@@ -934,3 +934,107 @@
     max-height: 45vh;
   }
 }
+/* ─────────────────────────────────────────────────────────────
+ * 执行产出面板（v8 · 批次A）
+ *
+ * ⚠️ 这些类是随 `conversation.tsx` 的右栏一起新增的 ——
+ *    旧右栏（servant-pane.tsx）已随多执行者架构删除，它的样式类一起废弃。
+ *
+ * ★ 类名统一按 `nv-pane-*` 前缀，与现有面板（head/title）保持一致。
+ * ───────────────────────────────────────────────────────────── */
+
+.nv-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--n-sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--n-sp-2);
+}
+
+.nv-pane-card {
+  border: 1px solid var(--n-border);
+  border-radius: var(--n-r);
+  background: var(--n-bg);
+  padding: var(--n-sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--n-sp-2);
+}
+
+.nv-pane-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--n-sp-2);
+}
+
+.nv-pane-card-title {
+  font-size: var(--n-fs-sub);
+  font-weight: 600;
+}
+
+.nv-pane-card-status {
+  font-size: var(--n-fs-tiny);
+  color: var(--n-text-faint);
+  font-family: var(--n-mono);
+}
+
+.nv-pane-text {
+  margin: 0;
+  font-size: var(--n-fs-sub);
+  color: var(--n-text-sub);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nv-pane-list {
+  margin: 0;
+  padding-left: var(--n-sp-4);
+  font-size: var(--n-fs-tiny);
+  color: var(--n-text-mute);
+  display: flex;
+  flex-direction: column;
+  gap: var(--n-sp-1);
+}
+
+.nv-pane-uncertain {
+  color: var(--n-warn);
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 判据核对（v8 · 批次D · 监督员面板主体）
+ *
+ * ★ 这是"可核对"在界面上的落点：契约写了几条判据，就逐条给结果。
+ *   颜色语义：满足=正常色，未满足=警告色并带说明。
+ * ───────────────────────────────────────────────────────────── */
+
+.nv-pane-checks {
+  padding-left: 0;
+  list-style: none;
+  gap: var(--n-sp-2);
+}
+
+.nv-pane-checks li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--n-sp-2);
+  align-items: start;
+  color: var(--n-text-sub);
+}
+
+.nv-pane-check-mark {
+  font-family: var(--n-mono);
+  color: var(--n-ok);
+}
+
+.nv-pane-checks li[data-met] .nv-pane-check-mark {
+  color: var(--n-warn);
+}
+
+.nv-pane-check-note {
+  grid-column: 2;
+  font-size: var(--n-fs-tiny);
+  color: var(--n-warn);
+}

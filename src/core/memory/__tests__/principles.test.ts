@@ -234,7 +234,7 @@ describe('② ★ 效果好的优先，效果差的不排除', () => {
       action: '确认忌口',
       domain: 'life',
     });
-    const withServant = selectPrinciples({ store, task: '推荐餐厅', servant: 'life' });
+    const withServant = selectPrinciples({ store, task: '推荐餐厅', domain: 'life' });
     const without = selectPrinciples({ store, task: '推荐餐厅' });
     expect(withServant[0]!.relevance).toBeGreaterThan(without[0]!.relevance);
   });
@@ -315,7 +315,7 @@ describe('④ 违背检测 · 只报疑似，不终判', () => {
 
     const r = checkPrinciples({
       injected: picked,
-      reports: [{ servant: 'life', text: '已确认同行人饮食忌口，小李素食' }],
+      reports: [{ domain: 'life', text: '已确认同行人饮食忌口，小李素食' }],
     });
 
     expect(r.violated).toHaveLength(0);
@@ -328,7 +328,7 @@ describe('④ 违背检测 · 只报疑似，不终判', () => {
 
     const r = checkPrinciples({
       injected: picked,
-      reports: [{ servant: 'life', text: '推荐了三家评分很高的餐厅' }],
+      reports: [{ domain: 'life', text: '推荐了三家评分很高的餐厅' }],
     });
 
     expect(r.violated).toHaveLength(1);
@@ -343,8 +343,8 @@ describe('④ 违背检测 · 只报疑似，不终判', () => {
     const r = checkPrinciples({
       injected: picked,
       reports: [
-        { servant: 'life', text: '推荐了三家餐厅' },
-        { servant: 'health', text: '已核对同行人饮食忌口' },
+        { domain: 'life', text: '推荐了三家餐厅' },
+        { domain: 'health', text: '已核对同行人饮食忌口' },
       ],
     });
     expect(r.violated).toHaveLength(0);
@@ -355,7 +355,7 @@ describe('④ 违背检测 · 只报疑似，不终判', () => {
     const picked = injected(store);
     const r = checkPrinciples({
       injected: picked,
-      reports: [{ servant: 'life', text: '推荐了三家餐厅' }],
+      reports: [{ domain: 'life', text: '推荐了三家餐厅' }],
     });
 
     for (const v of r.violated) {
@@ -368,7 +368,7 @@ describe('④ 违背检测 · 只报疑似，不终判', () => {
   });
 
   it('没有注入原则时检测结果为空', () => {
-    const r = checkPrinciples({ injected: [], reports: [{ servant: 'life', text: 'x' }] });
+    const r = checkPrinciples({ injected: [], reports: [{ domain: 'life', text: 'x' }] });
     expect(r.checks).toHaveLength(0);
     expect(r.violated).toHaveLength(0);
   });

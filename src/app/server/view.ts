@@ -13,7 +13,7 @@
  */
 
 import type { BootstrapResult } from '@/core/runtime/bootstrap.js';
-import { SERVANT_BOUNDARY, SERVANT_IDS, type ServantId } from '@/core/servants/types.js';
+import { DOMAIN_DISCIPLINE, DOMAIN_IDS, domainName, type DomainId } from '@/core/domain/types.js';
 import {
   CATEGORY_LABEL,
   PATTERN_KIND_LABEL,
@@ -101,7 +101,7 @@ export function toMemoryCard(
     fitnessPercent: Math.round(e.fitness * 100),
     confidencePercent: Math.round(e.confidence * 100),
     evidenceCount: e.evidence.length,
-    ownerLabel: sv !== null ? SERVANT_BOUNDARY[sv].name : '管家（全局）',
+    ownerLabel: sv !== null ? domainName(sv) : '管家（全局）',
     createdAt: e.createdAt,
     updatedAt: e.updatedAt,
     version: e.version,
@@ -155,11 +155,20 @@ export interface OverviewData {
     readonly succeeded: number;
     readonly avgSuccessPercent: number;
   };
-  readonly servants: readonly {
-    readonly id: ServantId;
+  /**
+   * ⚠️ 字段名仍是 `servants`（遗留，界面阶段统一改）。
+   *    但内容语义已改为**领域分布**：`DomainId` + 领域名 + 专业纪律条数。
+   *
+   * ★ v8（P3）：`test` 字段已删除 —— 那是旧架构的「路由判据」
+   *   （"什么请求归这个仆人"），而 A1 的 `DOMAIN_INFO` **已刻意不给 test**：
+   *   没路由了，判据没有边界可划。界面继续显示它等于展示一个不存在的概念。
+   *   改为 `disciplineCount`：领域现在真正的用途之一（监督员据此选纪律）。
+   */
+  readonly domains: readonly {
+    readonly id: DomainId;
     readonly name: string;
-    readonly domain: string;
-    readonly test: string;
+    /** 这个领域的专业纪律条数（监督员复核时会用这几条） */
+    readonly disciplineCount: number;
     readonly memories: number;
     readonly principles: number;
   }[];
@@ -294,13 +303,12 @@ export function buildOverview(rt: BootstrapResult, opts: { readonly model: strin
       succeeded: stats.succeeded,
       avgSuccessPercent: Math.round(stats.avgSuccessRate * 100),
     },
-    servants: SERVANT_IDS.map((id) => {
+    domains: DOMAIN_IDS.map((id) => {
       const mine = all.filter((m) => m.memClass === 'domain' && m.domain === id);
       return {
         id,
-        name: SERVANT_BOUNDARY[id].name,
-        domain: SERVANT_BOUNDARY[id].domain,
-        test: SERVANT_BOUNDARY[id].test,
+        name: domainName(id),
+        disciplineCount: DOMAIN_DISCIPLINE[id].length,
         memories: mine.length,
         principles: mine.filter((m) => m.kind === 'principle').length,
       };

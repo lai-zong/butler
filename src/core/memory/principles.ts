@@ -52,7 +52,7 @@ export function selectPrinciples(args: {
   /** 本次任务指令 / 用户目标 */
   readonly task: string;
   /** 偏好的仆人领域（该领域的领域原则优先） */
-  readonly servant?: string;
+  readonly domain?: string;
   readonly limit?: number;
 }): readonly PrincipleCandidate[] {
   const limit = args.limit ?? MAX_PRINCIPLES_PER_TASK;
@@ -80,9 +80,9 @@ export function selectPrinciples(args: {
     // ★ v7（A2）：判定依据从 `owner.servant` 改为 `domain` 标签 ——
     //   "这条原则属于哪个领域"与"谁写的"是两件事（单执行者下 owner 恒为管家）。
     const domainBonus =
-      args.servant !== undefined &&
+      args.domain !== undefined &&
       p.memClass === 'domain' &&
-      p.domain === args.servant
+      p.domain === args.domain
         ? 0.15
         : 0;
 
@@ -199,7 +199,7 @@ export interface PrincipleCheckReport {
 export function checkPrinciples(args: {
   readonly injected: readonly PrincipleCandidate[];
   readonly reports: readonly {
-    readonly servant: string;
+    readonly domain: string;
     readonly text: string;
   }[];
 }): PrincipleCheckReport {

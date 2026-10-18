@@ -627,7 +627,7 @@ describe('⑦ ★ 成长画像', () => {
     expect(s.facts).toBe(10);
     expect(s.principles).toBe(3);
     expect(s.sessionCount).toBe(10);
-    expect(s.perServant).toBeDefined();
+    expect(s.perDomain).toBeDefined();
   });
 
   it('★ 候选不计入（没被承认的不算"我了解你"）', () => {

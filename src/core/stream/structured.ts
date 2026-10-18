@@ -135,7 +135,7 @@ export async function streamStructured<T>(
     ];
 
     const call: StreamCall = {
-      purpose: 'servant',
+      purpose: 'execution',
       messages,
       ...(args.temperature !== undefined ? { temperature: args.temperature } : {}),
       ...(args.maxOutputTokens !== undefined ? { maxOutputTokens: args.maxOutputTokens } : {}),

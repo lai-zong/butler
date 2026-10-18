@@ -40,8 +40,17 @@ import {
  *
  * 白名单而非黑名单：新增事件类型时**默认不成为检查点**，
  * 避免某天有人加了个高频事件把时间轴刷成一片。
+ *
+ * ★★ v8：白名单分两段 —— **当前架构**与**历史事件**。
+ *
+ * ⚠️ 为什么要分段：v8 之前这里有 6 条（`route.decided` / `dispatch.*` /
+ *    `conflict.*`）对应的功能**已经删了**，当前代码永不产生它们。
+ *    但**不能删**：旧日志里有，删了回退历史会话时那些检查点会消失。
+ *
+ *    ★ 读到这里的人请注意：**历史段的存在不是"还有派发"的证据**。
  */
 const CHECKPOINT_RULES: Partial<Record<SessionEvent['type'], { kind: CheckpointKind; label: (p: Record<string, unknown>) => string }>> = {
+  // ── 当前架构（v8）────────────────────────────────────────────
   'thought.done': {
     kind: 'goal',
     label: (p) => (typeof p['stage'] === 'string' && p['stage'] === 'understand' ? '理解目标' : '推理完成'),
@@ -50,18 +59,69 @@ const CHECKPOINT_RULES: Partial<Record<SessionEvent['type'], { kind: CheckpointK
     kind: 'recall',
     label: (p) => `召回记忆 ${typeof p['count'] === 'number' ? p['count'] : 0} 条`,
   },
+  /**
+   * ★ v8 新增：**承诺了什么**。
+   *
+   * ⚠️ 这是新架构最该成为检查点的一步 —— 契约是监督员的核对标准，
+   *    也是"回退到写契约之前重来"的锚点。之前它不成检查点，
+   *    等于时间轴上缺了"它答应做什么"那一刻。
+   */
+  'contract.written': {
+    kind: 'plan',
+    label: (p) => {
+      const n = Array.isArray(p['criteria']) ? p['criteria'].length : 0;
+      const d = typeof p['deliverable'] === 'string' ? p['deliverable'] : '';
+      return `写下契约${d.length > 0 ? `：${d.slice(0, 24)}` : ''}${n > 0 ? `（${n} 条判据）` : ''}`;
+    },
+  },
+  /**
+   * ★ v8 新增：**干完了**。
+   *
+   * ⚠️ 这是产出物的产生点，也是"回退到这一轮之前重来"的锚点。
+   */
+  'butler.executed': {
+    kind: 'stepDone',
+    label: (p) => {
+      const st = typeof p['status'] === 'string' ? p['status'] : '?';
+      const arts = typeof p['artifacts'] === 'number' ? p['artifacts'] : 0;
+      return `执行完成（${st} · ${arts} 项产出）`;
+    },
+  },
+  /** ★ v8 新增：**复核结果**（判据核对 + 三视角发现） */
+  'supervisor.observe': {
+    kind: 'verdict',
+    label: (p) => {
+      const met = typeof p['criteriaMet'] === 'number' ? p['criteriaMet'] : 0;
+      const tot = typeof p['criteriaTotal'] === 'number' ? p['criteriaTotal'] : 0;
+      const dropped = typeof p['droppedFindings'] === 'number' ? p['droppedFindings'] : 0;
+      const tail = dropped > 0 ? ` · 丢弃 ${dropped} 条不规范发现` : '';
+      return tot > 0 ? `复核完成（判据 ${met}/${tot}）${tail}` : `复核完成${tail}`;
+    },
+  },
+  /** 硬约束机械拦截 —— 当前架构仍会产生 */
+  'constraint.hardBlocked': { kind: 'conflict', label: () => '硬约束拦截' },
+  'artifact.created': { kind: 'deliver', label: (p) => `产出物 ${String(p['label'] ?? p['artifactId'] ?? '')}` },
+  'session.ended': { kind: 'deliver', label: () => '汇总交付' },
+
+  // ── 历史事件（只读重放；当前代码**不再产生**）─────────────────
+  //
+  // ⚠️ 保留这 6 条只为**回退旧日志**时仍能重建当时的检查点。
+  //    删了会让历史会话的时间轴突然变空。
+  /** @deprecated 历史：独立路由调用已在 v8 砍掉（置信度并入契约） */
   'route.decided': { kind: 'route', label: (p) => `路由 → ${String(p['servant'] ?? '?')}` },
+  /** @deprecated 历史：多步派发已删 */
   'dispatch.created': { kind: 'plan', label: (p) => `任务分解 ${Array.isArray(p['steps']) ? p['steps'].length : 0} 步` },
+  /** @deprecated 历史：多步派发已删 */
   'dispatch.stepDone': {
     kind: 'stepDone',
     label: (p) => `完成 ${String(p['stepId'] ?? '?')}${p['servant'] ? ` · ${String(p['servant'])}` : ''}`,
   },
+  /** @deprecated 历史：多步派发已删 */
   'dispatch.stepFailed': { kind: 'stepDone', label: (p) => `失败 ${String(p['stepId'] ?? '?')}` },
+  /** @deprecated 历史：跨执行者冲突裁决已删（改为三视角复核） */
   'conflict.detected': { kind: 'conflict', label: () => '检出冲突' },
-  'constraint.hardBlocked': { kind: 'conflict', label: () => '硬约束拦截' },
+  /** @deprecated 历史：跨执行者冲突裁决已删 */
   'conflict.resolved': { kind: 'verdict', label: () => '冲突裁决' },
-  'artifact.created': { kind: 'deliver', label: (p) => `产出物 ${String(p['label'] ?? p['artifactId'] ?? '')}` },
-  'session.ended': { kind: 'deliver', label: () => '汇总交付' },
 };
 
 /** 该事件是否值得成为检查点。 */
@@ -257,7 +317,15 @@ export class CheckpointManager {
 
     const eventsAfter = this.log.range(target.seq + 1, currentSeq);
 
-    // 步骤层面：目标快照已完成之外的都是"要重做"
+    /**
+     * ⚠️ **历史分支**：`doneAfter` 只从 `dispatch.stepDone` 收集。
+     *
+     * ★ 当前架构不产生该事件 → `keepSteps` / `redoSteps` 对新会话本就是空的。
+     *   **这不是 bug**：单执行者架构里没有「步骤」，回退粒度是**会话/产出物级**。
+     *
+     * ⚠️ 「每轮一个单元」的粒度尚未引入 —— 那是新功能设计（需要轮次 id），
+     *    不属于「清掉仆人代码」。见 docs/refactor-status.md §7.3。
+     */
     const doneAfter = new Set<string>();
     for (const e of eventsAfter) {
       const p = (e.payload ?? {}) as Record<string, unknown>;
@@ -300,11 +368,24 @@ export class CheckpointManager {
     for (const e of eventsAfter) {
       const p = (e.payload ?? {}) as Record<string, unknown>;
       if (e.type === 'constraint.injected') {
+        /**
+         * ★ 这是**当前架构**的记忆影响来源：`writeContract` 给每条注入的约束
+         *   发一个 `constraint.injected`，所以「这轮用到了哪些记忆」照样算得出来。
+         */
         const id = p['memoryId'];
         if (typeof id === 'string' && !keptMemories.has(id)) {
           memoryImpact.push({ memoryId: id, action: 'review' });
         }
       } else if (e.type === 'servant.report') {
+        /**
+         * ⚠️ **历史分支**（多执行者时代）：从 `servant.report.payload.memoryRefs` 取。
+         *
+         * 当前架构**不再产生** `servant.report`，所以这条分支在**新日志上不可达** ——
+         * 记忆影响已由上面的 `constraint.injected` 覆盖。
+         *
+         * ★ 保留理由：**回退旧日志时仍需按当时的语义重建影响面**。
+         *   删了会让历史检查点的 `memoryImpact` 变空。
+         */
         const refs = p['memoryRefs'];
         if (Array.isArray(refs)) {
           for (const r of refs) {
@@ -510,6 +591,9 @@ export class CheckpointManager {
 function describeEvent(e: SessionEvent): string {
   const p = (e.payload ?? {}) as Record<string, unknown>;
   switch (e.type) {
+    // ⚠️ `route.decided` / `dispatch.*` / `conflict.*` 是**历史事件**
+    //    （当前代码不产生），保留只为给旧日志的检查点补一行说明。
+    //    `constraint.hardBlocked` 仍在使用，所以它和 `conflict.detected` 共用分支。
     case 'route.decided':
       return `置信度 ${typeof p['confidence'] === 'number' ? p['confidence'] : '?'}`;
     case 'dispatch.created':

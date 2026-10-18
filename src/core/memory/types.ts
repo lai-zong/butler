@@ -10,7 +10,6 @@
  */
 
 import type { DomainId } from '../domain/types.js';
-import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
 // 三元结构
@@ -171,7 +170,7 @@ export type MemoryOwner = { readonly kind: 'butler'; readonly userId: string };
  */
 export interface MemoryGrant {
   readonly taskId: string;
-  readonly grantedTo: ServantId;
+  readonly grantedTo: DomainId;
   readonly at: number;
   /** 任务结束后自动失效；到期后不再可见 */
   readonly expiresAt: number;

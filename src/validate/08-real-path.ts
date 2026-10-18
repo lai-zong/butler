@@ -13,7 +13,7 @@
  *      **每一个都只在真实使用路径上暴露**：
  *
  *        ① 对话历史从没进模型上下文（跨轮指代失败）
- *        ② `tools` 从没装配到界面（仆人根本不调工具）
+ *        ② `tools` 从没装配到界面（执行者根本不调工具）
  *        ③ 工具调用分片按错键聚合（参数全空、20 轮烧光 token）
  *
  *      这三个在单元测试里全过 —— 因为单元测试测的是**零件**，
@@ -29,7 +29,7 @@
  *   ③ 第二轮能召回第一轮的事实（跨轮可用）
  *   ④ 工具循环真的调用了工具，且**参数正确**（分片聚合对）
  *   ⑤ 工具过程落进消息（刷新后能看到）
- *   ⑥ 硬约束被注入给仆人
+ *   ⑥ 硬约束被注入给执行
  *
  * 运行：pnpm validate:8
  */
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   line(`  工作目录：${dir}`);
 
   try {
-    // 造一个仆人需要读的文件
+    // 造一个执行需要读的文件
     const { writeFile } = await import('node:fs/promises');
     await writeFile(
       join(dir, '冰箱盘点.txt'),
@@ -138,8 +138,35 @@ async function main(): Promise<void> {
     const toolCalls = progress.filter((e) => e.kind === 'toolCall' && !e.partial);
     const fileRead = toolResults.find((e) => e.kind === 'toolResult' && e.name === 'read_file');
 
-    line(`  轮次：${turn1.session.routing.servant} · 判定 ${turn1.verdict.outcome}`);
+    line(`  轮次：${(turn1.session.contract?.domains ?? []).join("/")} · 判定 ${turn1.verdict.outcome}`);
     line(`  工具调用 ${toolCalls.length} 次 · 结果 ${toolResults.length} 个`);
+
+    /**
+     * ★★ v8（批次D/K）：判据核对**真的走到了结论里**。
+     *
+     * ⚠️ 这是右栏「判据核对」的唯一数据来源：
+     *    supervision.criteriaChecks → verdict.criteriaChecks → SSE → 界面
+     *
+     * ⚠️ 这条链路此前**从未被端到端验证** —— 批次D 加了字段与界面，
+     *    但「浏览器走的那条路（runTurn）上它有没有值」没人测。
+     */
+    const verdictChecks = turn1.verdict.criteriaChecks;
+    const contractCriteria = turn1.session.contract?.criteria ?? [];
+    line(`  判据核对 ${verdictChecks.length} 条（契约 ${contractCriteria.length} 条）`);
+    for (const c of verdictChecks) {
+      const note = c.note !== undefined ? ` — ${c.note.slice(0, 30)}` : '';
+      line(`    ${c.met ? '✓' : '✗'} ${c.criterion.slice(0, 50)}${note}`);
+    }
+    check(
+      '④★ 判据核对进入了审查结论（右栏数据源）',
+      contractCriteria.length === 0 || verdictChecks.length > 0,
+      `契约 ${contractCriteria.length} 条 → 核对 ${verdictChecks.length} 条`,
+    );
+    check(
+      '④★ 每条核对都带 met 布尔值（界面据此打勾/叉）',
+      verdictChecks.every((c) => typeof c.met === 'boolean' && c.criterion.length > 0),
+      verdictChecks.length === 0 ? '（本次无核对）' : '全部合法',
+    );
     for (const e of toolResults) {
       if (e.kind !== 'toolResult') continue;
       line(`    ${e.ok ? '✓' : '✗'} ${e.name} ${e.output.length} 字（${e.durationMs}ms）`);
@@ -268,7 +295,7 @@ async function main(): Promise<void> {
       line(`    → ${p.servant}：${p.content}（${p.reason}）`);
     }
 
-    check('⑥ ★ 硬约束被注入给仆人', hardInjections.length > 0, `${hardInjections.length} 次`);
+    check('⑥ ★ 硬约束被注入给执行', hardInjections.length > 0, `${hardInjections.length} 次`);
 
     // ═══════════════════════════════════════════════════════
     hr('结果汇总');

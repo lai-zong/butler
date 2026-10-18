@@ -55,7 +55,7 @@ export const MAX_HISTORY_CHARS = 800;
  * ★ 为什么废弃：**固定轮数是错误的判据**。
  *   · 4 轮 × 800 字 ≈ 3K token，而上下文有 1M —— **主动丢掉了大量有用信息**
  *   · 实测后果：用户说"那今晚就按你说的做"，模型答"我看不到那个方案"
- *   ⚠️ 保留导出仅为不破坏既有引用（`buildServantHistoryMessages` 不用它）。
+ *   ⚠️ 保留导出仅为不破坏既有引用（`buildDomainHistoryMessages` 不用它）。
  */
 export const MAX_HISTORY_TURNS = 4;
 
@@ -203,7 +203,7 @@ export function truncateHead(text: string, max: number): string {
  *   实测依据：仆人 prompt 里已经有 `instruction` + `injectedConstraints`
  *   + `inputs` 三块精确信息，再加长历史是重复供给。
  */
-export function buildServantHistoryMessages(
+export function buildDomainHistoryMessages(
   messages: readonly ChatMessage[],
 ): readonly ModelMessage[] {
   if (messages.length === 0) return [];

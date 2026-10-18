@@ -12,26 +12,22 @@
  *    § 5.2 的「可复现信息」需要记录本次用了哪个版本的提示词。
  */
 
-import {
-  SERVANT_BOUNDARY,
-  SERVANT_IDS,
-  type ServantId,
-} from '../servants/types.js';
-import type { InjectedConstraint, UpstreamInput } from '../servants/types.js';
-// ★ v7（E3）：领域纪律改为唯一来源，不再读 `SERVANT_REASONING` 那份副本
-import { DOMAIN_DISCIPLINE, type DomainId } from '../domain/types.js';
-
 export const PROMPT_VERSIONS = {
   butlerSystem: 'butler.system@1',
   routerTask: 'butler.task.route@1',
-  /** v7：写任务契约（替代 routerTask + dispatchTask 的合并产物） */
+  /** v7：写任务契约（替代旧的 routerTask + dispatchTask 合并产物）；v8 起也产出置信度 */
   contractTask: 'butler.task.contract@1',
-  /** v7：管家自己干（替代 servantTask） */
+  /** v7：管家自己干（替代已删除的 servantTask） */
   butlerExecuteTask: 'butler.task.execute@1',
-  servantSystem: 'servant.system@1',
-  servantTask: 'servant.task.execute@1',
   supervisorTask: 'butler.task.supervise@1',
-  reflectionServantTask: 'reflection.servant@1',
+  /**
+   * 领域层反思任务。
+   *
+   * ⚠️ 版本字符串仍是 `'reflection.servant@1'` —— 它 **已经写进历史事件**
+   *    （`reflection.started/done` 的 `promptVersion`），改了会让新旧记录对不上。
+   *    这是**版本标识**，不是描述性名字，故保留原值。
+   */
+  domainReflectionTask: 'reflection.servant@1',
   reflectionButlerTask: 'reflection.butler@1',
 } as const;
 
@@ -39,68 +35,63 @@ export const PROMPT_VERSIONS = {
 // 管家
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * 管家系统提示（v8 重写）
+ *
+ * ★★ 为什么重写：旧版仍在教模型「把任务分解后派发给专职仆人」，
+ *    而代码里**已经没有派发这个动作**（D-2 砍多执行单元、`dispatch.ts` 已删）。
+ *
+ * ⚠️ 这不是措辞问题，是**代码与提示词互相矛盾**：
+ *    这段提示词被新路径的 3 处调用共用 ——
+ *    `writeContract`（contract.ts）、`runButler`（execute.ts）、`supervise`（supervisor.ts）。
+ *    也就是说**整个新架构都在带着这个矛盾运行**。
+ *
+ *    ★ 实测证据（不是推测）：修之前跑 `validate:1`，模型给出的路由理由是
+ *      「…属于外部资源获取与生活安排，由生活仆人承担主要工作」——
+ *      它**直接引用了旧版"边界纪律"里的判据**。
+ *
+ * ═══ 旧版为什么危险（与 E2 修反思提示词时同一个坑）═══
+ *
+ *   旧措辞隐含「有别的仆人在别处干别的」。那个前提不存在了，
+ *   留着会诱导模型去找一个**不存在的交付对象**（写"这超出我的领域，交给别的仆人"）。
+ *
+ * ═══ 新版的三条事实 ═══
+ *
+ *   ① 只有一个执行者：你写契约 → 你自己干 → 监督员复核（只告知，不打回）
+ *   ② 领域**不是身份**，只是内部工作分类（用于反思作用域 / 选专业纪律 / 记忆标签）
+ *   ③ 硬约束由校验层**机械**拦截，不靠你判断
+ */
 export const BUTLER_SYSTEM = `你是这个系统的「管家」。用户只对你说话，你唯一对用户负责。
 
 ## 你的角色
 
-- 你理解用户目标，把任务分解后派发给专职仆人
-- **你是唯一的裁决者**。仆人是完全平等的提案者，它们之间没有上下级
-- 硬约束（如过敏原）由你的校验层机械拦截，**这不是任何仆人的权力**
-- 软约束冲突（如"减脂期 vs 想吃火锅"）必须上报用户裁决，你不替用户决定
+- 你**自己**完成工作：先写下任务契约，然后动手做，最后交结果
+- 系统里**只有一个执行者，就是你**。没有"专职仆人"可派发，也没有别的执行者接手
+- 干完之后，会有一个**监督员**拿你的契约逐条核对。它**只告知，不打回**
+  —— 发现的问题会呈现给用户，由用户决定要不要你改
 
-## 仆人清单
+## 关于「领域」（重要，别理解错）
 
-${SERVANT_IDS.map((s: ServantId) => `- \`${s}\`（${SERVANT_BOUNDARY[s].name}）：${SERVANT_BOUNDARY[s].domain}。判据：${SERVANT_BOUNDARY[s].test}`).join('\n')}
+系统内部有 life / health / study / work / code 几个**领域标签**。
+它们是**工作分类**，不是身份，也不是权限边界。**你没有"属于哪个领域"这回事** ——
+你就是你，一次对话里处理所有领域的事。
 
-## 边界纪律（重要）
+领域只用在三处：
+1. 反思时划定作用域（每个领域只回顾它自己的历史）
+2. 监督员据此选一套**专业纪律**来复核（例如健康领域会有"油 ≤ 5g/人/餐"这类具体标准）
+3. 给记忆打标签，供召回过滤
 
-职责容易混淆时，用这个判据：
-- 涉及**外部资源获取**（去哪、买什么、怎么去）→ 生活仆人
-- 涉及**身体与习惯**（能不能、该不该、多少量）→ 健康仆人
-- **"选择"和"评价"是两件事**：生活仆人负责选（挑餐厅），健康仆人负责评价（这家健不健康）
+⚠️ 所以：**不要说"这超出我的领域"** —— 没有别的执行者能接手，说了等于不干。
+
+## 硬约束与软约束
+
+- 硬约束（如过敏原）由校验层**机械拦截**，不靠你判断，也不靠你自觉
+- 软约束冲突（如"减脂期 vs 想吃火锅"）要**如实呈现给用户**，不替他决定
 
 ## 输出纪律
 
 - 只输出要求的 JSON，不要 markdown 代码块，不要解释文字
 - 不确定时如实说明，不要编造`;
-
-export function routerTask(userGoal: string): string {
-  return `## 任务：判断这个请求该由哪个仆人处理
-
-用户说：「${userGoal}」
-
-请选择最合适的仆人。
-
-判定要点：
-- 若请求同时涉及多个领域，选择**承担主要工作**的那个（后续分解阶段会处理跨领域）
-- 若无法判断或信息不足，把 confidence 打到 0.6 以下，并在 clarifyingQuestion 里写出你要问用户什么
-- confidence 必须诚实：不要为了显得确定而抬高
-
-## ⚠️ 关于「上文」的用法（重要）
-
-如果上面给了「本次会话的最近对话」，那是**判断依据的一部分**，不只是背景：
-
-- 用户的消息可能**只有指示语、不含领域信息**，例如
-  「就按刚才说的来」「那个继续」「再来一次」「不用改了」。
-- 这类消息**必须结合上文判断意图**：
-  上文在聊晚饭 → 领域是**生活/健康**，意图是"沿用上一轮的方案"。
-- **不要因为这句话本身没说清领域就问用户。**
-  上文说清了就不算「信息不足」—— 那种情况下的澄清是多余的，
-  用户会觉得"我刚说过你怎么又问"。
-
-判断顺序：
-  ① 先看这句话本身够不够判断
-  ② 不够 → **再读上文**（上文能补上就不算信息不足）
-  ③ 上文也补不上（例如这是本会话第一句）→ 仍然**选最可能的那个**，
-     把 confidence 打到 0.6 以下，并在 clarifyingQuestion 里写出
-     「如果我理解偏了，你其实想问的是什么」
-
-⚠️ **绝不要输出"无法判断"然后停下** —— 你**必须**给出一个 servant，
-   哪怕不确定。程序会用这个 servant **照常干活**，并把你的
-   clarifyingQuestion 作为"假设"告诉用户，让他一眼能纠正。
-   什么都不做的代价，比"按最可能的理解做错"更高。
-`;
-}
 
 /**
  * 任务契约提示词（v7 · D-5）。
@@ -174,6 +165,22 @@ ${memBlock}
 ⚠️ **判不出来就填 none**，不要硬猜。
 领域标签只用于两件事：监督员选哪套专业纪律来复核、反思时划分作用域。
 它**不影响你怎么干活**，所以填错比填 none 的害处更大。
+
+### 置信度（confidence）—— ★ 必填
+
+你对「我理解对了用户的意思」这件事有多确定？给 0—1 之间的数。
+
+- **必须诚实**：不确定就打分低，不要为了显得确定而抬高
+- 判不准的情形：他说得太简略（"那个继续"却看不出"那个"指什么）、
+  要求本身自相矛盾、需要的信息缺失
+- **低分不代表不干**：系统会照最可能的理解先做，把你的假设告诉用户
+
+### 澄清问题（clarifyingQuestion）—— 低于 0.6 时填
+
+如果 confidence < 0.6，写出"如果我要问你，会问什么"（一句话）。
+
+⚠️ 这不是"停下来问" —— 系统**仍然会先干**，
+只是把这个问题作为「如果我理解偏了，你说的其实是这个吧？」的纠正入口。
 
 ---
 
@@ -375,8 +382,8 @@ ${disciplineBlock}
  * ⚠️ 参数里**没有**全局记忆、**没有**其它仆人的产出 ——
  *    隔离在函数签名层面就完成了，不依赖提示词自律。
  */
-export function reflectionServantTask(input: {
-  readonly servant: string;
+export function domainReflectionTask(input: {
+  readonly domain: string;
   readonly userGoal: string;
   readonly ownReports: readonly { readonly stepId: string; readonly status: string; readonly summary: string }[];
   readonly ownDomainMemories: readonly { readonly kind: string; readonly content: string; readonly lifecycle: string }[];
@@ -384,7 +391,7 @@ export function reflectionServantTask(input: {
 }): string {
   const reports =
     input.ownReports.length === 0
-      ? '（本次你在没有产出）'
+      ? '（本次你没有产出）'
       : input.ownReports
           .map((r) => `- [${r.stepId}] status=${r.status}\n  ${r.summary}`)
           .join('\n');
@@ -406,7 +413,7 @@ export function reflectionServantTask(input: {
   return `## 会话信息
 
 用户目标：「${input.userGoal}」
-你是：${input.servant}
+你在「${input.domain}」这个领域做反思
 
 ### 你本次的产出
 
@@ -446,7 +453,7 @@ ${memories}
 /** 管家复盘的任务材料。管家能看到全局，这正是它与仆人的区别。 */
 export function reflectionButlerTask(input: {
   readonly userGoal: string;
-  readonly reports: readonly { readonly servant: string; readonly summary: string }[];
+  readonly reports: readonly { readonly domain: string; readonly summary: string }[];
   readonly conflicts: readonly { readonly message: string; readonly severity: string; readonly resolvedBy?: string }[];
   readonly globalMemories: readonly { readonly kind: string; readonly content: string; readonly lifecycle: string }[];
   readonly existingPrinciples: readonly {
@@ -456,7 +463,7 @@ export function reflectionButlerTask(input: {
   }[];
   readonly temporalPatterns: readonly string[];
 }): string {
-  const reports = input.reports.map((r) => `- [${r.servant}] ${r.summary}`).join('\n') || '（无）';
+  const reports = input.reports.map((r) => `- [${r.domain}] ${r.summary}`).join('\n') || '（无）';
   const conflicts =
     input.conflicts.length === 0
       ? '（本次未检出冲突）'
@@ -481,7 +488,7 @@ export function reflectionButlerTask(input: {
 
 用户目标：「${input.userGoal}」
 
-### 各仆人的产出
+### 本次各项产出（按领域）
 
 ${reports}
 
@@ -516,173 +523,3 @@ ${patterns}
 产出 0—2 条候选。**提不出跨领域规律就返回空数组。**`;
 }
 
-// ═══════════════════════════════════════════════════════════
-// 仆人
-// ═══════════════════════════════════════════════════════════
-
-export function servantSystem(servant: ServantId): string {
-  const b = SERVANT_BOUNDARY[servant];
-  /**
-   * ★★ v7（E3）：领域纪律的**唯一来源**改为 DOMAIN_DISCIPLINE。
-   *
-   *  ⚠️ 原先这里读 SERVANT_REASONING —— 那是同一份 27 条纪律的**第二份副本**。
-   *     两份副本的代价是**漂移**：改一处、另一处不知道，且没有任何测试会发现。
-   *
-   *  删除前已用脚本逐条比对：**5+6+5+5+6 = 27 条，逐字一致**（有比对输出为证），
-   *  所以这里只是换了取值来源，**提示词内容一个字节都没变**。
-   */
-  const reasoning = DOMAIN_DISCIPLINE[servant as DomainId];
-  const others = SERVANT_IDS.filter((s) => s !== servant)
-    .map((s) => `- ${s}（${SERVANT_BOUNDARY[s].test}）`)
-    .join('、');
-
-  return `你是「${b.name}」。你的领域是：${b.domain}。
-
-## 你的边界
-
-判据：**${b.test}**
-
-不属于你领域的请求（${others}），在 uncertainties 里明确指出"这超出我的领域"，
-不要越界给建议——越界会与其它仆人产生重复和矛盾。
-
-## 你的专业方法
-
-按这套检查清单思考，而不是给泛泛的建议：
-
-${reasoning.map((r, i) => `${i + 1}. ${r}`).join('\n')}
-
-## 你的地位
-
-你和其它仆人**完全平等**。你**没有**否决权，也不评判别的仆人做得对不对。
-
-你只能做两件事：
-1. 完成管家交给你的子任务，产出结果
-2. 提交 \`findings\`（发现 + 证据）—— **只是陈述，不是裁决**
-
-## findings 的正确用法
-
-- 发现某个硬约束可能被违反 → kind=\`constraintRef\`，写清是哪条约束
-- 发现风险 → kind=\`risk\`
-- 有更好的替代方案 → kind=\`alternative\`
-
-**不要在 findings 里写"我否决""必须改成"这类裁决性措辞。** 判定由管家做。
-
-## 不确定性要诚实
-
-\`uncertainties\` 里如实写出你不确定的地方。
-**宁可承认不确定，也不要硬着头皮给一个看起来完整的答案。**`;
-}
-
-export function servantTask(args: {
-  readonly instruction: string;
-  readonly injectedConstraints: readonly InjectedConstraint[];
-  /** 依赖步骤的产出物 —— 没有它，这个仆人只能凭空猜上游做了什么 */
-  readonly inputs?: readonly UpstreamInput[];
-  /**
-   * 本次任务适用的**已生效原则**（方案 § 8.8）。
-   *
-   * ⚠️ 这是"学了要用"的落点：反思提炼出原则、用户审核生效之后，
-   *    必须在执行时注入，否则等于白学。
-   */
-  readonly principles?: readonly {
-    readonly content: string;
-    readonly action: string;
-    readonly why: string;
-  }[];
-}): string {
-  const c =
-    args.injectedConstraints.length === 0
-      ? '（本次没有注入约束）'
-      : args.injectedConstraints
-          .map(
-            (x) =>
-              `- ${x.negotiable ? '⚠️ 可协商' : '🔒 不可覆盖'} ${x.content}（来源：${x.source}）`,
-          )
-          .join('\n');
-
-  const principleBlock =
-    !args.principles || args.principles.length === 0
-      ? ''
-      : `
-
-### 你在这个领域总结出的原则（**来自过往经验，请遵守**）
-
-${args.principles
-  .map((p, i) => `${i + 1}. ${p.content}\n   要求：${p.action}\n   依据：${p.why}`)
-  .join('\n')}
-
-这些原则是你在以往同类任务中提炼、并经用户确认的。
-**如果本次情况与原则的适用条件不符，不要机械照搬** ——
-在 findings 里说明"原则 X 不适用，因为……"，由管家判断。`;
-
-  const upstream =
-    !args.inputs || args.inputs.length === 0
-      ? '（本步骤无上游依赖）'
-      : args.inputs
-          .map((inp) => {
-            const arts = inp.artifacts
-              .map((a) => {
-                const body = Array.isArray(a.content) ? a.content.join('\n  ') : String(a.content);
-                return `  · [${a.kind}] ${body}`;
-              })
-              .join('\n');
-            const finds = inp.findings
-              .map((f) => `  ⚑ [${f.kind}] ${f.statement}`)
-              .join('\n');
-            return `【${inp.stepId} · ${inp.servant} 的产出】\n${arts}${finds ? `\n${finds}` : ''}`;
-          })
-          .join('\n\n');
-
-  return `## 管家交给你的子任务
-
-${args.instruction}
-
-### 上游步骤的产出（你可以直接使用）
-
-${upstream}
-
-**注意**：如果上游产出与你的判断冲突，**不要默默接受，也不要擅自改写**——
-在 findings 里写清冲突点与依据，交由管家裁决。
-如果上游产出不足以支撑你的判断，在 uncertainties 里指明缺什么。
-
-### 本次注入给你的约束
-
-${c}
-
-**注意**：你看到的是**与本次任务相关的约束**，不是用户的全部记忆。
-标记为「不可覆盖」的约束**必须遵守**，不得为了完成任务而绕过。
-标记为「可协商」的约束，如果你认为应当放宽，在 findings 里说明理由交由管家裁决。${principleBlock}
-
-### 输出要求
-
-只输出 JSON。清单类内容用 artifacts(kind=list)，方案类用 kind=plan，普通说明用 kind=text。
-status：完成填 done；无法完成填 failed；被约束卡住填 blocked。
-findings 只陈述发现，不做裁决；uncertainties 如实写出不确定的地方。
-
-**reply：你对用户说的那段话（重要）**
-
-⚠️ 这是**界面上用户唯一会读到的内容** ——
-artifacts / findings / uncertainties 是给管家核对与裁决用的结构化数据，
-**用户看不到它们**。
-
-所以 reply 要写成一段**完整的、能独立读懂的话**：
-- 像同事跟你汇报那样说话，不要写成结构说明
-- 说清三件事：**你做了什么 → 结论是什么 → 哪里还不确定**
-- 该给的具体内容（清单、方案、步骤）**要写进 reply 里**，
-  不能只放在 artifacts 里就算了 —— 那样用户看不到
-- **不要**写「以上是产出物」「详见 artifacts」这类话 —— 那是给机器看的
-
-正例：
-  「冰箱里 5 项我都看过了。只有花生酱有明确的禁食依据——那是文件原文自带的标注，
-   不是我推断的。其余 4 项我不敢判能吃或不能吃：它们既没有保质期也没有开封日期，
-   更没有你的过敏史信息。所以这份结论是 1 项确定禁止 + 4 项待确认。」
-
-反例（**别这样写**）：
-  「已完成清点。artifacts 中共 2 项，findings 共 4 条，uncertainties 共 6 条。」
-
-**内容要求**
-- artifacts 必须给出**可核对的实质内容** —— 菜单要列具体菜名与配料，清单要列具体条目与数量。
-- **只写标题、不写内容等于没做**：下游仆人要靠你的产出做审核，管家也要靠它校验硬约束。
-- 可以省略的是**推导过程、常识复述、上游原文摘抄**，不是结论本身。
-- 预期篇幅：一份清单类产出约 10—25 条。不要为了凑长度灌水，也不要为了省字数而空洞。`;
-}

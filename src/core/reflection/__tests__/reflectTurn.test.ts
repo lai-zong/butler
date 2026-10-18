@@ -4,7 +4,7 @@
  * ★★ 为什么要单独一个文件：
  *
  *   `reflectTurn` 原本**没有任何测试** ——
- *   现有的 23 个反思测试都在测 `buildServantReflectionInput` / `reflectServant`
+ *   现有的 23 个反思测试都在测 `buildDomainReflectionInput` / `reflectDomain`
  *   这两个**下层函数**，`validate:02` 也是直接调下层。
  *
  *   ⚠️ 后果：我在 E4 里改了 `reflectTurn` 的分组依据（`report.servant` → 契约的 `domains`），
@@ -26,7 +26,7 @@ import { MemoryStore } from '../../memory/store.js';
 import type { ModelPort } from '../../ports/model.js';
 import type { RunSessionResult } from '../../runtime/orchestrator.js';
 import type { TaskContract } from '../../butler/contract.js';
-import type { ServantReport } from '../../servants/types.js';
+import type { ExecutionReport } from '../../execution/types.js';
 
 const T0 = 1_760_000_000_000;
 const USER = 'u_test';
@@ -37,11 +37,12 @@ function contract(domains: TaskContract['domains']): TaskContract {
     criteria: ['不含花生'],
     mustObey: ['花生过敏'],
     domains,
-    raw: { deliverable: 'x', criteria: ['y'], mustObey: [], domains: ['none'] },
+    confidence: 0.9,
+    raw: { deliverable: 'x', criteria: ['y'], mustObey: [], domains: ['none'], confidence: 0.9 },
   };
 }
 
-function report(): ServantReport {
+function report(): ExecutionReport {
   return {
     taskId: 't1',
     // ⚠️ 这个字段在 v7 里已经没有语义（E5 会删）。测试里随便填，
@@ -94,7 +95,6 @@ function session(c: TaskContract | undefined): RunSessionResult {
     log: new EventLog('s'),
     routing: { servant: 'life', confidence: 0.9, reason: 'x' },
     confident: true,
-    steps: [],
     ...(c !== undefined ? { contract: c } : {}),
     injectedConstraints: [],
     reports: [report()],

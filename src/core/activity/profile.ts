@@ -24,7 +24,7 @@ import type { ClockPort } from '../ports/clock.js';
 import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
 import { principleStats } from '../memory/principles.js';
-import { SERVANT_BOUNDARY, SERVANT_IDS, type ServantId } from '../servants/types.js';
+import { DOMAIN_IDS, domainName, type DomainId } from '../domain/types.js';
 import type { TemporalPattern } from '../activity/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -39,7 +39,7 @@ export interface ProfileSnapshot {
   readonly facts: number;
   readonly preferences: number;
   readonly principles: number;
-  readonly perServant: Readonly<Record<string, { readonly memories: number; readonly principles: number }>>;
+  readonly perDomain: Readonly<Record<string, { readonly memories: number; readonly principles: number }>>;
   readonly temporalPatterns: number;
   readonly principleList: readonly {
     readonly content: string;
@@ -72,15 +72,15 @@ export function captureProfile(args: {
   const preferences = active.filter((m) => m.kind === 'preference').length;
   const principles = active.filter((m) => m.kind === 'principle').length;
 
-  // 分仆人统计
-  const perServant: Record<string, { memories: number; principles: number }> = {};
-  for (const s of SERVANT_IDS) {
-    perServant[s] = { memories: 0, principles: 0 };
+  // 分领域统计
+  const perDomain: Record<string, { memories: number; principles: number }> = {};
+  for (const s of DOMAIN_IDS) {
+    perDomain[s] = { memories: 0, principles: 0 };
   }
   for (const m of active) {
     if (m.memClass !== 'domain' || m.domain === undefined) continue;
     const key = m.domain;
-    const cur = perServant[key];
+    const cur = perDomain[key];
     if (!cur) continue;
     cur.memories += 1;
     if (m.kind === 'principle') cur.principles += 1;
@@ -113,7 +113,7 @@ export function captureProfile(args: {
     facts,
     preferences,
     principles,
-    perServant,
+    perDomain,
     temporalPatterns: args.patterns.length,
     principleList,
     summary: buildSummary({
@@ -122,7 +122,7 @@ export function captureProfile(args: {
       preferences,
       principles,
       patternCount: args.patterns.length,
-      perServant,
+      perDomain,
     }),
   };
 
@@ -278,15 +278,15 @@ function buildSummary(args: {
   readonly preferences: number;
   readonly principles: number;
   readonly patternCount: number;
-  readonly perServant: Readonly<Record<string, { readonly memories: number; readonly principles: number }>>;
+  readonly perDomain: Readonly<Record<string, { readonly memories: number; readonly principles: number }>>;
 }): string {
   const total = args.facts + args.preferences + args.principles;
   if (total === 0) {
     return `第 ${args.sessionCount} 次会话，还没有形成可复用的记忆。`;
   }
 
-  // 找出记忆最多的仆人（说明"我最了解你的哪一面"）
-  const top = (Object.entries(args.perServant) as [ServantId, { memories: number }][])
+  // 找出记忆最多的领域（说明「我最了解你的哪一方面」）
+  const top = (Object.entries(args.perDomain) as [DomainId, { memories: number }][])
     .filter(([, v]) => v.memories > 0)
     .sort((a, b) => b[1].memories - a[1].memories)[0];
 
@@ -297,7 +297,17 @@ function buildSummary(args: {
     `${args.principles} 条原则`,
   ];
   if (args.patternCount > 0) parts.push(`${args.patternCount} 条生活节奏`);
-  if (top) parts.push(`最了解你的${SERVANT_BOUNDARY[top[0]].name}（${top[1].memories} 条）`);
+  /**
+   * ★★ v8（P3）：用户可见文案里不再出现「仆人」。
+   *
+   * ⚠️ 原来写 `最了解你的${SERVANT_BOUNDARY[top[0]].name}`
+   *    → 界面会显示「最了解你的**生活仆人**」——
+   *      单执行者架构下**没有仆人**，这是**界面在对用户说假话**。
+   *
+   * ✅ 改为「其中「生活」方面记得最多」：
+   *    领域是内部工作分类，这样表述既准确，用户也看得懂"它记住了我哪些方面"。
+   */
+  if (top) parts.push(`其中「${domainName(top[0])}」方面记得最多（${top[1].memories} 条）`);
 
   return `${parts.join('、')}。`;
 }

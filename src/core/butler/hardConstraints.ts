@@ -20,7 +20,7 @@
 import type { EventLog } from '../events/log.js';
 import { coreOf, hasAnyNgram } from '../text/keywords.js';
 import type { ScoredMemory } from '../memory/recall.js';
-import type { ServantReport } from '../servants/types.js';
+import type { ExecutionReport } from '../execution/types.js';
 
 export interface HardConstraintVerdict {
   readonly constraintId: string;
@@ -47,7 +47,7 @@ export interface HardConstraintReport {
  * 这是启发式，目标是**抓住"完全没提"的情况**，而不是做精确的语义匹配。
  * 方向性取舍：宁可漏报（交由 LLM 监督补位），也不误伤（把正常产出拦下来）。
  */
-function handledBy(report: ServantReport, constraintContent: string, constraintId: string): boolean {
+function handledBy(report: ExecutionReport, constraintContent: string, constraintId: string): boolean {
   // ① finding 明确指向该约束
   const refsIt = (report.findings ?? []).some(
     (f) =>
@@ -106,7 +106,7 @@ export function extractKeywords(constraint: string): readonly string[] {
 export function verifyHardConstraints(args: {
   readonly log: EventLog;
   readonly hardConstraints: readonly ScoredMemory[];
-  readonly reports: readonly ServantReport[];
+  readonly reports: readonly ExecutionReport[];
   readonly now: number;
 }): HardConstraintReport {
   const verdicts: HardConstraintVerdict[] = [];
@@ -136,7 +136,7 @@ export function verifyHardConstraints(args: {
           constraintId: hc.memory.id,
           content: hc.memory.content,
           unhandledBy,
-          reason: `以下仆人未处理该硬约束：${unhandledBy.join(', ')}`,
+          reason: `该硬约束未被处理：${unhandledBy.join(', ')}`,
           deterministic: true,
           note: '机械校验判定，非模型裁决',
         },

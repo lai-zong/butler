@@ -38,14 +38,14 @@ import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
 import {
   SessionStore,
-  type ServantReportData,
+  type ExecutionReportData,
   type Verdict,
   type VerdictIssue,
 } from './types.js';
-import { buildHistoryMessages, buildServantHistoryMessages } from './history.js';
+import { buildHistoryMessages, buildDomainHistoryMessages } from './history.js';
 import { planHistory, summarizeOlder } from './compaction.js';
 import { createTraceCollector } from './trace.js';
-import { toServantReportData } from './reports.js';
+import { toExecutionReportData } from './reports.js';
 
 // ═══════════════════════════════════════════════════════════
 // 一轮的执行
@@ -121,7 +121,8 @@ export interface RunTurnResult {
    *     转两次会出现「界面上看到的」与「存下来的」不一致，
    *     而那是最难查的一类 bug。
    */
-  readonly servantReports: readonly ServantReportData[];
+  /** 本轮各次执行的产出（v8：由 `servantReports` 改名 —— 内存态，非持久化键） */
+  readonly executionReports: readonly ExecutionReportData[];
 }
 
 /**
@@ -200,7 +201,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     excludeLast: true,
     ...(olderSummary !== undefined ? { olderSummary } : {}),
   });
-  const servantHistory = buildServantHistoryMessages(priorMessages);
+  const domainHistory = buildDomainHistoryMessages(priorMessages);
 
   /**
    * ── ①b ★ 从用户发言提取事实 ──
@@ -340,7 +341,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     // 管家要理解指代（「按你说的」）
     ...(history.length > 0 ? { history } : {}),
     // 仆人用精简历史（只有用户本轮原话）
-    ...(servantHistory.length > 0 ? { servantHistory } : {}),
+    ...(domainHistory.length > 0 ? { domainHistory } : {}),
     // ★ 工具循环的流式：让「调了什么工具、拿到什么」可见
     ...(args.streamModel !== undefined && args.streamModel !== null
       ? { streamPort: args.streamModel }
@@ -389,7 +390,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    * ★ 仆人产出**只转换一次** —— 下面两个地方复用它
    *   （落进消息 + 通过返回值给 SSE）。
    */
-  const servantReports = toServantReportData(session);
+  const executionReports = toExecutionReportData(session);
 
   const reply = chat.appendMessage(sessionId, {
     role: 'butler',
@@ -407,7 +408,9 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
      *    那个区分必须在界面上看得见，
      *    否则「平等编排」只是文档里的一句话。
      */
-    ...(servantReports.length > 0 ? { servantReports } : {}),
+    // ⚠️ 属性名 `servantReports` 是**持久化键**（写在消息 payload 里），不能改；
+    //    左边是内存态变量名，可以改。
+    ...(executionReports.length > 0 ? { servantReports: executionReports } : {}),
   });
 
   args.onProgress?.({
@@ -421,7 +424,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    *
    * ★★ 这一步之前**缺了**，而且是整个项目最严重的一个缺口：
    *
-   *   `reflectServant` / `reflectButler` / `sinkCandidates` 在此之前
+   *   `reflectDomain` / `reflectButler` / `sinkCandidates` 在此之前
    *   **只有验证脚本调用**。生产代码里没有任何地方调用它们。
    *
    *   失效链：界面聊天 → 记忆库永远是空的 → 召回 0 条
@@ -500,7 +503,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   return {
     userMessageId: userMsg.id,
     replyMessageId: reply.id,
-    servantReports,
+    executionReports,
     replyText,
     verdict,
     session,
@@ -650,6 +653,20 @@ export function buildVerdict(args: {
     outcome,
     summary,
     issues,
+    /**
+     * ★★ v8（批次D）：把监督员的**判据逐条核对**带进结论。
+     *
+     * ⚠️ 为什么不只给 `issues`：`issues` 是「发现的问题」（负面清单），
+     *    而判据核对是**正面证据** —— "契约里 5 条，4 条满足，第 3 条差在哪"。
+     *    用户判断"它到底做到没做到"，靠的是后者。
+     *
+     * ★ 这是「可核对」在界面上的落点：不要求用户相信管家的自述。
+     */
+    criteriaChecks: args.session.supervision.criteriaChecks.map((c) => ({
+      criterion: c.criterion,
+      met: c.met,
+      ...(c.note !== undefined && c.note.length > 0 ? { note: c.note } : {}),
+    })),
     steps,
     durationMs: args.session.endedAt - args.session.startedAt,
     usage: args.session.totalUsage,
@@ -747,12 +764,12 @@ function buildRejectedReply(session: RunSessionResult, verdict: Verdict): string
     for (const a of advisory) lines.push(`- ${a.statement}`);
   }
 
-  // 仆人确实做了事，产出仍可查看（不是"什么都没发生"）
+  // 确实做了事，产出仍可查看（不是"什么都没发生"）
   const totalArtifacts = session.reports.reduce((n, r) => n + r.artifacts.length, 0);
   if (totalArtifacts > 0) {
     lines.push('');
     lines.push(
-      `（仆人确实产出了 ${totalArtifacts} 项内容，被我就地扣下。` +
+      `（实际产出了 ${totalArtifacts} 项内容，被我就地扣下。` +
         '如果你想看我也可以展示 —— 但要先让你知道问题在哪。）',
     );
   }

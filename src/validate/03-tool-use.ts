@@ -1,8 +1,8 @@
 /**
  * 验证 3 · 真实模型驱动工具循环
  *
- * 目的：验证 1 证明了"真实模型能驱动编排"，但那时仆人只能说不能做。
- *       现在仆人能读写文件、跑命令了 —— **真实模型能不能用好这些工具？**
+ * 目的：验证 1 证明了"真实模型能驱动编排"，但那时执行者只能说不能做。
+ *       现在管家能读写文件、跑命令了 —— **真实模型能不能用好这些工具？**
  *
  * 这个假设同样无法靠推理确认，必须实测：
  *   · 它会不会正确调工具（而不是绕过工具凭空编）？
@@ -34,7 +34,8 @@ import { EventLog } from '../core/events/log.js';
 import { fileTools } from '../core/tools/builtin/file.js';
 import { execTool } from '../core/tools/builtin/exec.js';
 import { ToolFramework } from '../core/tools/framework.js';
-import { SERVANT_TOOL_POLICY, runServant } from '../core/servants/execute.js';
+import { runButler } from '../core/butler/execute.js';
+import type { TaskContract } from '../core/butler/contract.js';
 import type { ActionTier, PermissionPolicy } from '../core/tools/types.js';
 
 const line = (s = ''): void => console.log(s);
@@ -125,10 +126,7 @@ async function main(): Promise<void> {
     line(`  模型：${model.describe().provider} / ${model.describe().model}`);
     line(`  可用工具：${tools.list().map((t) => t.name).join(', ')}`);
 
-    const policy_ = SERVANT_TOOL_POLICY.life;
-    line(`  生活仆人可用级别：${policy_.allowTiers.join(' / ')}`);
-
-    hr('派发任务');
+    hr('下达目标');
     const instruction =
       '读一下工作目录里的 inventory.txt，看看家里现有什么。' +
       '然后据此写一份"需要采购的清单"到 shopping-list.txt。' +
@@ -139,14 +137,34 @@ async function main(): Promise<void> {
     hr('执行中（真实模型 + 真实文件系统）…');
     const t0 = Date.now();
 
-    const run = await runServant({
+    /**
+     * ★ v8（批次B）：unServant 已随多执行者架构删除，改用 unButler。
+     *
+     * ⚠️ 本验证测的是**工具循环**（读文件 / 写文件 / 权限闸门 / 结构化汇报），
+     *    不是契约生成 —— 所以这里直接内联一份契约，不调模型去写。
+     *    契约生成由 alidate:11 单独验证。
+     */
+    const contract: TaskContract = {
+      deliverable: '家里缺什么、需要采购什么的清单，写入 shopping-list.txt',
+      criteria: [
+        '清单里只有家里缺的东西，已有的不再买',
+        '清单里不含任何花生制品',
+        '清单写入 shopping-list.txt',
+      ],
+      mustObey: ['你对花生严重过敏'],
+      domains: ['life'],
+      confidence: 0.9,
+      raw: { deliverable: 'x', criteria: ['y'], mustObey: [], domains: ['none'], confidence: 0.9 },
+    };
+
+    const run = await runButler({
       model,
       log,
       clock,
       tools,
-      servant: 'life',
       taskId: 's_inventory',
-      instruction,
+      contract,
+      userGoal: instruction,
       // 硬约束：这条会被注入，模型必须遵守
       injectedConstraints: [
         {

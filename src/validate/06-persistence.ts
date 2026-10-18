@@ -11,7 +11,7 @@
  *   ① 建档落的事件**足以重建**（含 fitness / createdAt / version 等）
  *   ② ★★ 写入磁盘 → 模拟重启 → 读盘重放 → 状态**逐字段一致**
  *   ③ 适应度、生命周期（休眠/归档）、效果跟踪都恢复
- *   ④ 领域归属恢复（生活仆人的记忆不会跑到健康仆人名下）
+ *   ④ 领域归属恢复（生活领域的记忆不会跑到健康领域名下）
  *   ⑤ 硬约束恢复（安全约束绝不能丢）
  *   ⑥ 分级自主生效的记录也在（"它自己学的"重启后还在）
  *   ⑦ 重放不产生新事件（否则每次启动事件流翻倍）
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
       content: '你偏好先结论后细节', confidence: 0.85, evidence: ['e_tone'], lifecycle: 'active',
     });
 
-    // ③ 领域记忆（生活仆人）
+    // ③ 领域记忆（生活领域）
     store1.create(butler, {
       id: 'm_light', memClass: 'domain', kind: 'preference',
       content: '你偏好清淡口味', confidence: 0.8, evidence: ['e_light'],

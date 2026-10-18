@@ -37,7 +37,7 @@ export type TrustLevel =
   | 'system' // 管家系统规则、注入的约束与原则
   | 'tool' // 工具返回（自己的工具，半可信：结果可能含外部内容）
   | 'external' // 抓取的网页、上传的文档、第三方 API 返回 —— 最低
-  | 'subagent'; // 仆人/子会话产出（可信度介于 system 与 tool 之间）
+  | 'subagent'; // 子会话产出（可信度介于 system 与 tool 之间）
 
 /**
  * 优先级数值（越大越优先）。

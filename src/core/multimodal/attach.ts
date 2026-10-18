@@ -24,7 +24,7 @@
  *    本模块负责的是**分类、路由、把结果变成记忆候选**。
  */
 
-import type { ServantId } from '../servants/types.js';
+import type { DomainId } from '../execution/types.js';
 
 // ═══════════════════════════════════════════════════════════
 // 附件
@@ -267,12 +267,20 @@ export function classifyAttachment(input: ClassifyInput): ClassifyResult {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 路由：该派给哪个仆人
+// 归类：这份附件属于哪个领域
 // ═══════════════════════════════════════════════════════════
 
 export interface RouteDecision {
-  /** 目标仆人；null 表示需要先反问用户 */
-  readonly servant: ServantId | 'butler' | null;
+  /**
+   * 目标领域；`null` 表示类型不确定、需要先反问用户。
+   *
+   * ★★ v8（批次G）：字段名从 `servant` 改为 `domain` ——
+   *    它装的一直是**领域值**（`'health'` 等），叫 servant 会让读者
+   *    以为"附件会被派给某个仆人"。当前架构里没有派发。
+   *
+   * ⚠️ `'butler'` 这个取值保留：语音先由管家转写，不属于任何领域。
+   */
+  readonly domain: DomainId | 'butler' | null;
   readonly why: string;
   /** 需要用户确认时才有的反问文本 */
   readonly question?: string;
@@ -289,7 +297,7 @@ export function routeAttachment(args: {
 }): RouteDecision {
   if (args.needsUserConfirmation) {
     return {
-      servant: null,
+      domain: null,
       why: '类型不确定',
       question:
         `这份「${KIND_LABEL[args.kind]}」是做什么用的？` +
@@ -300,35 +308,35 @@ export function routeAttachment(args: {
   switch (args.kind) {
     case 'receipt':
       return {
-        servant: 'health',
-        why: '收据账单涉及消费与饮食，交给健康仆人（方案 § 5.3 的映射）',
+        domain: 'health',
+        why: '收据账单涉及消费与饮食，归入健康领域（方案 § 5.3 的映射）',
       };
     case 'code':
-      return { servant: 'code', why: '代码相关，交给代码仆人' };
+      return { domain: 'code', why: '代码相关，归入代码领域' };
     case 'spreadsheet':
-      return { servant: 'work', why: '表格处理，交给办公仆人' };
+      return { domain: 'work', why: '表格处理，归入办公领域' };
     case 'document':
-      return { servant: 'work', why: '文档资料，交给办公仆人（学习类可由用户改派）' };
+      return { domain: 'work', why: '文档资料，归入办公领域（学习类可由用户改派）' };
     case 'audio':
       return {
-        servant: 'butler',
-        why: '语音先由管家转写，转写文本再进入正常派发流程',
+        domain: 'butler',
+        why: '语音先由管家转写，转写文本再进入正常处理流程',
       };
     case 'screenshot':
       return {
-        servant: null,
+        domain: null,
         why: '截图内容未知，需先解析后才能判断归属',
         question: '这张截图是要我做什么？（例如：照着改代码 / 提取里面的信息 / 其他）',
       };
     case 'image':
       return {
-        servant: null,
+        domain: null,
         why: '普通图片用途不明',
         question: '这张图片是想让我做什么？',
       };
     case 'unknown':
       return {
-        servant: null,
+        domain: null,
         why: '未知类型',
         question: '这个文件是要我做什么？',
       };

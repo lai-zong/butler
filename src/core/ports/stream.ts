@@ -18,7 +18,7 @@
 import type { ModelMessage, ModelToolSpec, ModelUsage } from './model.js';
 
 export interface StreamCall {
-  readonly purpose: 'chat' | 'reasoning' | 'servant' | 'reflection';
+  readonly purpose: 'chat' | 'reasoning' | 'execution' | 'reflection';
   readonly messages: readonly ModelMessage[];
   readonly tools?: readonly ModelToolSpec[];
   readonly temperature?: number;

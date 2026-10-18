@@ -20,6 +20,7 @@ export interface AppendInput<T extends EventType = EventType, P = unknown> {
   readonly payload: P;
   readonly actor: EventActor;
   readonly parentEventId?: string;
+  /** ⚠️ 历史字段，新代码不要传 —— 见 `SessionEvent.servantId` 的说明 */
   readonly servantId?: string;
   readonly createdAt?: number;
   readonly id?: string;
@@ -168,6 +169,12 @@ export class EventLog {
       }
     }
 
+    /**
+     * ⚠️ **历史不变量**：旧架构里 `actor: 'servant'` 必须带 `servantId` 才能定位是哪个。
+     *
+     *    保留它是因为**重放旧日志时仍要校验**；新代码不会走到这里
+     *    （`EventActor` 里 `'servant'` 已标 `@deprecated`，没有生产者）。
+     */
     if (input.actor === 'servant' && !input.servantId) {
       throw new EventInvariantError(
         "actor 为 'servant' 时必须提供 servantId",

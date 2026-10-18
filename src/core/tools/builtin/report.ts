@@ -14,7 +14,7 @@
  *   `tier: readOnly` —— 提交汇报不产生任何外部副作用。
  */
 
-import { servantReportSchema } from '../../prompts/schemas.js';
+import { executionReportSchema } from '../../prompts/schemas.js';
 import type { ToolSpec } from '../types.js';
 
 export function submitReportTool(): ToolSpec {
@@ -114,7 +114,7 @@ export function submitReportTool(): ToolSpec {
     },
     async execute(args, ctx) {
       const started = ctx.clock.now();
-      const parsed = servantReportSchema.safeParse(args);
+      const parsed = executionReportSchema.safeParse(args);
 
       if (!parsed.success) {
         const issues = parsed.error.issues

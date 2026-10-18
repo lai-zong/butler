@@ -111,7 +111,7 @@ export default async function SettingsPage() {
               label="它怎么工作"
               tail={
                 <span style={{ color: 'var(--n-text-faint)' }}>
-                  管家安排 → 仆人执行 → 管家验收
+                  管家写契约 → 自己执行 → 监督员复核
                 </span>
               }
             />

@@ -151,7 +151,7 @@ export interface ModelCall {
 export type ModelPurpose =
   | 'routing' // 意图识别与路由 —— 便宜模型即可
   | 'planning' // 任务分解
-  | 'servant' // 仆人执行
+  | 'execution' // 管家自己执行（原 servant，v8 改名）
   | 'reflection' // 反思
   | 'memoryExtraction' // 记忆提取
   | 'compaction' // 上下文摘要压缩（把更老的历史压成摘要）

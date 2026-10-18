@@ -29,7 +29,7 @@ import { fileTools } from '../core/tools/builtin/file.js';
 import type { ActionTier, PermissionPolicy } from '../core/tools/types.js';
 import type { ScoredMemory } from '../core/memory/recall.js';
 import type { MemoryEntry } from '../core/memory/types.js';
-import type { InjectedConstraint } from '../core/servants/types.js';
+import type { InjectedConstraint } from '../core/execution/types.js';
 
 let passed = 0;
 let failed = 0;

@@ -3,7 +3,7 @@
  *
  * ★★ 这个文件补的是一个**致命缺口**：
  *
- *   `reflectServant` / `reflectButler` / `sinkCandidates` 在此之前
+ *   `reflectDomain` / `reflectButler` / `sinkCandidates` 在此之前
  *   **只有验证脚本调用**（`validate/02-memory-loop.ts`）。
  *   生产代码里没有任何地方调用它们。
  *
@@ -25,9 +25,9 @@ import type { ModelPort } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
-import type { ServantId, ServantReport } from '../servants/types.js';
+import type { ExecutionReport } from '../execution/types.js';
 import type { DomainId } from '../domain/types.js';
-import { buildServantReflectionInput, reflectButler, reflectServant } from './reflect.js';
+import { buildDomainReflectionInput, reflectButler, reflectDomain } from './reflect.js';
 import type { MemoryCandidate } from './reflect.js';
 import { sinkCandidates } from '../memory/sink.js';
 import {
@@ -65,7 +65,7 @@ export interface ReflectTurnArgs {
 }
 
 export interface ReflectTurnResult {
-  readonly servantCandidates: readonly MemoryCandidate[];
+  readonly domainCandidates: readonly MemoryCandidate[];
   readonly butlerCandidates: readonly MemoryCandidate[];
   /** 自主生效的（分级自主策略） */
   readonly admittedAutonomously: number;
@@ -89,7 +89,7 @@ export interface ReflectTurnResult {
  *   ① **失败不抛出** —— 反思是"事后学习"，它失败不该让用户
  *      刚拿到的结果作废（那是把学习成本转嫁给用户）
  *   ② **每个仆人只反思自己的产出** —— 结构上不给它看别的领域
- *      （`buildServantReflectionInput` 会过滤）
+ *      （`buildDomainReflectionInput` 会过滤）
  *   ③ **去重后入库** —— 与既有记忆重复的候选不写
  */
 export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnResult> {
@@ -106,7 +106,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
   const feedback = args.session.reports.flatMap((r) =>
     r.artifacts.length > 0
       ? r.artifacts.map((_artifact, i) => ({
-          // ⚠️ `ServantArtifact` 没有 id（它是仆人产出的原始形状，
+          // ⚠️ `ExecutionArtifact` 没有 id（它是仆人产出的原始形状，
           //    产出物 id 要到 `artifact.register` 之后才有）。
           //    所以用 `taskId#序号` 定位 —— 稳定且可读。
           onArtifact: `${r.taskId}#${i}`,
@@ -141,7 +141,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
         ([...new Set(args.session.contract.domains)].sort() as DomainId[])
       : [];
 
-  const servantCandidates: MemoryCandidate[] = [];
+  const domainCandidates: MemoryCandidate[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
   let failed = false;
@@ -159,8 +159,8 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
       .filter((m) => m.memClass === 'domain' && m.domain === domain)
       .map((m) => ({ id: m.id, kind: m.kind, content: m.content, lifecycle: m.lifecycle }));
 
-    const input = buildServantReflectionInput({
-      servant: domain as unknown as ServantId,
+    const input = buildDomainReflectionInput({
+      domain,
       userGoal: args.userGoal,
       ownReports,
       ownDomainMemories,
@@ -168,7 +168,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
     });
 
     trace(`领域层反思：${domain}（${ownReports.length} 份产出）`);
-    const r = await reflectServant({
+    const r = await reflectDomain({
       model: args.model,
       log: args.log,
       clock: args.clock,
@@ -177,7 +177,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
 
     inputTokens += r.usage.inputTokens;
     outputTokens += r.usage.outputTokens;
-    servantCandidates.push(...r.candidates);
+    domainCandidates.push(...r.candidates);
   }
 
   // ── ③ 管家层反思：看**仆人的总结**，跨领域 ──
@@ -210,7 +210,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
       input: {
         reports: args.session.reports.map((r) => ({
           // ⚠️ 下游参数的字段名仍是 servant（遗留），此处传领域值
-          servant: r.domain ?? '',
+          domain: r.domain ?? '',
           summary: summarizeReport(r),
         })),
         conflicts: (args.session.supervision.findings ?? []).map((c) => ({
@@ -236,8 +236,8 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
     trace(`管家层反思失败：${failureReason}`);
   }
 
-  const allCandidates = [...servantCandidates, ...butlerCandidates];
-  trace(`候选合计 ${allCandidates.length} 条（仆人层 ${servantCandidates.length} / 管家层 ${butlerCandidates.length}）`);
+  const allCandidates = [...domainCandidates, ...butlerCandidates];
+  trace(`候选合计 ${allCandidates.length} 条（领域层 ${domainCandidates.length} / 管家层 ${butlerCandidates.length}）`);
 
   // ── ④⑤ 入库 + 分级自主准入 ──
   const outcome = sinkAndAdmit({
@@ -251,7 +251,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
   );
 
   return {
-    servantCandidates,
+    domainCandidates,
     butlerCandidates,
     admittedAutonomously: outcome.admittedAutonomously,
     pendingReview: outcome.pendingReview,
@@ -386,7 +386,7 @@ export function sinkAndAdmit(args: {
  *    管家层要跨仆人比对，看长正文会被细节淹没。
  *    截断到 300 字是防止单个产出独占上下文。
  */
-function summarizeReport(r: ServantReport): string {
+function summarizeReport(r: ExecutionReport): string {
   const parts: string[] = [];
 
   // ⚠️ 截断到 300 字/项、最多 2 项 —— 防止单个产出独占管家层的上下文
@@ -430,7 +430,7 @@ function temporalPatternLines(args: ReflectTurnArgs): readonly string[] {
 /** 供界面展示：本次学到了什么。 */
 export function renderReflectSummary(r: ReflectTurnResult): string {
   const lines: string[] = [];
-  const total = r.servantCandidates.length + r.butlerCandidates.length;
+  const total = r.domainCandidates.length + r.butlerCandidates.length;
 
   if (total === 0) return '';
 

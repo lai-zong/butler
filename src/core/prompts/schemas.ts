@@ -9,10 +9,6 @@
 
 import { z } from 'zod';
 
-import { SERVANT_IDS } from '../servants/types.js';
-
-const servantIdSchema = z.enum(SERVANT_IDS as unknown as [string, ...string[]]);
-
 // ═══════════════════════════════════════════════════════════
 // 仆人提交的「发现」
 // ═══════════════════════════════════════════════════════════
@@ -77,15 +73,6 @@ export function normalizeFinding(f: z.infer<typeof findingSchema>): NormalizedFi
 // 管家 · 路由
 // ═══════════════════════════════════════════════════════════
 
-export const routingSchema = z.object({
-  servant: servantIdSchema.describe('最合适的仆人'),
-  confidence: z.number().min(0).max(1).describe('置信度 0—1；低于 0.6 会被转为询问用户'),
-  reason: z.string().min(1).describe('选择理由，一句话'),
-  /** 低置信度时给出需要向用户澄清的问题 */
-  clarifyingQuestion: z.string().optional().describe('confidence < 0.6 时必填：要向用户问什么'),
-});
-
-export type RoutingDecision = z.infer<typeof routingSchema>;
 
 // ═══════════════════════════════════════════════════════════
 // 管家 · 任务分解
@@ -131,6 +118,28 @@ export const contractSchema = z.object({
     .array(z.enum(['life', 'health', 'study', 'work', 'code', 'none']))
     .min(1)
     .describe('这件事涉及哪些领域（可多选）。判不出就填 none —— 不要硬猜'),
+  /**
+   * ★★ v8（批次C）：置信度**并入契约**，不再单独调一次路由。
+   *
+   * ⚠️ 原来有一次独立的 `route()` LLM 调用（`router.ts` + `routingSchema`），
+   *    只为了产出 `confidence` / `reason` / `clarifyingQuestion` 三个值 ——
+   *    而写契约时模型**已经读懂了同一句话**，再问一遍纯属浪费一次调用，
+   *    而且两份判断可能互相矛盾（实测出现过：路由判 life、契约写 health）。
+   *
+   * ★ 方案 D-3 原文就写着"合并进写契约一步"，这里补上。
+   *
+   * ⚠️ `confidence` 低**不阻断执行**（D-4）：带着假设先干，把假设告诉用户。
+   */
+  confidence: z
+    .number()
+    .min(0)
+    .max(1)
+    .describe('你对"理解对了用户意思"的置信度 0—1。必须诚实：不确定就打低分，不要为了显得确定而抬高'),
+  /** 低置信度时给出需要向用户澄清的问题（可选） */
+  clarifyingQuestion: z
+    .string()
+    .optional()
+    .describe('confidence < 0.6 时填：你要向用户确认什么。其余情况省略'),
 });
 
 export type TaskContractPlan = z.infer<typeof contractSchema>;
@@ -214,12 +223,12 @@ const needsDecisionSchema = z
 
 function normalizeNeedsDecision(v: string | boolean | null | undefined): string | undefined {
   if (v === undefined || v === null || v === false) return undefined;
-  if (v === true) return '仆人声明需要管家裁决，但未给出具体问题';
+  if (v === true) return '声明需要管家裁决，但未给出具体问题';
   const s = v.trim();
   return s.length > 0 ? s : undefined;
 }
 
-export const servantReportSchema = z.object({
+export const executionReportSchema = z.object({
   /**
    * ★★ 给**用户**看的那段话 —— 界面上显示的主体。
    *
@@ -240,10 +249,10 @@ export const servantReportSchema = z.object({
   findings: z.array(findingSchema).describe('发现清单；没有就填空数组'),
 });
 
-export type ServantReportOutput = z.infer<typeof servantReportSchema>;
+export type ExecutionReportOutput = z.infer<typeof executionReportSchema>;
 
 /** 把报告里的 needsButlerDecision 归一化（在适配边界调用）。 */
-export function normalizeReport(raw: ServantReportOutput): {
+export function normalizeReport(raw: ExecutionReportOutput): {
   needsButlerDecision: string | undefined;
 } {
   return { needsButlerDecision: normalizeNeedsDecision(raw.needsButlerDecision) };
@@ -293,7 +302,7 @@ export const reflectionSchema = z.object({
   collaborationIssues: z
     .array(z.string())
     .optional()
-    .describe('跨领域协作中发现的问题（仆人看不到这些）'),
+    .describe('跨领域协作中发现的问题（单领域反思看不到这些）'),
   /** 仅管家层使用 */
   rhythmChanges: z
     .array(z.string())
@@ -344,7 +353,7 @@ export const supervisionSchema = z.object({
         severity: z.enum(['info', 'warn', 'block']),
         /**
          * ⚠️ 这里**接受三个字段名**，是因为实测撞到过：
-         *    模型在同一个项目里见过 `servantReportSchema.findings`
+         *    模型在同一个项目里见过 `executionReportSchema.findings`
          *    （字段叫 `statement`），于是写监督结果时也用了 `statement`，
          *    导致 `message` 缺失、整次调用重试 3 次后失败。
          *

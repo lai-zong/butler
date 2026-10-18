@@ -1,5 +1,5 @@
 /**
- * 验证 1 · 真实模型能否驱动管家-仆人编排
+ * 验证 1 · 真实模型能否走通「管家 + 监督员」全链
  *
  * 目的：**排除最高风险假设**——如果真实 LLM 无法稳定输出结构化路由决策、
  *       任务分解与汇报，整个方案的编排部分就不成立。
@@ -8,7 +8,7 @@
  * 通过条件（四条，全部可判定）：
  *   ① 真实模型能输出结构化路由决策（通过 Zod 校验）
  *   ② 能输出结构化任务分解（含依赖关系且引用合法）
- *   ③ 仆人能按 findings 格式结构化汇报
+ *   ③ 执行产出里的 findings 能被监督员拿到
  *   ④ 全程事件通过四条不变量校验（append 时不抛错即通过）
  *
  * 运行：pnpm validate:1
@@ -80,7 +80,7 @@ const hr = (t: string): void => {
 async function main(): Promise<void> {
   line();
   line('╔' + '═'.repeat(70) + '╗');
-  line('║  验证 1 · 真实模型驱动管家-仆人编排' + ' '.repeat(33) + '║');
+  line('║  验证 1 · 真实模型驱动管家 + 监督员' + ' '.repeat(33) + '║');
   line('╚' + '═'.repeat(70) + '╝');
 
   const model = new DeepSeekModel(deepSeekConfigFromEnv());
@@ -100,21 +100,26 @@ async function main(): Promise<void> {
   });
   const elapsed = Date.now() - t0;
 
-  // ── 条件 ① 路由 ──
-  hr('① 结构化路由决策');
-  line(`  仆人      : ${result.routing.servant}`);
-  line(`  置信度    : ${result.routing.confidence}`);
-  line(`  理由      : ${result.routing.reason}`);
+  // ── 条件 ① 理解（v8：置信度已并入契约，不再有独立路由调用）──
+  hr('① 理解与置信度（来自契约）');
+  const goalDomains = result.contract?.domains ?? [];
+  line(`  领域      : ${goalDomains.join('、') || '（空）'}`);
+  line(`  置信度    : ${result.contract?.confidence ?? 0}`);
+  line(`  假设      : ${result.assumption?.note ?? '（置信度足够，无需假设）'}`);
   check(
-    '① 路由决策结构合法',
-    typeof result.routing.servant === 'string' && result.routing.confidence >= 0,
-    `${result.routing.servant} @ ${result.routing.confidence}`,
+    '① 契约给出领域与置信度',
+    goalDomains.length > 0 && typeof result.contract?.confidence === 'number',
+    `${goalDomains.join('、')} @ ${result.contract?.confidence ?? 0}`,
   );
-  check('① 置信度达到阈值', result.confident, result.confident ? '可继续派发' : '转入澄清');
+  check(
+    '① 低置信度时如实记录假设（不阻断执行）',
+    (result.contract?.confidence ?? 0) >= 0.6 ? result.assumption === undefined : result.assumption !== undefined,
+    result.assumption === undefined ? '置信度足够' : '已记录假设',
+  );
 
   // ── 条件 ② 任务契约（v7 · D-5，取代旧的"任务分解"）──
   //
-  // ⚠️ v7：这里原本检查 `result.steps`（拆解出的多步派发），
+  // ⚠️ v7：这里原本检查 `result.steps`（拆解出的多步派发；v8 已彻底删除），
   //    现在只有一个执行者，没有"步骤"这回事。
   //    改为检查**契约** —— 它才是"要做什么"的权威描述。
   hr('② 任务契约（取代旧的"任务分解"）');
@@ -147,9 +152,9 @@ async function main(): Promise<void> {
   );
   check('②b 花生过敏（硬约束）已送达', hardInjected, hardInjected ? '不可覆盖' : '未送达');
 
-  // ── 条件 ③ 仆人汇报 ──
-  hr('③ 仆人结构化汇报');
-  check('③ 收到仆人汇报', result.reports.length > 0, `${result.reports.length} 份`);
+  // ── 条件 ③ 执行产出 ──
+  hr('③ 结构化执行汇报');
+  check('③ 收到执行汇报', result.reports.length > 0, `${result.reports.length} 份`);
   let findingCount = 0;
   let uncertaintyCount = 0;
   for (const rep of result.reports) {

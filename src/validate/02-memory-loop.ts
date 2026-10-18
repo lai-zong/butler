@@ -5,7 +5,7 @@
  *
  * 这条链路是：
  *   ① 召回（分权过滤 + 适应度加权）
- *   ② 编排（路由 → 分解 → 派发 → 硬约束机械校验）
+ *   ② 编排（写契约 → 管家自己执行 → 硬约束机械校验）
  *   ③ 检查点（时间轴 → 预览 → 回退，**保留前置成果**）
  *   ④ 反思（分层 + 隔离）→ 候选落库 → 用户审核
  *   ⑤ 效果验证 → 适应度演化 → 休眠/唤醒
@@ -14,7 +14,7 @@
  *   A. 回退保留前置成果：s1 的产出在回退后仍然存在
  *   B. 级联失效：删除被引用的记忆后，相关检查点不可回退
  *   C. 确定性：同一事件流重放两次状态哈希一致
- *   D. 反思隔离：仆人反思材料不含他域/敏感/全局内容
+ *   D. 反思隔离：领域反思材料不含他域/敏感/全局内容
  *   E. 候选不直接生效：反思产出进候选池，需审核才进召回
  *   F. 演化闭环：效果反馈改变适应度，低适应度会休眠，再命中会唤醒
  *
@@ -32,10 +32,10 @@ import { recall } from '../core/memory/recall.js';
 import { sinkCandidates } from '../core/memory/sink.js';
 import { MemoryStore } from '../core/memory/store.js';
 import type { MemoryCandidate } from '../core/reflection/reflect.js';
-import { buildServantReflectionInput, reflectButler, reflectServant } from '../core/reflection/reflect.js';
+import { buildDomainReflectionInput, reflectButler, reflectDomain } from '../core/reflection/reflect.js';
 import { FixedClock, SeededRandom } from '../core/ports/clock.js';
 import type { DomainId } from '../core/domain/types.js';
-import type { ServantReport } from '../core/servants/types.js';
+import type { ExecutionReport } from '../core/execution/types.js';
 
 const T0 = 1_760_000_000_000;
 const DAY = 86_400_000;
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
   const mLi = seed('global_shared', 'fact', '小李是你的朋友，素食者', 0.95);
   const mFat = seed('global_shared', 'preference', '你正在减脂期，需控制高油高盐', 0.88);
   const mDist = seed('domain', 'preference', '你偏好离家 3 公里内的餐厅', 0.79, 'life');
-  // ⚠️ 这条特意归到「代码仆人」域 —— 用来验证"他域记忆不会被生活仆人看到"。
+  // ⚠️ 这条特意归到「代码」域 —— 用来验证"他域记忆不会被生活领域看到"。
   //    我一度把归属写成 'life' 却按"他域"断言，导致验证自己前后矛盾。
   const mCom = seed('domain', 'preference', 'Excel 批量处理优先走 COM 接口', 0.91, 'code');
   const mPsych = seed('global_shared', 'fact', '心理咨询：近期压力较大', 0.9);
@@ -171,7 +171,7 @@ async function main(): Promise<void> {
   // ② 编排（用确定脚本，不调真实模型）
   // ═══════════════════════════════════════════════════════
 
-  hr('② 编排（路由 → 分解 → 派发 → 硬约束机械校验）');
+  hr('② 编排（写契约 → 自行执行 → 硬约束机械校验）');
 
   // 铺一条与真实模型跑出来等价的事件流
   const at = (n: number): number => T0 + n * 1000;
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
   log.append({ type: 'memory.recalled', actor: 'butler', payload: { count: lifeRecall.selected.length }, createdAt: at(1) });
   engine.recordHit(mAllergy);
   engine.recordHit(mLi);
-  log.append({ type: 'route.decided', actor: 'butler', payload: { servant: 'life', confidence: 0.75, confident: true }, createdAt: at(2) });
+  log.append({ type: 'route.decided', actor: 'butler', payload: { domain: 'life', confidence: 0.75, confident: true }, createdAt: at(2) });
 
   const steps = [
     { stepId: 's1', servant: 'life' },
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   log.append({ type: 'constraint.injected', actor: 'butler', payload: { stepId: 's1', memoryId: mAllergy, negotiable: false }, createdAt: at(4) });
 
   log.append({ type: 'dispatch.stepStarted', actor: 'butler', payload: { stepId: 's1', servant: 'life' }, createdAt: at(5) });
-  const lifeReport: ServantReport = {
+  const lifeReport: ExecutionReport = {
     taskId: 's1',
     domain: 'life',
     status: 'done',
@@ -222,7 +222,7 @@ async function main(): Promise<void> {
   log.append({ type: 'artifact.created', actor: 'butler', payload: { artifactId: 'art_menu', label: '全素无花生菜单' }, createdAt: at(8) });
 
   log.append({ type: 'dispatch.stepStarted', actor: 'butler', payload: { stepId: 's2', servant: 'health' }, createdAt: at(9) });
-  const healthReport: ServantReport = {
+  const healthReport: ExecutionReport = {
     taskId: 's2',
     domain: 'health',
     status: 'done',
@@ -353,7 +353,7 @@ async function main(): Promise<void> {
   );
   check('B 硬约束不可被遗忘（安全底线）', !hardDel.ok);
 
-  // ── 验证 ③：删掉**被仆人汇报引用过**的软约束 → 应精确失效 ──
+  // ── 验证 ③：删掉**被执行引用过**的软约束 → 应精确失效 ──
   //
   //    注意选材：回退已经丢弃了 seq 21 之后的检查点，
   //    幸存的两个检查点依赖的是 lifeReport.memoryRefs（mAllergy + mLi）。
@@ -445,12 +445,12 @@ async function main(): Promise<void> {
     ],
   });
 
-  const lifeReflect = await reflectServant({
+  const lifeReflect = await reflectDomain({
     model: mock,
     log,
     clock,
-    input: buildServantReflectionInput({
-      servant: 'life',
+    input: buildDomainReflectionInput({
+      domain: 'life',
       userGoal: USER_GOAL,
       ownReports: [lifeReport],
       ownDomainMemories: store
@@ -459,7 +459,7 @@ async function main(): Promise<void> {
     }),
   });
 
-  line(`  生活仆人反思产出 ${lifeReflect.candidates.length} 条候选`);
+  line(`  生活领域反思产出 ${lifeReflect.candidates.length} 条候选`);
   for (const c of lifeReflect.candidates) {
     line(`    · [${c.kind}] ${c.content}`);
     line(`      作用域 ${c.scope.memClass}${c.scope.domain ? ` / ${c.scope.domain}` : ''}`);
@@ -473,9 +473,9 @@ async function main(): Promise<void> {
   line(`  模型是否看到他域记忆：${sawOtherDomain ? '⚠️ 是' : '✓ 否'}`);
   line(`  模型是否看到全局硬约束：${sawGlobalConstraint ? '⚠️ 是' : '✓ 否'}`);
 
-  check('D 仆人反思未见敏感域', !sawSensitive);
-  check('D 仆人反思未见他域记忆', !sawOtherDomain);
-  check('D 仆人反思未见全局记忆', !sawGlobalConstraint);
+  check('D 领域反思未见敏感域', !sawSensitive);
+  check('D 领域反思未见他域记忆', !sawOtherDomain);
+  check('D 领域反思未见全局记忆', !sawGlobalConstraint);
   check(
     'D 领域候选作用域正确',
     lifeReflect.candidates.every((c) => c.scope.memClass === 'domain' && c.scope.domain === 'life'),
@@ -498,7 +498,7 @@ async function main(): Promise<void> {
                 rationale: '冲突裁决中用户选择了安全优先',
               },
             ],
-            collaborationIssues: ['健康仆人的审核结论未回流给生活仆人重做'],
+            collaborationIssues: ['健康领域的审核结论未回流给生活领域重做'],
             rhythmChanges: [],
           },
         },
@@ -513,7 +513,7 @@ async function main(): Promise<void> {
     input: {
       userGoal: USER_GOAL,
       reports: reportsForReflection.map((r) => ({
-        servant: r.domain ?? '',
+        domain: r.domain ?? '',
         summary: r.artifacts.map((a) => (Array.isArray(a.content) ? a.content.join('；') : a.content)).join(' | '),
       })),
       conflicts: [{ message: '蛋白摄入是否加量', severity: 'warn', resolvedBy: '用户选择加量' }],
@@ -528,7 +528,7 @@ async function main(): Promise<void> {
   line();
   line(`  管家复盘产出 ${butlerReflect.candidates.length} 条跨领域候选`);
   line(`  协作问题 ${butlerReflect.collaborationIssues.length} 条：${butlerReflect.collaborationIssues[0] ?? '（无）'}`);
-  line(`  管家是否看到全局内容：${mockButler.sawText('减脂') ? '✓ 是（这正是与仆人的区别）' : '— 否'}`);
+  line(`  管家是否看到全局内容：${mockButler.sawText('减脂') ? '✓ 是（这正是与单领域反思的区别）' : '— 否'}`);
   check('D 管家层候选进全局共享层', butlerReflect.candidates.every((c) => c.scope.memClass === 'global_shared'));
   check('D 管家能看到跨领域信息', mockButler.sawText('减脂') || mockButler.sawText('素食'));
 

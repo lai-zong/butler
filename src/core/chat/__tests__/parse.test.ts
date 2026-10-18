@@ -15,7 +15,7 @@
  *
  *     ```ts
  *     ...(Array.isArray(p['servantReports'])
- *       ? { servantReports: p['servantReports'] as ServantReportData[] }
+ *       ? { servantReports: p['servantReports'] as ExecutionReportData[] }
  *       : {}),
  *     ```
  *
@@ -30,7 +30,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { parseAgentTrace, parseServantReports } from '../parse.js';
+import { parseAgentTrace, parseExecutionReports } from '../parse.js';
 
 /** 旧版本写下的仆人产出（**没有 `reply` 字段**）—— 就是崩溃时的那份数据。 */
 const LEGACY_REPORT = {
@@ -46,13 +46,13 @@ const LEGACY_REPORT = {
 
 describe('★ 旧数据（加 reply 之前写的）', () => {
   it('★ 不再崩溃 —— reply 缺字段时补空串', () => {
-    const out = parseServantReports([LEGACY_REPORT]);
+    const out = parseExecutionReports([LEGACY_REPORT]);
     expect(out).toBeDefined();
     expect(out?.[0]?.reply).toBe('');
   });
 
   it('★ 其余字段照常读出（不因为一个字段缺就整条丢弃）', () => {
-    const out = parseServantReports([LEGACY_REPORT]);
+    const out = parseExecutionReports([LEGACY_REPORT]);
     expect(out?.[0]?.servant).toBe('life');
     expect(out?.[0]?.artifacts[0]?.text).toBe('鸡蛋 5 个');
     expect(out?.[0]?.findings[0]?.evidence).toEqual(['抹刀残留']);
@@ -60,7 +60,7 @@ describe('★ 旧数据（加 reply 之前写的）', () => {
   });
 
   it('⚠️ 不编假话 —— 缺 reply 就补空串，而不是「（无说明）」这类占位', () => {
-    const out = parseServantReports([LEGACY_REPORT]);
+    const out = parseExecutionReports([LEGACY_REPORT]);
     // 界面据空串走「这次没有留下说明」的兜底分支；
     // 若这里编一句假的，它会与模型真的说过的话混在一起，用户分不清
     expect(out?.[0]?.reply).toBe('');
@@ -69,18 +69,18 @@ describe('★ 旧数据（加 reply 之前写的）', () => {
 
 describe('★ 恶意 / 畸形数据（不可信输入）', () => {
   it('不是数组 → undefined', () => {
-    expect(parseServantReports('nope')).toBeUndefined();
-    expect(parseServantReports(null)).toBeUndefined();
-    expect(parseServantReports({})).toBeUndefined();
+    expect(parseExecutionReports('nope')).toBeUndefined();
+    expect(parseExecutionReports(null)).toBeUndefined();
+    expect(parseExecutionReports({})).toBeUndefined();
   });
 
   it('数组里混着非对象 → 跳过它们，不整体失败', () => {
-    const out = parseServantReports([null, 'x', 42, LEGACY_REPORT]);
+    const out = parseExecutionReports([null, 'x', 42, LEGACY_REPORT]);
     expect(out).toHaveLength(1);
   });
 
   it('字段类型全错 → 补默认值，不抛', () => {
-    const out = parseServantReports([
+    const out = parseExecutionReports([
       { servant: 123, taskId: null, status: 'weird', artifacts: 'not-array', reply: {} },
     ]);
     expect(out?.[0]?.servant).toBe('');
@@ -90,11 +90,11 @@ describe('★ 恶意 / 畸形数据（不可信输入）', () => {
   });
 
   it('空数组 → undefined（界面据此整块不渲染）', () => {
-    expect(parseServantReports([])).toBeUndefined();
+    expect(parseExecutionReports([])).toBeUndefined();
   });
 
   it('★ 缺 negotiable 时按「不可协商」处理（保守方向）', () => {
-    const out = parseServantReports([
+    const out = parseExecutionReports([
       { ...LEGACY_REPORT, injectedConstraints: [{ content: '硬约束' }] },
     ]);
     // 把软约束误当硬约束，只是提示多一句；

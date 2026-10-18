@@ -56,8 +56,46 @@ function mem(id: string, content: string, memClass: string, relevance = 0.9): Sc
   } as ScoredMemory;
 }
 
-/** 无法判定的措辞 —— 出现即说明判据写得不可核对 */
+/** 无法判定的措辞 —— 出现**且没有具体界限**时才说明判据不可核对 */
 const VAGUE = ['尽量', '努力', '合理', '适当', '尽可能', '差不多', '大概'];
+
+/**
+ * ★★ 「具体界限」的证据 —— 有它，模糊词就不是问题。
+ *
+ * ⚠️ 这条规则是**修假红**改出来的，起因是一次实测：
+ *
+ *   模型给的判据是：
+ *     「每套方案标注每餐用油量，且控制在减脂期**合理范围**内
+ *       （**每餐食用油不超过 5g/人**）」
+ *
+ *   旧断言用 `includes('合理')` 直接判红 —— 但这条判据**给了具体上限**
+ *   （5g/人），是**完全可核对**的。真正的空话是「合理搭配」那种。
+ *
+ *   ★ 假红的代价不是"少一条绿"，而是**"验证全绿"这个信号失真** ——
+ *     之后任何一次真失败都可能被当成波动忽略掉。
+ *
+ * ★ 判定口径（精确化）：
+ *     模糊词 + **有**具体界限 → 可核对（界限把模糊词钉住了）
+ *     模糊词 + **无**具体界限 → 不可核对（确实是空话）
+ *
+ * ⚠️ 这是启发式，不是语义理解。它只认「数字+单位」或「比较词+数字」
+ *    这两种最明确的量化形式 —— 宁可漏判，也不要把"给了界限"误判成空话。
+ */
+const BOUNDED: readonly RegExp[] = [
+  // 数字 + 单位（5g / 30分钟 / 200千卡 / 3次 / 20%）
+  /\d+(?:\.\d+)?\s*(?:g|kg|ml|l|克|千克|毫升|升|分钟|小时|次|元|块|%|kcal|千卡|大卡|人)/i,
+  // 比较词 + 数字（不超过5 / ≥3 / 至少2）
+  /(?:不超过|不少于|不低于|不高于|至少|最多|≥|≤|<=|>=)\s*\d/,
+  // 数字 + 范围后缀（3以内 / 5以下）
+  /\d+(?:\.\d+)?\s*(?:以内|以下|以上|之内)/,
+];
+
+/** 判据是否可核对：模糊词必须被具体界限钉住。 */
+function isJudgeable(criterion: string): boolean {
+  const hasVague = VAGUE.some((v) => criterion.includes(v));
+  if (!hasVague) return true;
+  return BOUNDED.some((rx) => rx.test(criterion));
+}
 
 async function main(): Promise<void> {
   const cfg = deepSeekConfigFromEnv();
@@ -96,7 +134,7 @@ async function main(): Promise<void> {
   check('交付物非空', r1.contract.deliverable.length > 4, r1.contract.deliverable.slice(0, 30));
   check('判据 ≥ 1 条', r1.contract.criteria.length >= 1, `${r1.contract.criteria.length} 条`);
 
-  const vagueHits = r1.contract.criteria.filter((c) => VAGUE.some((v) => c.includes(v)));
+  const vagueHits = r1.contract.criteria.filter((c) => !isJudgeable(c));
   check(
     '★ 判据里没有无法判定的措辞',
     vagueHits.length === 0,

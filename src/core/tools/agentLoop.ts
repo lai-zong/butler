@@ -166,7 +166,7 @@ async function runRoundStreaming(args: {
   const byIndex = new Map<number, { callId: string; name: string; args: string }>();
 
   for await (const chunk of args.port.stream({
-    purpose: 'servant',
+    purpose: 'execution',
     messages: args.messages,
     ...(args.toolSpecs.length > 0 ? { tools: args.toolSpecs } : {}),
     temperature: 0.2,
@@ -427,7 +427,7 @@ export async function runAgentLoop(
       };
     } else {
       const r = await opts.model.complete({
-        purpose: 'servant',
+        purpose: 'execution',
         messages,
         ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
         temperature: 0.2,

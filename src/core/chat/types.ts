@@ -16,8 +16,8 @@
 
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
-import type { ServantId } from '../servants/types.js';
-import { parseAgentTrace, parseServantReports } from './parse.js';
+import type { DomainId } from '../execution/types.js';
+import { parseAgentTrace, parseExecutionReports } from './parse.js';
 
 // ═══════════════════════════════════════════════════════════
 // 消息
@@ -54,7 +54,7 @@ export interface ChatMessage {
   readonly sessionId: string;
   readonly role: MessageRole;
   /** role === 'servant' 时是哪个仆人 */
-  readonly servant?: ServantId;
+  readonly servant?: DomainId;
   /** 正文（markdown） */
   readonly text: string;
   /**
@@ -100,11 +100,30 @@ export interface ChatMessage {
    *    只能显示管家汇总后的结果。而方案 § 2.2 强调的是
    *    **仆人只提交发现、管家才做裁决** —— 那个区分必须在界面上看得见。
    */
-  readonly servantReports?: readonly ServantReportData[];
+  readonly servantReports?: readonly ExecutionReportData[];
 }
 
-/** 一个仆人的产出（可持久化形状）。 */
-export interface ServantReportData {
+/**
+ * 一次执行的产出（**可持久化形状** —— 存在事件日志的消息 payload 里）。
+ *
+ * ★★★ 读这个类型时**不要**据此推断架构：
+ *
+ *   | 字段名 | 实际含义 | 为什么还叫这个 |
+ *   |---|---|---|
+ *   | `servant` | **领域标识**（life/health/…）| ⚠️ 是**持久化键**，改名会让旧消息读不出 |
+ *   | `servantReports`（在 `StoredMessage` 上）| 本轮的执行产出 | 同上 |
+ *
+ *   ⚠️ 这是**历史遗留的键名**，不是"系统里有仆人"的证据。
+ *      当前架构是**单执行者（管家）+ 监督员**：一次会话只有一份执行产出。
+ *
+ *   ★ 若要彻底改名，需要"双读迁移"（同时接受新旧两个键 + 回写），
+ *     属于事件线格式变更（批次F），不能顺手改 —— 见 `docs/refactor-status.md`。
+ *
+ * ⚠️ 旧的注释说"仆人只提交发现、管家才做裁决" —— 那个区分现在体现为
+ *    **执行产出里的 `findings` 交给监督员复核**，不再是"多执行者各自提交"。
+ */
+export interface ExecutionReportData {
+  /** ⚠️ 历史键名；装的是**领域标识**（见上方说明）*/
   readonly servant: string;
   readonly taskId: string;
   readonly status: 'done' | 'failed' | 'blocked';
@@ -241,6 +260,24 @@ export interface Verdict {
   /** 一句话说明（用户看的就是这句） */
   readonly summary: string;
   readonly issues: readonly VerdictIssue[];
+  /**
+   * ★★ v8（批次D）：监督员对**契约判据的逐条核对**。
+   *
+   * ⚠️ 这是"可核对"最直接的证据：契约里写了几条判据，
+   *    监督员就逐条回答"满足了没、差在哪"。
+   *    用户展开右栏就能看到——不需要相信管家的自述。
+   *
+   * ⚠️ 旧结论（v8 之前落的 `session.verdict`）没有这个字段，
+   *    重放时补空数组，所以类型上**不能**是必填的 optional 语义混淆 ——
+   *    统一按"没有就是 `[]`"处理。
+   */
+  readonly criteriaChecks: readonly {
+    /** 契约里的某一条判据（原文） */
+    readonly criterion: string;
+    readonly met: boolean;
+    /** 没满足时差在哪 */
+    readonly note?: string;
+  }[];
   /** 本次实际执行了哪些步骤 */
   readonly steps: readonly { readonly stepId: string; readonly servant: string; readonly ok: boolean }[];
   readonly durationMs: number;
@@ -278,14 +315,14 @@ export interface SessionSnapshot {
 export interface AppendMessageInput {
   readonly id?: string;
   readonly role: MessageRole;
-  readonly servant?: ServantId;
+  readonly servant?: DomainId;
   readonly text: string;
   readonly reasoning?: string;
   readonly reasoningTranslated?: string;
   readonly status?: MessageStatus;
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
   readonly agentTrace?: AgentTraceData;
-  readonly servantReports?: readonly ServantReportData[];
+  readonly servantReports?: readonly ExecutionReportData[];
 }
 
 /**
@@ -495,6 +532,7 @@ export class SessionStore {
         summary: input.summary,
         issueCount: input.issues.length,
         blockingCount: input.issues.filter((i) => i.severity === 'blocking').length,
+        criteriaChecks: input.criteriaChecks,
         steps: input.steps,
         durationMs: input.durationMs,
         artifactIds: input.artifactIds,
@@ -618,7 +656,7 @@ export function replaySessions(
        * ⚠️ 这两处**必须走解析器，不能用 as 断言**。
        *
        *   事故记录：给仆人产出加必填字段 reply 之后，首页直接 500 ——
-       *   旧落盘数据里没有该字段，而 as ServantReportData[] 只贴类型标签、
+       *   旧落盘数据里没有该字段，而 as ExecutionReportData[] 只贴类型标签、
        *   不做任何检查，于是 cur.reply.length 在运行时炸掉。
        *
        *   ★ 纪律：**跨持久化边界的数据是不可信输入。**
@@ -629,7 +667,7 @@ export function replaySessions(
        *    于是 { agentTrace: X | undefined } 不满足 { agentTrace?: X }。
        */
       const replayedTrace = parseAgentTrace(trace);
-      const replayedReports = parseServantReports(p['servantReports']);
+      const replayedReports = parseExecutionReports(p['servantReports']);
 
       messages.push({
         id: messageId,
@@ -670,8 +708,11 @@ export function replaySessions(
         outcome: (p['outcome'] === 'rejected' ? 'rejected' : 'accepted') as VerdictOutcome,
         summary: typeof p['summary'] === 'string' ? p['summary'] : '',
         issues: [],
+        criteriaChecks: Array.isArray(p['criteriaChecks'])
+          ? (p['criteriaChecks'] as { criterion: string; met: boolean; note?: string }[])
+          : [],
         steps: Array.isArray(p['steps'])
-          ? (p['steps'] as { stepId: string; servant: ServantId; ok: boolean }[])
+          ? (p['steps'] as { stepId: string; servant: DomainId; ok: boolean }[])
           : [],
         durationMs: typeof p['durationMs'] === 'number' ? p['durationMs'] : 0,
         usage: { inputTokens: 0, outputTokens: 0 },

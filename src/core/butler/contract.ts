@@ -51,6 +51,18 @@ export interface TaskContract {
   readonly mustObey: readonly string[];
   /** 涉及领域 —— 供监督员选纪律、供反思划分作用域 */
   readonly domains: readonly DomainId[];
+  /**
+   * 管家对「理解对了用户意思」这件事的置信度（0—1）。
+   *
+   * ★★ v8（批次C）：这个值原来由**独立的 `route()` 调用**产出，
+   *    现在并入写契约 —— 因为写契约时模型已经在读同一句话了。
+   *    再问一遍既浪费一次调用，两份判断还可能互相矛盾。
+   *
+   * ⚠️ 低置信度**不阻断执行**（D-4）：带着假设先干，把假设告诉用户。
+   */
+  readonly confidence: number;
+  /** confidence < 0.6 时给出的澄清问题（可选） */
+  readonly clarifyingQuestion?: string;
   /** 原始模型产出（审计用） */
   readonly raw: TaskContractPlan;
 }
@@ -194,6 +206,10 @@ export async function writeContract(args: {
       criteria: plan.criteria,
       mustObey: plan.mustObey,
       domains,
+      confidence: plan.confidence,
+      ...(plan.clarifyingQuestion !== undefined && plan.clarifyingQuestion.trim().length > 0
+        ? { clarifyingQuestion: plan.clarifyingQuestion.trim() }
+        : {}),
       raw: plan,
     },
     constraints,

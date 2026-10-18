@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     });
     artifacts.revise({
       artifactId: 'art_menu', content: '', items: ['糙米 500g', '北豆腐 2 盒', '西兰花 1 颗'],
-      author: 'servant', authorId: 'life', reason: '按健康仆人意见调整分量',
+      author: 'servant', authorId: 'life', reason: '按健康领域意见调整分量',
     });
 
     // 操作记忆（"第 1 次试 UI 失败、改用 COM 成功"）

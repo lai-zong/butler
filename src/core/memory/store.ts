@@ -30,7 +30,6 @@ import {
   type PrincipleDetail,
 } from './types.js';
 import type { DomainId } from '../domain/types.js';
-import type { ServantId } from '../servants/types.js';
 
 // ═══════════════════════════════════════════════════════════
 // 操作主体
@@ -618,7 +617,7 @@ export class MemoryStore {
   grant(args: {
     readonly actor: MemoryActor;
     readonly memoryId: string;
-    readonly to: ServantId;
+    readonly to: DomainId;
     readonly taskId: string;
     readonly purpose: string;
     readonly ttlMs: number;

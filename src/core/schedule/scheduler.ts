@@ -32,7 +32,7 @@ import type { ClockPort } from '../ports/clock.js';
  *    这样调度器不需要知道反思/画像/聚合的任何细节。
  */
 export type ScheduledTaskKind =
-  | 'dailyReflection' // 每日反思：汇总当日会话，仆人层反思 → 产出候选
+  | 'dailyReflection' // 每日反思：汇总当日会话，领域层反思 → 产出候选
   | 'weeklyReview' // 管家周复盘：跨领域复盘 + 画像快照 + 重算规律
   | 'proactiveCheck' // 主动服务检查：需提前提醒的事项
   | 'activityAggregate'; // 行为聚合：原始记录 → ActivityAggregate

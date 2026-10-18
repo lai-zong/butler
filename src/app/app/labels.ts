@@ -92,10 +92,10 @@ import { domainName } from '@/core/domain/types.js';
  *      ⚠️ 原先 `core/domain/types.ts` 与这里各有一份领域名映射。
  *         两份表的代价是**漂移**：改一处另一处不知道（E3 已踩过同类问题）。
  *
- *   ⚠️ 常量名仍是 `SERVANT_NAME` —— 它有 13 处引用，
+ *   ⚠️ 常量名仍是 `DOMAIN_NAME` —— 它有 13 处引用，
  *      改名与「值修正」混在一起会让 diff 无法审阅。名字单独一次改。
  */
-export const SERVANT_NAME: Record<string, string> = {
+export const DOMAIN_NAME: Record<string, string> = {
   life: domainName('life'),
   health: domainName('health'),
   study: domainName('study'),
@@ -121,7 +121,7 @@ export function toolWord(name: string): string {
 }
 
 /** 仆人执行状态 → 人话 */
-export const SERVANT_STATUS: Record<string, string> = {
+export const DOMAIN_STATUS: Record<string, string> = {
   done: '做完了',
   failed: '没做成',
   blocked: '被卡住了',

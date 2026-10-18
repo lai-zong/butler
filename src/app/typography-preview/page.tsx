@@ -19,7 +19,7 @@ import { RichContent } from '@/app/rich-content';
 export const dynamic = 'force-static';
 
 /** 实测一次「周末请朋友吃饭」对话的真实产出。 */
-const REAL_MENU = `未发现冲突。life 提供的两人家宴菜单与 health 的营养用量核对在菜式、份量、食材上完全一致，health 仅补充了用油与钠的量化建议（属优化提示，非矛盾）。无全局硬约束，无跨仆人冲突。
+const REAL_MENU = `未发现冲突。life 提供的两人家宴菜单与 health 的营养用量核对在菜式、份量、食材上完全一致，health 仅补充了用油与钠的量化建议（属优化提示，非矛盾）。无全局硬约束，无跨领域冲突。
 
 两人周末家宴方案（在家做）
 

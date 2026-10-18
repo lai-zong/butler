@@ -10,15 +10,15 @@
  *
  *   ★ 现在：外壳由 `layout.tsx` **只包一次**，跨路由保持挂载。
  *
- * ★ 右栏（仆人窗口）的接入方式：
- *   它在语义上属于**对话**（仆人只在对话时出现），
+ * ★ 右栏（监督与执行）的接入方式：
+ *   它在语义上属于**对话**（执行只在对话时发生），
  *   但视觉上属于**外壳**（它是第二栏）。
  *   所以用 context：对话页把右栏内容**发布**出来，外壳渲染它。
  *   ⚠️ 不用 portal —— 那要额外的 DOM 节点与手动样式同步。
  *
  * ★ 布局按两张手绘图：
  *   图一：顶栏 + 侧栏 + 主区
- *   图二：主区在仆人执行时分成左右两栏，**两侧各带输入框**
+ *   图二：主区在执行时分成左右两栏
  */
 
 'use client';
@@ -59,7 +59,7 @@ export function useRightPane(node: ReactNode | null): void {
   const { setRight } = useContext(Ctx);
   useEffect(() => {
     setRight(node);
-    // 卸载时撤下右栏 —— 否则切到「记忆」页右栏还挂着仆人
+    // 卸载时撤下右栏 —— 否则切到「记忆」页右栏还挂着上一次的执行
     return () => setRight(null);
   }, [node, setRight]);
 }
@@ -87,7 +87,7 @@ interface NavItem {
  *    想深挖的人从「审计」进去就能看到全过程。
  */
 const NAV: readonly NavItem[] = [
-  { href: '/app', icon: '💬', label: '对话', hint: '和管家说话，它安排仆人干活' },
+  { href: '/app', icon: '💬', label: '对话', hint: '和管家说话，它自己动手做' },
   { href: '/app/memory', icon: '🧠', label: '记忆', hint: '它记住了你哪些事' },
   { href: '/app/audit', icon: '🔍', label: '审计', hint: '每次结论的依据与全过程' },
   { href: '/app/settings', icon: '⚙️', label: '设置', hint: '模型、外观、数据' },
@@ -217,13 +217,13 @@ export function AppShell({ children }: { readonly children: ReactNode }): ReactN
 
           {/* ── 主区 ──
               ⚠️ 两栏比例按图二是**各占一半**。
-                 固定窄栏会让仆人那侧看着像"附属信息面板"，
+                 固定窄栏会让右栏看着像"附属信息面板"，
                  而两者地位是平等的（方案 § 2.2 平等编排）。 */}
           <main className="nv-main" data-split={split ? '' : undefined}>
             {children}
           </main>
 
-          {/* ── 右栏（仆人窗口）── */}
+          {/* ── 右栏（监督与执行）── */}
           {split && <aside className="nv-side-pane">{right}</aside>}
         </div>
       </div>

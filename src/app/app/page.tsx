@@ -11,7 +11,7 @@
 import { getRuntime } from '../runtime.js';
 import type { AgentTraceData } from '@/core/chat/types.js';
 
-import { parseServantReports } from '@/core/chat/parse.js';
+import { parseExecutionReports } from '@/core/chat/parse.js';
 import { Conversation } from '../app/conversation.js';
 
 export const dynamic = 'force-dynamic';
@@ -24,16 +24,16 @@ export default async function AppPage() {
   const raw = session !== null ? chat.messagesOf(session.id) : [];
 
   /**
-   * ★ 右栏「仆人窗口」的初值 —— **从最近一轮带仆人产出的消息里取**。
+   * ★ 右栏「监督与执行」的初值 —— **从最近一轮带执行产出的消息里取**。
    *
-   * ⚠️ 走解析器（parseServantReports），不用 s 断言。
+   * ⚠️ 走解析器（parseExecutionReports），不用 s 断言。
    *    事故记录：加过一个必填字段后直接断言，
    *    旧落盘数据里没有该字段 → 页面 500。
    *    **跨持久化边界的数据是不可信输入。**
    */
   const lastWithReports = [...raw]
     .reverse()
-    .map((m) => parseServantReports(m.servantReports))
+    .map((m) => parseExecutionReports(m.servantReports))
     .find((r) => r !== undefined);
 
   const messages = raw.map((m) => {

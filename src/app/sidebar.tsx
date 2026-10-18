@@ -1,13 +1,24 @@
 /**
  * 侧边导航
  *
- * 分组依据是**用户的心智模型**，不是代码模块划分：
- *   · 对话   —— 我让它做的事
- *   · 记忆   —— 它记住的我（**产品核心**，所以单列且带待办角标）
- *   · 能力   —— 它能做的事（仆人 / 工具 / MCP / 定时）
- *   · 记录   —— 发生过什么（任务 / 产出物 / 检查点）
+ * ★★ v8 修正：**按方案 §13.8 重写为 3 个一级项**。
  *
- * ⚠️ 角标只标**需要用户动作**的数字（待审核），
+ * ⚠️ 旧版是 5 组 16 项，而其中 **14 项指向不存在的路由**（实测对照：
+ *    只有 `/` 与 `/overview` 有效，另外 14 个全是死链，点了 404）。
+ *    那份结构写的是"计划中的 9 页界面"，而方案 §13.8 早已明确废止它：
+ *
+ *      一级导航（3 项）
+ *        💬 对话   ← 只有对话
+ *        📜 审计   ← 需要时查
+ *        ⚙ 控制台 ← 设置一次长期有效的东西（含记忆库 / 权限 / 外观 / 导出）
+ *
+ *    ★ 判据（方案原文）：**"设置一次长期有效"→ 控制台；"每轮都要变"→ 对话窗口**。
+ *
+ * ⚠️ 本文件只放**真实存在**的路由。
+ *    新增导航项前先确认 `src/app` 下真的有对应目录与 page 文件 ——
+ *    否则用户点到一个 404，比没有这个入口更糟。
+ *
+ *    ⚠️ 角标只标**需要用户动作**的数字（待审核），
  *    不标"总条数"之类 —— 否则角标会一直亮着，
  *    用户很快就不看了，等于没有。
  */
@@ -26,42 +37,19 @@ const GROUPS: readonly {
 }[] = [
   {
     label: '对话',
-    items: [
-      { href: '/', label: '与管家对话' },
-      { href: '/overview', label: '总览' },
-    ],
+    items: [{ href: '/app', label: '与管家对话' }],
   },
   {
-    label: '记忆',
-    items: [
-      { href: '/memory', label: '记忆库', badge: 'review' },
-      { href: '/principles', label: '原则与效果' },
-      { href: '/evolution', label: '演化状态' },
-      { href: '/growth', label: '成长对比' },
-      { href: '/profile', label: '行为画像' },
-    ],
+    label: '审计',
+    items: [{ href: '/app/audit', label: '操作与记忆审计' }],
   },
   {
-    label: '能力',
+    label: '控制台',
     items: [
-      { href: '/servants', label: '仆人' },
-      { href: '/operations', label: '记忆化执行' },
-      { href: '/tools', label: '工具与权限' },
-      { href: '/mcp', label: 'MCP 服务' },
-      { href: '/schedule', label: '定时任务' },
+      { href: '/app/memory', label: '记忆库', badge: 'review' },
+      { href: '/overview', label: '它在哪些方面了解你' },
+      { href: '/app/settings', label: '设置' },
     ],
-  },
-  {
-    label: '记录',
-    items: [
-      { href: '/tasks', label: '历史任务' },
-      { href: '/artifacts', label: '产出物' },
-      { href: '/checkpoints', label: '检查点与回退' },
-    ],
-  },
-  {
-    label: '设置',
-    items: [{ href: '/settings', label: '偏好与隐私' }],
   },
 ];
 

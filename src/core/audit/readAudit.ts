@@ -29,6 +29,7 @@
  */
 
 import type { EventLog } from '../events/log.js';
+import { domainName } from '../domain/types.js';
 import type { SessionEvent } from '../events/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -57,8 +58,9 @@ export interface InjectionEvidence {
   readonly seq: number;
   readonly at: number;
   readonly stepId: string;
-  readonly servant: string;
-  readonly servantLabel: string;
+  /** ⚠️ 历史键名：事件 payload 里的键仍是 `servant`，装的是领域值 */
+  readonly domain: string;
+  readonly domainLabel: string;
   readonly memoryId: string;
   readonly content: string;
   readonly source: string;
@@ -89,8 +91,9 @@ export interface GrantEvidence {
   readonly kind: 'requested' | 'approved' | 'denied' | 'used' | 'expired';
   readonly kindLabel: string;
   readonly memoryId: string;
-  readonly toServant: string;
-  readonly toServantLabel: string;
+  /** ⚠️ 历史键名：事件 payload 里的键仍是 `toServant`，装的是领域值 */
+  readonly toDomain: string;
+  readonly toDomainLabel: string;
   readonly taskId: string;
   readonly reason: string;
   /** 已过期？ */
@@ -132,14 +135,7 @@ const CLASS_LABEL: Record<string, string> = {
   domain: '领域记忆',
 };
 
-const SERVANT_LABEL: Record<string, string> = {
-  life: '生活仆人',
-  health: '健康仆人',
-  study: '学习仆人',
-  work: '办公仆人',
-  code: '代码仆人',
-  butler: '管家',
-};
+
 
 const GRANT_LABEL: Record<string, string> = {
   requested: '请求授权',
@@ -154,8 +150,10 @@ const GRANT_LABEL: Record<string, string> = {
  *   界面不该自己维护一份枚举翻译 —— 那必然与领域层漂移，
  *   而漂移的表现是"界面显示 global_constraint"这种原始值。
  */
-function servantLabel(id: string): string {
-  return SERVANT_LABEL[id] ?? id;
+function domainLabel(id: string): string {
+  // ★ v8（P3）：领域名不自己维护一份映射 —— 委托给核心领域模块，避免漂移
+  if (id === 'butler') return '管家';
+  return domainName(id);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -212,14 +210,14 @@ export function readTurnAudit(
       }
 
       case 'constraint.injected': {
-        const servant = typeof p['servant'] === 'string' ? p['servant'] : '';
+        const domain = typeof p['servant'] === 'string' ? p['servant'] : '';
         const source = typeof p['source'] === 'string' ? p['source'] : '';
         injections.push({
           seq: e.seq,
           at: e.createdAt,
           stepId: typeof p['stepId'] === 'string' ? p['stepId'] : '',
-          servant,
-          servantLabel: servantLabel(servant),
+          domain,
+          domainLabel: domainLabel(domain),
           memoryId: typeof p['memoryId'] === 'string' ? p['memoryId'] : '',
           content: typeof p['content'] === 'string' ? p['content'] : '',
           source,
@@ -241,7 +239,7 @@ export function readTurnAudit(
           content: typeof p['content'] === 'string' ? p['content'] : '',
           constraintId: typeof p['constraintId'] === 'string' ? p['constraintId'] : '',
           unhandledBy: unhandled,
-          unhandledByLabels: unhandled.map(servantLabel),
+          unhandledByLabels: unhandled.map(domainLabel),
           deterministic: p['deterministic'] === true,
           note: typeof p['note'] === 'string' ? p['note'] : '',
         });
@@ -260,15 +258,15 @@ export function readTurnAudit(
             : 'requested'
         ) as GrantEvidence['kind'];
         const expiresAt = typeof p['expiresAt'] === 'number' ? p['expiresAt'] : 0;
-        const toServant = typeof p['toServant'] === 'string' ? p['toServant'] : '';
+        const toDomain = typeof p['toServant'] === 'string' ? p['toServant'] : '';
         grants.push({
           seq: e.seq,
           at: e.createdAt,
           kind,
           kindLabel: GRANT_LABEL[kind] ?? kind,
           memoryId: typeof p['memoryId'] === 'string' ? p['memoryId'] : '',
-          toServant,
-          toServantLabel: servantLabel(toServant),
+          toDomain,
+          toDomainLabel: domainLabel(toDomain),
           taskId: typeof p['taskId'] === 'string' ? p['taskId'] : '',
           reason: typeof p['reason'] === 'string' ? p['reason'] : '',
           expired: expiresAt > 0 && expiresAt < Date.now(),

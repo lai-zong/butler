@@ -132,6 +132,18 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
     const stepId = typeof p?.['stepId'] === 'string' ? p['stepId'] : undefined;
 
     switch (e.type) {
+      // ═══════════════════════════════════════════════════════
+      // ⚠️ 历史分支（多执行者时代）—— 当前代码**不产生**这些事件
+      //
+      //   ★ 保留理由：**重放旧日志时必须按当时的语义重建步骤状态**。
+      //     删了这些分支，历史会话的 `completedSteps` 会突然变空，
+      //     「回退到某一步」就查不到它之前完成了什么。
+      //
+      //   ⚠️ 读到这里请注意：**它们的为空不是 bug** ——
+      //      当前架构只有一次执行（`butler.executed`），
+      //      没有「步骤」这个概念，所以 `completedSteps` 对新会话本就是空的。
+      //      （"每轮一个单元"的粒度尚未引入，见 docs/refactor-status.md §7.3）
+      // ═══════════════════════════════════════════════════════
       case 'dispatch.created': {
         const steps = p?.['steps'];
         if (Array.isArray(steps)) {
@@ -188,6 +200,14 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
         break;
       }
 
+      /**
+       * ⚠️ 历史分支：`servant.report.payload.memoryRefs`。
+       *
+       * 当前架构的记忆依赖走 `constraint.injected`（上面那条），
+       * 所以本分支在**新日志上不可达**。
+       *
+       * ★ 保留理由：回退旧日志时要按当时的语义重建"用了哪些记忆"。
+       */
       case 'servant.report': {
         const refs = p?.['memoryRefs'];
         if (Array.isArray(refs)) {

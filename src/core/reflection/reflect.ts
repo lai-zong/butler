@@ -18,19 +18,19 @@
  *     → 产出【全局记忆候选 / 跨领域原则候选】
  *
  * ★ 关键设计：隔离**不是靠提示词请求模型自律**，而是靠**输入构造**：
- *   仆人的反思材料里根本不含其它领域的记忆与产出（见 `buildServantReflectionInput`）。
+ *   仆人的反思材料里根本不含其它领域的记忆与产出（见 `buildDomainReflectionInput`）。
  *   模型看不到，就无从被污染。这比"请只关注你的领域"可靠得多。
  */
 
 import { EventLog } from '../events/log.js';
 import { msg, type ModelPort } from '../ports/model.js';
-import { PROMPT_VERSIONS, reflectionButlerTask, reflectionServantTask } from '../prompts/butler.js';
+import { PROMPT_VERSIONS, reflectionButlerTask, domainReflectionTask } from '../prompts/butler.js';
 import { reflectionSchema } from '../prompts/schemas.js';
 import type { MemoryClass, MemoryKind } from '../memory/types.js';
 // ★ v7（E2）：反思改用领域纪律（`DOMAIN_DISCIPLINE`），
 //   不再依赖旧 `SERVANT_BOUNDARY[...].test`（那个字段在新域模块里已废除）。
 import { DOMAIN_DISCIPLINE, domainName, type DomainId } from '../domain/types.js';
-import { SERVANT_BOUNDARY, type ServantId, type ServantReport } from '../servants/types.js';
+import type { ExecutionReport } from '../execution/types.js';
 import type { ClockPort } from '../ports/clock.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -62,8 +62,8 @@ export interface MemoryCandidate {
    *
    * ★ v7：领域层反思时这里是**领域**（`DomainId`），管家层时是 `'butler'`。
    *
-   * ⚠️ 类型曾是 `ServantId | 'butler'` —— 名字错但值没错，
-   *    因为 `ServantId` 与 `DomainId` 的字面量集合**完全相同**
+   * ⚠️ 类型曾是 `DomainId | 'butler'` —— 名字错但值没错，
+   *    因为 `DomainId` 与 `DomainId` 的字面量集合**完全相同**
    *    （都是 `'life'|'health'|'study'|'work'|'code'`）。
    *    所以这是**纯类型名修正，零运行时差异**。
    *
@@ -105,10 +105,10 @@ export interface ReflectionRunResult {
  *    **没有**其它仆人的产出、**没有**全局记忆、**没有**敏感域内容。
  *    所以即便提示词失效，污染也无从发生 —— 模型看不到别的领域。
  */
-export interface ServantReflectionInput {
-  readonly servant: ServantId;
+export interface DomainReflectionInput {
+  readonly domain: DomainId;
   /** 本次会话中该仆人的全部产出 */
-  readonly ownReports: readonly ServantReport[];
+  readonly ownReports: readonly ExecutionReport[];
   /** 该仆人领域内的既有记忆（仅 content 与 kind，不含其它领域） */
   readonly ownDomainMemories: readonly { readonly id: string; readonly kind: MemoryKind; readonly content: string; readonly lifecycle: string }[];
   /** 用户对该仆人产出的反馈（采纳 / 纠正） */
@@ -117,14 +117,14 @@ export interface ServantReflectionInput {
   readonly userGoal: string;
 }
 
-export async function reflectServant(args: {
+export async function reflectDomain(args: {
   readonly model: ModelPort;
   readonly log: EventLog;
   readonly clock: ClockPort;
-  readonly input: ServantReflectionInput;
+  readonly input: DomainReflectionInput;
 }): Promise<ReflectionRunResult> {
   const now = args.clock.now();
-  const { servant } = args.input;
+  const domain = args.input.domain;
 
   args.log.append({
     type: 'reflection.started',
@@ -148,7 +148,7 @@ export async function reflectServant(args: {
     payload: {
       layer: 'domain',
       /** v7：这次反思针对哪个领域（取代原来语义错误的 servantId） */
-      domain: servant,
+      domain,
       materials: {
         ownReports: args.input.ownReports.length,
         ownDomainMemories: args.input.ownDomainMemories.length,
@@ -165,10 +165,10 @@ export async function reflectServant(args: {
     temperature: 0.3,
     maxOutputTokens: 2048,
     messages: [
-      msg.system(domainReflectionSystem(servant as unknown as DomainId)),
+      msg.system(domainReflectionSystem(domain)),
       msg.user(
-        reflectionServantTask({
-          servant: `${SERVANT_BOUNDARY[servant].name}（${servant}）`,
+        domainReflectionTask({
+          domain: `${domainName(domain)}（${domain}）`,
           userGoal: args.input.userGoal,
           ownReports: args.input.ownReports.map((r) => ({
             stepId: r.taskId,
@@ -184,8 +184,9 @@ export async function reflectServant(args: {
 
   const candidates = result.value.candidates
     // ★ v7（批次1）：候选的层标识从 `'servant'` 改为 `'domain'` ——
-    //   反思现在按**领域**分层，不再有"仆人层"。变量名 `servant` 暂留（E1 再改名）。
-    .map((c, i) => toCandidate(c, i, { memClass: 'domain', domain: servant }, 'domain', servant, now))
+    //   反思现在按**领域**分层，不再有"仆人层"。
+    // ★ v8（批次G）：变量名也从 `servant` 改为 `domain`（E1 收尾）。
+    .map((c, i) => toCandidate(c, i, { memClass: 'domain', domain }, 'domain', domain, now))
     .filter((c): c is MemoryCandidate => c !== null);
 
   args.log.append({
@@ -195,23 +196,23 @@ export async function reflectServant(args: {
     payload: {
       layer: 'domain',
       /** v7：这次反思针对哪个领域 */
-      domain: servant,
+      domain,
       candidateCount: candidates.length,
       candidates: candidates.map((c) => ({ kind: c.kind, content: c.content, confidence: c.confidence })),
       usage: result.usage,
-      promptVersion: PROMPT_VERSIONS.reflectionServantTask,
+      promptVersion: PROMPT_VERSIONS.domainReflectionTask,
     },
     createdAt: now,
   });
 
   return {
     layer: 'domain',
-    by: servant,
+    by: domain,
     candidates,
     collaborationIssues: [],
     rhythmChanges: [],
     usage: result.usage,
-    promptVersion: PROMPT_VERSIONS.reflectionServantTask,
+    promptVersion: PROMPT_VERSIONS.domainReflectionTask,
   };
 }
 
@@ -278,7 +279,7 @@ ${ruleBlock}
 
 export interface ButlerReflectionInput {
   /** 全部仆人的产出摘要 */
-  readonly reports: readonly { readonly servant: string; readonly summary: string }[];
+  readonly reports: readonly { readonly domain: string; readonly summary: string }[];
   /** 本次会话检出的冲突与裁决 */
   readonly conflicts: readonly { readonly message: string; readonly severity: string; readonly resolvedBy?: string }[];
   /** 全局层的既有记忆 */
@@ -329,7 +330,7 @@ export async function reflectButler(args: {
       msg.user(
         reflectionButlerTask({
           userGoal: args.input.userGoal,
-          reports: args.input.reports.map((r) => ({ servant: r.servant, summary: r.summary })),
+          reports: args.input.reports.map((r) => ({ domain: r.domain, summary: r.summary })),
           conflicts: args.input.conflicts.map((c) => ({
             message: c.message,
             severity: c.severity,
@@ -383,7 +384,7 @@ export async function reflectButler(args: {
 }
 
 /** 把仆人汇报压成一句摘要，供反思材料使用（避免 prompt 过长）。 */
-export function summarizeReport(r: ServantReport): string {
+export function summarizeReport(r: ExecutionReport): string {
   const arts = r.artifacts
     .map((a) => (Array.isArray(a.content) ? a.content.join('；') : String(a.content)))
     .join(' | ');
@@ -395,13 +396,13 @@ export function summarizeReport(r: ServantReport): string {
 export function butlerReflectionSystem(): string {
   return `你是这个系统的「管家」，现在做**会话后的跨领域复盘**。
 
-## 你的视角与仆人的区别
+## 你的视角与单领域反思的区别
 
-仆人只能看到自己领域；**你能看到全局**。所以你要反思的是
-**仆人看不到的那些东西**：
+单领域反思只看得到那个领域；**你能看到全局**。所以你要反思的是
+**单看一个领域看不到的那些东西**：
 
-1. **跨领域协作是否顺畅** —— 有没有该派发却没派发的、派发顺序不合理的、
-   两个仆人的产出需要来回返工的
+1. **领域之间是否衔接得上** —— 有没有该考虑却没考虑的方面、
+   两个领域的结论需要来回返工的
 2. **跨领域规律** —— 多个领域共同反映出的用户特征
    （例：生活领域"常点外卖" + 健康领域"作息不规律" → 跨领域规律"工作繁忙期饮食不规律"）
 3. **生活节奏变化** —— 与既有全局记忆相比，用户的行为模式是否在变
@@ -417,7 +418,7 @@ export function butlerReflectionSystem(): string {
 ## 你**不能**产出什么
 
 - ❌ **硬约束**（如过敏原）—— 那只能由用户设定，反思不能凭空造出安全约束
-- ❌ 领域内的具体偏好 —— 那是仆人的职责，你越界会产生重复
+- ❌ 领域内的具体偏好 —— 那是单领域反思的职责，你越界会产生重复
 
 ## 质量要求
 
@@ -474,18 +475,18 @@ function toCandidate(
 /**
  * 构造仆人反思材料 —— **隔离在类型层面就已完成**。
  *
- * 这个函数刻意不接受 globalMemories / otherServantReports 之类的参数：
+ * 这个函数刻意不接受 globalMemories / otherExecutionReports 之类的参数：
  * 参数列表里没有，就没人能顺手传进来。这是比"提示词请求自律"可靠得多的隔离。
  */
-export function buildServantReflectionInput(args: {
-  readonly servant: ServantId;
+export function buildDomainReflectionInput(args: {
+  readonly domain: DomainId;
   readonly userGoal: string;
-  readonly ownReports: readonly ServantReport[];
+  readonly ownReports: readonly ExecutionReport[];
   readonly ownDomainMemories: readonly { readonly id: string; readonly kind: MemoryKind; readonly content: string; readonly lifecycle: string }[];
   readonly feedback?: readonly { readonly onArtifact: string; readonly effective: boolean; readonly note?: string }[];
-}): ServantReflectionInput {
+}): DomainReflectionInput {
   return {
-    servant: args.servant,
+    domain: args.domain,
     userGoal: args.userGoal,
     ownReports: args.ownReports,
     ownDomainMemories: args.ownDomainMemories,

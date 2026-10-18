@@ -7,7 +7,6 @@
  * UI 只是把这个流程的事件流渲染出来，不额外承载业务逻辑。
  */
 
-import { route } from '../butler/router.js';
 import { writeContract } from '../butler/contract.js';
 import { runButler } from '../butler/execute.js';
 import { verifyHardConstraints, type HardConstraintReport } from '../butler/hardConstraints.js';
@@ -25,12 +24,11 @@ import {
   type PrincipleCandidate,
   type PrincipleCheck,
 } from '../memory/principles.js';
-import type { DispatchStep, InjectedConstraint, ServantId, ServantReport } from '../servants/types.js';
+import type { InjectedConstraint, DomainId, ExecutionReport } from '../execution/types.js';
 import type { TaskContract } from '../butler/contract.js';
 import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
-import type { RoutingDecision } from '../prompts/schemas.js';
 
 export interface RunSessionArgs {
   readonly model: ModelPort;
@@ -80,7 +78,7 @@ export interface RunSessionArgs {
    *    同一份历史喂两边，仆人会被对话细节带偏到
    *    「回答用户」而不是「产出结构化报告」。
    */
-  readonly servantHistory?: readonly ModelMessage[];
+  readonly domainHistory?: readonly ModelMessage[];
   /**
    * 流式端口。给出时**仆人的工具循环走流式** ——
    * 「思考 → 工具 → 再思考」画面的来源。
@@ -105,37 +103,38 @@ export interface RunSessionArgs {
   readonly onProgress?: (e: ProgressEvent) => void;
 }
 
-/** 编排进度事件（供界面实时展示）。 */
-export type ProgressEvent =
-  | { readonly kind: 'stage'; readonly stage: string; readonly label: string }
-  | {
-      readonly kind: 'stepStarted';
-      readonly stepId: string;
-      readonly servant: ServantId;
-      readonly instruction: string;
-      readonly index: number;
-      readonly total: number;
-    }
-  | {
-      readonly kind: 'stepDone';
-      readonly stepId: string;
-      readonly servant: ServantId;
-      readonly ok: boolean;
-      readonly artifactCount: number;
-      readonly findingCount: number;
-    }
-  | {
-      readonly kind: 'stepFailed';
-      readonly stepId: string;
-      readonly servant: ServantId;
-      readonly reason: string;
-    };
+/**
+ * 编排进度事件。
+ *
+ * ★★ v8：原来有 `stepStarted` / `stepDone` / `stepFailed` 三个变体
+ *    （带 `stepId` / `index` / `total`），那是**多步派发**时代的协议形状。
+ *
+ * ⚠️ 已删除，两点证据：
+ *   ① 单执行者架构里「步骤」不存在 —— 之前的代码只是把它写死成
+ *      `stepId: 'execute'` + `index: 1, total: 1` 来模拟「一步」，
+ *      字段本身仍在暗示「有多步」。
+ *   ② 这三个变体**没有任何消费者** —— `route.ts` 原样转发成
+ *      SSE `{type:'progress'}`，而客户端 `conversation.tsx` 只处理
+ *      `session`/`agent`/`narration`/`reply`/`reports`/`verdict`/`error`，
+ *      **没有 `progress` 分支**。
+ *
+ *    ⚠️ 也就是说这条通道整体是**死的**（`stage` 也无人消费）。
+ *       保留 `stage` 是因为它是通用形态、后续可能接界面；
+ *       但**不要再基于它做新功能而不接消费端**。
+ */
+export type ProgressEvent = { readonly kind: 'stage'; readonly stage: string; readonly label: string };
 
 export interface RunSessionResult {
   readonly log: EventLog;
-  readonly routing: RoutingDecision;
-  /** 置信度是否达阈值。⚠️ `false` **不再意味着没干活** —— 见 `assumption` */
-  readonly confident: boolean;
+  // ★★ v8（批次C）：原有的 `routing` 与 `confident` 两个字段已删除 ——
+  //    它们来自**独立的 `route()` 调用**（`{servant, confidence, reason}`），
+  //    而那次调用已并入写契约（方案 D-3）。
+  //
+  //    现在读这两样东西：
+  //      · 领域    → `contract.domains`
+  //      · 置信度  → `contract.confidence`
+  //      · 要不要说明假设 → `assumption !== undefined`
+  //        （低置信度时**照样干完活**，只是把假设告诉用户 · D-4）
   /**
    * 置信度不足时"按什么假设继续干的"（v7 · D-4）。
    *
@@ -145,22 +144,15 @@ export interface RunSessionResult {
    * `undefined` 表示置信度足够，没有假设需要说明。
    */
   readonly assumption?: {
-    readonly servant: string;
+    /** 假设涉及的领域（原 `servant` —— 它装的一直是领域值）*/
+    readonly domains: readonly DomainId[];
     readonly confidence: number;
     readonly note: string;
+    /** 本该向用户澄清的问题（现在不阻断，只是记录下来）*/
+    readonly wouldHaveAsked?: string;
   };
   /**
-   * @deprecated v7：**恒为空数组**。
-   *
-   * 旧架构把任务拆成多步、每步派给一个仆人，`steps` 就是那份拆解。
-   * 现在只有一个执行者，没有「步骤」这回事（见 `contract`）。
-   *
-   * ⚠️ 保留字段只为不破坏既有调用方（界面/验证脚本）。
-   *    **新代码请用 `contract`** —— 它才是「要做什么」的权威描述。
-   */
-  readonly steps: readonly DispatchStep[];
-  /**
-   * 任务契约（v7 · D-5）—— 取代 `steps` 的权威描述。
+   * 任务契约（v7 · D-5）—— 「要做什么」的权威描述。
    *
    * ★ 里面写着：交付物、判据、硬约束、涉及领域。
    *   监督员用它当核对标准，界面用它展示「这次答应做什么」。
@@ -173,7 +165,7 @@ export interface RunSessionResult {
    *    现在只有一次执行 —— 约束是**整轮一份**，直接挂在结果上。
    */
   readonly injectedConstraints: readonly InjectedConstraint[];
-  readonly reports: readonly ServantReport[];
+  readonly reports: readonly ExecutionReport[];
   readonly supervision: NormalizedSupervisionOutput;
   /** 硬约束机械校验结果（确定性判定，见 hardConstraints.ts） */
   readonly hardConstraints: HardConstraintReport;
@@ -204,30 +196,44 @@ export interface RunSessionResult {
  *   ③ **给出纠正入口** —— "不对的话直接说"，而不是反问他"你到底想要什么"
  *      （反问等于把球踢回去，而用户可能已经去忙别的了）
  */
-export function buildRouteAssumption(
-  confident: boolean,
-  decision: {
-    readonly servant: string;
-    readonly confidence: number;
-    // ⚠️ `exactOptionalPropertyTypes` 下必须写成 `| undefined`，
-    //    否则调用方传 `clarifyingQuestion: undefined` 会被判类型错
-    readonly clarifyingQuestion?: string | undefined;
-  },
+/**
+ * 由契约的置信度构造「假设」说明（低置信度不阻断执行 · D-4）。
+ *
+ * ★★ v8（批次C）：入参从**路由结果**改为**契约**。
+ *    原签名 `buildRouteAssumption(confident, {servant, confidence, clarifyingQuestion})`
+ *    里的 `servant` 其实是领域值 —— 现在直接叫 `domains`。
+ *
+ * ⚠️ 阈值仍是 0.6：与提示词里"低于 0.6 就写 clarifyingQuestion"一致。
+ *    两处必须同步，否则会出现"模型觉得该问、系统觉得不用问"。
+ */
+export function buildAssumption(
+  contract: Pick<TaskContract, 'domains' | 'confidence' | 'clarifyingQuestion'>,
 ): RunSessionResult['assumption'] {
-  if (confident) return undefined;
+  if (contract.confidence >= CONFIDENCE_THRESHOLD) return undefined;
 
-  const asked = decision.clarifyingQuestion?.trim() ?? '';
-  const head = `我不太确定你的意思，先按「${decision.servant}」这件事处理了。`;
+  const asked = contract.clarifyingQuestion?.trim() ?? '';
+  const where = contract.domains.map(domainName).join('、');
+  const head = `我不太确定你的意思，先按「${where}」这件事处理了。`;
 
   return {
-    servant: decision.servant,
-    confidence: decision.confidence,
+    domains: contract.domains,
+    confidence: contract.confidence,
     note:
       asked.length > 0
         ? `${head}如果我理解偏了，你其实是想问「${asked}」—— 直接说，我重来。`
         : `${head}不对的话直接说，我重来。`,
+    ...(asked.length > 0 ? { wouldHaveAsked: asked } : {}),
   };
 }
+
+/**
+ * 置信度阈值：低于它就记录一条「假设」告诉用户（但不阻断执行 · D-4）。
+ *
+ * ⚠️ 必须与提示词里的措辞一致 —— contractSchema.confidence 的 describe 写着
+ *    「confidence < 0.6 时填 clarifyingQuestion」。两处不同步会出现
+ *    「模型觉得该问、系统觉得不用问」的静默错位。
+ */
+const CONFIDENCE_THRESHOLD = 0.6;
 
 export async function runSession(args: RunSessionArgs): Promise<RunSessionResult> {
   // ⚠️ 用传入的 log（它挂了持久化端口）；不传时内部新建一个仅内存的，供测试用
@@ -278,74 +284,6 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     createdAt: args.clock.now(),
   });
 
-  // ── ③ 路由 ──
-  stage('route', '判断该由谁处理');
-  const r = await route({
-    model: args.model,
-    userGoal: args.userGoal,
-    ...(args.history !== undefined ? { history: args.history } : {}),
-  });
-  inputTokens += r.usage.inputTokens;
-  outputTokens += r.usage.outputTokens;
-
-  log.append({
-    type: 'route.decided',
-    actor: 'butler',
-    payload: {
-      servant: r.decision.servant,
-      confidence: r.decision.confidence,
-      reason: r.decision.reason,
-      confident: r.confident,
-      usage: r.usage,
-      promptVersion: r.promptVersion,
-    },
-    createdAt: args.clock.now(),
-  });
-
-  /**
-   * ── ★ 低置信度：记录假设，**但不阻断**（v7 · D-4）──
-   *
-   * ★★ 这里原先是一道**硬门**：
-   *
-   *     if (!r.confident) {
-   *       return { steps: [], reports: [], … };   // 不派发、不执行、什么都不干
-   *     }
-   *
-   *   后果（用户实测撞到过）：回复是一句
-   *   「置信度不足，已转入澄清提问，未执行派发。」
-   *   然后整轮就这么结束了 —— 用户去干别的回来一看，**什么也没做**。
-   *
-   * ⚠️ 这与项目目标直接冲突：
-   *   · 产品目标是「自主完成，不要用户逐次审核」
-   *   · 而这道门把"我不确定"变成了"我不干活"
-   *   · **不确定 ≠ 不能干** —— 路由本来就已经给出了最可能的判断
-   *
-   * ★ 改成：**照最可能的理解先干，把假设明说出来，给一条纠正的路**。
-   *   这样用户回来看到的是**结果 + 假设**，而不是**一个未回答的问题**。
-   *
-   * ⚠️ 例外（不适用本条）：**权限类**决定不能这样处理 ——
-   *    判断错了可以改，删掉的文件回不来。见方案 D-17。
-   */
-  const assumption = buildRouteAssumption(r.confident, r.decision);
-
-  if (assumption !== undefined) {
-    log.append({
-      type: 'route.assumed',
-      actor: 'butler',
-      payload: {
-        servant: assumption.servant,
-        confidence: assumption.confidence,
-        note: assumption.note,
-        // ⚠️ 事件名从 route.clarify 改为 route.assumed ——
-        //    "clarify" 意味着"停下来问"，而现在的语义是"带着假设继续干"。
-        //    保留旧名会让审计视图与实现语义脱节。
-        ...(r.decision.clarifyingQuestion !== undefined
-          ? { wouldHaveAsked: r.decision.clarifyingQuestion }
-          : {}),
-      },
-      createdAt: args.clock.now(),
-    });
-  }
 
   // ── ④ 写任务契约（v7 · D-5，替代原来的 route + decompose）──
   //
@@ -371,6 +309,50 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   outputTokens += written.usage.outputTokens;
   const contract = written.contract;
 
+  /**
+   * ── ★ 低置信度：记录假设，**但不阻断**（v7 · D-4；v8 批次C 改为读契约）──
+   *
+   * ★★ 这里原先是一道**硬门**：
+   *
+   *     if (!r.confident) {
+   *       return { steps: [], reports: [], … };   // 不派发、不执行、什么都不干
+   *     }
+   *
+   *   后果（用户实测撞到过）：回复是一句
+   *   「置信度不足，已转入澄清提问，未执行派发。」
+   *   然后整轮就这么结束了 —— 用户去干别的回来一看，**什么也没做**。
+   *
+   * ⚠️ 这与项目目标直接冲突：产品目标是「自主完成，不要用户逐次审核」，
+   *   而那道门把「我不确定」变成了「我不干活」。**不确定 ≠ 不能干。**
+   *
+   * ★ 现在是：**照最可能的理解先干，把假设明说出来，给一条纠正的路**。
+   *
+   * ★ v8（批次C）：置信度来源从**独立的 `route()` 调用**改为**契约自带的
+   *   `confidence`** —— 写契约时模型已经在读同一句话，不必再问一遍。
+   *
+   * ⚠️ 例外（不适用本条）：**权限类**决定不能这样处理 ——
+   *    判断错了可以改，删掉的文件回不来。见方案 D-17。
+   */
+  const assumption = buildAssumption(contract);
+
+  if (assumption !== undefined) {
+    log.append({
+      type: 'route.assumed',
+      actor: 'butler',
+      payload: {
+        domains: contract.domains,
+        confidence: assumption.confidence,
+        note: assumption.note,
+        // ⚠️ 事件名从 route.clarify 改为 route.assumed ——
+        //    "clarify" 意味着"停下来问"，而现在的语义是"带着假设继续干"。
+        ...(assumption.wouldHaveAsked !== undefined
+          ? { wouldHaveAsked: assumption.wouldHaveAsked }
+          : {}),
+      },
+      createdAt: args.clock.now(),
+    });
+  }
+
   // ── ⑤ 管家自己干（v7 · D-2 / B6）──
   //
   // ★★ 这一步替代了原来的"逐步派发"循环（220 行）。
@@ -382,7 +364,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   //     · **进度事件** —— 界面「边说边想」画面的来源
   stage('execute', '开始执行');
 
-  const reports: ServantReport[] = [];
+  const reports: ExecutionReport[] = [];
   /** 本次会话实际注入过的原则（收尾时做违背检测） */
   const injectedPrinciples: PrincipleCandidate[] = [];
 
@@ -395,7 +377,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
           task: args.userGoal,
           // ⚠️ 单执行者下"哪个仆人"这个参数改成"主领域" ——
           //    原则仍按领域加权（本领域的原则更相关），只是没有仆人身份了。
-          ...(contract.domains[0] !== undefined ? { servant: contract.domains[0] } : {}),
+          ...(contract.domains[0] !== undefined ? { domain: contract.domains[0] } : {}),
         })
       : [];
 
@@ -410,15 +392,11 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     injectedPrinciples.push(...principleCandidates);
   }
 
-  // ★ 界面进度：开始执行（一步，不是多步）
-  progress({
-    kind: 'stepStarted',
-    stepId: 'execute',
-    servant: contract.domains[0] ?? 'life',
-    instruction: contract.deliverable,
-    index: 1,
-    total: 1,
-  });
+  // ★ 进度：开始执行
+  //
+  // ⚠️ v8：原来发的是 `stepStarted`（带 stepId/index/total，多步派发语义）。
+  //    已改为通用 `stage` —— 单执行者架构没有「步骤」。
+  progress({ kind: 'stage', stage: 'execute', label: `开始执行：${contract.deliverable.slice(0, 24)}` });
 
   const injectedConstraints = written.constraints.map((c) => ({
     memoryId: c.memoryId,
@@ -437,7 +415,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       contract,
       injectedConstraints,
       userGoal: args.userGoal,
-      ...(args.servantHistory !== undefined ? { history: args.servantHistory } : {}),
+      ...(args.domainHistory !== undefined ? { history: args.domainHistory } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
       ...(args.onAgentProgress !== undefined ? { onAgentProgress: args.onAgentProgress } : {}),
       ...(args.tools !== undefined ? { tools: args.tools } : {}),
@@ -480,22 +458,18 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   outputTokens += run.usage.outputTokens;
   reports.push(run.report);
 
-  // ★ 界面进度：执行结束（带产出数量，界面据此显示"产出 2 项"）
+  // ★ 进度：执行结束
+  //
+  // ⚠️ v8：原来发 `stepDone` / `stepFailed`（多步派发语义），已改为通用 `stage`。
   if (run.report.status === 'done') {
-    progress({
-      kind: 'stepDone',
-      stepId: 'execute',
-      servant: contract.domains[0] ?? 'life',
-      ok: true,
-      artifactCount: run.report.artifacts.length,
-      findingCount: run.report.findings?.length ?? 0,
-    });
+    const arts = run.report.artifacts.length;
+    const finds = run.report.findings?.length ?? 0;
+    progress({ kind: 'stage', stage: 'executed', label: `执行完成（${arts} 项产出、${finds} 条发现）` });
   } else {
     progress({
-      kind: 'stepFailed',
-      stepId: 'execute',
-      servant: contract.domains[0] ?? 'life',
-      reason: run.report.uncertainties?.[0] ?? `状态：${run.report.status}`,
+      kind: 'stage',
+      stage: 'executeFailed',
+      label: `执行未完成：${run.report.uncertainties?.[0] ?? run.report.status}`,
     });
   }
 
@@ -544,7 +518,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       injected: injectedPrinciples,
       reports: reports.map((r) => ({
         // ⚠️ checkPrinciples 的参数名仍是 servant（遗留），此处传领域值
-        servant: r.domain ?? '',
+        domain: r.domain ?? '',
         text: JSON.stringify(r.artifacts) + JSON.stringify(r.findings ?? []),
       })),
     });
@@ -601,13 +575,14 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
 
   return {
     log,
-    routing: r.decision,
-    // ⚠️ 这里用**真实的** `r.confident`，不是写死 true ——
-    //    低置信度时这一轮**确实干完活了**，只是带着一个假设。
-    //    写死 true 会让上层无法把假设告诉用户。
-    confident: r.confident,
+    /**
+     * ★★ v8（批次C）：`routing` 字段已删除 —— 它装的是**独立路由调用**的产物
+     *    （`{servant, confidence, reason}`），而那次调用已经并入写契约。
+     *
+     * ⚠️ 原来读 `result.routing.servant` 的地方，现在读
+     *    `result.contract.domains`（领域）与 `result.contract.confidence`（置信度）。
+     */
     ...(assumption !== undefined ? { assumption } : {}),
-    steps: [],
     contract,
     injectedConstraints,
     reports,

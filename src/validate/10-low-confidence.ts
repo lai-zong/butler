@@ -29,7 +29,7 @@ import type {
   StructuredCall,
   StructuredResult,
 } from '../core/ports/model.js';
-import { runSession, buildRouteAssumption } from '../core/runtime/orchestrator.js';
+import { runSession, buildAssumption } from '../core/runtime/orchestrator.js';
 
 // ═══════════════════════════════════════════════════════════
 // 断言框架
@@ -86,22 +86,6 @@ function makeStubModel(opts: {
 
       const usage = { inputTokens: 10, outputTokens: 5 };
 
-      // ① 路由 → 故意低置信度
-      if (name === 'RoutingDecision') {
-        return Promise.resolve({
-          value: {
-            servant: 'life',
-            confidence: opts.confidence,
-            reason: '用户的话太短，看不出具体要做什么',
-            ...(opts.clarifyingQuestion !== undefined
-              ? { clarifyingQuestion: opts.clarifyingQuestion }
-              : {}),
-          } as unknown as T,
-          usage,
-          attempts: 1,
-          promptVersion: 'test',
-        });
-      }
 
       // ② 任务契约（v7 · D-5，取代旧的 DispatchPlan）
       //
@@ -115,6 +99,11 @@ function makeStubModel(opts: {
             criteria: ['给出一条可执行的建议'],
             mustObey: [],
             domains: ['none'],
+            // ★ v8（批次C）：置信度并入契约 —— 桩模型在这里模拟"低置信度"
+            confidence: opts.confidence,
+            ...(opts.clarifyingQuestion !== undefined
+              ? { clarifyingQuestion: opts.clarifyingQuestion }
+              : {}),
           } as unknown as T,
           usage,
           attempts: 1,
@@ -122,8 +111,8 @@ function makeStubModel(opts: {
         });
       }
 
-      // ③ 仆人汇报
-      if (name === 'ServantReport') {
+      // ③ 执行汇报
+      if (name === 'ExecutionReport') {
         return Promise.resolve({
           value: {
             reply: '先按最朴素的做法给你一个方案。',
@@ -193,15 +182,15 @@ console.log('\n▶ 验证 10：低置信度不再阻断（D-4）\n');
 
 hr('① 纯函数层：假设的文案');
 
-const noAssume = buildRouteAssumption(true, { servant: 'life', confidence: 0.9 });
+const noAssume = buildAssumption({ domains: ['life'], confidence: 0.9 });
 check('置信度足够 → 没有假设', noAssume === undefined);
 
-const withAssume = buildRouteAssumption(false, { servant: 'health', confidence: 0.3 });
+const withAssume = buildAssumption({ domains: ['health'], confidence: 0.3 });
 check('置信度不足 → 有假设', withAssume !== undefined);
 check('★ 假设里先说"干了什么"（让用户知道不是空转）', withAssume?.note.includes('先按') === true);
 check('★ 不含内部术语', withAssume?.note.includes('置信度') === false);
 
-hr('② ★★ 关键：低置信度时 runSession 仍然派发执行');
+hr('② ★★ 关键：低置信度时 runSession 仍然执行（不再阻断）');
 
 const lowModel = makeStubModel({ confidence: 0.2, clarifyingQuestion: '你是想问晚饭还是想问买菜？' });
 const log1 = new EventLog('v10_low');
@@ -222,7 +211,7 @@ try {
 }
 
 check('runSession 没有抛异常', threw === undefined, threw?.slice(0, 40));
-check('确实调了路由与契约', lowModel.calls.includes('RoutingDecision') && lowModel.calls.includes('TaskContract'), lowModel.calls.join(','));
+check('确实调了契约（v8：路由已并入契约）', lowModel.calls.includes('TaskContract') && lowModel.calls.includes('TaskContract'), lowModel.calls.join(','));
 
 if (result !== undefined) {
   check(
@@ -235,7 +224,7 @@ if (result !== undefined) {
     result.reports.length > 0,
     `reports=${result.reports.length}`,
   );
-  check('confident 如实为 false（不写死 true）', result.confident === false);
+  check('★ 契约置信度如实偏低（不写死）', (result.contract?.confidence ?? 1) < 0.6);
   check('★★ assumption 存在（把假设告诉用户，而不是停下来问）', result.assumption !== undefined);
   check('★ 假设把 clarifyingQuestion 转成了纠正入口', result.assumption?.note.includes('你其实是想问') === true);
 }
@@ -265,7 +254,7 @@ const high = await runSession({
 });
 
 check('高置信度时 assumption 为空', high.assumption === undefined);
-check('高置信度时 confident 为 true', high.confident === true);
+check('高置信度时契约置信度 >= 0.6', (high.contract?.confidence ?? 0) >= 0.6);
 check('高置信度时不落 route.assumed', log2.byType('route.assumed').length === 0);
 check('高置信度时照常执行', high.reports.length > 0 && high.contract !== undefined, `${high.reports.length} 份汇报`);
 

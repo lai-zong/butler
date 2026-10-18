@@ -143,33 +143,33 @@ describe('① 分类：内容优先，文件名仅作提示', () => {
 describe('② ★ 路由到正确的仆人', () => {
   it('★ 收据 → 健康仆人（方案 § 5.3 的映射）', () => {
     const d = routeAttachment({ kind: 'receipt', needsUserConfirmation: false });
-    expect(d.servant).toBe('health');
+    expect(d.domain).toBe('health');
   });
 
   it('代码 → 代码仆人', () => {
-    expect(routeAttachment({ kind: 'code', needsUserConfirmation: false }).servant).toBe('code');
+    expect(routeAttachment({ kind: 'code', needsUserConfirmation: false }).domain).toBe('code');
   });
 
   it('表格 → 办公仆人', () => {
-    expect(routeAttachment({ kind: 'spreadsheet', needsUserConfirmation: false }).servant).toBe('work');
+    expect(routeAttachment({ kind: 'spreadsheet', needsUserConfirmation: false }).domain).toBe('work');
   });
 
   it('语音 → 先交给管家转写', () => {
     const d = routeAttachment({ kind: 'audio', needsUserConfirmation: false });
-    expect(d.servant).toBe('butler');
+    expect(d.domain).toBe('butler');
     expect(d.why).toContain('转写');
   });
 
   it('★ 需要确认时不给仆人，而是给出反问文本', () => {
     const d = routeAttachment({ kind: 'image', needsUserConfirmation: true });
-    expect(d.servant).toBeNull();
+    expect(d.domain).toBeNull();
     expect(d.question).toBeDefined();
     expect(d.question?.length).toBeGreaterThan(0);
   });
 
   it('★ 截图内容未知 → 反问，不擅自派发', () => {
     const d = routeAttachment({ kind: 'screenshot', needsUserConfirmation: false });
-    expect(d.servant).toBeNull();
+    expect(d.domain).toBeNull();
     expect(d.question).toContain('截图');
   });
 
@@ -177,7 +177,7 @@ describe('② ★ 路由到正确的仆人', () => {
     const kinds = ['receipt', 'screenshot', 'document', 'spreadsheet', 'code', 'image', 'audio', 'unknown'] as const;
     for (const kind of kinds) {
       const d = routeAttachment({ kind, needsUserConfirmation: false });
-      expect(d.servant !== undefined || d.question !== undefined).toBe(true);
+      expect(d.domain !== undefined || d.question !== undefined).toBe(true);
       expect(d.why.length).toBeGreaterThan(0);
     }
   });
