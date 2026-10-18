@@ -16,7 +16,7 @@ import { Shell } from './ui/shell.js';
 import { getRuntime } from './runtime.js';
 
 export const metadata: Metadata = {
-  title: '管家式 AI · 记忆治理',
+  title: 'butler',
   description: '可审计的记忆治理与自进化系统 —— 它记得你，且你能看见它记住了什么',
 };
 

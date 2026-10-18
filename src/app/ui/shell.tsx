@@ -86,20 +86,43 @@ export function Shell({
   }, []);
 
   /**
-   * ⚠️ 首帧用 `ready` 压住 `data-dark` 与 `data-collapsed`，
-   *    避免"服务端浅色 → 客户端深色"的闪一下。
+   * ★★ 主题挂在 **`<html>`** 上，不是挂在 `.app` 上。
+   *
+   * ⚠️ 之前的写法（`<div className="app" data-dark>`）造成了两个真实缺陷：
+   *   ① `body { background: var(--bg) }` 用的仍是**浅色**变量
+   *      —— 因为变量被改写在 `.app` 上，而 `.app` 是 body 的子元素；
+   *      于是没有自己背景的容器（`.main`/`.chat`/`.chat-body`）全透出白底。
+   *   ② `color` 是从 body **继承下来的计算值**（深色文字），
+   *      `.app` 没重设 color —— 深底配深字，用户气泡里的字就看不见了。
+   *
+   *    挂到 html 之后，body 的背景色与文字色都会跟着深色变量走。
    */
+  useEffect(() => {
+    const root = document.documentElement;
+    if (ready && dark) root.setAttribute('data-dark', '');
+    else root.removeAttribute('data-dark');
+  }, [ready, dark]);
+
   return (
-    <div className="app" data-dark={ready && dark ? '' : undefined}>
+    <div className="app">
       <aside className="side" data-collapsed={ready && collapsed ? '' : undefined}>
         <div className="side-brand">
           <span className="dot" aria-hidden />
-          <span className="label">管家式 AI</span>
+          <span className="label">butler</span>
+          <button
+            type="button"
+            className="icon-btn side-theme"
+            onClick={toggleDark}
+            title={dark ? '切换到浅色' : '切换到深色'}
+            aria-label={dark ? '切换到浅色' : '切换到深色'}
+          >
+            {dark ? <IconSun /> : <IconMoon />}
+          </button>
         </div>
 
         <nav className="side-nav">
           {NAV.map((item) => {
-            // '/app' 类路径要精确匹配，否则子页也会点亮
+            // '/' 要精确匹配，否则所有子路径都会点亮首页
             const on =
               item.href === '/'
                 ? path === '/'
@@ -121,17 +144,52 @@ export function Shell({
           })}
         </nav>
 
+        {/*
+          收起 / 展开：一行「› 收起」，收起后只剩箭头。
+          ⚠️ 用同一个箭头（而不是“展开/收起”两种文案）——
+             位置不变、点击目标不变，用户不用重新找按钮。
+        */}
         <div className="side-foot">
-          <button type="button" onClick={toggleDark} title={dark ? '切换到浅色' : '切换到深色'}>
-            {dark ? '浅色' : '深色'}
-          </button>
-          <button type="button" onClick={toggleNav} title={collapsed ? '展开侧栏' : '收起侧栏'}>
-            {collapsed ? '展开' : '收起'}
+          <button
+            type="button"
+            className="side-collapse"
+            onClick={toggleNav}
+            title={collapsed ? '展开侧栏' : '收起侧栏'}
+            aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
+            aria-expanded={!collapsed}
+          >
+            <span className="chev" aria-hidden>
+              &gt;
+            </span>
+            <span className="label">收起</span>
           </button>
         </div>
       </aside>
 
       <main className="main">{children}</main>
     </div>
+  );
+}
+
+/**
+ * 图标：内联 SVG，描边走 `currentColor`。
+ *
+ * ⚠️ 刻意不引图标库：只有两个图标，引一个包会让首屏 JS 变大，
+ *    而且风格还得再对齐一次。
+ */
+function IconMoon(): React.ReactElement {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8Z" />
+    </svg>
+  );
+}
+
+function IconSun(): React.ReactElement {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
   );
 }

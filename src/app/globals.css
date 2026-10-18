@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   管家式 AI · 界面样式（极简务实）
+   butler · 界面样式（极简务实）
 
    原则：
    ① 只用两种底色（页面 / 卡片），靠 1px 细线分区，不用阴影
@@ -103,6 +103,11 @@ ol {
 .app {
   display: flex;
   min-height: 100vh;
+  /* ★ 兜底：底色与文字色成对生效。
+     真正的主题开关挂在 <html> 上（见 ui/shell.tsx）——
+     那样 body 的背景与「继承下来的文字色」才会一起变。 */
+  background: var(--bg);
+  color: var(--fg);
 }
 
 .side {
@@ -117,13 +122,17 @@ ol {
   height: 100vh;
 }
 
+/**
+ * 收起态：64px 窄栏，**导航仍显示两字标签**（中文导航正好两字）。
+ * 算过：64 − 导航内边距 6×2 = 52；「对话」13.5px ≈ 27 + 左右内边距 8×2 = 43 ✓
+ */
 .side[data-collapsed] {
-  width: 60px;
-  flex-basis: 60px;
+  width: 64px;
+  flex-basis: 64px;
 }
 
 .side-brand {
-  padding: 20px 20px 12px;
+  padding: 18px 14px 10px;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -140,6 +149,30 @@ ol {
   border-radius: 50%;
   background: var(--accent);
   flex: 0 0 6px;
+}
+
+/** 主题图标：靠右，收起时仍在 */
+.side-theme {
+  margin-left: auto;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--bg-sink);
+  color: var(--fg);
 }
 
 .side-nav {
@@ -184,28 +217,85 @@ ol {
   color: var(--accent);
 }
 
-.side-foot {
-  margin-top: auto;
-  padding: 12px;
-  display: flex;
+/* ── 收起态 ───────────────────────────────────────────── */
+
+/* 品牌只留圆点（butler 六个字母放不进 64px）*/
+.side[data-collapsed] .side-brand {
+  padding: 18px 0 10px;
+  justify-content: center;
   gap: 6px;
 }
 
-.side-foot button {
-  flex: 1;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--fg-2);
-  border-radius: var(--r-sm);
-  padding: 6px 0;
-  font-size: 13px;
-  cursor: pointer;
+.side[data-collapsed] .side-brand .label {
+  display: none;
 }
 
-.side-foot button:hover {
-  color: var(--fg);
-  border-color: var(--line-strong);
+.side[data-collapsed] .side-nav {
+  padding: 6px;
 }
+
+/* 导航保留两字标签：不加图标也能认出来，且点击区域够大 */
+.side[data-collapsed] .side-item {
+  padding: 8px;
+  justify-content: center;
+  font-size: 13.5px;
+  gap: 0;
+}
+
+/* 数字角标在窄栏里没有位置，收起时不显示（标题里仍有提示）*/
+.side[data-collapsed] .side-item .n {
+  display: none;
+}
+
+/* ── 底部：收起行 ─────────────────────────────────────── */
+
+.side-foot {
+  margin-top: auto;
+  padding: 8px;
+}
+
+.side-collapse {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 13.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.side-collapse:hover {
+  background: var(--bg-sink);
+  color: var(--fg);
+}
+
+.side-collapse .chev {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--fg-3);
+}
+
+.side-collapse:hover .chev {
+  color: var(--fg);
+}
+
+.side[data-collapsed] .side-collapse {
+  justify-content: center;
+  padding: 8px 0;
+}
+
+/* 收起后只剩箭头 */
+.side[data-collapsed] .side-collapse .label {
+  display: none;
+}
+
+/* 收起后底部按钮宽度跟着窄栏走 */
 
 .main {
   flex: 1;
@@ -996,11 +1086,39 @@ select.input {
     --pad-page: 20px;
   }
   .side {
-    width: 60px;
-    flex-basis: 60px;
+    width: 64px;
+    flex-basis: 64px;
   }
-  .side-brand .label,
-  .side-item .label {
+  /*
+   * 窄屏下侧栏就是"常驻收起"：
+   * 品牌只留圆点，**导航保留两字标签**（和桌面收起态一致，
+   * 否则窄屏上五个入口会变成空方块）。
+   */
+  .side-brand {
+    padding: 18px 0 10px;
+    justify-content: center;
+    gap: 6px;
+  }
+  .side-brand .label {
+    display: none;
+  }
+  .side-nav {
+    padding: 6px;
+  }
+  .side-item {
+    padding: 8px;
+    justify-content: center;
+    font-size: 13.5px;
+    gap: 0;
+  }
+  .side-item .n {
+    display: none;
+  }
+  .side-collapse {
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .side-collapse .label {
     display: none;
   }
   .stats {
