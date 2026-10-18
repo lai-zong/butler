@@ -22,6 +22,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { RichContent } from '../rich-content.js';
+import { AppErrorBoundary } from './error-boundary.js';
 import { ProcessView, type TraceView } from './process.js';
 import { useRightPane } from './shell.js';
 import { domainName } from '@/core/domain/types.js';
@@ -381,7 +382,9 @@ export function Conversation({
           {(live !== null || liveText.length > 0 || busy) && (
             <div className="nv-msg">
               {live !== null && live.rounds.length > 0 && (
-                <ProcessView trace={live} live />
+                <AppErrorBoundary area="推理过程">
+                  <ProcessView trace={live} live />
+                </AppErrorBoundary>
               )}
               {liveText.length > 0 ? (
                 <div className="nv-msg-text">
@@ -457,7 +460,9 @@ function MessageView({ msg }: { readonly msg: Msg }): ReactNode {
       {/* 过程在回复**之前** —— 与用户的期望一致：
           「先流式输出思考、工具调用，这些结束后，再输出最终回复」 */}
       {msg.agentTrace !== undefined && msg.agentTrace.rounds.length > 0 && (
-        <ProcessView trace={msg.agentTrace} />
+        <AppErrorBoundary area="推理过程">
+          <ProcessView trace={msg.agentTrace} />
+        </AppErrorBoundary>
       )}
       <div className="nv-msg-text">
         <RichContent text={msg.text} />

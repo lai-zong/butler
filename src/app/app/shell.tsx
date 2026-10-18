@@ -36,6 +36,7 @@ import {
 } from 'react';
 
 import './new.css';
+import { AppErrorBoundary } from './error-boundary.js';
 
 // ═══════════════════════════════════════════════════════════
 // 右栏 context
@@ -223,8 +224,14 @@ export function AppShell({ children }: { readonly children: ReactNode }): ReactN
             {children}
           </main>
 
-          {/* ── 右栏（监督与执行）── */}
-          {split && <aside className="nv-side-pane">{right}</aside>}
+          {/* ── 右栏（监督与执行）──
+              ⚠️ 右栏**单独套错误边界**：它的数据来自 verdict / 执行汇报，
+                 与左侧对话流互不相干。右栏渲染失败不该让历史对话也消失。 */}
+          {split && (
+            <aside className="nv-side-pane">
+              <AppErrorBoundary area="监督与执行">{right}</AppErrorBoundary>
+            </aside>
+          )}
         </div>
       </div>
     </Ctx.Provider>
