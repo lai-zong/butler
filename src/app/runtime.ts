@@ -39,6 +39,9 @@ import { fileTools } from '@/core/tools/builtin/file.js';
 import { execTool } from '@/core/tools/builtin/exec.js';
 import { NodeFileSystem } from '@/adapters/fs/node.js';
 import { NodeExec } from '@/adapters/exec/node.js';
+import { PythonDesktopBridge } from '@/adapters/desktop/pythonBridge.js';
+import { isDesktopPlatform } from '@/core/desktop/port.js';
+import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
 import type { ModelPort } from '@/core/ports/model.js';
@@ -228,6 +231,40 @@ async function initRuntime(): Promise<ButlerRuntime> {
   });
   tools.registerAll(fileTools(fsPort));
   tools.register(execTool(new NodeExec({ cwdRoot: WORKSPACE_ROOT }), WORKSPACE_ROOT));
+
+  /**
+   * ★ 桌面控制（方案 §9）—— **按真实能力注册，失败即降级**。
+   *
+   * ⚠️ 三条降级纪律：
+   *   ① 非 Windows 平台**直接不注册**（COM/UIA 都是 Windows 专有）
+   *   ② Python 或模块缺失**不注册对应工具** —— 模型看到的是"没有这个工具"，
+   *      而不是"调了才发现不存在"
+   *   ③ 探测本身失败**只记日志、不抛错** —— 桌面能力不可用不该让整个应用起不来
+   *
+   * ⚠️ 这里**不 await**：探测要拉起 Python（几百毫秒）。放在启动路径上会拖慢首屏。
+   *    工具在探测完成前不会被注册，而模型要拿到工具清单也得等一轮对话 ——
+   *    实际时序上够用，而且失败时只是"少三个工具"，不影响其它能力。
+   */
+  if (isDesktopPlatform()) {
+    const bridge = new PythonDesktopBridge({
+      scriptPath: join(WORKSPACE_ROOT, 'scripts', 'desktop_bridge.py'),
+    });
+    void bridge
+      .ping()
+      .then((caps) => {
+        const specs = desktopTools(bridge, caps.capabilities);
+        if (specs.length === 0) {
+          bridge.close();
+          return;
+        }
+        tools.registerAll(specs);
+      })
+      .catch((err: unknown) => {
+        // 仅记录，不抛 —— 桌面能力缺席是"降级"，不是启动失败
+        console.warn('[runtime] 桌面控制不可用（已降级）：', err instanceof Error ? err.message : String(err));
+        bridge.close();
+      });
+  }
 
   return {
     bootstrapped,

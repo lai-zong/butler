@@ -1,0 +1,215 @@
+/**
+ * 桌面工具验证（v8 · 方案 §9）
+ *
+ * ★ 用**假桥**测工具逻辑 —— 不依赖 Python、不依赖本机装没装 Office。
+ *   真实 COM/UIA 的验证在 `validate:15`（它会真的跑一次 Word→PDF）。
+ *
+ * ★★ 这里要钉死的四件事，都是"权限与降级"层面的：
+ *   ① 三个工具的 **tier** 与方案 §9.4 的分层一致
+ *   ② 能力探测决定**注册哪些**工具（缺模块就不注册，而不是注册了再失败）
+ *   ③ 参数校验在**执行前**就挡住明显错误的调用
+ *   ④ 工具失败时**如实返回原因**，不把异常吞成"成功"
+ */
+
+import { describe, expect, it, vi } from 'vitest';
+
+import { desktopTools } from '../builtin/desktop.js';
+import type { DesktopBridgePort } from '../../desktop/port.js';
+
+/** 假桥：记录调用，按需返回或抛错 */
+function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
+  return {
+    ping: vi.fn(async () => ({ python: '3.12', platform: 'win32', capabilities: {} })),
+    listWindows: vi.fn(async () => [
+      { title: '记事本', className: 'Notepad', processId: 100 },
+      { title: 'Word', className: 'OpusApp', processId: 200 },
+    ]),
+    officeConvert: vi.fn(async (source: string, target: string) => ({
+      source,
+      target,
+      bytes: 1234,
+    })),
+    screenshot: vi.fn(async () => ({ path: 'C:/tmp/shot.png', backend: 'mss', width: 1920, height: 1080 })),
+    close: vi.fn(),
+    ...over,
+  };
+}
+
+/** 全部能力可用 */
+const ALL_CAPS = { win32com: true, uiautomation: true, mss: true, PIL: true, pyautogui: true };
+
+describe('desktopTools —— 能力探测决定注册哪些工具', () => {
+  it('能力齐全 → 三个工具都在', () => {
+    const specs = desktopTools(fakeBridge(), ALL_CAPS);
+    expect(specs.map((s) => s.name).sort()).toEqual([
+      'desktop_list_windows',
+      'desktop_office_convert',
+      'desktop_screenshot',
+    ]);
+  });
+
+  it('★ 缺 win32com → 不注册 Office 转换（而不是注册了再失败）', () => {
+    const specs = desktopTools(fakeBridge(), { ...ALL_CAPS, win32com: false });
+    expect(specs.map((s) => s.name)).not.toContain('desktop_office_convert');
+  });
+
+  it('★ 缺 uiautomation → 不注册列窗口', () => {
+    const specs = desktopTools(fakeBridge(), { ...ALL_CAPS, uiautomation: false });
+    expect(specs.map((s) => s.name)).not.toContain('desktop_list_windows');
+  });
+
+  it('★ mss 与 PIL 都缺 → 不注册截图', () => {
+    const specs = desktopTools(fakeBridge(), { ...ALL_CAPS, mss: false, PIL: false });
+    expect(specs.map((s) => s.name)).not.toContain('desktop_screenshot');
+  });
+
+  it('mss 缺但 PIL 在 → 仍然注册截图（PIL 是降级后端）', () => {
+    const specs = desktopTools(fakeBridge(), { ...ALL_CAPS, mss: false });
+    expect(specs.map((s) => s.name)).toContain('desktop_screenshot');
+  });
+
+  it('全部缺失 → 返回空数组（桌面能力不可用，但系统照常）', () => {
+    expect(desktopTools(fakeBridge(), {})).toHaveLength(0);
+  });
+});
+
+describe('desktopTools —— 权限分级与方案 §9.4 一致', () => {
+  const specs = desktopTools(fakeBridge(), ALL_CAPS);
+  const byName = (n: string) => specs.find((s) => s.name === n);
+
+  it('★ COM（应用接口）→ normal（需确认的写操作）', () => {
+    expect(byName('desktop_office_convert')?.tier).toBe('normal');
+  });
+
+  it('★ UIA 列窗口 → readOnly（只读，不影响系统状态）', () => {
+    expect(byName('desktop_list_windows')?.tier).toBe('readOnly');
+  });
+
+  it('★★ 截图 → highRisk，不是 readOnly', () => {
+    /**
+     * ⚠️ 这条是刻意的：截图**不改变**系统状态，但它**读取了用户屏幕上的一切**
+     *    （聊天记录、密码框、私人照片）。按 readOnly 自动放行
+     *    等于让模型随时偷看屏幕 —— 那不该是默认行为。
+     */
+    expect(byName('desktop_screenshot')?.tier).toBe('highRisk');
+    expect(byName('desktop_screenshot')?.tier).not.toBe('readOnly');
+  });
+
+  it('★ 没有 click / type（等 C6 询问开关落地再接）', () => {
+    /**
+     * 理由：点击/输入是不可逆的视觉层操作，需要"每次确认"。
+     * 而现在注册成 `dangerous` 就是**永远禁用**（策略对 dangerous 恒 false），
+     * 注册了也用不了 —— 那只会制造"有这个能力"的错觉。
+     */
+    expect(byName('desktop_click')).toBeUndefined();
+    expect(byName('desktop_type')).toBeUndefined();
+  });
+
+  it('高危工具提供 preview（用户得能看到"会动到什么"）', () => {
+    const shot = byName('desktop_screenshot');
+    expect(typeof shot?.preview).toBe('function');
+    const conv = byName('desktop_office_convert');
+    expect(typeof conv?.preview).toBe('function');
+  });
+});
+
+describe('desktop_list_windows', () => {
+  it('把窗口渲染成可读文本', async () => {
+    const specs = desktopTools(fakeBridge(), ALL_CAPS);
+    const tool = specs.find((s) => s.name === 'desktop_list_windows');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({}, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('记事本');
+    expect(r.output).toContain('pid 100');
+  });
+
+  it('limit 有上限保护（不让模型一次拉一万个窗口）', async () => {
+    const bridge = fakeBridge();
+    const specs = desktopTools(bridge, ALL_CAPS);
+    const tool = specs.find((s) => s.name === 'desktop_list_windows');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute({ limit: 99999 }, {} as never);
+    expect(bridge.listWindows).toHaveBeenCalledWith(200);
+  });
+
+  it('空窗口列表 → 给一句明确的话，而不是空字符串', async () => {
+    const bridge = fakeBridge({ listWindows: vi.fn(async () => []) });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_list_windows');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({}, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output.length).toBeGreaterThan(0);
+  });
+});
+
+describe('desktop_office_convert', () => {
+  it('正常转换：返回字节数', async () => {
+    const specs = desktopTools(fakeBridge(), ALL_CAPS);
+    const tool = specs.find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ source: 'a.docx', target: 'b.pdf' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('1234');
+  });
+
+  it('★ target 不是 .pdf → 执行前就拒绝', async () => {
+    const bridge = fakeBridge();
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await expect(
+      tool.execute({ source: 'a.docx', target: 'b.docx' }, {} as never),
+    ).rejects.toThrow(/pdf/);
+    // 参数不合法时**不该调用桥** —— 那会把明显错误变成一次真实的 COM 调用
+    expect(bridge.officeConvert).not.toHaveBeenCalled();
+  });
+
+  it('★ 参数缺失 → 拒绝，且给出是哪个参数', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await expect(tool.execute({ target: 'b.pdf' }, {} as never)).rejects.toThrow(/source/);
+    await expect(tool.execute({ source: 'a.docx' }, {} as never)).rejects.toThrow(/target/);
+  });
+
+  it('★★ 桥抛错时**如实抛出**（不吞成成功）', async () => {
+    const bridge = fakeBridge({
+      officeConvert: vi.fn(async () => {
+        throw new Error('源文件不存在：C:/nope.docx');
+      }),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await expect(
+      tool.execute({ source: 'C:/nope.docx', target: 'b.pdf' }, {} as never),
+    ).rejects.toThrow(/源文件不存在/);
+  });
+});
+
+describe('desktop_screenshot', () => {
+  it('返回路径与尺寸', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_screenshot');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({}, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('1920×1080');
+  });
+
+  it('preview 说明"会截到屏幕上的一切"（用户要能看懂风险）', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_screenshot');
+    if (!tool?.preview) throw new Error('缺少 preview');
+
+    const text = await tool.preview({}, {} as never);
+    // 检查**语义**而不是某个固定词：
+    //   ① 说了"整个屏幕 / 所有窗口" ② 说了"私人/无关内容也会进来"
+    expect(text).toMatch(/整个屏幕|所有窗口/);
+    expect(text).toMatch(/私人|无关/);
+  });
+});
