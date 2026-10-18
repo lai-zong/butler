@@ -43,6 +43,8 @@ import { PythonDesktopBridge } from '@/adapters/desktop/pythonBridge.js';
 import { isDesktopPlatform } from '@/core/desktop/port.js';
 import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
+import { ActivityObserver } from '@/core/activity/observe.js';
+import { createActivityRuntime, startActivityLoop } from '@/core/activity/runtime.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
 import type { ModelPort } from '@/core/ports/model.js';
 import type { ModelStreamPort } from '@/core/ports/stream.js';
@@ -270,6 +272,43 @@ async function initRuntime(): Promise<ButlerRuntime> {
         bridge.close();
       });
   }
+
+  /**
+   * ★★ A10 行为采集与周期总结的**接线**（方案 §7 / §5.4）。
+   *
+   * 核查代码发现的事实（改造前）：`Scheduler.register` 生产代码 **0 调用**、
+   * `buildTasks` **0 调用方**、`ActivityObserver` **从未实例化** ——
+   * 也就是定时任务与行为观察在运行时**完全是空的**。
+   *
+   * ⚠️ 三条纪律（都写进了 `activity/runtime.ts`）：
+   *   ① **同意开关默认关闭**（`BEHAVIOR_OBSERVATION_ENABLED`，env 默认 false）
+   *      —— 不"帮你打开"，方案 §7 要求显式同意
+   *   ② 没有前台采样数据源时**如实报"没有数据源"**，不编造应用名
+   *   ③ 定时循环用 `globalThis` 单例 + `unref()`，避免热重载重复注册、避免挂住进程
+   */
+  const activityObserver = new ActivityObserver(bootstrapped.log, clock, DEFAULT_USER_ID);
+  const behaviorEnabled = process.env['BEHAVIOR_OBSERVATION_ENABLED'] === '1';
+  if (behaviorEnabled) {
+    // 只有显式开启才视为"用户同意"（默认关闭，不"帮你打开"）
+    activityObserver.grantConsent(clock.now());
+  }
+  const activityRuntime = createActivityRuntime({
+    log: bootstrapped.log,
+    clock,
+    store: bootstrapped.memory,
+    userId: DEFAULT_USER_ID,
+    observer: activityObserver,
+    sessionCount: () => bootstrapped.chat.listSessions().length,
+    // ⚠️ 暂不接 `reflect`：它需要模型与反思引擎，接线属于后续步骤。
+    //    不接也能跑聚合（聚合完全不需要模型）。
+  });
+  startActivityLoop({
+    runtime: activityRuntime,
+    onError: (err) => {
+      // 定时循环里的异常必须吞掉，只记日志 —— 否则会变成未捕获异常崩进程
+      console.warn('[activity] 定时任务异常：', err instanceof Error ? err.message : String(err));
+    },
+  });
 
   return {
     bootstrapped,
