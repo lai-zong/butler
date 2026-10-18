@@ -38,6 +38,15 @@ function hr(t: string): void {
   console.log(`\n${'─'.repeat(70)}\n${t}\n${'─'.repeat(70)}`);
 }
 
+/**
+ * ⚠️ 两个**不同**的 id —— 必须分开（真实系统里它们就是不同的）：
+ *   · `LOG_ID`  ：`EventLog` 构造时传的"事件日志 id"，填进 `SessionEvent.sessionId`
+ *   · `SESSION` ：**聊天会话** id，写在事件 payload 的 `taskId` 里
+ *
+ * ★ 这里曾把两者传成同一个值，于是"按 sessionId 过滤"的错误写法
+ *   **在验证脚本里也能通过** —— 那是假绿。现在照真实调用链区分。
+ */
+const LOG_ID = '__event_log__';
 const SESSION = 'sess_validate_13';
 const T0 = 1_760_000_000_000;
 
@@ -81,7 +90,7 @@ async function main(): Promise<void> {
 
   hr('② 答案落事件、可读回（重启后仍可批改）');
 
-  const log = new EventLog(SESSION);
+  const log = new EventLog(LOG_ID);
   const quizId = (() => {
     log.append({
       type: 'quiz.created',
@@ -100,6 +109,9 @@ async function main(): Promise<void> {
   const readBack = readQuizzes(log, SESSION);
   check('从事件读回一份题', readBack.length === 1);
   check('题目一致', JSON.stringify(readBack[0]?.questions) === JSON.stringify(questions));
+
+  // ★ 回归断言：用**日志 id** 查不到（证明过滤用的是 taskId 而不是 e.sessionId）
+  check('★ 用日志 id 查不到题（过滤依据是 payload.taskId）', readQuizzes(log, LOG_ID).length === 0);
 
   const readBackDump = JSON.stringify(readBack);
   check('★★ 给前端的结构里不含答案（它会被直接放进 HTTP 响应）',

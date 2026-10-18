@@ -104,18 +104,36 @@ function parseGraded(payload: unknown): QuizGrade | null {
  *
  * `id` 用 `quiz.created` 事件的 `seq`：事件日志全局单调递增 ⇒ 天然唯一。
  * 这样前端不必依赖"第几轮/第几个产出物"这类当前架构并不明确的量。
+ *
+ * ★★ 一个必须分清的字段（曾经写错，见下方注释）：
+ *
+ *   · `SessionEvent.sessionId` = **事件日志**的 id
+ *     （`EventLog` 构造时传入；`log.ts` 里 `sessionId: this.sessionId` 填的是它）
+ *   · **聊天会话** id 在 `payload.taskId` 里
+ *     （`orchestrator.ts` 传 `taskId: args.sessionId` 给 `runButler`）
+ *
+ *   ⚠️ 所以按 `e.sessionId` 过滤**永远查不到** —— 生产环境里所有事件共用
+ *      同一个日志 id，与聊天会话 id 是两个不同的字符串。
+ *      这个错误在单元测试里看不出来（测试里两者恰好传了同一个值），
+ *      只有对着真实调用链才暴露。
  */
 export function readQuizzes(log: EventLog, sessionId: string): readonly QuizItem[] {
+  /** 取事件 payload 里的聊天会话 id */
+  const chatSessionOf = (payload: unknown): string => {
+    if (typeof payload !== 'object' || payload === null) return '';
+    const v = (payload as Record<string, unknown>)['taskId'];
+    return typeof v === 'string' ? v : '';
+  };
+
   const created = log
     .byType('quiz.created')
-    .filter((e) => e.sessionId === sessionId)
+    .filter((e) => chatSessionOf(e.payload) === sessionId)
     .slice()
     .sort((a, b) => a.seq - b.seq);
 
   // 批改结果按 quizId 归组（同一份题可能被批改多次，取最后一条）
   const gradedByQuiz = new Map<number, QuizGrade>();
   for (const e of log.byType('quiz.graded')) {
-    if (e.sessionId !== sessionId) continue;
     const payload = e.payload;
     if (typeof payload !== 'object' || payload === null) continue;
     const quizId = (payload as Record<string, unknown>)['quizId'];
@@ -131,7 +149,8 @@ export function readQuizzes(log: EventLog, sessionId: string): readonly QuizItem
     const grade = gradedByQuiz.get(e.seq);
     out.push({
       id: e.seq,
-      sessionId: e.sessionId,
+      // ⚠️ 不是 `e.sessionId`（那是日志 id）—— 回填入参里的聊天会话 id
+      sessionId,
       questions: parsed.questions,
       ...(grade !== undefined ? { grade } : {}),
     });
@@ -150,9 +169,17 @@ export function readAnswerKey(
   sessionId: string,
   quizId: number,
 ): QuizAnswerKey | undefined {
-  const event = log
-    .byType('quiz.created')
-    .find((e) => e.sessionId === sessionId && e.seq === quizId);
+  /**
+   * ⚠️ 会话归属看 `payload.taskId`，不是 `e.sessionId`（后者是日志 id）。
+   *    `seq` 是全局唯一的，所以理论上只按 seq 就能定位；
+   *    但仍校验会话归属 —— 防止跨会话拿到别人的答案表。
+   */
+  const event = log.byType('quiz.created').find((e) => {
+    if (e.seq !== quizId) return false;
+    const p = e.payload;
+    if (typeof p !== 'object' || p === null) return false;
+    return (p as Record<string, unknown>)['taskId'] === sessionId;
+  });
   if (!event) return undefined;
 
   const parsed = parseCreated(event.payload);

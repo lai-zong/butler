@@ -16,6 +16,15 @@ import { describe, expect, it } from 'vitest';
 import { EventLog } from '../../events/log.js';
 import { readAnswerKey, readExplanations, readQuizzes } from '../read.js';
 
+/**
+ * ⚠️ 两个**不同**的 id，必须分开（真实系统里它们就是不同的）：
+ *   · `LOG_ID`  —— `EventLog` 构造时传的"事件日志 id"，会填进 `SessionEvent.sessionId`
+ *   · `SESSION` —— **聊天会话** id，写在事件 payload 的 `taskId` 里
+ *
+ * 曾经的缺陷：读题时按 `e.sessionId` 过滤 → 生产环境永远查不到。
+ * 而测试里两者恰好传了同一个值，所以那个 bug **在测试里看不出来**。
+ */
+const LOG_ID = '__event_log__';
 const SESSION = 'sess_quiz';
 
 /** 造一条真实的 `quiz.created` 事件 */
@@ -47,7 +56,7 @@ function seedQuiz(
 
 describe('readQuizzes', () => {
   it('读出题目，且 id 等于事件的 seq', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const seq = seedQuiz(log);
 
     const quizzes = readQuizzes(log, SESSION);
@@ -58,7 +67,7 @@ describe('readQuizzes', () => {
   });
 
   it('★★ 返回值里不含答案（它会被直接放进 HTTP 响应）', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     seedQuiz(log);
 
     const dumped = JSON.stringify(readQuizzes(log, SESSION));
@@ -68,13 +77,13 @@ describe('readQuizzes', () => {
   });
 
   it('未批改时没有 grade 字段', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     seedQuiz(log);
     expect(readQuizzes(log, SESSION)[0]?.grade).toBeUndefined();
   });
 
   it('★ 批改结果会挂到对应那份题上', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log);
 
     log.append({
@@ -96,7 +105,7 @@ describe('readQuizzes', () => {
   });
 
   it('同一份题被批改多次时取**最后一条**', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log);
     for (const right of [false, true]) {
       log.append({
@@ -112,34 +121,37 @@ describe('readQuizzes', () => {
   });
 
   it('只看本会话的题', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     seedQuiz(log);
+    // 另一条事件：**没有 taskId** —— 不属于任何聊天会话，不该被读到
     log.append({
       type: 'quiz.created',
       actor: 'butler',
       payload: { questions: [{ id: 'q9', stem: '别的会话', options: ['甲', '乙'] }], answers: [] },
     });
-    // 第二条事件仍属于同一 log（同一 sessionId），所以两条都该读到
-    expect(readQuizzes(log, SESSION)).toHaveLength(2);
-    // 而换成别的 sessionId 查，就一条都没有
+    expect(readQuizzes(log, SESSION)).toHaveLength(1);
+    // 换成别的聊天会话 id 查，也一条都没有
     expect(readQuizzes(log, 'sess_other')).toHaveLength(0);
   });
 });
 
 describe('readQuizzes —— 损坏数据必须"少一条"，不能抛错', () => {
   it('questions 不是数组 → 跳过该条', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     log.append({ type: 'quiz.created', actor: 'butler', payload: { questions: '不是数组' } });
     expect(() => readQuizzes(log, SESSION)).not.toThrow();
     expect(readQuizzes(log, SESSION)).toHaveLength(0);
   });
 
   it('题目结构不完整 → 只丢那一题', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     log.append({
       type: 'quiz.created',
       actor: 'butler',
       payload: {
+        // ⚠️ 必须带 taskId —— 否则整条事件不属于任何聊天会话，会被过滤掉，
+        //    这条测试就退化成"因为查不到所以通过"，什么也没测到
+        taskId: SESSION,
         questions: [
           { id: 'q1', stem: '完整', options: ['甲', '乙'] },
           { id: 'q2', stem: '只有一个选项', options: ['甲'] },
@@ -156,13 +168,13 @@ describe('readQuizzes —— 损坏数据必须"少一条"，不能抛错', () =
   });
 
   it('payload 完全为空 → 跳过', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     log.append({ type: 'quiz.created', actor: 'butler', payload: {} });
     expect(readQuizzes(log, SESSION)).toHaveLength(0);
   });
 
   it('quiz.graded 的 payload 坏掉 → 当作未批改（而不是崩）', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log);
     log.append({ type: 'quiz.graded', actor: 'user', payload: { quizId, items: '坏' } });
     expect(() => readQuizzes(log, SESSION)).not.toThrow();
@@ -172,7 +184,7 @@ describe('readQuizzes —— 损坏数据必须"少一条"，不能抛错', () =
 
 describe('readAnswerKey', () => {
   it('取出答案表（服务端专用）', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log);
 
     const key = readAnswerKey(log, SESSION, quizId);
@@ -183,20 +195,20 @@ describe('readAnswerKey', () => {
   });
 
   it('quizId 不存在 → undefined', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     seedQuiz(log);
     expect(readAnswerKey(log, SESSION, 999)).toBeUndefined();
   });
 
   it('★ 一道答案都没有 → undefined（无法批改，当作不存在）', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log, { withAnswers: false });
     expect(readAnswerKey(log, SESSION, quizId)).toBeUndefined();
   });
 
   it('★ 绝不能把答案表现在直接当响应——它的类型里就有 correct', () => {
     // 这条是"提醒式断言"：说明为什么 API 层必须用 readQuizzes 而不是它
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log);
     const key = readAnswerKey(log, SESSION, quizId);
     expect(key !== undefined && 'correct' in key).toBe(true);
@@ -205,7 +217,7 @@ describe('readAnswerKey', () => {
 
 describe('readExplanations', () => {
   it('只返回有解析的题', () => {
-    const log = new EventLog(SESSION);
+    const log = new EventLog(LOG_ID);
     const quizId = seedQuiz(log);
     const key = readAnswerKey(log, SESSION, quizId);
     if (!key) throw new Error('答案表缺失');
@@ -213,5 +225,37 @@ describe('readExplanations', () => {
     expect(readExplanations(key)).toEqual([
       { questionId: 'q1', explanation: '清蒸几乎不用油' },
     ]);
+  });
+});
+
+describe('★ 字段语义回归：日志 id 与聊天会话 id 不是一回事', () => {
+  it('按日志 id 查不到题（这正是不该用它过滤的原因）', () => {
+    const log = new EventLog(LOG_ID);
+    seedQuiz(log);
+
+    // 用日志 id 查 → 空（因为它不是聊天会话 id）
+    expect(readQuizzes(log, LOG_ID)).toHaveLength(0);
+    // 用聊天会话 id 查 → 有
+    expect(readQuizzes(log, SESSION)).toHaveLength(1);
+  });
+
+  it('事件自身的 sessionId 是日志 id，不是聊天会话 id', () => {
+    const log = new EventLog(LOG_ID);
+    seedQuiz(log);
+
+    const ev = log.byType('quiz.created')[0];
+    expect(ev?.sessionId).toBe(LOG_ID);
+    expect((ev?.payload as { taskId?: string }).taskId).toBe(SESSION);
+    // 两者必须不同 —— 相同的话这个测试就没有意义了
+    expect(LOG_ID).not.toBe(SESSION);
+  });
+
+  it('readAnswerKey 也按聊天会话 id 校验归属', () => {
+    const log = new EventLog(LOG_ID);
+    const quizId = seedQuiz(log);
+
+    expect(readAnswerKey(log, SESSION, quizId)).toBeDefined();
+    // 用日志 id 当会话 id → 拒绝（防止跨会话拿答案）
+    expect(readAnswerKey(log, LOG_ID, quizId)).toBeUndefined();
   });
 });
