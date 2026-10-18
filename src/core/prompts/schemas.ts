@@ -486,7 +486,7 @@ export const reflectionSchema = z.object({
           .enum(['fact', 'preference', 'principle', 'summary'])
           .describe(
             'fact=客观事实；preference=倾向习惯；principle=可复用的行为准则；' +
-              'summary=**跨会话的长期状态汇总**（只在周期复盘时产出，见下）',
+              'summary=**跨会话的长期状态汇总**。选型纪律见系统提示词「记忆类型怎么选」一节',
           ),
         content: z
           .string()
