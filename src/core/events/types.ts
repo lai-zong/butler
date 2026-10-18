@@ -150,6 +150,7 @@ export type EventType =
   | 'profile.snapshot'
   | 'activity.sampled'
   | 'activity.aggregated'
+  | 'attachment.parsed'
   | 'pattern.derived'
   | 'pattern.invalidated'
 
@@ -310,6 +311,13 @@ export const EVENT_FAMILIES = {
     'pattern.derived',
     'pattern.invalidated',
   ],
+  /**
+   * ★ 多模态（v8.2 补登记）：附件解析留痕。
+   *
+   * ⚠️ 只记**字段个数与摘要长度**，不记原始内容 —— 附件可能含隐私
+   *    （收据上有地址、截图里有私信）。这条纪律写在 `multimodal/parse.ts` 里。
+   */
+  multimodal: ['attachment.parsed'],
   lifecycle: [
     'intervention.pause',
     'intervention.resume',

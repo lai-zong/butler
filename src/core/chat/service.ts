@@ -48,6 +48,8 @@ import { createTraceCollector } from './trace.js';
 import { toExecutionReportData } from './reports.js';
 import { artifactToText } from '../execution/render.js';
 import type { ApprovalAsker } from '../tools/approval.js';
+import { parseAttachment } from '../multimodal/parse.js';
+import type { MemoryCandidateFromAttachment } from '../multimodal/attach.js';
 
 // ═══════════════════════════════════════════════════════════
 // 一轮的执行
@@ -497,6 +499,61 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   if (reflection !== null) {
     const s = renderReflectSummary(reflection);
     if (s.length > 0) learnedParts.push(s);
+  }
+
+  /**
+   * ★★ 附件进记忆（E1/E2 接线）。
+   *
+   * 方案 §5.3 的增分点：「收据截图 → 解析 → 发现常购品牌 → 生成记忆候选」。
+   * 在此之前这条链是**断的** —— `parseAttachment` 根本不存在，
+   * 于是 `extractMemoryCandidates` 永远拿不到输入。
+   *
+   * ⚠️ 三条纪律：
+   *   ① **只处理本轮附件**：图片本就不持久化（D-34），过时不补
+   *   ② 解析失败**不打断对话** —— 记一句"这张没解析出来"，主流程照常
+   *   ③ 候选**一律待审核**：走 `sinkAndAdmit`（与反思同一条入库路径）
+   */
+  if (args.images !== undefined && args.images.length > 0) {
+    const attachmentCandidates: MemoryCandidateFromAttachment[] = [];
+    for (const [i, img] of args.images.entries()) {
+      const parsed = await parseAttachment({
+        model: args.model,
+        log: args.log,
+        clock: args.clock,
+        attachmentId: `${sessionId}#img${i + 1}`,
+        kind: 'image',
+        fileName: `附件${i + 1}`,
+        source: { kind: 'image', url: img.url },
+      });
+      if (parsed.ok) {
+        attachmentCandidates.push(...parsed.candidates);
+      } else {
+        // 如实告诉用户"这张没解析出来"，而不是静默跳过
+        learnedParts.push(`附件${i + 1} 未解析：${parsed.reason}`);
+      }
+    }
+
+    if (attachmentCandidates.length > 0) {
+      const now = args.clock.now();
+      const sunk = sinkAndAdmit({
+        log: args.log,
+        store: args.store,
+        clock: args.clock,
+        candidates: attachmentCandidates.map((c, i) => ({
+          id: `cand_attach_${sessionId}_${i}`,
+          kind: c.kind,
+          content: c.content,
+          confidence: c.confidence,
+          evidence: c.evidence,
+          scope: { memClass: 'global_shared' as const },
+          rationale: c.rationale,
+          layer: 'domain' as const,
+          by: 'butler' as const,
+          createdAt: now,
+        })),
+      });
+      learnedParts.push(`从附件里提炼了 ${sunk.created} 条记忆（待你确认）`);
+    }
   }
   if (learnedParts.length > 0) {
     chat.updateMessage(sessionId, reply.id, {

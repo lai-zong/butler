@@ -177,6 +177,7 @@ export type ModelPurpose =
   | 'execution' // 管家自己执行（原 servant，v8 改名）
   | 'reflection' // 反思
   | 'memoryExtraction' // 记忆提取
+  | 'attachmentParse' // 附件解析（图片/文本 → 结构化键值；E1）
   | 'compaction' // 上下文摘要压缩（把更老的历史压成摘要）
   | 'translation'; // 英文思考增量翻译
 
