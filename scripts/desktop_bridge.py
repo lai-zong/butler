@@ -287,24 +287,35 @@ def _match_window(args):
 
 
 def _walk_controls(node, depth, out, max_depth, max_items):
-    if depth > max_depth or len(out) >= max_items:
-        return
-    for c in node.GetChildren():
-        try:
-            rect = c.BoundingRectangle
-            out.append({
-                "depth": depth,
-                "type": c.ControlTypeName,
-                "name": c.Name or "",
-                "automationId": c.AutomationId or "",
-                "className": c.ClassName or "",
-                "rect": [rect.left, rect.top, rect.right, rect.bottom],
-            })
-        except Exception:
-            continue
-        if len(out) >= max_items:
+    """遍历控件树。
+
+    ⚠️ 返回 `truncated` 标记 —— 到上限就停时必须**告知**，
+       否则调用方会以为"界面就这些控件"，从而得出错误结论。
+       （第一版只按 max 截断而不报告，模型看到 200 个就以为全了。）
+    """
+    def walk(n, d):
+        if d > max_depth or len(out) >= max_items:
             return
-        _walk_controls(c, depth + 1, out, max_depth, max_items)
+        for c in n.GetChildren():
+            if len(out) >= max_items:
+                return
+            try:
+                rect = c.BoundingRectangle
+                out.append({
+                    "depth": d,
+                    "type": c.ControlTypeName,
+                    "name": c.Name or "",
+                    "automationId": c.AutomationId or "",
+                    "className": c.ClassName or "",
+                    "rect": [rect.left, rect.top, rect.right, rect.bottom],
+                })
+            except Exception:
+                continue
+            walk(c, d + 1)
+
+    walk(node, depth)
+    # 命中任一上限即视为可能被截断
+    return len(out) >= max_items
 
 
 def op_uia_tree(args):
@@ -316,11 +327,13 @@ def op_uia_tree(args):
     max_depth = int(args.get("depth", 8))
     max_items = int(args.get("max", 200))
     out = []
-    _walk_controls(win, 0, out, max_depth, max_items)
+    truncated = _walk_controls(win, 0, out, max_depth, max_items)
     return {
         "window": {"name": win.Name or "", "className": win.ClassName or "", "processId": win.ProcessId},
         "controls": out,
         "count": len(out),
+        "truncated": truncated,
+        "limits": {"depth": max_depth, "max": max_items},
     }
 
 

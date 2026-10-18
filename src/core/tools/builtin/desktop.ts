@@ -57,6 +57,8 @@ export function officeConvertTool(bridge: DesktopBridgePort): ToolSpec {
       required: ['source', 'target'],
     },
     tier: 'normal',
+    // ★ 阶梯级（D-32）：层① 应用接口：Word 用自己的 COM 接口干活
+    rung: 1,
     summarize: (args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       return `把 ${String(a['source'] ?? '?')} 转成 PDF`;
@@ -220,14 +222,25 @@ export function uiaReadTool(bridge: DesktopBridgePort): ToolSpec {
 
       const depth = typeof a['depth'] === 'number' ? Math.min(Math.max(a['depth'], 1), 12) : 8;
       const max = typeof a['max'] === 'number' ? Math.min(Math.max(a['max'], 1), 500) : 200;
-      const nodes = await bridge.uiaTree(window, depth, max);
+      const tree = await bridge.uiaTree(window, depth, max);
+      const nodes = tree.nodes;
       const text = nodes
         .map((n) => `${'  '.repeat(n.depth)}[${n.type}] ${n.name || '（无名）'}`)
         .join('\n');
+      /**
+       * ⚠️ 截断必须说出来。
+       *    模型看到"控件树（200 个）"会以为界面就这些，进而得出
+       *    "没有那个按钮"的错误结论 —— 而实际是没遍历完。
+       */
+      const truncNote = tree.truncated
+        ? `\n\n⚠️ **已截断**：已达到上限（深度 ${tree.limits.depth} / 数量 ${tree.limits.max}）。` +
+          `\n这棵树**不完整** —— 你要找的控件可能在未遍历的部分。` +
+          `\n请调大 max（或缩小 depth）后重试，不要据此断言"没有该控件"。`
+        : '';
       return {
         ok: true,
-        output: `控件树（${nodes.length} 个）：\n${text}`,
-        data: { nodes, count: nodes.length },
+        output: `控件树（${nodes.length} 个${tree.truncated ? '，已截断' : ''}）：\n${text}${truncNote}`,
+        data: { nodes, count: nodes.length, truncated: tree.truncated, limits: tree.limits },
         durationMs: 0,
       };
     },
@@ -266,6 +279,8 @@ export function uiaInvokeTool(bridge: DesktopBridgePort): ToolSpec {
       required: ['window', 'name', 'action'],
     },
     tier: 'highRisk',
+    // ★ 阶梯级（D-32）：层② 模式调用：Invoke / Toggle / Select，不碰鼠标键盘
+    rung: 2,
     summarize: (args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       return `对「${String(a['window'] ?? '?')}」里的「${String(a['name'] ?? '?')}」执行 ${String(a['action'] ?? '?')}`;
@@ -351,6 +366,8 @@ export function uiaSetValueTool(bridge: DesktopBridgePort): ToolSpec {
       required: ['window', 'name', 'value'],
     },
     tier: 'highRisk',
+    // ★ 阶梯级（D-32）：层② 模式调用：ValuePattern，不碰键盘
+    rung: 2,
     summarize: (args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       return `把「${String(a['window'] ?? '?')}」的「${String(a['name'] ?? '?')}」设为「${String(a['value'] ?? '?')}」`;
@@ -384,6 +401,118 @@ export function uiaSetValueTool(bridge: DesktopBridgePort): ToolSpec {
 }
 
 /**
+ * ② UIA 层：**等到界面就绪**再往下走（只读）。
+ *
+ * ★★ 为什么必须有这个工具：
+ *
+ *   界面变化是异步的。没有它，模型只能"调一次 → 找不到 → 失败"，
+ *   或者在验证脚本里写 `sleep(2500)`（**闭眼数秒**）：
+ *   - 机器慢一点 → 2.5 秒不够 → 假失败
+ *   - 其实 300ms 就好了 → 白等 2.2 秒
+ *
+ *   "盯着看到"和"闭眼数秒"的差别，在真实使用里就是**偶发失败率**的差别。
+ *
+ * ⚠️ 轮询在 Node 侧做，不新增 Python op —— 复用 `uiaFind`。
+ *    `uiaFind` 在窗口/控件不存在时会抛错，这里把"抛错"当作**还没就绪**，
+ *    只有超时才判失败。
+ */
+export function waitForTool(bridge: DesktopBridgePort): ToolSpec {
+  return {
+    name: 'desktop_wait_for',
+    description:
+      '等待界面就绪：轮询直到目标窗口（或窗口里的某个控件）出现。' +
+      '给 name 时等该控件出现，不给时只等窗口出现。' +
+      '比"先截图看看"更省，比"直接操作"更稳 —— 界面变化是异步的。',
+    parameters: {
+      type: 'object',
+      properties: {
+        window: { type: 'string', description: '窗口标题的一部分' },
+        name: { type: 'string', description: '要等待的控件名（精确匹配）。不填则只等窗口' },
+        controlType: { type: 'string', description: '限定控件类型，用于消歧' },
+        timeoutMs: { type: 'number', description: '最长等待毫秒数（默认 10000，上限 120000）' },
+        pollMs: { type: 'number', description: '轮询间隔毫秒（默认 250，最小 100）' },
+      },
+      required: ['window'],
+    },
+    tier: 'readOnly',
+    summarize: (args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const n = typeof a['name'] === 'string' ? `控件「${a['name']}」` : '窗口';
+      return `等待「${String(a['window'] ?? '?')}」的${n}出现`;
+    },
+    execute: async (args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const window = requireString(a, 'window');
+      const name = typeof a['name'] === 'string' ? a['name'] : '';
+      const ct = typeof a['controlType'] === 'string' ? a['controlType'] : undefined;
+
+      const timeoutRaw = typeof a['timeoutMs'] === 'number' ? a['timeoutMs'] : 10_000;
+      const timeoutMs = Math.min(Math.max(timeoutRaw, 500), 120_000);
+      const pollRaw = typeof a['pollMs'] === 'number' ? a['pollMs'] : 250;
+      const pollMs = Math.min(Math.max(pollRaw, 100), 5_000);
+
+      const started = Date.now();
+      let attempts = 0;
+      let lastError = '';
+
+      for (;;) {
+        attempts++;
+        try {
+          if (name.length === 0) {
+            // 只等窗口：列出窗口，看有没有匹配标题的
+            const wins = await bridge.listWindows(200);
+            if (wins.some((w) => w.title.includes(window))) {
+              const waited = Date.now() - started;
+              return {
+                ok: true,
+                output: `窗口「${window}」已就绪（等了 ${waited}ms，轮询 ${attempts} 次）`,
+                data: { waitedMs: waited, attempts, found: 'window' },
+                durationMs: waited,
+              };
+            }
+            lastError = '窗口还没出现';
+          } else {
+            const r = await bridge.uiaFind(window, name, ct);
+            if (r.count > 0) {
+              const waited = Date.now() - started;
+              return {
+                ok: true,
+                output: `控件「${name}」已出现（等了 ${waited}ms，轮询 ${attempts} 次，${r.count} 个匹配）`,
+                data: { waitedMs: waited, attempts, found: 'control', matches: r.matches },
+                durationMs: waited,
+              };
+            }
+            lastError = '控件还没出现';
+          }
+        } catch (err) {
+          // ⚠️ 窗口/控件不存在时 uiaFind 会抛错 —— 那是"还没就绪"，不是故障
+          lastError = err instanceof Error ? err.message : String(err);
+        }
+
+        const elapsed = Date.now() - started;
+        if (elapsed + pollMs > timeoutMs) {
+          return {
+            ok: false,
+            output:
+              `等待超时（${timeoutMs}ms，轮询 ${attempts} 次）：` +
+              `窗口「${window}」${name.length > 0 ? `的控件「${name}」` : ''}始终没出现。` +
+              `最后一次原因：${lastError}`,
+            data: { waitedMs: elapsed, attempts, found: null, timeoutMs },
+            durationMs: elapsed,
+          };
+        }
+        await sleep(pollMs);
+      }
+    },
+  };
+}
+
+/** 等待（Node 侧，不引入依赖） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * 按本机能力组装工具集。
  *
  * ★ **不猜**：`caps` 来自 Python 侧的真实探测（`ping` 的返回），
@@ -406,6 +535,7 @@ export function desktopTools(
     out.push(uiaReadTool(bridge));
     out.push(uiaInvokeTool(bridge));
     out.push(uiaSetValueTool(bridge));
+    out.push(waitForTool(bridge));
   }
   // ③ 视觉需要 mss 或 PIL 之一
   if (caps['mss'] === true || caps['PIL'] === true) out.push(screenshotTool(bridge));

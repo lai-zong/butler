@@ -198,6 +198,8 @@ export class ToolFramework {
       payload: {
         toolName: spec.name,
         tier: spec.tier,
+        // ★ 桌面动作阶梯级（方案 §9.4 / D-32）—— 与 tier 正交，见 `ToolSpec.rung`
+        ...(spec.rung !== undefined ? { actionRung: spec.rung } : {}),
         taskId: args.taskId,
         // 参数经脱敏后再入流（方案 § 11 第二层）
         args: redactArgs(args.args),

@@ -114,6 +114,7 @@ async function main(): Promise<void> {
       desktop_uia_read: 'readOnly', // ② UIA：只读
       desktop_uia_invoke: 'highRisk', // ② UIA：改变应用状态
       desktop_uia_set_value: 'highRisk', // ② UIA：改变应用状态
+      desktop_wait_for: 'readOnly', // ② UIA：只等不动手
       desktop_screenshot: 'highRisk', // ③ 视觉：每次确认 + 高风险（会读到屏幕全部内容）
     };
     const unregistered = specs.filter((s) => EXPECTED_TIER[s.name] === undefined);
@@ -197,9 +198,23 @@ async function main(): Promise<void> {
     const initialLighting = readLightingReg();
     check('能读到动态光效的初始状态（注册表）', initialLighting !== null, `AmbientLightingEnabled=${String(initialLighting)}`);
 
+    /**
+     * ★★ 这一段刻意**不用 sleep**，改用轮询等待。
+     *
+     * 之前写的是 `await sleep(4500)` —— 那是"闭眼数秒"：
+     * 机器慢就假失败，机器快就白等。现在用 `waitFor` 工具的真实逻辑：
+     * 看到就继续，看不到才等到超时。
+     */
+    const waitTool = specs.find((s) => s.name === 'desktop_wait_for');
+    check('★ 注册了等待工具 desktop_wait_for', waitTool !== undefined);
+
     // 打开设置（不指定页面，让 UIA 自己导航 —— 那才是被测的能力）
     spawnSync('cmd', ['/c', 'start', '', 'ms-settings:'], { timeout: 15_000 });
-    await sleep(4500);
+
+    const waitWindow = waitTool !== undefined
+      ? await waitTool.execute({ window: '设置', timeoutMs: 20_000 }, {} as never)
+      : { ok: false, output: '（无等待工具）' };
+    check('★★ 等到「设置」窗口出现（轮询，不是固定 sleep）', waitWindow.ok, waitWindow.output.split('\n')[0] ?? '');
 
     const win = await bridge.uiaFind('设置', '个性化');
     check('★ 找到「设置」窗口（按标题定位）', win.count > 0, `${win.count} 个匹配`);
@@ -211,16 +226,24 @@ async function main(): Promise<void> {
 
     const sel = await bridge.uiaAction('设置', '个性化', 'select', 'listitem');
     check('★★ 选中「个性化」且**状态校验通过**', sel.verified === true, `${String(sel.before)} → ${String(sel.after)}`);
-    await sleep(2500);
 
     // 「动态光效」有三个同名控件，必须用 controlType 消歧 —— 这一步本身就在验证"拒绝猜测"
     const dlAll = await bridge.uiaFind('设置', '动态光效');
     check('★ 「动态光效」存在多个同名控件（说明消歧是必要的）', dlAll.count > 1, `${dlAll.count} 个`);
     const dlIn = await bridge.uiaAction('设置', '动态光效', 'invoke', 'listitem');
     check('★★ 进入「动态光效」页', dlIn.control.type === 'ListItemControl', dlIn.control.automationId);
-    await sleep(2500);
 
     const toggleName = '在我的设备上使用动态光效';
+
+    // ★ 用等待工具替代 `sleep(2500)`：页面切换是异步的
+    const waitToggle = waitTool !== undefined
+      ? await waitTool.execute(
+          { window: '设置', name: toggleName, timeoutMs: 15_000, pollMs: 200 },
+          {} as never,
+        )
+      : { ok: false, output: '（无等待工具）' };
+    check('★★ 等到开关控件出现（轮询，不是固定 sleep）', waitToggle.ok, waitToggle.output.split('\n')[0] ?? '');
+
     const tf = await bridge.uiaFind('设置', toggleName);
     const toggleCtl = tf.matches.find((m) => (m.patterns ?? []).includes('Toggle'));
     check('★ 找到开关控件且支持 Toggle 模式', toggleCtl !== undefined, toggleCtl?.automationId ?? '未找到');
@@ -243,7 +266,14 @@ async function main(): Promise<void> {
     // 关闭设置
     const closed = await bridge.uiaAction('设置', '关闭 设置', 'invoke');
     check('★ 关闭「设置」窗口', closed.control.type === 'ButtonControl');
-    await sleep(2000);
+
+    /**
+     * ⚠️ 这里**保留 sleep**，因为它是"等东西消失" —— 而等待工具只能等"出现"。
+     *    ⚠️ 而且判据必须是"窗口不在了"，不能用"uiaFind 抛错"来判断：
+     *       `uiaFind('设置', ...)` 抛错可能是因为**窗口还在但控件没了**。
+     *       所以这里用 `uiaFind` 的 count 判断，并允许它抛错（抛错=窗口已不存在）。
+     */
+    await sleep(1500);
     const stillThere = await bridge
       .uiaFind('设置', '个性化')
       .then((r) => r.count > 0)

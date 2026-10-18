@@ -59,6 +59,19 @@ export interface UiaFindResult {
   readonly matches: readonly UiaControl[];
 }
 
+/** 控件树（**必须能表达"被截断了"**）*/
+export interface UiaTreeResult {
+  readonly nodes: readonly UiaNode[];
+  /**
+   * 是否可能被上限截断。
+   *
+   * ⚠️ 隐瞒截断是有害的：模型看到 200 个控件会以为"界面就这些"，
+   *    于是得出"没有这个按钮"的错误结论。宁可多给一个字段。
+   */
+  readonly truncated: boolean;
+  readonly limits: { readonly depth: number; readonly max: number };
+}
+
 /** UIA 操作的结果（**必须带校验**）*/
 export interface UiaActionResult {
   readonly action: string;
@@ -99,7 +112,7 @@ export interface DesktopBridgePort {
   //   而酷狗那种自绘 UI 只能靠坐标，且会被叠加窗口吞掉点击。
 
   /** 导出窗口控件树 */
-  uiaTree(window: string, depth?: number, max?: number): Promise<readonly UiaNode[]>;
+  uiaTree(window: string, depth?: number, max?: number): Promise<UiaTreeResult>;
   /** 按名字找控件（**只报告，不动手**）*/
   uiaFind(window: string, name: string, controlType?: string): Promise<UiaFindResult>;
   /** 按模式操作控件，并读回状态校验 */

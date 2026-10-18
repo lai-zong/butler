@@ -29,6 +29,7 @@ import type {
   UiaFindResult,
   UiaNode,
   UiaSetValueResult,
+  UiaTreeResult,
 } from '../../core/desktop/port.js';
 
 /** 把 bridge 回包里的控件描述转成强类型（形状不对返回 null，不猜） */
@@ -275,20 +276,37 @@ export class PythonDesktopBridge implements DesktopBridgePort {
 
   // ── UIA ──
 
-  async uiaTree(window: string, depth?: number, max?: number): Promise<readonly UiaNode[]> {
+  async uiaTree(window: string, depth?: number, max?: number): Promise<UiaTreeResult> {
     const args: Record<string, unknown> = { window };
     if (depth !== undefined) args['depth'] = depth;
     if (max !== undefined) args['max'] = max;
     const raw = await this.call('uia_tree', args, 30_000);
-    if (typeof raw !== 'object' || raw === null) return [];
-    const list = (raw as Record<string, unknown>)['controls'];
-    if (!Array.isArray(list)) return [];
-    const out: UiaNode[] = [];
-    for (const item of list) {
-      const n = toNode(item);
-      if (n !== null) out.push(n);
+    if (typeof raw !== 'object' || raw === null) {
+      return { nodes: [], truncated: false, limits: { depth: depth ?? 8, max: max ?? 200 } };
     }
-    return out;
+    const o = raw as Record<string, unknown>;
+    const list = o['controls'];
+    const nodes: UiaNode[] = [];
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        const n = toNode(item);
+        if (n !== null) nodes.push(n);
+      }
+    }
+    const lim = o['limits'];
+    const limObj = typeof lim === 'object' && lim !== null ? (lim as Record<string, unknown>) : {};
+    return {
+      nodes,
+      // ★ 后端没给就按"命中上限即可能截断"保守推断，绝不默默当成完整
+      truncated:
+        typeof o['truncated'] === 'boolean'
+          ? o['truncated']
+          : nodes.length >= (typeof limObj['max'] === 'number' ? limObj['max'] : (max ?? 200)),
+      limits: {
+        depth: typeof limObj['depth'] === 'number' ? limObj['depth'] : (depth ?? 8),
+        max: typeof limObj['max'] === 'number' ? limObj['max'] : (max ?? 200),
+      },
+    };
   }
 
   async uiaFind(window: string, name: string, controlType?: string): Promise<UiaFindResult> {

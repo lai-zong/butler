@@ -30,10 +30,14 @@ function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
       bytes: 1234,
     })),
     screenshot: vi.fn(async () => ({ path: 'C:/tmp/shot.png', backend: 'mss', width: 1920, height: 1080 })),
-    uiaTree: vi.fn(async () => [
-      { depth: 0, type: 'WindowControl', name: '设置', automationId: '', className: 'App', rect: [0, 0, 100, 100] as const },
-      { depth: 1, type: 'ButtonControl', name: '确定', automationId: 'ok', className: '', rect: [10, 10, 20, 20] as const },
-    ]),
+    uiaTree: vi.fn(async () => ({
+      nodes: [
+        { depth: 0, type: 'WindowControl', name: '设置', automationId: '', className: 'App', rect: [0, 0, 100, 100] as const },
+        { depth: 1, type: 'ButtonControl', name: '确定', automationId: 'ok', className: '', rect: [10, 10, 20, 20] as const },
+      ],
+      truncated: false,
+      limits: { depth: 8, max: 200 },
+    })),
     uiaFind: vi.fn(async () => ({
       count: 1,
       matches: [
@@ -68,7 +72,7 @@ function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
 const ALL_CAPS = { win32com: true, uiautomation: true, mss: true, PIL: true, pyautogui: true };
 
 describe('desktopTools —— 能力探测决定注册哪些工具', () => {
-  it('能力齐全 → 六个工具都在', () => {
+  it('能力齐全 → 七个工具都在', () => {
     const specs = desktopTools(fakeBridge(), ALL_CAPS);
     expect(specs.map((s) => s.name).sort()).toEqual([
       'desktop_list_windows',
@@ -77,6 +81,7 @@ describe('desktopTools —— 能力探测决定注册哪些工具', () => {
       'desktop_uia_invoke',
       'desktop_uia_read',
       'desktop_uia_set_value',
+      'desktop_wait_for',
     ]);
   });
 
@@ -166,7 +171,142 @@ describe('desktopTools —— 权限分级与方案 §9.4 一致', () => {
   });
 });
 
-describe('desktop_uia_read', () => {
+describe('desktop_wait_for —— 等到界面就绪', () => {
+  it('控件立刻就在 → 马上返回，不白等', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_wait_for');
+    if (!tool) throw new Error('工具缺失');
+
+    const t0 = Date.now();
+    const r = await tool.execute({ window: '设置', name: '确定' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('已出现');
+    // 已经存在时不该睡一个轮询周期以上
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('★ 窗口还没出现 → 轮询直到出现（不是一次就放弃）', async () => {
+    let calls = 0;
+    const bridge = fakeBridge({
+      uiaFind: vi.fn(async () => {
+        calls++;
+        // 前 2 次找不到，第 3 次出现
+        if (calls < 3) throw new Error('找不到窗口（还没就绪）');
+        return {
+          count: 1,
+          matches: [{ type: 'ButtonControl', name: '确定', automationId: 'ok', rect: [0, 0, 1, 1] as const }],
+        };
+      }),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_wait_for');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute(
+      { window: '设置', name: '确定', pollMs: 100, timeoutMs: 5000 },
+      {} as never,
+    );
+    expect(r.ok).toBe(true);
+    expect(calls).toBe(3);
+  });
+
+  it('★★ 超时 → 返回失败并说明最后一次原因', async () => {
+    const bridge = fakeBridge({
+      uiaFind: vi.fn(async () => {
+        throw new Error('找不到窗口');
+      }),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_wait_for');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute(
+      { window: '不存在', name: 'X', pollMs: 100, timeoutMs: 600 },
+      {} as never,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain('超时');
+    expect(r.output).toContain('找不到窗口');
+  });
+
+  it('不给 name → 只等窗口出现', async () => {
+    const bridge = fakeBridge({
+      listWindows: vi.fn(async () => [{ title: '酷狗音乐', className: 'kugou_ui', processId: 1 }]),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_wait_for');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: '酷狗', timeoutMs: 2000 }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(bridge.uiaFind).not.toHaveBeenCalled();
+  });
+
+  it('timeoutMs / pollMs 有上下限保护', async () => {
+    // 传负数不应导致死循环或立即失败
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_wait_for');
+    if (!tool) throw new Error('工具缺失');
+    const r = await tool.execute({ window: '设置', name: '确定', timeoutMs: -1, pollMs: 0 }, {} as never);
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('desktop_uia_read —— 截断必须说出来', () => {
+  it('★★ 被截断时明确告知"这棵树不完整"', async () => {
+    const bridge = fakeBridge({
+      uiaTree: vi.fn(async () => ({
+        nodes: [
+          { depth: 0, type: 'WindowControl', name: 'W', automationId: '', className: '', rect: [0, 0, 1, 1] as const },
+        ],
+        truncated: true,
+        limits: { depth: 8, max: 200 },
+      })),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: 'W' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('已截断');
+    // 必须提醒"不要据此断言没有该控件"
+    expect(r.output).toContain('不完整');
+  });
+
+  it('未截断时不出现截断警告', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+    const r = await tool.execute({ window: '设置' }, {} as never);
+    expect(r.output).not.toContain('已截断');
+  });
+});
+
+describe('★ 阶梯级（D-32）：能不动鼠标键盘就不动', () => {
+  const specs = desktopTools(fakeBridge(), ALL_CAPS);
+  const byName = (n: string) => specs.find((s) => s.name === n);
+
+  it('COM 转换 = 第 1 级', () => {
+    expect(byName('desktop_office_convert')?.rung).toBe(1);
+  });
+
+  it('★ UIA 模式调用 = 第 2 级（不碰鼠标键盘）', () => {
+    expect(byName('desktop_uia_invoke')?.rung).toBe(2);
+    expect(byName('desktop_uia_set_value')?.rung).toBe(2);
+  });
+
+  it('★★ 当前**没有**第 3 / 第 4 级工具（不制造"有这个能力"的错觉）', () => {
+    /**
+     * 第 3 级（窗口消息）与第 4 级（真实注入）都还没实现。
+     * 这不是遗漏，是刻意的：第 4 级需要 C8 询问通道才能做到"每次确认"，
+     * 而 C8 还没建。先注册成 highRisk 会绕过"每次确认"的承诺。
+     */
+    expect(specs.every((s) => s.rung === undefined || s.rung === 1 || s.rung === 2)).toBe(true);
+  });
+
+  it('★ 读类工具不标阶梯级（阶梯只描述"动手"的手段）', () => {
+    expect(byName('desktop_uia_read')?.rung).toBeUndefined();
+    expect(byName('desktop_list_windows')?.rung).toBeUndefined();
+    expect(byName('desktop_wait_for')?.rung).toBeUndefined();
+    expect(byName('desktop_screenshot')?.rung).toBeUndefined();
+  });
+});
+
+describe('desktop_uia_read —— 查找与结构', () => {
   it('给 name → 报告匹配数与可用模式', async () => {
     const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
     if (!tool) throw new Error('工具缺失');
