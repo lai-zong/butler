@@ -120,6 +120,17 @@ export interface ToolSpec {
    */
   readonly rung?: 1 | 2 | 3 | 4;
   /**
+   * 该工具**固定属于哪个应用域**（用于操作记忆里的 app 维度）。
+   *
+   * ★ 为什么需要：`desktop_office_convert` 的参数里只有文件路径，
+   *   从扩展名推出来的 `docx` **不是应用** —— 把它当 app 会让
+   *   "应用级聚合"混进一个叫 `docx` 的假应用。
+   *   这类工具应当显式声明所属应用域（如 `office`）。
+   *
+   * 不适用的工具留空，由工具自己从参数里取（如 UIA 工具取 `window`）。
+   */
+  readonly actionApp?: string;
+  /**
    * 是否会接触凭证（密钥、token、密码）。
    * 这类工具的结果必须脱敏，且不写入长期记忆（方案 § 11 第二层）。
    */

@@ -412,8 +412,25 @@ describe('★ 操作记忆接线（方案 §6.3 ① 方法记忆）', () => {
     expect(r.ok).toBe(true);
   });
 
-  it('★ UIA 模式调用记成 uia 路径（阶梯 2）', async () => {
+  it('★★ office_convert 的 app 记成 office，不是文件扩展名', async () => {
+    /**
+     * ⚠️ 参数里只有文件路径。若从扩展名推 app，会得到一个叫 `docx` 的**假应用**，
+     *    应用级聚合就被污染了。这条断言钉住 `actionApp: 'office'`。
+     */
     const ops = fakeOps();
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute(
+      { source: 'C:/x/a.docx', target: 'C:/x/b.pdf' },
+      { task: '转换文档', clock: {} as never, taskId: 't' } as never,
+    );
+    const calls = (ops as unknown as { __calls: Array<Record<string, unknown>> }).__calls;
+    expect(calls[0]?.['app']).toBe('office');
+    expect(calls[0]?.['app']).not.toBe('docx');
+  });
+
+  it('★ UIA 模式调用记成 uia 路径（阶梯 2）', async () => {    const ops = fakeOps();
     const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_uia_invoke');
     if (!tool) throw new Error('工具缺失');
 

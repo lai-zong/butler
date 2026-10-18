@@ -367,6 +367,25 @@ async function main(): Promise<void> {
         revived.ranked.find((p) => p.path === 'uia')?.stale === undefined,
         revived.stale.join(',') || 'stale 为空',
       );
+
+      // ── 按应用聚合（跨说法稳定）──
+      //
+      // ★ 这一段的依据是**实测事实**：同一件事的 5 种中文说法会算出 5 个不同签名
+      //   （"把 Word 转 PDF" / "导出成 pdf" / "另存为 PDF" …），
+      //   按签名召回几乎不命中；而"这个应用上哪条路走得通"是跨说法稳定的。
+      const beforeApp = ops.byApp('设置').samples;
+      ops.recordAttempt({ task: '把那个开关切到开启状态', app: '设置', path: 'uia', success: true, durationMs: 180 });
+      const appAgg = ops.byApp('设置');
+      check('★★ 应用级聚合能收下"不同说法"的记录', appAgg.samples > beforeApp, `${beforeApp} → ${appAgg.samples}`);
+      check('★★ 应用级给出该应用最可靠的路径', appAgg.ranked[0]?.path === 'uia', appAgg.ranked[0]?.why ?? '');
+
+      // 换一个完全不同的说法查：任务签名不命中，但应用级兜底
+      const fallback = ops.recommend({ task: '让那盏灯亮起来', app: '设置' });
+      check(
+        '★★ 签名没命中时用应用级兜底（不会"什么都没学到"）',
+        fallback.appLevel !== undefined && fallback.usedMemory === true,
+        `appLevel.samples=${String(fallback.appLevel?.samples)}`,
+      );
     }
 
     hr('⑧ 降级：桥关闭后调用必须失败（而不是假装成功）');

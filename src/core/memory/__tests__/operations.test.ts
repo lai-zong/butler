@@ -23,6 +23,7 @@ import {
   summarizeOperation,
 } from '../operations.js';
 import { PATH_LABEL, sameTaskKind, taskSignature } from '../operation.js';
+import { operationSnapshotOf } from '../operationReplay.js';
 
 const T0 = 1_760_000_000_000;
 const USER = 'u_op';
@@ -406,6 +407,86 @@ describe('⑦ 确定性', () => {
   });
 });
 
+describe('⑥ ★ 按应用聚合（跨任务说法稳定）', () => {
+  it('★★ 同一应用的**不同说法** → 任务签名各不相同，但应用级能聚合', () => {
+    /**
+     * 这条测试记录的是**实测事实**：
+     * 同一件事的 5 种中文说法会算出 5 个不同签名，按签名召回几乎不命中。
+     * 而"在这个应用上哪条路走得通"是跨说法稳定的 —— 所以需要应用级聚合。
+     */
+    const { store } = setup();
+
+    // 同一个应用（"设置"），三种完全不同的说法，都记 UIA 成功
+    store.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: true, durationMs: 200 });
+    store.recordAttempt({ task: '把动态光效开关关掉', app: '设置', path: 'uia', success: true, durationMs: 220 });
+    store.recordAttempt({ task: '开启我的设备上使用动态光效', app: '设置', path: 'uia', success: false, durationMs: 900, failureReason: '找不到控件' });
+
+    // 任务级：说"打开动态光效"只能命中第一条
+    const byTask = store.recommend({ task: '打开动态光效', app: '设置' });
+    expect(byTask.ranked.filter((r) => r.fromExperience).length).toBe(1);
+
+    // 应用级：三次都能聚合进来
+    const agg = store.byApp('设置');
+    expect(agg.samples).toBe(3);
+    expect(agg.ranked[0]?.path).toBe('uia');
+    // 3 次尝试 2 次成功
+    expect(agg.ranked[0]?.why).toContain('尝试 3 次、成功 2 次');
+  });
+
+  it('★★ 任务签名没命中时，recommend 用应用级兜底', () => {
+    const { store } = setup();
+    // 用说法 A 记录
+    store.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: true, durationMs: 200 });
+
+    // 换一个**完全不同的说法** B 去查 —— 签名不会命中
+    const r = store.recommend({ task: '把那个开关切到开启状态', app: '设置' });
+    expect(r.ranked.some((x) => x.fromExperience)).toBe(false);
+    // 但应用级兜底给了答案
+    expect(r.appLevel?.app).toBe('设置');
+    expect(r.appLevel?.ranked[0]?.path).toBe('uia');
+    expect(r.usedMemory).toBe(true);
+  });
+
+  it('任务级已命中时**不**附加应用级（避免两份排名让模型纠结）', () => {
+    const { store } = setup();
+    store.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: true, durationMs: 200 });
+    const r = store.recommend({ task: '打开动态光效', app: '设置' });
+    expect(r.appLevel).toBeUndefined();
+  });
+
+  it('没有 app 参数 → 不做应用级聚合', () => {
+    const { store } = setup();
+    store.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: true, durationMs: 200 });
+    const r = store.recommend({ task: '完全不同的说法' });
+    expect(r.appLevel).toBeUndefined();
+  });
+
+  it('★ app 大小写/空格不敏感', () => {
+    const { store } = setup();
+    store.recordAttempt({ task: 'A', app: '设置', path: 'uia', success: true, durationMs: 100 });
+    expect(store.byApp('  设置 ').samples).toBe(1);
+  });
+
+  it('★ 旧记录没有 app 字段 → 回退到从签名里找', () => {
+    const { store } = setup();
+    // 显式用 app 记录，签名里会带 app
+    const m = store.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: true, durationMs: 100 });
+    expect(m.app).toBe('设置');
+    // 模拟旧记录：去掉 app，只留签名（`exactOptionalPropertyTypes` 下要显式解构）
+    const { app: _drop, ...withoutApp } = m;
+    void _drop;
+    store.restoreOperation(withoutApp);
+    expect(store.byApp('设置').samples).toBe(1);
+  });
+
+  it('★★ app 与 effectiveness 都要能过重放（丢字段会让聚合静默失效）', () => {
+    const { store } = setup();
+    const m = store.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: false, durationMs: 300 });
+    const snap = operationSnapshotOf(store.get(m.id));
+    expect(snap?.['app']).toBe('设置');
+    expect(snap?.['effectiveness']).toBeTruthy();
+  });
+});
 describe('⑤ ★ 记忆会过期：连续失败即降信心并标记（方案 §6.3⑤ 第 3 层）', () => {
   it('★ 连续失败累计计数；一次成功清零', () => {
     const { store } = setup();

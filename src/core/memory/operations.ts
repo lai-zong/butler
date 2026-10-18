@@ -84,6 +84,17 @@ export interface RecommendResult {
    *    与 `discouraged` 的区别：那个是"一直不行"，这个是"现在可能不行了"。
    */
   readonly stale: readonly ExecutionPath[];
+  /**
+   * 按**应用**聚合的经验（跨任务说法）。
+   *
+   * ★ 只在调用方给了 `app` 时才有值。
+   *   用途：任务签名没命中（说法不同）时，仍能回答"这个应用上哪条路走得通"。
+   */
+  readonly appLevel?: {
+    readonly app: string;
+    readonly ranked: readonly PathRecommendation[];
+    readonly samples: number;
+  };
   /** 本次是否用到了历史经验 */
   readonly usedMemory: boolean;
 }
@@ -246,13 +257,102 @@ export class OperationMemoryStore {
 
     ranked.sort((a, b) => b.score - a.score);
 
+    /**
+     * ★ 应用级聚合（跨说法稳定）。
+     *
+     * ⚠️ 只在"签名没命中任何历史"时才附加：
+     *    命中时任务级信息更精确，不必用更粗的应用级去干扰模型判断。
+     *    （两者都给会让模型在两份排名之间纠结。）
+     */
+    const appLevel =
+      args.app !== undefined && !ranked.some((r) => r.fromExperience)
+        ? (() => {
+            const agg = this.byApp(args.app as string);
+            return agg.samples > 0
+              ? { app: args.app as string, ranked: agg.ranked, samples: agg.samples }
+              : undefined;
+          })()
+        : undefined;
+
     return {
       taskSignature: signature,
       ranked,
       discouraged: ranked.filter((r) => r.adviseGivingUp === true).map((r) => r.path),
       stale: stalePaths,
-      usedMemory: ranked.some((r) => r.fromExperience),
+      ...(appLevel !== undefined ? { appLevel } : {}),
+      usedMemory: ranked.some((r) => r.fromExperience) || appLevel !== undefined,
     };
+  }
+
+  /**
+   * 按**应用**聚合的历史经验（跨任务说法）。
+   *
+   * ★★ 为什么需要它（实测驱动）：
+   *   同一件事的 5 种中文说法会算出 **5 个不同的任务签名**
+   *   （"把 Word 转 PDF" / "导出成 pdf" / "另存为 PDF" …）——
+   *   按签名召回**几乎不命中**。
+   *
+   *   而"在某个应用上，哪条路走得通"是**跨说法稳定**的，
+   *   这恰好也是桌面控制真正要回答的问题。
+   *
+   * ⚠️ app 的取值：优先用显式字段（新记录），
+   *    旧记录没有就从 `taskSignature` 的段里找（兼容）。
+   */
+  byApp(app: string): {
+    readonly ranked: readonly PathRecommendation[];
+    readonly samples: number;
+  } {
+    const want = app.trim().toLowerCase();
+    if (want.length === 0) return { ranked: [], samples: 0 };
+
+    /** 这条记忆是否属于该应用 */
+    const belongs = (m: OperationMemory): boolean => {
+      if (m.app !== undefined) return m.app.trim().toLowerCase() === want;
+      // 旧记录：签名形如 `verb|object|app`，逐段找（空段会被过滤，位置不固定）
+      return m.taskSignature
+        .split('|')
+        .some((seg) => seg.trim().toLowerCase() === want);
+    };
+
+    // 按路径汇总（跨任务）
+    const agg = new Map<ExecutionPath, { attempts: number; succeeded: number; ms: number; n: number; lastFailure?: string; consecutive: number }>();
+    for (const m of this.all()) {
+      if (m.kind !== 'method' || m.path === undefined) continue;
+      if (!belongs(m)) continue;
+      const cur = agg.get(m.path) ?? { attempts: 0, succeeded: 0, ms: 0, n: 0, consecutive: 0 };
+      const eff = m.effectiveness;
+      cur.attempts += eff?.attempts ?? 0;
+      cur.succeeded += eff?.succeeded ?? 0;
+      if (eff?.avgDurationMs) {
+        cur.ms += eff.avgDurationMs;
+        cur.n += 1;
+      }
+      if (eff?.lastFailure !== undefined) cur.lastFailure = eff.lastFailure;
+      // 该应用上"最近一条"的连续失败数：只要有一条还在连续失败，就提示
+      cur.consecutive = Math.max(cur.consecutive, eff?.consecutiveFailures ?? 0);
+      agg.set(m.path, cur);
+    }
+
+    const ranked: PathRecommendation[] = [];
+    for (const [path, a] of agg) {
+      const rate = a.attempts === 0 ? 0.5 : a.succeeded / a.attempts;
+      const durationBonus = a.n > 0 ? durationFactor(a.ms / a.n) : 0;
+      const score = 0.7 * rate + 0.2 * durationBonus + 0.1 * 0.5;
+      const stale = a.consecutive >= ARCHIVE_AFTER_CONSECUTIVE_FAILURES;
+      ranked.push({
+        path,
+        score,
+        why:
+          `该应用上的历史（跨任务）：尝试 ${a.attempts} 次、成功 ${a.succeeded} 次` +
+          (a.lastFailure !== undefined ? `；上次失败原因：${a.lastFailure}` : '') +
+          (stale ? ' ⚠️ 可能已过期：连续失败' : ''),
+        fromExperience: true,
+        ...(stale ? { stale: true } : {}),
+      });
+    }
+    ranked.sort((x, y) => y.score - x.score);
+    const samples = [...agg.values()].reduce((s, a) => s + a.attempts, 0);
+    return { ranked, samples };
   }
 
   // ── 记录执行结果 ──
@@ -311,6 +411,8 @@ export class OperationMemoryStore {
 
       const next: OperationMemory = {
         ...existing,
+        // ★ 首次记录时可能没带 app，后续带上就补进记忆
+        ...(existing.app === undefined && args.app !== undefined ? { app: args.app } : {}),
         effectiveness: {
           attempts,
           succeeded,
@@ -364,6 +466,8 @@ export class OperationMemoryStore {
       kind: 'method',
       taskSignature: signature,
       taskLabel: args.task,
+      // ★ 显式存 app（供"按应用聚合"用，见 OperationMemory.app 的注释）
+      ...(args.app !== undefined ? { app: args.app } : {}),
       content: args.method ?? `这类任务走「${PATH_LABEL[args.path]}」${args.success ? '可行' : '不可行'}`,
       path: args.path,
       effectiveness: {

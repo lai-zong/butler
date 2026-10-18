@@ -97,9 +97,27 @@ export function experienceTool(ops: OperationMemoryStore): ToolSpec {
             `\n它们**仍在推荐里**（软件可能已经修好了），但**用之前必须先验证**，别盲信。`
           : '';
 
+      /**
+       * ★ 应用级经验（跨任务说法）。
+       *
+       * 实测：同一件事的不同中文说法会得到**不同签名**，所以任务级常常空手而归；
+       * 而"在这个应用上哪条路走得通"是**跨说法稳定**的 —— 这时就用它兜底。
+       */
+      const appNote =
+        r.appLevel !== undefined
+          ? `\n\n📌 **该应用的整体经验**（「${r.appLevel.app}」，跨 ${r.appLevel.samples} 次操作）：\n` +
+            r.appLevel.ranked
+              .map(
+                (p, i) =>
+                  `${i + 1}. ${PATH_LABEL[p.path]}（得分 ${p.score.toFixed(2)}）：${p.why}` +
+                  (p.stale === true ? '  ⚠️ 用之前先验证' : ''),
+              )
+              .join('\n')
+          : '';
+
       return {
         ok: true,
-        output: `这类任务的历史经验（签名 ${r.taskSignature}）：\n${lines.join('\n')}${discouraged}${staleNote}`,
+        output: `这类任务的历史经验（签名 ${r.taskSignature}）：\n${lines.join('\n')}${discouraged}${staleNote}${appNote}`,
         data: r,
         durationMs: 0,
       };
@@ -133,12 +151,6 @@ function appOf(args: unknown): string | undefined {
   // 桌面工具都用 window 指目标应用
   const w = a['window'];
   if (typeof w === 'string' && w.trim().length > 0) return w.trim();
-  const src = a['source'];
-  if (typeof src === 'string' && src.trim().length > 0) {
-    const base = src.split(/[\\/]/).pop() ?? src;
-    const ext = base.includes('.') ? (base.split('.').pop() ?? '') : '';
-    return ext.length > 0 ? ext.toLowerCase() : undefined;
-  }
   return undefined;
 }
 
@@ -176,7 +188,8 @@ function withMemory(spec: ToolSpec, ops: OperationMemoryStore): ToolSpec {
           if (task !== undefined && task.trim().length > 0) {
             const ok = result?.ok === true && thrown === undefined;
             const path = rungToPath(spec.rung ?? 1);
-            const app = appOf(args);
+            // ★ 工具显式声明了应用域就用它（如 office），否则从参数取（如 window）
+            const app = spec.actionApp ?? appOf(args);
             ops.recordAttempt({
               task,
               ...(app !== undefined ? { app } : {}),
@@ -240,6 +253,11 @@ export function officeConvertTool(bridge: DesktopBridgePort): ToolSpec {
     tier: 'normal',
     // ★ 阶梯级（D-32）：层① 应用接口：Word 用自己的 COM 接口干活
     rung: 1,
+    /**
+     * ⚠️ 参数里只有文件路径，从扩展名推出来的 `docx` **不是应用**。
+     *    显式声明成 `office`，否则应用级聚合会混进一个叫 `docx` 的假应用。
+     */
+    actionApp: 'office',
     summarize: (args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       return `把 ${String(a['source'] ?? '?')} 转成 PDF`;

@@ -37,6 +37,8 @@ export function operationSnapshotOf(m: OperationMemory | undefined): Record<stri
     taskLabel: m.taskLabel,
     content: m.content,
     path: m.path ?? null,
+    // ⚠️ 新增字段必须在这里同步 —— 漏了会让"按应用聚合"在重放后静默失效
+    app: m.app ?? null,
     effectiveness: m.effectiveness ?? null,
     confidence: m.confidence,
     evidence: m.evidence,
@@ -133,6 +135,8 @@ function parseOperation(raw: unknown): OperationMemory | null {
     ...(typeof o['path'] === 'string'
       ? { path: o['path'] as NonNullable<OperationMemory['path']> }
       : {}),
+    // ★ 旧事件没有 app 字段 → 不写（回退到从签名解析，见 byApp）
+    ...(typeof o['app'] === 'string' ? { app: o['app'] } : {}),
     ...(typeof o['effectiveness'] === 'object' && o['effectiveness'] !== null
       ? { effectiveness: o['effectiveness'] as NonNullable<OperationMemory['effectiveness']> }
       : {}),
