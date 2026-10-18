@@ -45,6 +45,8 @@ import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
 import { ActivityObserver } from '@/core/activity/observe.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
+import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
+import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
 import type { ActivitySourcePort } from '@/core/activity/observe.js';
 import { desktopActivitySource } from '@/core/activity/desktopSource.js';
 import { createActivityRuntime, startActivityLoop } from '@/core/activity/runtime.js';
@@ -291,6 +293,50 @@ async function initRuntime(): Promise<ButlerRuntime> {
   }
 
   /**
+   * ★★ B10 MCP 接线。
+   *
+   * 审计发现（全量引用扫描）：`registerTransport` / `addServer` / `connect` /
+   * `toToolSpecs` / `callTool` 的**生产调用各 0 处** ——
+   * `McpClient` 构造出来后只被界面读了个空列表，
+   * 于是方案 B10「外部 MCP server 的工具可用」在运行时根本达不到。
+   *
+   * ⚠️ 配置来源：`MCP_CONFIG_PATH`（默认当前目录 `mcp.json`）。
+   *    **没有配置文件就不接** —— 不是错误，没配就是没配。
+   * ⚠️ 异步、失败隔离：单个 server 挂掉不影响启动，也不影响别的 server。
+   */
+  const mcpConfigPath = process.env['MCP_CONFIG_PATH'] ?? 'mcp.json';
+  const mcpConfig = loadMcpConfigFile(mcpConfigPath);
+  if (mcpConfig !== null) {
+    if (mcpConfig.rejected.length > 0) {
+      console.warn(
+        `[mcp] 配置里有 ${mcpConfig.rejected.length} 条被丢弃：`,
+        mcpConfig.rejected.map((r) => `#${r.index} ${r.reason}`).join('；'),
+      );
+    }
+    void wireMcpServers({
+      mcp: bootstrapped.mcp,
+      tools,
+      configs: mcpConfig.configs,
+      transports: [stdioTransportFactory()],
+      onError: (id, err) => {
+        console.warn(`[mcp] ${id} 出错：`, err instanceof Error ? err.message : String(err));
+      },
+    })
+      .then((r) => {
+        if (r.connected.length > 0 || r.failed.length > 0) {
+          console.log(
+            `[mcp] 已连接 ${r.connected.length} 个 server，注册 ${r.toolsRegistered} 个工具` +
+              (r.failed.length > 0 ? `；失败 ${r.failed.length} 个：${r.failed.map((f) => f.id).join(',')}` : ''),
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        // MCP 整体失败同样是"降级"，不是启动失败
+        console.warn('[mcp] 接线失败（已降级）：', err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  /**
    * ★★ A10 行为采集与周期总结的**接线**（方案 §7 / §5.4）。
    *
    * 核查代码发现的事实（改造前）：`Scheduler.register` 生产代码 **0 调用**、
@@ -403,3 +449,4 @@ export async function flush(): Promise<void> {
   const rt = await getRuntime();
   await rt.bootstrapped.log.flushPersistence();
 }
+

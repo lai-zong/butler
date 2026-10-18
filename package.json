@@ -34,7 +34,8 @@
     "validate:14": "node node_modules/tsx/dist/cli.mjs src/validate/14-transfer.ts",
     "validate:15": "node node_modules/tsx/dist/cli.mjs src/validate/15-desktop.ts",
     "validate:16": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/16-vision.ts",
-    "validate:17": "node node_modules/tsx/dist/cli.mjs src/validate/17-attachment.ts"
+    "validate:17": "node node_modules/tsx/dist/cli.mjs src/validate/17-attachment.ts",
+    "validate:18": "node node_modules/tsx/dist/cli.mjs src/validate/18-mcp-wiring.ts"
   },
   "dependencies": {
     "next": "15",
