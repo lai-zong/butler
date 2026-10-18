@@ -30,6 +30,35 @@ function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
       bytes: 1234,
     })),
     screenshot: vi.fn(async () => ({ path: 'C:/tmp/shot.png', backend: 'mss', width: 1920, height: 1080 })),
+    uiaTree: vi.fn(async () => [
+      { depth: 0, type: 'WindowControl', name: '设置', automationId: '', className: 'App', rect: [0, 0, 100, 100] as const },
+      { depth: 1, type: 'ButtonControl', name: '确定', automationId: 'ok', className: '', rect: [10, 10, 20, 20] as const },
+    ]),
+    uiaFind: vi.fn(async () => ({
+      count: 1,
+      matches: [
+        {
+          type: 'ButtonControl',
+          name: '确定',
+          automationId: 'ok',
+          rect: [10, 10, 20, 20] as const,
+          patterns: ['Invoke'],
+        },
+      ],
+    })),
+    uiaAction: vi.fn(async () => ({
+      action: 'toggle',
+      control: { type: 'ButtonControl', name: '开关', automationId: 'sw', rect: [0, 0, 10, 10] as const },
+      before: 0,
+      after: 1,
+      verified: true,
+    })),
+    uiaSetValue: vi.fn(async () => ({
+      control: { type: 'EditControl', name: '搜索', automationId: 'se', rect: [0, 0, 10, 10] as const },
+      before: '',
+      after: '显示',
+      verified: true,
+    })),
     close: vi.fn(),
     ...over,
   };
@@ -39,13 +68,25 @@ function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
 const ALL_CAPS = { win32com: true, uiautomation: true, mss: true, PIL: true, pyautogui: true };
 
 describe('desktopTools —— 能力探测决定注册哪些工具', () => {
-  it('能力齐全 → 三个工具都在', () => {
+  it('能力齐全 → 六个工具都在', () => {
     const specs = desktopTools(fakeBridge(), ALL_CAPS);
     expect(specs.map((s) => s.name).sort()).toEqual([
       'desktop_list_windows',
       'desktop_office_convert',
       'desktop_screenshot',
+      'desktop_uia_invoke',
+      'desktop_uia_read',
+      'desktop_uia_set_value',
     ]);
+  });
+
+  it('★ 缺 uiautomation → 四个 UIA 工具全不注册', () => {
+    const specs = desktopTools(fakeBridge(), { ...ALL_CAPS, uiautomation: false });
+    const names = specs.map((s) => s.name);
+    expect(names).not.toContain('desktop_list_windows');
+    expect(names).not.toContain('desktop_uia_read');
+    expect(names).not.toContain('desktop_uia_invoke');
+    expect(names).not.toContain('desktop_uia_set_value');
   });
 
   it('★ 缺 win32com → 不注册 Office 转换（而不是注册了再失败）', () => {
@@ -81,8 +122,14 @@ describe('desktopTools —— 权限分级与方案 §9.4 一致', () => {
     expect(byName('desktop_office_convert')?.tier).toBe('normal');
   });
 
-  it('★ UIA 列窗口 → readOnly（只读，不影响系统状态）', () => {
+  it('★ UIA 只读操作 → readOnly', () => {
     expect(byName('desktop_list_windows')?.tier).toBe('readOnly');
+    expect(byName('desktop_uia_read')?.tier).toBe('readOnly');
+  });
+
+  it('★★ UIA 写操作 → highRisk（会改变应用状态）', () => {
+    expect(byName('desktop_uia_invoke')?.tier).toBe('highRisk');
+    expect(byName('desktop_uia_set_value')?.tier).toBe('highRisk');
   });
 
   it('★★ 截图 → highRisk，不是 readOnly', () => {
@@ -97,11 +144,15 @@ describe('desktopTools —— 权限分级与方案 §9.4 一致', () => {
 
   it('★ 没有 click / type（等 C6 询问开关落地再接）', () => {
     /**
-     * 理由：点击/输入是不可逆的视觉层操作，需要"每次确认"。
+     * 理由：点击/输入到指定坐标是不可逆的视觉层操作，需要"每次确认"。
      * 而现在注册成 `dangerous` 就是**永远禁用**（策略对 dangerous 恒 false），
      * 注册了也用不了 —— 那只会制造"有这个能力"的错觉。
+     *
+     * ★ 注意区分：`desktop_uia_invoke` 不是坐标点击，它是**按元素**操作，
+     *   且带状态校验 —— 属于 ② UIA 层，不是 ③ 视觉层。
      */
     expect(byName('desktop_click')).toBeUndefined();
+    expect(byName('desktop_click_at')).toBeUndefined();
     expect(byName('desktop_type')).toBeUndefined();
   });
 
@@ -110,6 +161,152 @@ describe('desktopTools —— 权限分级与方案 §9.4 一致', () => {
     expect(typeof shot?.preview).toBe('function');
     const conv = byName('desktop_office_convert');
     expect(typeof conv?.preview).toBe('function');
+    expect(typeof byName('desktop_uia_invoke')?.preview).toBe('function');
+    expect(typeof byName('desktop_uia_set_value')?.preview).toBe('function');
+  });
+});
+
+describe('desktop_uia_read', () => {
+  it('给 name → 报告匹配数与可用模式', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: '设置', name: '确定' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('共 1 个匹配');
+    expect(r.output).toContain('Invoke');
+  });
+
+  it('不给 name → 导出控件树（带缩进层级）', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: '设置' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('控件树（2 个）');
+    expect(r.output).toContain('  [ButtonControl] 确定');
+  });
+
+  it('缺 window → 拒绝', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+    await expect(tool.execute({}, {} as never)).rejects.toThrow(/window/);
+  });
+
+  it('depth/max 有上限保护', async () => {
+    const bridge = fakeBridge();
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute({ window: '设置', depth: 999, max: 9999 }, {} as never);
+    expect(bridge.uiaTree).toHaveBeenCalledWith('设置', 12, 500);
+  });
+});
+
+describe('desktop_uia_invoke', () => {
+  it('toggle 成功：报告 before → after', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_invoke');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute(
+      { window: '设置', name: '在我的设备上使用动态光效', action: 'toggle', controlType: 'button' },
+      {} as never,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('0 → 1');
+  });
+
+  it('★★ verified=false → 返回失败，而不是"操作成功"', async () => {
+    /**
+     * 这是这个工具最重要的性质：**状态没变就是失败**。
+     * 报成成功会让模型以为改好了，然后基于错误前提继续干活。
+     */
+    const bridge = fakeBridge({
+      uiaAction: vi.fn(async () => ({
+        action: 'toggle',
+        control: { type: 'ButtonControl', name: '开关', automationId: 'sw', rect: [0, 0, 10, 10] as const },
+        before: 0,
+        after: 0,
+        verified: false,
+      })),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_invoke');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: 'W', name: '开关', action: 'toggle' }, {} as never);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain('未生效');
+  });
+
+  it('无状态可比对（invoke）→ verified=null，仍算成功', async () => {
+    const bridge = fakeBridge({
+      uiaAction: vi.fn(async () => ({
+        action: 'invoke',
+        control: { type: 'ButtonControl', name: '个性化', automationId: '', rect: [0, 0, 10, 10] as const },
+        before: null,
+        after: null,
+        verified: null,
+      })),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_invoke');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: '设置', name: '个性化', action: 'invoke' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('没有可读回的状态');
+  });
+
+  it('★ 非法 action → 执行前拒绝，且不调桥', async () => {
+    const bridge = fakeBridge();
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_invoke');
+    if (!tool) throw new Error('工具缺失');
+
+    await expect(
+      tool.execute({ window: 'W', name: 'N', action: '双击' }, {} as never),
+    ).rejects.toThrow(/action/);
+    expect(bridge.uiaAction).not.toHaveBeenCalled();
+  });
+
+  it('★★ 桥报"多个匹配"时，错误如实传出（不吞成成功）', async () => {
+    const bridge = fakeBridge({
+      uiaAction: vi.fn(async () => {
+        throw new Error('有 3 个互不嵌套的控件都支持InvokePattern，拒绝猜测');
+      }),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_invoke');
+    if (!tool) throw new Error('工具缺失');
+
+    await expect(
+      tool.execute({ window: 'W', name: 'N', action: 'invoke' }, {} as never),
+    ).rejects.toThrow(/拒绝猜测/);
+  });
+});
+
+describe('desktop_uia_set_value', () => {
+  it('写入成功：报告前值 → 现值', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_set_value');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: '设置', name: '搜索框', value: '显示' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('「显示」');
+  });
+
+  it('★ verified=false → 返回失败并给出实际值', async () => {
+    const bridge = fakeBridge({
+      uiaSetValue: vi.fn(async () => ({
+        control: { type: 'EditControl', name: '搜索', automationId: '', rect: [0, 0, 1, 1] as const },
+        before: '',
+        after: '',
+        verified: false,
+      })),
+    });
+    const tool = desktopTools(bridge, ALL_CAPS).find((s) => s.name === 'desktop_uia_set_value');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ window: '设置', name: '搜索', value: '显示' }, {} as never);
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain('未生效');
   });
 });
 

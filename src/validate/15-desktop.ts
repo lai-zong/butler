@@ -99,13 +99,36 @@ async function main(): Promise<void> {
             : caps.capabilities['mss'] === true || caps.capabilities['PIL'] === true,
       ),
     );
-    check('tier 分级符合方案 §9.4', specs.every((s) =>
-      s.name === 'desktop_office_convert'
-        ? s.tier === 'normal'
-        : s.name === 'desktop_screenshot'
-          ? s.tier === 'highRisk'
-          : s.tier === 'readOnly',
-    ));
+    /**
+     * ★ tier 必须与方案 §9.4 的分层一致。
+     *
+     * ⚠️ 这个检查第一版只按 3 个工具写死了映射，
+     *    加入 `desktop_uia_invoke` / `desktop_uia_set_value` 之后，
+     *    它们（highRisk）落进了 `else → readOnly` 分支，于是**检查本身报错**。
+     *    那是检查过时，不是分级错了 —— 所以这里改成**显式声明期望值**，
+     *    新增工具若没在表里登记，会直接判失败（逼着人来更新）。
+     */
+    const EXPECTED_TIER: Record<string, 'readOnly' | 'normal' | 'highRisk' | 'dangerous'> = {
+      desktop_office_convert: 'normal', // ① COM：需确认的写操作
+      desktop_list_windows: 'readOnly', // ② UIA：只读
+      desktop_uia_read: 'readOnly', // ② UIA：只读
+      desktop_uia_invoke: 'highRisk', // ② UIA：改变应用状态
+      desktop_uia_set_value: 'highRisk', // ② UIA：改变应用状态
+      desktop_screenshot: 'highRisk', // ③ 视觉：每次确认 + 高风险（会读到屏幕全部内容）
+    };
+    const unregistered = specs.filter((s) => EXPECTED_TIER[s.name] === undefined);
+    check(
+      '★ 每个工具都在分级表里登记过（新增工具必须补表）',
+      unregistered.length === 0,
+      unregistered.map((s) => s.name).join(', ') || '全部已登记',
+    );
+    const wrongTier = specs.filter((s) => EXPECTED_TIER[s.name] !== undefined && s.tier !== EXPECTED_TIER[s.name]);
+    check(
+      '★ tier 分级符合方案 §9.4',
+      wrongTier.length === 0,
+      wrongTier.map((s) => `${s.name}=${s.tier}(期望 ${EXPECTED_TIER[s.name]})`).join(', ') ||
+        specs.map((s) => `${s.name}=${s.tier}`).join(' '),
+    );
 
     hr('④ UIA：真的列出窗口');
 
@@ -158,7 +181,76 @@ async function main(): Promise<void> {
       }
     }
 
-    hr('⑥ 降级：桥关闭后调用必须失败（而不是假装成功）');
+    hr('⑥ ★★ UIA 按元素操作（不按坐标）：对「设置」做真实导航与开关');
+
+    /**
+     * ★ 为什么用「设置」而不是酷狗：
+     *   设置是 WinUI/XAML 应用，控件有名字、实现了标准 UIA 模式 ——
+     *   这正是 ② UIA 层能覆盖的范围。
+     *
+     *   酷狗实测（另一次人工验证）是自绘 UI：`ValuePattern.SetValue` 抛 COMError、
+     *   坐标点击会被叠加窗口吞掉。**那是 UIA 层的边界，不是它的能力**。
+     *
+     * ⚠️ 这一段会**临时改动**「在我的设备上使用动态光效」，
+     *    结束时必须恢复原值 —— 所以先记下初始状态，最后比对。
+     */
+    const initialLighting = readLightingReg();
+    check('能读到动态光效的初始状态（注册表）', initialLighting !== null, `AmbientLightingEnabled=${String(initialLighting)}`);
+
+    // 打开设置（不指定页面，让 UIA 自己导航 —— 那才是被测的能力）
+    spawnSync('cmd', ['/c', 'start', '', 'ms-settings:'], { timeout: 15_000 });
+    await sleep(4500);
+
+    const win = await bridge.uiaFind('设置', '个性化');
+    check('★ 找到「设置」窗口（按标题定位）', win.count > 0, `${win.count} 个匹配`);
+    check(
+      '★ 导航项「个性化」支持 SelectionItem 模式',
+      win.matches.some((m) => m.type === 'ListItemControl' && (m.patterns ?? []).includes('SelectionItem')),
+      win.matches.map((m) => `${m.type}:${(m.patterns ?? []).join('/')}`).join(' | '),
+    );
+
+    const sel = await bridge.uiaAction('设置', '个性化', 'select', 'listitem');
+    check('★★ 选中「个性化」且**状态校验通过**', sel.verified === true, `${String(sel.before)} → ${String(sel.after)}`);
+    await sleep(2500);
+
+    // 「动态光效」有三个同名控件，必须用 controlType 消歧 —— 这一步本身就在验证"拒绝猜测"
+    const dlAll = await bridge.uiaFind('设置', '动态光效');
+    check('★ 「动态光效」存在多个同名控件（说明消歧是必要的）', dlAll.count > 1, `${dlAll.count} 个`);
+    const dlIn = await bridge.uiaAction('设置', '动态光效', 'invoke', 'listitem');
+    check('★★ 进入「动态光效」页', dlIn.control.type === 'ListItemControl', dlIn.control.automationId);
+    await sleep(2500);
+
+    const toggleName = '在我的设备上使用动态光效';
+    const tf = await bridge.uiaFind('设置', toggleName);
+    const toggleCtl = tf.matches.find((m) => (m.patterns ?? []).includes('Toggle'));
+    check('★ 找到开关控件且支持 Toggle 模式', toggleCtl !== undefined, toggleCtl?.automationId ?? '未找到');
+
+    if (toggleCtl !== undefined) {
+      // ① 切换一次
+      const t1 = await bridge.uiaAction('设置', toggleName, 'toggle', 'button');
+      check('★★ 开关状态确实变了（读回校验）', t1.verified === true, `${String(t1.before)} → ${String(t1.after)}`);
+      const reg1 = readLightingReg();
+      const expected1 = t1.after === 1 ? 1 : 0;
+      check('★★ 注册表随之改变（跨层交叉验证）', reg1 === expected1, `注册表=${String(reg1)}，期望=${expected1}`);
+
+      // ② 切回原状
+      const t2 = await bridge.uiaAction('设置', toggleName, 'toggle', 'button');
+      check('★★ 再切一次也校验通过', t2.verified === true, `${String(t2.before)} → ${String(t2.after)}`);
+      const reg2 = readLightingReg();
+      check('★★ 注册表**恢复原值**（不留下改动）', reg2 === initialLighting, `${String(reg2)} / 初始 ${String(initialLighting)}`);
+    }
+
+    // 关闭设置
+    const closed = await bridge.uiaAction('设置', '关闭 设置', 'invoke');
+    check('★ 关闭「设置」窗口', closed.control.type === 'ButtonControl');
+    await sleep(2000);
+    const stillThere = await bridge
+      .uiaFind('设置', '个性化')
+      .then((r) => r.count > 0)
+      .catch(() => false);
+    check('★ 设置确实关掉了', !stillThere);
+
+    hr('⑦ 降级：桥关闭后调用必须失败（而不是假装成功）');
 
     bridge.close();
     let failedAfterClose = false;
@@ -169,7 +261,7 @@ async function main(): Promise<void> {
     }
     check('★ 桥关闭后调用报错', failedAfterClose);
 
-    hr('⑦ 进程无残留（Word 不能留在后台）');
+    hr('⑧ 进程无残留（Word 不能留在后台）');
 
     /**
      * ⚠️ **Word 的退出是异步的** —— `Quit()` 返回时进程可能还在收尾。
@@ -248,6 +340,29 @@ function isPdf(path: string): boolean {
 /** 简单的等待（不引入依赖） */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 读「在我的设备上使用动态光效」的真实状态（注册表）。
+ *
+ * ★ 为什么要读注册表：UIA 报的 `ToggleState` 是**界面**状态，
+ *   注册表才是**系统**状态。两者一致才能证明"操作真的生效了"，
+ *   而不是只改了个显示。
+ */
+function readLightingReg(): number | null {
+  try {
+    const r = spawnSync(
+      'reg',
+      ['query', 'HKCU\\Software\\Microsoft\\Lighting', '/v', 'AmbientLightingEnabled'],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    const out = r.stdout ?? '';
+    const m = /AmbientLightingEnabled\s+REG_DWORD\s+0x([0-9a-f]+)/i.exec(out);
+    if (m === null) return null;
+    return parseInt(m[1] as string, 16);
+  } catch {
+    return null;
+  }
 }
 
 /** 数一下某个进程还有几个（不依赖 wmic，用 tasklist） */

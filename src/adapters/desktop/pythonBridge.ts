@@ -24,7 +24,46 @@ import type {
   DesktopCapabilities,
   DesktopWindow,
   ShotResult,
+  UiaActionResult,
+  UiaControl,
+  UiaFindResult,
+  UiaNode,
+  UiaSetValueResult,
 } from '../../core/desktop/port.js';
+
+/** 把 bridge 回包里的控件描述转成强类型（形状不对返回 null，不猜） */
+function toControl(raw: unknown): UiaControl | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const rect = o['rect'];
+  const rectArr: [number, number, number, number] = Array.isArray(rect) && rect.length === 4
+    ? [
+        typeof rect[0] === 'number' ? rect[0] : 0,
+        typeof rect[1] === 'number' ? rect[1] : 0,
+        typeof rect[2] === 'number' ? rect[2] : 0,
+        typeof rect[3] === 'number' ? rect[3] : 0,
+      ]
+    : [0, 0, 0, 0];
+  const pats = o['patterns'];
+  return {
+    type: typeof o['type'] === 'string' ? o['type'] : '',
+    name: typeof o['name'] === 'string' ? o['name'] : '',
+    automationId: typeof o['automationId'] === 'string' ? o['automationId'] : '',
+    rect: rectArr,
+    ...(Array.isArray(pats) ? { patterns: pats.filter((p): p is string => typeof p === 'string') } : {}),
+  };
+}
+
+function toNode(raw: unknown): UiaNode | null {
+  const c = toControl(raw);
+  if (c === null) return null;
+  const o = raw as Record<string, unknown>;
+  return {
+    ...c,
+    depth: typeof o['depth'] === 'number' ? o['depth'] : 0,
+    className: typeof o['className'] === 'string' ? o['className'] : '',
+  };
+}
 
 /** 协议回包 */
 type BridgeResponse =
@@ -231,6 +270,79 @@ export class PythonDesktopBridge implements DesktopBridgePort {
       backend: typeof o['backend'] === 'string' ? o['backend'] : '',
       width: typeof o['width'] === 'number' ? o['width'] : 0,
       height: typeof o['height'] === 'number' ? o['height'] : 0,
+    };
+  }
+
+  // ── UIA ──
+
+  async uiaTree(window: string, depth?: number, max?: number): Promise<readonly UiaNode[]> {
+    const args: Record<string, unknown> = { window };
+    if (depth !== undefined) args['depth'] = depth;
+    if (max !== undefined) args['max'] = max;
+    const raw = await this.call('uia_tree', args, 30_000);
+    if (typeof raw !== 'object' || raw === null) return [];
+    const list = (raw as Record<string, unknown>)['controls'];
+    if (!Array.isArray(list)) return [];
+    const out: UiaNode[] = [];
+    for (const item of list) {
+      const n = toNode(item);
+      if (n !== null) out.push(n);
+    }
+    return out;
+  }
+
+  async uiaFind(window: string, name: string, controlType?: string): Promise<UiaFindResult> {
+    const args: Record<string, unknown> = { window, name };
+    if (controlType !== undefined) args['controlType'] = controlType;
+    const raw = await this.call('uia_find', args, 30_000);
+    if (typeof raw !== 'object' || raw === null) return { count: 0, matches: [] };
+    const o = raw as Record<string, unknown>;
+    const list = o['matches'];
+    const matches: UiaControl[] = [];
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        const c = toControl(item);
+        if (c !== null) matches.push(c);
+      }
+    }
+    return { count: typeof o['count'] === 'number' ? o['count'] : matches.length, matches };
+  }
+
+  async uiaAction(
+    window: string,
+    name: string,
+    action: 'toggle' | 'select' | 'invoke' | 'expand' | 'collapse',
+    controlType?: string,
+  ): Promise<UiaActionResult> {
+    const args: Record<string, unknown> = { window, name, action };
+    if (controlType !== undefined) args['controlType'] = controlType;
+    const raw = await this.call('uia_action', args, 45_000);
+    if (typeof raw !== 'object' || raw === null) throw new Error('uia_action 返回形状异常');
+    const o = raw as Record<string, unknown>;
+    const control = toControl(o['control']);
+    if (control === null) throw new Error('uia_action 未返回控件信息');
+    const numOrBool = (v: unknown): number | boolean | null =>
+      typeof v === 'number' || typeof v === 'boolean' ? v : null;
+    return {
+      action: typeof o['action'] === 'string' ? o['action'] : action,
+      control,
+      before: numOrBool(o['before']),
+      after: numOrBool(o['after']),
+      verified: typeof o['verified'] === 'boolean' ? o['verified'] : null,
+    };
+  }
+
+  async uiaSetValue(window: string, name: string, value: string): Promise<UiaSetValueResult> {
+    const raw = await this.call('uia_set_value', { window, name, value }, 30_000);
+    if (typeof raw !== 'object' || raw === null) throw new Error('uia_set_value 返回形状异常');
+    const o = raw as Record<string, unknown>;
+    const control = toControl(o['control']);
+    if (control === null) throw new Error('uia_set_value 未返回控件信息');
+    return {
+      control,
+      before: typeof o['before'] === 'string' ? o['before'] : '',
+      after: typeof o['after'] === 'string' ? o['after'] : '',
+      verified: o['verified'] === true,
     };
   }
 

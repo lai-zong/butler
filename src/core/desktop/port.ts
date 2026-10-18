@@ -37,6 +37,47 @@ export interface ShotResult {
   readonly height: number;
 }
 
+/** UIA 控件描述 */
+export interface UiaControl {
+  readonly type: string;
+  readonly name: string;
+  readonly automationId: string;
+  readonly rect: readonly [number, number, number, number];
+  /** 该控件真正支持的模式（Invoke / Toggle / SelectionItem / ExpandCollapse / Value）*/
+  readonly patterns?: readonly string[];
+}
+
+/** 控件树里的一个节点 */
+export interface UiaNode extends UiaControl {
+  readonly depth: number;
+  readonly className: string;
+}
+
+/** 找控件的返回值：**报告全部匹配**，由调用方决定是否动手 */
+export interface UiaFindResult {
+  readonly count: number;
+  readonly matches: readonly UiaControl[];
+}
+
+/** UIA 操作的结果（**必须带校验**）*/
+export interface UiaActionResult {
+  readonly action: string;
+  readonly control: UiaControl;
+  /** 操作前的状态（toggle: 0/1/2；select: boolean）；无可读状态时为 null */
+  readonly before: number | boolean | null;
+  readonly after: number | boolean | null;
+  /** 状态确实变了才为 true；无状态可比对时为 null */
+  readonly verified: boolean | null;
+}
+
+/** 设置输入框内容的结果 */
+export interface UiaSetValueResult {
+  readonly control: UiaControl;
+  readonly before: string;
+  readonly after: string;
+  readonly verified: boolean;
+}
+
 /**
  * 桌面桥。
  *
@@ -50,6 +91,27 @@ export interface DesktopBridgePort {
   listWindows(limit?: number): Promise<readonly DesktopWindow[]>;
   officeConvert(source: string, target: string): Promise<ConvertResult>;
   screenshot(): Promise<ShotResult>;
+
+  // ── UIA：按**元素**操作（不按坐标）──
+  //
+  // ★ 为什么这层重要（实测证据）：
+  //   操作 Windows 设置时全程零坐标点击，窗口被挡住也照样生效；
+  //   而酷狗那种自绘 UI 只能靠坐标，且会被叠加窗口吞掉点击。
+
+  /** 导出窗口控件树 */
+  uiaTree(window: string, depth?: number, max?: number): Promise<readonly UiaNode[]>;
+  /** 按名字找控件（**只报告，不动手**）*/
+  uiaFind(window: string, name: string, controlType?: string): Promise<UiaFindResult>;
+  /** 按模式操作控件，并读回状态校验 */
+  uiaAction(
+    window: string,
+    name: string,
+    action: 'toggle' | 'select' | 'invoke' | 'expand' | 'collapse',
+    controlType?: string,
+  ): Promise<UiaActionResult>;
+  /** 给标准输入框设值（自绘 UI 会如实失败）*/
+  uiaSetValue(window: string, name: string, value: string): Promise<UiaSetValueResult>;
+
   /** 关掉子进程（进程退出/测试清理时调）*/
   close(): void;
 }
