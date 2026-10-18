@@ -436,7 +436,11 @@ export function butlerReflectionSystem(): string {
 // ═══════════════════════════════════════════════════════════
 
 interface RawReflectionCandidate {
-  readonly kind: 'fact' | 'preference' | 'principle';
+  /**
+   * ★ 直接用 `MemoryKind` 而不是重复一份字面量联合 ——
+   *   否则每加一种记忆类型，这里都要跟着改一次（漏改就是类型谎言）。
+   */
+  readonly kind: MemoryKind;
   readonly content: string;
   readonly confidence: number;
   readonly evidence?: readonly string[];

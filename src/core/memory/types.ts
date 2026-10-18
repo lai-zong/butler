@@ -16,11 +16,26 @@ import type { DomainId } from '../domain/types.js';
 // ═══════════════════════════════════════════════════════════
 
 /**
+ * 记忆类型。
+ *
  * - fact       客观信息        「你对花生过敏」
  * - preference 倾向与习惯      「先给结论再给细节」
  * - principle  反思产物         「推荐餐厅前先确认同行人饮食禁忌」
+ * - summary    **聚合记忆**（D-31）「这周你在赶毕设，晚上效率更高」
+ *
+ * ★★ `summary` 与前三者的关键区别（这是它存在的理由）：
+ *
+ *   | | fact / preference / principle | summary |
+ *   |---|---|---|
+ *   | 粒度 | **原子条目**，一句话 | **长内容**，可多段 |
+ *   | 来源 | 单轮抽取 / 单轮反思 | **周期复盘**（跨会话汇总）|
+ *   | 作用 | 精确事实与准则 | 让"跨会话的长期状态"能进上下文 |
+ *
+ *   ⚠️ 它**不是** `ProfileSnapshot`：快照是**展示用**的（成长对比），
+ *      不参与召回；`summary` 是**可召回**的记忆，有 fitness、会衰减、
+ *      能休眠归档 —— 与其它三类走同一套治理。
  */
-export type MemoryKind = 'fact' | 'preference' | 'principle';
+export type MemoryKind = 'fact' | 'preference' | 'principle' | 'summary';
 
 // ═══════════════════════════════════════════════════════════
 // 分权（§ 2.2⑥）

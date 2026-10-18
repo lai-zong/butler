@@ -72,6 +72,8 @@ const KIND_LABEL: Record<string, string> = {
   fact: '事实',
   preference: '偏好',
   principle: '原则',
+  // ★ 聚合记忆（D-31）：长内容汇总，与前三者是不同粒度
+  summary: '长期总结',
 };
 
 const CLASS_LABEL: Record<string, string> = {

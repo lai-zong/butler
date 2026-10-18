@@ -483,9 +483,18 @@ export const reflectionSchema = z.object({
     .array(
       z.object({
         kind: z
-          .enum(['fact', 'preference', 'principle'])
-          .describe('fact=客观事实；preference=倾向习惯；principle=可复用的行为准则'),
-        content: z.string().min(1).describe('候选内容，一句话说清，不要写成长段落'),
+          .enum(['fact', 'preference', 'principle', 'summary'])
+          .describe(
+            'fact=客观事实；preference=倾向习惯；principle=可复用的行为准则；' +
+              'summary=**跨会话的长期状态汇总**（只在周期复盘时产出，见下）',
+          ),
+        content: z
+          .string()
+          .min(1)
+          .describe(
+            '候选内容。fact/preference/principle 一句话说清，不要写成长段落；' +
+              'summary 例外 —— 它本来就是长内容汇总，可以写 3—6 句（时间段、状态、成因、建议）',
+          ),
         confidence: z
           .number()
           .min(0)

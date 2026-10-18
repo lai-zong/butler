@@ -111,6 +111,13 @@ export function decayClassOf(entry: {
   if (entry.memClass === 'global_constraint') return 'none';
   if (entry.kind === 'fact') return 'slow';
   if (entry.kind === 'principle') return 'medium';
+  /**
+   * 聚合记忆（`summary`）用 `medium`：它描述"最近一段时间的状态"，
+   * 本来就该随时间失效 —— 三个月前的"这周在赶毕设"不该继续影响判断。
+   *
+   * ⚠️ 不给 `fast`：它比环境事实稳定，衰减太快会反复重学同一条。
+   */
+  if (entry.kind === 'summary') return 'medium';
   return 'medium'; // preference
 }
 
