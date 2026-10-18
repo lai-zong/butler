@@ -188,4 +188,29 @@ describe('★★★ reflectScheduled', () => {
     // 事件流里有"产生候选"的事件（可审计）
     expect(log.byType('memory.candidate').length).toBeGreaterThan(0);
   });
+
+  it('★★★ 时间维度规律真的进了反思提示词（方案 §7.4）', async () => {
+    /**
+     * ⚠️ 改造前这里恒为空数组：周复盘算出的规律只进了界面与画像快照，
+     *    **反思完全看不到** —— "时间维度画像"的意义就落空了。
+     */
+    const { log, clock, store, chat, seed } = setup();
+    seed({ at: T0 - 1000, domain: 'health', reply: '做了体检', taskId: 't1' });
+
+    const seen: string[] = [];
+    await reflectScheduled({
+      scope: 'weekly',
+      model: fakeModel(seen),
+      log,
+      clock,
+      store,
+      chat,
+      userId: 'local',
+      temporalPatterns: ['工作日 9—18 通常较忙', '晚上 21 点后偏学习'],
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('工作日 9—18 通常较忙');
+    expect(seen[0]).toContain('晚上 21 点后偏学习');
+  });
 });

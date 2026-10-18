@@ -340,7 +340,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
      */
     ...(model !== null
       ? {
-          reflect: (a: { readonly scope: 'daily' | 'weekly' }) =>
+          reflect: (a: { readonly scope: 'daily' | 'weekly'; readonly temporalPatterns?: readonly string[] }) =>
             reflectScheduled({
               scope: a.scope,
               model: model as ModelPort,
@@ -349,6 +349,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
               store: bootstrapped.memory,
               chat: bootstrapped.chat,
               userId: DEFAULT_USER_ID,
+              // ★ 周复盘算好的时间规律原样传下去（daily 会忽略）
+              ...(a.temporalPatterns !== undefined ? { temporalPatterns: a.temporalPatterns } : {}),
             }),
         }
       : {}),

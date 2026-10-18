@@ -142,6 +142,12 @@ export interface ReflectScheduledArgs {
   readonly userId: string;
   /** 反思材料的"任务目标"描述（默认按周期生成）*/
   readonly userGoal?: string;
+  /**
+   * 时间维度规律（由周复盘算好传入，见 `tasks.ts` 的顺序调整）。
+   *
+   * ★ 只有 weekly 用得上；daily 传了也会忽略。
+   */
+  readonly temporalPatterns?: readonly string[];
 }
 
 export interface ReflectScheduledResult {
@@ -225,7 +231,13 @@ export async function reflectScheduled(args: ReflectScheduledArgs): Promise<Refl
             succeeded: e.effectiveness?.succeeded ?? 0,
           })),
         userGoal,
-        temporalPatterns: [],
+        /**
+         * ★ 时间维度规律真正参与反思（方案 §7.4）。
+         *
+         * ⚠️ 之前这里恒为空数组 —— 于是"周复盘"里算出的规律
+         *    只进了界面与画像快照，**反思完全看不到**。
+         */
+        temporalPatterns: args.temporalPatterns ?? [],
       },
     });
     candidates.push(...r.candidates);

@@ -43,6 +43,13 @@ export interface TaskContext {
    */
   readonly reflect?: (args: {
     readonly scope: 'daily' | 'weekly';
+    /**
+     * 时间维度规律（已渲染成一句一条）。
+     *
+     * ★ 由**周复盘先算好再传进来**，不让反思自己去算 ——
+     *   `derivePatterns` 会写 `pattern.derived` 事件，两处各算一次会重复落事件。
+     */
+    readonly temporalPatterns?: readonly string[];
   }) => Promise<{ readonly candidateCount: number; readonly summary: string }>;
   /** 待提醒事项的检查（主动服务）*/
   readonly checkReminders?: () => Promise<readonly { readonly title: string; readonly dueAt: number }[]>;
@@ -106,15 +113,18 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
   const weeklyReview: TaskHandler = async () => {
     const parts: string[] = [];
 
-    // ① 跨领域复盘（仆人层反思 + 管家层反思）
-    if (ctx.reflect) {
-      const r = await ctx.reflect({ scope: 'weekly' });
-      parts.push(`跨领域复盘产出 ${r.candidateCount} 条候选`);
-    } else {
-      parts.push('未接入反思引擎');
-    }
-
-    // ② 重算时间维度规律
+    /**
+     * ★ 顺序调整（v8）：**先算时间规律，再反思**。
+     *
+     * ⚠️ 原来反思是第 ① 步、规律是第 ② 步，于是反思拿不到规律
+     *    （`temporalPatterns` 恒为空）。而"时间维度画像"的意义恰恰是
+     *    **参与反思**（方案 §7.4）—— 顺序反了等于白算。
+     *
+     * ⚠️ 也不能让反思自己去算：`derivePatterns` **会写事件**
+     *    （`pattern.derived`），两处各算一次就会重复落事件。
+     *    所以这里算一次，把结果**传进去**。
+     */
+    let renderedPatterns: readonly string[] = [];
     if (ctx.observer) {
       const aggregates = ctx.observer.aggregate();
       const derived = derivePatterns({
@@ -126,11 +136,23 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
         observedDays: derived.observedDays,
         derivedAt: ctx.clock.now(),
       };
+      renderedPatterns = derived.patterns.map((p) => patternGuidance(p));
       parts.push(
         derived.patterns.length > 0
           ? `重算规律 ${derived.patterns.length} 条（观察 ${derived.observedDays} 天）`
           : `未能重算规律：${derived.reason ?? '数据不足'}`,
       );
+    }
+
+    // ② 跨领域复盘（把①算出的时间规律一起喂进去）
+    if (ctx.reflect) {
+      const r = await ctx.reflect({
+        scope: 'weekly',
+        ...(renderedPatterns.length > 0 ? { temporalPatterns: renderedPatterns } : {}),
+      });
+      parts.push(`跨领域复盘产出 ${r.candidateCount} 条候选`);
+    } else {
+      parts.push('未接入反思引擎');
     }
 
     // ③ 生成画像快照（方案 § 3.3 的"最强演示件"由这里自动产出）
