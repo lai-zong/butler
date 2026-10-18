@@ -37,6 +37,7 @@ import { ToolFramework } from '../core/tools/framework.js';
 import { runButler } from '../core/butler/execute.js';
 import type { TaskContract } from '../core/butler/contract.js';
 import type { ActionTier, PermissionPolicy } from '../core/tools/types.js';
+import { artifactToText } from '../core/execution/render.js';
 
 const line = (s = ''): void => console.log(s);
 const hr = (t: string): void => {
@@ -198,7 +199,7 @@ async function main(): Promise<void> {
     const reportText = JSON.stringify(report.artifacts);
     line(`  汇报状态：${report.status}`);
     for (const a of report.artifacts) {
-      const text = Array.isArray(a.content) ? a.content.join('；') : String(a.content);
+      const text = artifactToText(a, '；');
       line(`  [${a.kind}] ${text.slice(0, 150)}`);
     }
 

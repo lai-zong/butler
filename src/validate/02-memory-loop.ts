@@ -36,6 +36,7 @@ import { buildDomainReflectionInput, reflectButler, reflectDomain } from '../cor
 import { FixedClock, SeededRandom } from '../core/ports/clock.js';
 import type { DomainId } from '../core/domain/types.js';
 import type { ExecutionReport } from '../core/execution/types.js';
+import { artifactToText } from '../core/execution/render.js';
 
 const T0 = 1_760_000_000_000;
 const DAY = 86_400_000;
@@ -514,7 +515,7 @@ async function main(): Promise<void> {
       userGoal: USER_GOAL,
       reports: reportsForReflection.map((r) => ({
         domain: r.domain ?? '',
-        summary: r.artifacts.map((a) => (Array.isArray(a.content) ? a.content.join('；') : a.content)).join(' | '),
+        summary: r.artifacts.map((a) => artifactToText(a, '；')).join(' | '),
       })),
       conflicts: [{ message: '蛋白摄入是否加量', severity: 'warn', resolvedBy: '用户选择加量' }],
       globalMemories: store

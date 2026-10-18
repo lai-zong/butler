@@ -37,6 +37,7 @@ import {
   revocationRates,
 } from '../memory/admission.js';
 import type { RunSessionResult } from '../runtime/orchestrator.js';
+import { artifactToText } from '../execution/render.js';
 
 // ═══════════════════════════════════════════════════════════
 // 参数与结果
@@ -391,9 +392,7 @@ function summarizeReport(r: ExecutionReport): string {
 
   // ⚠️ 截断到 300 字/项、最多 2 项 —— 防止单个产出独占管家层的上下文
   for (const artifact of r.artifacts.slice(0, 2)) {
-    const text = Array.isArray(artifact.content)
-      ? artifact.content.join('；')
-      : String(artifact.content);
+    const text = artifactToText(artifact, '；');
     parts.push(text.slice(0, 300));
   }
   for (const f of (r.findings ?? []).slice(0, 3)) {

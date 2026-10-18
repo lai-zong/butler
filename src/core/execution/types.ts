@@ -92,13 +92,56 @@ export interface ExecutionReport {
 }
 
 /**
+ * 表格产出物的内容。
+ *
+ * ★ `columns` 是**单一真相**：每一行都按它对齐（多了截断、少了补空）。
+ *   不这么做的话，模型偶尔漏列会让前端错列渲染。
+ */
+export interface TableContent {
+  readonly columns: readonly string[];
+  readonly rows: readonly (readonly string[])[];
+}
+
+/**
+ * 一道题 —— **刻意没有答案字段**。
+ *
+ * ★★ 答案在 `QuizAnswer` 里，落事件而不进产出物。
+ *    "把答案留在产出物里"这件事在类型层面写不出来（不是靠约定）。
+ */
+export interface QuizQuestion {
+  readonly id: string;
+  readonly stem: string;
+  readonly options: readonly string[];
+}
+
+/** 题目的正确答案（服务端专用，落 `quiz.created` 事件）。 */
+export interface QuizAnswer {
+  readonly id: string;
+  /** 正确选项字母（A/B/C…），已归一化 */
+  readonly correct: string;
+  readonly explanation?: string;
+}
+
+/**
  * 产出物。
  *
  * ★ v8（批次E）：类型名由 `ServantArtifact` 改为 `ExecutionArtifact` ——
  *   它描述的是"执行产出了什么"，不是"某个仆人交付了什么"。
+ *
+ * ★ v8（批次A）：新增 `table` / `quiz` 两种**真结构**。
+ *   它们不能压平成字符串 —— 表格有行列，题目要能作答与批改。
  */
 export type ExecutionArtifact =
   | { readonly kind: 'text'; readonly content: string }
   | { readonly kind: 'list'; readonly content: readonly string[] }
   | { readonly kind: 'plan'; readonly content: readonly string[] }
+  | { readonly kind: 'table'; readonly content: TableContent }
+  | { readonly kind: 'quiz'; readonly content: readonly QuizQuestion[] }
+  /**
+   * ⚠️ `file` **当前没有任何生产者**（模型 schema 里产不出这一种）。
+   *
+   * 刻意保留而不是删掉：它描述的是「产出物引用了一个文件」这个**真实需求**
+   * （例如生成的表格落盘后给出引用）。等真正实现时按它接上即可。
+   * `reports.ts` 已能渲染这一种，所以接上时不用改展示层。
+   */
   | { readonly kind: 'file'; readonly content: { readonly name: string; readonly ref: string } };

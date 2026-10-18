@@ -32,6 +32,7 @@ import type { MemoryClass, MemoryKind } from '../memory/types.js';
 import { DOMAIN_DISCIPLINE, domainName, type DomainId } from '../domain/types.js';
 import type { ExecutionReport } from '../execution/types.js';
 import type { ClockPort } from '../ports/clock.js';
+import { artifactToText } from '../execution/render.js';
 
 // ═══════════════════════════════════════════════════════════
 // 反思产出的候选
@@ -386,7 +387,7 @@ export async function reflectButler(args: {
 /** 把仆人汇报压成一句摘要，供反思材料使用（避免 prompt 过长）。 */
 export function summarizeReport(r: ExecutionReport): string {
   const arts = r.artifacts
-    .map((a) => (Array.isArray(a.content) ? a.content.join('；') : String(a.content)))
+    .map((a) => artifactToText(a, '；'))
     .join(' | ');
   const finds = (r.findings ?? []).map((f) => `[${f.kind}] ${f.statement}`).join('；');
   const joined = [arts, finds].filter((s) => s.length > 0).join(' ‖ ') || '(无产出)';

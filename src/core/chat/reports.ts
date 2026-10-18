@@ -18,7 +18,7 @@
  *    完整内容在审计视图里能查。
  */
 
-import type { ExecutionReport } from '../execution/types.js';
+import { renderArtifact } from '../execution/render.js';
 import type { ExecutionReportData } from './types.js';
 import type { RunSessionResult } from '../runtime/orchestrator.js';
 
@@ -30,30 +30,6 @@ export const REPORT_FINDING_LIMIT = 500;
 
 /** 最多保留几条不确定声明。 */
 export const REPORT_UNCERTAINTY_LIMIT = 6;
-
-/**
- * 产出物 → 可显示的文本。
- *
- * ⚠️ `ExecutionArtifact` 有**四种**形态，不是两种：
- *     text   → 字符串
- *     list   → 字符串数组（清单）
- *     plan   → 字符串数组（步骤）
- *     file   → **对象** `{ name, ref }`（文件引用）
- *
- *    我第一版只处理了"字符串或数组"，遇到 `file` 会在
- *    `.join()` 上崩 —— 而 `file` 恰恰是"仆人真的产出了文件"那一类，
- *    漏掉它会静默丢掉最有价值的产出。
- */
-function artifactText(content: ExecutionReport['artifacts'][number]['content']): {
-  text: string;
-  itemCount: number;
-} {
-  if (typeof content === 'string') return { text: content, itemCount: 1 };
-  if (Array.isArray(content)) return { text: content.join('\n'), itemCount: content.length };
-  // file 形态 —— ⚠️ `ref` 是内部引用，展示时用 name 更有意义
-  const file = content as { readonly name: string; readonly ref: string };
-  return { text: `${file.name}（引用 ${file.ref}）`, itemCount: 1 };
-}
 
 /**
  * 把一次会话的全部仆人产出转成界面数据。
@@ -89,7 +65,9 @@ export function toExecutionReportData(session: SessionReportSource): readonly Ex
     reply: r.reply,
     instruction: instructionOf(session),
     artifacts: r.artifacts.map((a) => {
-      const { text, itemCount } = artifactText(a.content);
+      // ★ 复用 `execution/render.ts` 的**唯一**渲染实现 ——
+      //   不在这里再维护一份按 kind 展开的 switch（两份必然漂移）。
+      const { text, itemCount } = renderArtifact(a);
       return {
         kind: a.kind,
         text:

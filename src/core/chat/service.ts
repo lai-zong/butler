@@ -46,6 +46,7 @@ import { buildHistoryMessages, buildDomainHistoryMessages } from './history.js';
 import { planHistory, summarizeOlder } from './compaction.js';
 import { createTraceCollector } from './trace.js';
 import { toExecutionReportData } from './reports.js';
+import { artifactToText } from '../execution/render.js';
 
 // ═══════════════════════════════════════════════════════════
 // 一轮的执行
@@ -700,7 +701,7 @@ function buildAcceptedReply(session: RunSessionResult, verdict: Verdict): string
     if (arts.length === 0) continue;
 
     for (const a of arts) {
-      const body = Array.isArray(a.content) ? a.content.join('\n') : String(a.content);
+      const body = artifactToText(a, '\n');
       lines.push(body);
       lines.push('');
     }

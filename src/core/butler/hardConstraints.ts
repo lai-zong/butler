@@ -21,6 +21,7 @@ import type { EventLog } from '../events/log.js';
 import { coreOf, hasAnyNgram } from '../text/keywords.js';
 import type { ScoredMemory } from '../memory/recall.js';
 import type { ExecutionReport } from '../execution/types.js';
+import { artifactToText } from '../execution/render.js';
 
 export interface HardConstraintVerdict {
   readonly constraintId: string;
@@ -58,7 +59,7 @@ function handledBy(report: ExecutionReport, constraintContent: string, constrain
 
   // ② 产出物中提到了相关关键词
   const haystack = report.artifacts
-    .map((a) => (Array.isArray(a.content) ? a.content.join('\n') : String(a.content)))
+    .map((a) => artifactToText(a, '\n'))
     .join('\n');
   return mentions(haystack, constraintContent);
 }

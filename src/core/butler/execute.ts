@@ -47,6 +47,7 @@ import type {
   InjectedConstraint,
   ExecutionArtifact,
   ExecutionReport,
+  QuizAnswer,
 } from '../execution/types.js';
 
 /** 管家回复的长度上限（与仆人一致，避免超长正文挤掉工具过程）。 */
@@ -110,21 +111,17 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   // ⚠️ 复用 `schemas.ts` 里现成的实现，不自己重写 ——
   //    那两个函数处理了模型的各种别名（kind/type、statement/content、items 嵌套对象），
   //    重写必然漏掉其中某一种，而漏掉的表现是"产出悄悄少了一条"。
+  //
+  // ★ v8（批次A）：归一化现在返回 `{ artifact, answers }`。
+  //   产出物与答案**在归一化内部就已分离**（见 schemas.ts 的类型设计），
+  //   所以这里不是"手动剥离"，而是**结构上就没有可泄漏的东西**。
   const artifacts: ExecutionArtifact[] = [];
+  const quizAnswers: QuizAnswer[] = [];
   for (const a of raw.artifacts) {
     const n = normalizeArtifactShape(a);
     if (!n) continue; // 空产出直接丢弃，不制造空条目
-    artifacts.push(
-      n.kind === 'text'
-        ? { kind: 'text', content: n.content }
-        : {
-            kind: n.kind,
-            content: n.content
-              .split('\n')
-              .map((l) => l.trim())
-              .filter((l) => l.length > 0),
-          },
-    );
+    artifacts.push(n.artifact);
+    quizAnswers.push(...n.answers);
   }
 
   const findings = raw.findings
@@ -171,6 +168,36 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
       usage,
     },
     createdAt: args.now,
+  });
+
+  /**
+   * ★ 题目的答案单独落事件 —— **绝不进产出物**。
+   *
+   * ⚠️ 每个 quiz 产出物单独一条事件，用 `artifactIndex` 对应到产出物数组的下标
+   *    （即前端渲染的那一份的顺序）。合成一条会让"一份报告有多组题"时对不上号。
+   *
+   * ⚠️ 顺序要求：必须在 `butler.executed` **之后**、产出物落盘之前。
+   *    这样即使后面消息落盘失败，答案事件也已存在 ——
+   *    宁可多一份没有题目的答案（无害），也不要"有题目没答案"（批改永远失败）。
+   */
+  artifacts.forEach((artifact, index) => {
+    if (artifact.kind !== 'quiz') return;
+    const ids = new Set(artifact.content.map((q) => q.id));
+    // 只保留确实属于这份产出物的答案（防御：归一化后两者本该一一对应）
+    const mine = quizAnswers.filter((a) => ids.has(a.id));
+    if (mine.length === 0) return;
+    args.log.append({
+      type: 'quiz.created',
+      actor: 'butler',
+      payload: {
+        taskId: args.taskId,
+        artifactIndex: index,
+        // 题目 id 也记下来：批改时要能校验"提交的题目 id 确实存在"
+        questionIds: [...ids],
+        answers: mine,
+      },
+      createdAt: args.now,
+    });
   });
 
   return {

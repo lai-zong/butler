@@ -19,6 +19,7 @@ import { SystemClock } from '../adapters/clock/system.js';
 import { runSession } from '../core/runtime/orchestrator.js';
 import type { ScoredMemory } from '../core/memory/recall.js';
 import type { MemoryEntry } from '../core/memory/types.js';
+import { artifactToText } from '../core/execution/render.js';
 
 // ═══════════════════════════════════════════════════════════
 // 场景数据：等价于"已积累一段时间的记忆库"
@@ -160,7 +161,7 @@ async function main(): Promise<void> {
   for (const rep of result.reports) {
     line(`  [${rep.domain ?? ''}] status=${rep.status}  产出物=${rep.artifacts.length}`);
     for (const a of rep.artifacts) {
-      const text = Array.isArray(a.content) ? a.content.join('；') : String(a.content);
+      const text = artifactToText(a, '；');
       line(`     · ${a.kind}: ${text.slice(0, 60)}`);
     }
     for (const f of rep.findings ?? []) {

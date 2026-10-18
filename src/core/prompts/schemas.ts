@@ -9,6 +9,8 @@
 
 import { z } from 'zod';
 
+import type { QuizAnswer, QuizQuestion, TableContent } from '../execution/types.js';
+
 // ═══════════════════════════════════════════════════════════
 // 仆人提交的「发现」
 // ═══════════════════════════════════════════════════════════
@@ -154,28 +156,284 @@ export type TaskContractPlan = z.infer<typeof contractSchema>;
  *  扁平：  { "kind": "list", "content": "条目1\n条目2" }
  *  结构化：{ "type": "list", "title": "标题", "items": ["…", { "name": "…" }] }
  *
+ * ★ v8 新增 `table` 与 `quiz` 两种**真结构** ——
+ *   它们不能压平成字符串：表格有行列，题目有选项与答案。
+ *
  * 归一化在 `normalizeArtifact` 里完成。
  */
 export const artifactSchema = z.object({
-  kind: z.enum(['text', 'list', 'plan']).optional(),
+  kind: z.enum(['text', 'list', 'plan', 'table', 'quiz']).optional(),
   /** 模型的常见别名 */
-  type: z.enum(['text', 'list', 'plan']).optional(),
+  type: z.enum(['text', 'list', 'plan', 'table', 'quiz']).optional(),
   content: z.string().optional(),
   title: z.string().optional(),
   /** items 里可以是字符串，也可以是任意对象（模型常带丰富字段） */
   items: z.array(z.union([z.string(), z.record(z.string(), z.unknown())])).optional(),
   /** 有的模型会额外给一句总结 */
   summary: z.string().optional(),
+
+  /**
+   * ★ 表格的**专用字段**（首选写法）。
+   *
+   * ⚠️ 为什么不只用 `items`：`items` 是"任意对象数组"，模型写表格时
+   *    列名散落在每行的键里，缺列、列序不一致都无法发现。
+   *    显式给 `columns` 才能保证**每一行都对齐同一组列**。
+   */
+  table: z
+    .object({
+      columns: z.array(z.string()),
+      rows: z.array(z.array(z.string())),
+    })
+    .optional(),
+
+  /**
+   * ★ 题目的**专用字段**（首选写法）。
+   *
+   * ⚠️ `answer` 会由 `normalizeArtifact` **搬走**，绝不进入 `ExecutionArtifact`。
+   *    这是「答案不出现在前端」的第一道防线。
+   */
+  quiz: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        stem: z.string().optional(),
+        question: z.string().optional(),
+        options: z.array(z.string()).optional(),
+        choices: z.array(z.string()).optional(),
+        answer: z.union([z.string(), z.number()]).optional(),
+        correct: z.union([z.string(), z.number()]).optional(),
+        explanation: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export type RawArtifact = z.infer<typeof artifactSchema>;
 
-/** 归一化产出物。内容为空时返回 null，由调用方丢弃。 */
-export function normalizeArtifact(
-  a: RawArtifact,
-): { kind: 'text' | 'list' | 'plan'; content: string } | null {
+// ═══════════════════════════════════════════════════════════
+// 产出物归一化的结果类型
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 一道题 —— **刻意没有 `answer` 字段**，答案在 `QuizAnswer` 里。
+ *
+ * ★ 直接复用 `core/execution/types` 的领域类型，不在这里再定义一份 ——
+ *   两份同形定义迟早漂移（本项目已经因为"两份 ServantId 字面量"吃过一次亏）。
+ */
+export type NormalizedQuizQuestion = QuizQuestion;
+
+/** 题目的正确答案（服务端专用；落事件，不进前端）。 */
+export type NormalizedQuizAnswer = QuizAnswer;
+
+export type NormalizedTable = TableContent;
+
+/**
+ * 归一化后的产出物。
+ *
+ * ★★ 关键设计：**`quiz` 分支的 content 里没有答案** ——
+ *    "把答案留在产出物里"这件事在**类型层面就写不出来**。
+ *    不靠注释提醒、不靠代码审查，靠类型不可表示。
+ */
+export type NormalizedArtifact =
+  | { readonly kind: 'text'; readonly content: string }
+  | { readonly kind: 'list' | 'plan'; readonly content: readonly string[] }
+  | { readonly kind: 'table'; readonly content: NormalizedTable }
+  | { readonly kind: 'quiz'; readonly content: readonly NormalizedQuizQuestion[] };
+
+/** 归一化结果：产出物 + 需要单独落库的答案。 */
+export interface ArtifactNormalization {
+  readonly artifact: NormalizedArtifact;
+  /** 非 quiz 时为空数组 */
+  readonly answers: readonly NormalizedQuizAnswer[];
+}
+
+const OPTION_LETTERS = 'ABCDEFGH';
+
+/**
+ * 把模型给的"正确答案"归一化成选项字母。
+ *
+ * ⚠️ 实测模型会用五种写法，少处理一种就会导致**批改永远判错**：
+ *   ① 纯字母     `"B"`
+ *   ② 字母+分隔  `"B. 清蒸"` / `"B、清蒸"`
+ *   ③ 数字下标   `2`（1 基）
+ *   ④ 选项原文   `"清蒸"`
+ *   ⑤ 互相包含   `"清蒸"` vs 选项 `"清蒸（少油）"`
+ */
+function toOptionLetter(raw: string | number, options: readonly string[]): string | undefined {
+  const t = String(raw).trim();
+  if (t.length === 0) return undefined;
+
+  const bare = /^([A-Ha-h])$/.exec(t);
+  if (bare?.[1] !== undefined) return bare[1].toUpperCase();
+
+  const prefixed = /^([A-Ha-h])\s*[.、,:：)）]/.exec(t);
+  if (prefixed?.[1] !== undefined) return prefixed[1].toUpperCase();
+
+  const n = Number(t);
+  if (Number.isInteger(n) && n >= 1 && n <= options.length && n <= OPTION_LETTERS.length) {
+    const idx = n - 1;
+    return OPTION_LETTERS[idx];
+  }
+
+  const exact = options.findIndex((o) => o.trim() === t);
+  if (exact >= 0 && exact < OPTION_LETTERS.length) {
+    const idx = exact;
+    return OPTION_LETTERS[idx];
+  }
+
+  const partial = options.findIndex((o) => {
+    const ot = o.trim();
+    return ot.length > 0 && (ot.includes(t) || t.includes(ot));
+  });
+  if (partial >= 0 && partial < OPTION_LETTERS.length) {
+    const idx = partial;
+    return OPTION_LETTERS[idx];
+  }
+
+  return undefined;
+}
+
+/** 去掉选项自带的 `A.` / `1.` 前缀 —— 否则界面会显示「A. A. 油炸」。 */
+function stripOptionPrefix(option: string): string {
+  return option.replace(/^\s*(?:[A-Ha-h]|\d{1,2})\s*[.、,:：)）]\s*/, '').trim();
+}
+
+function asText(v: unknown): string {
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number') return String(v);
+  return '';
+}
+
+/** 从 `items` 的任意对象里取一道题（模型常把题目塞进 items）。 */
+function quizFromRecord(
+  rec: Record<string, unknown>,
+  index: number,
+): { question: NormalizedQuizQuestion; answer: NormalizedQuizAnswer } | null {
+  const stem = asText(rec['stem'] ?? rec['question'] ?? rec['q'] ?? rec['title']);
+  const rawOptions = rec['options'] ?? rec['choices'];
+  const rawAnswer = rec['answer'] ?? rec['correct'] ?? rec['answerKey'];
+
+  if (stem.length === 0) return null;
+  if (!Array.isArray(rawOptions)) return null;
+
+  const options = rawOptions
+    .map((o) => (typeof o === 'string' ? stripOptionPrefix(o) : ''))
+    .filter((o) => o.length > 0);
+  if (options.length < 2) return null;
+
+  const answerText =
+    typeof rawAnswer === 'string' || typeof rawAnswer === 'number' ? rawAnswer : '';
+  const correct = toOptionLetter(answerText, options);
+  // 没有可判定的答案 → 这道题无法批改，整题丢弃（宁可少一题，也不给错判）
+  if (correct === undefined) return null;
+
+  const id = asText(rec['id']) || `q${index + 1}`;
+  const explanation = asText(rec['explanation'] ?? rec['analysis']);
+
+  return {
+    question: { id, stem, options },
+    answer: explanation.length > 0 ? { id, correct, explanation } : { id, correct },
+  };
+}
+
+/** 归一化表格：优先专用 `table` 字段，退回 `items` 的对象数组。 */
+function normalizeTable(a: RawArtifact): NormalizedTable | null {
+  if (a.table) {
+    const columns = a.table.columns.map((c) => c.trim()).filter((c) => c.length > 0);
+    if (columns.length === 0) return null;
+    const rows = a.table.rows
+      .map((r) => r.map((cell) => String(cell).trim()))
+      // 对齐列数：多了截断、少了补空 —— 否则前端渲染会错列
+      .map((r) => columns.map((_, i) => r[i] ?? ''))
+      .filter((r) => r.some((cell) => cell.length > 0));
+    if (rows.length === 0) return null;
+    return { columns, rows };
+  }
+
+  if (a.items && a.items.length > 0) {
+    const records = a.items.filter(
+      (i): i is Record<string, unknown> => typeof i === 'object' && i !== null,
+    );
+    if (records.length === 0) return null;
+    // 列名 = 所有对象键的并集（按首次出现顺序），保证不漏列
+    const columns: string[] = [];
+    for (const rec of records) {
+      for (const k of Object.keys(rec)) {
+        if (!columns.includes(k)) columns.push(k);
+      }
+    }
+    if (columns.length === 0) return null;
+    const rows = records.map((rec) => columns.map((c) => asText(rec[c])));
+    return { columns, rows };
+  }
+
+  return null;
+}
+
+/** 归一化题目：优先专用 `quiz` 字段，退回 `items` 的对象数组。 */
+function normalizeQuiz(a: RawArtifact): {
+  questions: NormalizedQuizQuestion[];
+  answers: NormalizedQuizAnswer[];
+} {
+  const parsed: { question: NormalizedQuizQuestion; answer: NormalizedQuizAnswer }[] = [];
+
+  if (a.quiz && a.quiz.length > 0) {
+    a.quiz.forEach((q, i) => {
+      const rawOptions = q.options ?? q.choices ?? [];
+      const options = rawOptions.map((o) => stripOptionPrefix(o)).filter((o) => o.length > 0);
+      const stem = asText(q.stem ?? q.question);
+      if (stem.length === 0 || options.length < 2) return;
+
+      const correct = toOptionLetter(q.answer ?? q.correct ?? '', options);
+      if (correct === undefined) return;
+
+      const id = asText(q.id) || `q${i + 1}`;
+      const explanation = asText(q.explanation);
+      parsed.push({
+        question: { id, stem, options },
+        answer: explanation.length > 0 ? { id, correct, explanation } : { id, correct },
+      });
+    });
+  }
+
+  if (parsed.length === 0 && a.items) {
+    a.items.forEach((item, i) => {
+      if (typeof item !== 'object' || item === null) return;
+      const got = quizFromRecord(item as Record<string, unknown>, i);
+      if (got) parsed.push(got);
+    });
+  }
+
+  return {
+    questions: parsed.map((p) => p.question),
+    answers: parsed.map((p) => p.answer),
+  };
+}
+
+/**
+ * 归一化产出物。内容为空时返回 null，由调用方丢弃。
+ *
+ * ★ 返回 `ArtifactNormalization`（产出物 + 答案）而不是单个产出物 ——
+ *   因为 quiz 的答案**必须与题目分离**，由调用方拿去落事件。
+ */
+export function normalizeArtifact(a: RawArtifact): ArtifactNormalization | null {
   const kind = a.kind ?? a.type ?? 'text';
 
+  // ── table：真结构 ──
+  if (kind === 'table') {
+    const table = normalizeTable(a);
+    if (!table) return null;
+    return { artifact: { kind: 'table', content: table }, answers: [] };
+  }
+
+  // ── quiz：题目与答案分离 ──
+  if (kind === 'quiz') {
+    const { questions, answers } = normalizeQuiz(a);
+    if (questions.length === 0) return null;
+    return { artifact: { kind: 'quiz', content: questions }, answers };
+  }
+
+  // ── text / list / plan：保持原有压平行为（这几类本来就没有结构）──
   const lines: string[] = [];
   if (a.title) lines.push(a.title);
   if (a.items && a.items.length > 0) {
@@ -197,9 +455,14 @@ export function normalizeArtifact(
   if (a.content) lines.push(a.content);
   if (a.summary) lines.push(a.summary);
 
-  const content = lines.filter((l) => l.trim().length > 0).join('\n');
-  if (content.length === 0) return null;
-  return { kind, content };
+  const kept = lines.map((l) => l.trim()).filter((l) => l.length > 0);
+  if (kept.length === 0) return null;
+
+  return {
+    artifact:
+      kind === 'text' ? { kind: 'text', content: kept.join('\n') } : { kind, content: kept },
+    answers: [],
+  };
 }
 
 /**

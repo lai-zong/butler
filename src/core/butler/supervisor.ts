@@ -36,6 +36,7 @@ import { supervisionSchema, type SupervisionOutput } from '../prompts/schemas.js
 import { renderContractForReview, type TaskContract } from './contract.js';
 import { DOMAIN_DISCIPLINE, domainName } from '../domain/types.js';
 import type { ExecutionReport } from '../execution/types.js';
+import { artifactToText } from '../execution/render.js';
 
 /**
  * 归一化后的发现 —— message **必定存在**。
@@ -74,7 +75,7 @@ const SUMMARY_CHAR_LIMIT = 1_800;
 
 function summarize(report: ExecutionReport): string {
   const arts = report.artifacts
-    .map((a) => (Array.isArray(a.content) ? a.content.join('；') : String(a.content)))
+    .map((a) => artifactToText(a, '；'))
     .join(' | ');
   const findings = (report.findings ?? []).map((f) => `[${f.kind}] ${f.statement}`).join('；');
   const reply = report.reply.length > 0 ? report.reply : '';

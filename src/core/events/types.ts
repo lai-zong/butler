@@ -196,7 +196,17 @@ export type EventType =
   //   对话就必须是**可持久化、可重放**的状态，而不只是界面里的一段 UI 状态。
   | 'session.message'
   | 'session.reply'
-  | 'session.verdict';
+  | 'session.verdict'
+  // ── 题目与批改（v8 新增）──
+  //
+  // ★★ `quiz.created` 存的是**正确答案**，它必须与产出物分离：
+  //   · 产出物（`ExecutionArtifact`）走 `session.reply` → **进前端**；
+  //   · 答案走这里 → **只给服务端**（`.butler-data` 对模型的文件工具是受保护路径）。
+  //
+  //   ⚠️ 为什么答案不能塞进产出物：一旦进了产出物，它会随消息一起
+  //      重放给前端，"做题窗格"就等于把答案直接印在题目下面。
+  | 'quiz.created'
+  | 'quiz.graded';
 
 /**
  * ⚠️ **历史事件类型**（v8 之前的多执行者架构产生）—— 当前代码不再产生。
@@ -325,6 +335,8 @@ export const EVENT_FAMILIES = {
     'session.message',
     'session.reply',
     'session.verdict',
+    'quiz.created',
+    'quiz.graded',
   ],
   mcp: [
     'mcp.serverAdded',
