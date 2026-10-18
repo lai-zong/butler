@@ -26,9 +26,26 @@ import type { ModelMessage, ModelPart, ModelToolSpec } from '../../core/ports/mo
 // 协议形状
 // ═══════════════════════════════════════════════════════════
 
+/**
+ * OpenAI 兼容的多模态内容片段。
+ *
+ * ★ 只有在**带图片**时才用数组形式；纯文本仍用 string（简单、且向后兼容）。
+ */
+export type ContentPart =
+  | { readonly type: 'text'; readonly text: string }
+  | {
+      readonly type: 'image_url';
+      readonly image_url: { readonly url: string; readonly detail?: string };
+    };
+
 export interface ApiMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  /**
+   * `string`：纯文本（多数情况）
+   * `null`：只有工具调用、没有正文
+   * `ContentPart[]`：**带图片时必须用数组**（OpenAI 兼容格式）
+   */
+  content: string | readonly ContentPart[] | null;
   tool_calls?: Array<{
     id: string;
     type: 'function';
@@ -88,16 +105,38 @@ export function partToApi(msg: ModelMessage): ApiMessage[] {
   const texts: string[] = [];
   const toolCalls: NonNullable<ApiMessage['tool_calls']> = [];
   const toolResults: ApiMessage[] = [];
+  /** ★ 图片单独收集：它们让 content 必须从 string 变成数组 */
+  const images: ContentPart[] = [];
 
   for (const p of msg.content as readonly ModelPart[]) {
     switch (p.kind) {
       case 'text':
         texts.push(p.text);
         break;
-      case 'image':
-        // 见上方说明：当前不发送图片，静默忽略会掩盖缺口 —— 这里留一行
-        // 明确的落点，补的时候不会被忘记。
+      case 'image': {
+        /**
+         * ★★ E3：图片真的送进模型（此前这里是 `break`，图片被静默丢弃）。
+         *
+         * ⚠️ 协议约束（写在 `ModelImagePart` 的注释里）：**图片只能放在 `user` 消息里**，
+         *    放 system/assistant 会被 API 以 400 拒绝。
+         *    所以这里**显式报错**而不是静默丢弃 ——
+         *    静默丢弃正是改之前的问题：模型看不到图，却没人知道为什么。
+         */
+        if (msg.role !== 'user') {
+          throw new Error(
+            `图片只能放在 user 消息里（当前 role=${msg.role}）。` +
+              `这是协议限制，放错会被 API 以 400 拒绝。`,
+          );
+        }
+        images.push({
+          type: 'image_url',
+          image_url: {
+            url: p.url,
+            ...(p.detail !== undefined ? { detail: p.detail } : {}),
+          },
+        });
         break;
+      }
       case 'toolCall':
         toolCalls.push({
           id: p.callId,
@@ -116,12 +155,27 @@ export function partToApi(msg: ModelMessage): ApiMessage[] {
   }
 
   const out: ApiMessage[] = [];
-  const hasBody = texts.length > 0 || toolCalls.length > 0;
+  const hasBody = texts.length > 0 || toolCalls.length > 0 || images.length > 0;
 
   if (hasBody) {
+    /**
+     * ★ 有图片 → 数组形式：先文本（若有）再图片。
+     *   顺序有讲究：OpenAI 兼容接口按顺序理解，文本在前等于"先说要干嘛，再看图"。
+     *   没有图片时**仍然用 string** —— 保持与旧行为完全一致，避免无谓变更。
+     */
+    const content: ApiMessage['content'] =
+      images.length > 0
+        ? [
+            ...(texts.length > 0 ? [{ type: 'text' as const, text: texts.join('\n') }] : []),
+            ...images,
+          ]
+        : texts.length > 0
+          ? texts.join('\n')
+          : null;
+
     out.push({
       role: msg.role,
-      content: texts.length > 0 ? texts.join('\n') : null,
+      content,
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
     });
   }
