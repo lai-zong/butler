@@ -37,6 +37,16 @@ interface ChatBody {
   readonly sessionId?: string;
   readonly text?: string;
   /**
+   * 前端是否**能处理确认请求**（`{ type:'approval' }` 事件 + POST 答复）。
+   *
+   * ⚠️ 默认 false，必须由前端**显式声明**。
+   *    原因（真实回归）：C6 通道建好后，如果无条件启用，
+   *    而前端还没实现确认界面，那么任何"需要确认"的工具调用都会
+   *    **挂满 120 秒超时**才被拒绝 —— 比改造前（立刻拒绝）体验更差。
+   *    所以这里按能力协商：能处理才开，不能处理就退回"立即拒绝"。
+   */
+  readonly supportsApproval?: boolean;
+  /**
    * 本轮图片：`data:image/png;base64,...` 或 http(s) 链接。
    *
    * ⚠️ 只对**这一轮**有效 —— 不落历史、不进事件、不写长期记忆。
@@ -108,27 +118,28 @@ export async function POST(req: NextRequest): Promise<Response> {
       send({ type: 'session', sessionId: session.id });
 
       /**
-       * ★ C6 询问通道：本轮专用。
+       * ★ C6 询问通道：**仅当前端声明能处理时才启用**。
        *
-       * 需要确认的动作会通过它推一条 `approval` 事件给前端，
-       * 然后**停在那里等**（前端 POST `/api/approval` 答复）。
-       * 超时 120 秒自动拒绝；流结束/断开时全部拒绝。
-       *
-       * ⚠️ 必须**每轮新建**：工具框架与权限策略都是全局共享的，
-       *    把询问状态挂在共享对象上会在并发会话之间串味。
+       * ⚠️ 无条件启用会造成真实回归：前端还没做确认界面时，
+       *    "需要确认"的工具调用会挂满 120 秒才拒绝，
+       *    而改造前是**立刻拒绝**。
+       *    所以这里是能力协商：能处理才开，否则退回原行为。
        */
-      const approvals = new SseApprovals({
-        emit: (req) =>
-          send({
-            type: 'approval',
-            id: req.id,
-            toolName: req.toolName,
-            tier: req.tier,
-            summary: req.summary,
-            ...(req.preview !== undefined ? { preview: req.preview } : {}),
-            timeoutMs: req.timeoutMs,
-          }),
-      });
+      const approvals =
+        body.supportsApproval === true
+          ? new SseApprovals({
+              emit: (req) =>
+                send({
+                  type: 'approval',
+                  id: req.id,
+                  toolName: req.toolName,
+                  tier: req.tier,
+                  summary: req.summary,
+                  ...(req.preview !== undefined ? { preview: req.preview } : {}),
+                  timeoutMs: req.timeoutMs,
+                }),
+            })
+          : undefined;
 
       /**
        * ★ 记下这一轮的起始 seq —— 界面据此取「本轮依据」。
@@ -147,8 +158,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           userText: text,
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(images.length > 0 ? { images } : {}),
-    // ★ 本轮询问通道（C6）
-    asker: approvals,
+    // ★ 本轮询问通道（C6）：仅前端声明能处理时才有，否则退回"立即拒绝"
+    ...(approvals !== undefined ? { asker: approvals } : {}),
           userId: session.userId,
           model: rt.model!,
           random: rt.random,
