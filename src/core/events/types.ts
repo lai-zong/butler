@@ -247,7 +247,20 @@ export function isLegacyEventType(t: EventType): boolean {
   return (LEGACY_EVENT_TYPES as readonly string[]).includes(t);
 }
 
-/** 族划分，便于 UI 分组与统计。 */
+/**
+ * 族划分，便于 UI 分组与统计。
+ *
+ * ⚠️ **只放当前架构会产生的事件**。
+ *
+ * ★ v8 修正：原 `routing` 族里混着 7 个历史事件（`route.decided` /
+ *   `route.clarify` / `route.rerouted` / `dispatch.*`），
+ *   原 `reporting` 族则**三个成员全是历史事件**（`servant.report` 等）。
+ *   这与本文件开头「历史事件必须显式隔离」的意图**直接矛盾** ——
+ *   读者按族浏览时会以为"汇报族"还是活的。
+ *
+ *   现在：历史的 10 个事件只在 `LEGACY_EVENT_TYPES` 里；
+ *   `reporting` 族删除；`routing` 改名 `execution`（`routing` 这个词已死）。
+ */
 export const EVENT_FAMILIES = {
   reasoning: [
     'thought.delta',
@@ -257,20 +270,7 @@ export const EVENT_FAMILIES = {
     'tool.call',
     'tool.result',
   ],
-  routing: [
-    'route.decided',
-    'contract.written',
-    'butler.executed',
-    'route.clarify',
-    'route.assumed',
-    'route.rerouted',
-    'dispatch.created',
-    'dispatch.stepStarted',
-    'dispatch.stepDone',
-    'dispatch.stepFailed',
-    'constraint.injected',
-  ],
-  reporting: ['servant.report', 'servant.blocked', 'servant.needsDecision'],
+  execution: ['contract.written', 'butler.executed', 'route.assumed', 'constraint.injected'],
   supervision: [
     'supervisor.observe',
     'supervisor.omissionDetected',
@@ -338,6 +338,14 @@ export const EVENT_FAMILIES = {
     'quiz.created',
     'quiz.graded',
   ],
+  /**
+   * ★ 上下文压缩（v8 补登记）。
+   *
+   * ⚠️ `context.compacted` 早就存在（`chat/service.ts` 会产生、`validate:9` 断言它落地），
+   *    但它**既不在任何事件族、也不在历史清单**里 —— 是编译期护栏
+   *    （`UnregisteredEventType`）把它抓出来的：能落盘、按族却查不到。
+   */
+  context: ['context.compacted'],
   mcp: [
     'mcp.serverAdded',
     'mcp.serverRemoved',
@@ -350,6 +358,44 @@ export const EVENT_FAMILIES = {
 } as const satisfies Record<string, readonly EventType[]>;
 
 export type EventFamily = keyof typeof EVENT_FAMILIES;
+
+// ═══════════════════════════════════════════════════════════
+// ★ 扩展护栏：新增事件类型必须登记
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 加一个新的 `EventType` 要动的地方（漏了会在这里被抓住）：
+ *
+ *   ① `EventType` 联合                      —— 必须
+ *   ② 下方 `EVENT_FAMILIES` 里某个族         —— **漏了这条会编译报错**
+ *   ③ 若为历史遗留 → `LEGACY_EVENT_TYPES`   —— 二选一，不能都漏
+ *   ④ 重放分支（若该事件影响检查点状态）      —— 不影响则可忽略（`replay` 有 default）
+ *   ⑤ 检查点白名单（若该时刻值得回退）        —— 见 `checkpoint/manager.ts`
+ *   ⑥ `event-replay-safety.test.ts` 会自动覆盖它（遍历全部类型重放）
+ */
+type FamilyEventType = (typeof EVENT_FAMILIES)[keyof typeof EVENT_FAMILIES][number];
+type LegacyEventType = (typeof LEGACY_EVENT_TYPES)[number];
+
+/**
+ * 既没登记进任何事件族、也不在历史清单里的事件类型。
+ *
+ * ★★ 这行的作用是**把纪律变成编译错误**：
+ *    以前漏登记的表现是"事件能落盘，但按族查不到、按族遍历漏掉"——
+ *    运行时完全正常，只有某天统计或清理时才发觉得到怪结果。
+ *
+ * ⚠️ 如果这里报错，说明你新加了 `EventType` 却没登记。去 ② 或 ③ 补上。
+ */
+type UnregisteredEventType = Exclude<EventType, FamilyEventType | LegacyEventType>;
+
+/** 编译期断言：`UnregisteredEventType` 必须为空（`never`）。 */
+const _assertEveryEventTypeIsRegistered: UnregisteredEventType extends never ? true : never = true;
+void _assertEveryEventTypeIsRegistered;
+
+/** 扁平的全部事件类型 —— 供测试与审计遍历（顺序稳定：先族内、后历史）。 */
+export const ALL_EVENT_TYPES: readonly EventType[] = [
+  ...Object.values(EVENT_FAMILIES).flat(),
+  ...LEGACY_EVENT_TYPES,
+] as readonly EventType[];
 
 /**
  * 一条会话事件。

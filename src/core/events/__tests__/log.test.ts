@@ -8,7 +8,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { EventLog } from '../log.js';
-import { EVENT_FAMILIES, EventInvariantError, type EventType } from '../types.js';
+import {
+  ALL_EVENT_TYPES,
+  EVENT_FAMILIES,
+  EventInvariantError,
+  LEGACY_EVENT_TYPES,
+  type EventType,
+} from '../types.js';
 
 describe('EventLog · 不变量 I1（seq 单调无空洞）', () => {
   it('seq 从 1 开始并单调递增', () => {
@@ -179,10 +185,8 @@ describe('EventLog · 订阅（跨会话一致性的基础）', () => {
 });
 
 describe('EVENT_FAMILIES 自检', () => {
-  it('十一个事件族全部非空', () => {
-    const families = Object.entries(EVENT_FAMILIES);
-    expect(families).toHaveLength(11);
-    for (const [name, types] of families) {
+  it('每个事件族都非空', () => {
+    for (const [name, types] of Object.entries(EVENT_FAMILIES)) {
       expect(types.length, `事件族 ${name} 不应为空`).toBeGreaterThan(0);
     }
   });
@@ -190,5 +194,41 @@ describe('EVENT_FAMILIES 自检', () => {
   it('事件类型不重复定义', () => {
     const all: EventType[] = Object.values(EVENT_FAMILIES).flatMap((t) => [...t]);
     expect(new Set(all).size).toBe(all.length);
+  });
+
+  it('★ 漏登记的事件类型会被抓到（护栏自身的回归测试）', () => {
+    /**
+     * ⚠️ 这里**刻意不再断言"十一个事件族"** —— 那个数字每加一簇就要改，
+     *    改的时候很容易"顺手把数字改掉"而没想清楚。
+     *
+     *    真正要守的不变量是：**每个 `EventType` 要么属于某个族，
+     *    要么被明确标成历史遗留**。漏登记的表现是"能落盘、按族查不到"，
+     *    运行时完全正常 —— 只能靠编译期断言 + 测试来抓。
+     *
+     *    这条护栏已经抓到过一个真实缺陷：`context.compacted` 早就在产生、
+     *    却既不属于任何族也不在历史清单里。
+     */
+    const registered = new Set<string>([
+      ...Object.values(EVENT_FAMILIES).flatMap((t) => [...t]),
+      ...LEGACY_EVENT_TYPES,
+    ]);
+
+    // ① 登记表不含"看着不像事件类型"的项（防写错字）
+    for (const t of registered) {
+      expect(t.includes('.'), `登记项 ${t} 不像事件类型`).toBe(true);
+    }
+
+    // ② `ALL_EVENT_TYPES` 覆盖全部登记项，且自身无重复
+    for (const t of registered) {
+      expect(ALL_EVENT_TYPES, `${t} 未出现在 ALL_EVENT_TYPES 里`).toContain(t as EventType);
+    }
+    expect(new Set(ALL_EVENT_TYPES).size).toBe(ALL_EVENT_TYPES.length);
+  });
+
+  it('★ 历史事件与当前事件不重叠', () => {
+    const current = new Set<string>(Object.values(EVENT_FAMILIES).flatMap((t) => [...t]));
+    for (const legacy of LEGACY_EVENT_TYPES) {
+      expect(current.has(legacy), `${legacy} 同时被标为历史事件与当前事件`).toBe(false);
+    }
   });
 });
