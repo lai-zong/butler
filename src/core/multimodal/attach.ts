@@ -395,6 +395,26 @@ const MEMORY_WORTHY: readonly {
   { field: /日期|时间|date/i, kind: 'fact', make: (v) => `消费发生在 ${v}`, confidence: 0.6 },
 ];
 
+/**
+ * 候选该落到哪一层。
+ *
+ * ★ 这是把我原来**硬编码 `global_shared`** 的地方纠正过来：
+ *   领域的决定权在 `routeAttachment`（方案 §5.3 的映射），不在调用方。
+ *
+ * ⚠️ 三种情况如实区分：
+ *   · 路由给出了具体领域 → `domain` 记忆（收据进健康领域）
+ *   · 路由判为 `'butler'`（语音转写）→ 全局共享
+ *   · 路由判为 `null`（用途未确认）→ 全局共享，**且调用方必须把反问转给用户**
+ */
+export function candidateScopeFor(route: RouteDecision):
+  | { readonly memClass: 'domain'; readonly domain: DomainId }
+  | { readonly memClass: 'global_shared' } {
+  if (route.domain !== null && route.domain !== 'butler') {
+    return { memClass: 'domain', domain: route.domain };
+  }
+  return { memClass: 'global_shared' };
+}
+
 export function extractMemoryCandidates(args: {
   readonly parsed: ParsedAttachment;
 }): readonly MemoryCandidateFromAttachment[] {

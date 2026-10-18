@@ -27,6 +27,8 @@ import { MemoryStore } from '../core/memory/store.js';
 import { MockModel, respondError, respondJson } from '../adapters/model/mock.js';
 import { parseAttachment } from '../core/multimodal/parse.js';
 import { sinkAndAdmit } from '../core/reflection/runReflection.js';
+import { candidateScopeFor, classifyAttachment, routeAttachment } from '../core/multimodal/attach.js';
+import { classifyInputFromDataUrl } from '../core/multimodal/dataUrl.js';
 import type { ModelCapabilities } from '../core/ports/model.js';
 
 let passed = 0;
@@ -260,6 +262,42 @@ async function main(): Promise<void> {
     check('模型确实被调用了', model.countByPurpose('attachmentParse') === 1);
   }
 
+  hr('⑧ 领域路由（§5.3：收据 → 健康领域）');
+  {
+    /**
+     * ⚠️ 这条以前**永远走不到**：`kind` 被写死 `'image'`、`scope` 写死 `global_shared`，
+     *    于是 `classifyAttachment` / `routeAttachment` 生产 0 调用，
+     *    「收据 → 健康领域」只存在于文档里。
+     */
+    const receiptRoute = routeAttachment({ kind: 'receipt', needsUserConfirmation: false });
+    check('收据 → health', receiptRoute.domain === 'health', String(receiptRoute.domain));
+    check(
+      '候选落 health 领域（不是全局共享）',
+      JSON.stringify(candidateScopeFor(receiptRoute)) ===
+        JSON.stringify({ memClass: 'domain', domain: 'health' }),
+      JSON.stringify(candidateScopeFor(receiptRoute)),
+    );
+
+    const imgRoute = routeAttachment({ kind: 'image', needsUserConfirmation: false });
+    check('用途不明的图片 → 不猜领域', imgRoute.domain === null);
+    check('并给出反问', (imgRoute.question ?? '').length > 0);
+    check(
+      '候选落全局共享（待确认）',
+      JSON.stringify(candidateScopeFor(imgRoute)) === JSON.stringify({ memClass: 'global_shared' }),
+    );
+
+    // 真实 PNG 魔数 → 按内容识别（而不是靠文件名）
+    const input = classifyInputFromDataUrl(
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      '附件1',
+    );
+    check('能还原出分类入参', input !== null);
+    if (input !== null) {
+      const cls = classifyAttachment(input);
+      check('按魔数识别出 image/png', cls.detectedMime === 'image/png', String(cls.detectedMime));
+    }
+  }
+
   hr('结果');
   console.log(`  通过 ${passed}/${passed + failed}`);
   if (failed > 0) {
@@ -271,4 +309,5 @@ async function main(): Promise<void> {
 }
 
 await main();
+
 

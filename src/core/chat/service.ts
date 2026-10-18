@@ -50,6 +50,8 @@ import { artifactToText } from '../execution/render.js';
 import type { ApprovalAsker } from '../tools/approval.js';
 import { parseAttachment } from '../multimodal/parse.js';
 import type { MemoryCandidateFromAttachment } from '../multimodal/attach.js';
+import { candidateScopeFor, classifyAttachment, routeAttachment, KIND_LABEL } from '../multimodal/attach.js';
+import { classifyInputFromDataUrl } from '../multimodal/dataUrl.js';
 
 // ═══════════════════════════════════════════════════════════
 // 一轮的执行
@@ -514,22 +516,56 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    *   ③ 候选**一律待审核**：走 `sinkAndAdmit`（与反思同一条入库路径）
    */
   if (args.images !== undefined && args.images.length > 0) {
-    const attachmentCandidates: MemoryCandidateFromAttachment[] = [];
+    /**
+     * ★★ 真实分类 + 领域路由（替掉原来的硬编码）。
+     *
+     * ⚠️ 原实现的两个捷径（本轮修正）：
+     *   ① `kind` 直接写死 `'image'` —— `classifyAttachment` 从未被调用
+     *   ② 候选 `scope` 写死 `global_shared` —— `routeAttachment` 从未被调用，
+     *      于是方案 §5.3 的「收据 → 健康领域」**永远不生效**
+     */
+    const attachmentCandidates: (MemoryCandidateFromAttachment & {
+      readonly scope: ReturnType<typeof candidateScopeFor>;
+    })[] = [];
+
     for (const [i, img] of args.images.entries()) {
+      const fileName = `附件${i + 1}`;
+      const classifyInput = classifyInputFromDataUrl(img.url, fileName);
+      if (classifyInput === null) {
+        learnedParts.push(`附件${i + 1} 无法识别（不是合法的图片数据）`);
+        continue;
+      }
+
+      const classification = classifyAttachment(classifyInput);
+      const route = routeAttachment({
+        kind: classification.kind,
+        needsUserConfirmation: classification.needsUserConfirmation,
+      });
+
       const parsed = await parseAttachment({
         model: args.model,
         log: args.log,
         clock: args.clock,
         attachmentId: `${sessionId}#img${i + 1}`,
-        kind: 'image',
-        fileName: `附件${i + 1}`,
+        kind: classification.kind,
+        fileName,
         source: { kind: 'image', url: img.url },
       });
-      if (parsed.ok) {
-        attachmentCandidates.push(...parsed.candidates);
-      } else {
+
+      if (!parsed.ok) {
         // 如实告诉用户"这张没解析出来"，而不是静默跳过
         learnedParts.push(`附件${i + 1} 未解析：${parsed.reason}`);
+        continue;
+      }
+
+      // ★ 用途未确认时**不猜领域**，并且把反问如实转给用户
+      if (route.domain === null) {
+        learnedParts.push(`附件${i + 1}（${KIND_LABEL[classification.kind]}）${route.question ?? '用途待确认'}`);
+      }
+
+      const scope = candidateScopeFor(route);
+      for (const c of parsed.candidates) {
+        attachmentCandidates.push({ ...c, scope });
       }
     }
 
@@ -545,7 +581,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           content: c.content,
           confidence: c.confidence,
           evidence: c.evidence,
-          scope: { memClass: 'global_shared' as const },
+          scope: c.scope,
           rationale: c.rationale,
           layer: 'domain' as const,
           by: 'butler' as const,
@@ -856,3 +892,4 @@ function buildRejectedReply(session: RunSessionResult, verdict: Verdict): string
 
   return lines.join('\n');
 }
+
