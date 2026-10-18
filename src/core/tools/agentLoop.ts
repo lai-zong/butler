@@ -298,7 +298,13 @@ export interface AgentLoopOptions {
   readonly log: EventLog;
   readonly clock: ClockPort;
   readonly taskId: string;
-  /** 暴露给模型的工具（默认全部；可按仆人能力收窄） */
+  /**
+   * 本次任务的**自然语言目标**，透传到 `ToolContext.task`。
+   *
+   * ★ 用途：桌面工具据此记录"这类任务用哪种方式成功"（方案 §6.3 ①）。
+   *   ⚠️ 不传就意味着操作记忆拿不到签名 —— 那宁可不记录，也不编造。
+   */
+  readonly task?: string;
   readonly toolFilter?: (t: ToolSpec) => boolean;
   readonly maxRounds?: number;
   /**
@@ -565,6 +571,7 @@ export async function runAgentLoop(
           toolName: tc.name,
           args: check.value,
           taskId: opts.taskId,
+          ...(opts.task !== undefined ? { task: opts.task } : {}),
         });
         output = r.output;
         ok = r.ok;

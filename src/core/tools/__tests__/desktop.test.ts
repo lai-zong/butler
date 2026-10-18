@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { desktopTools } from '../builtin/desktop.js';
 import type { DesktopBridgePort } from '../../desktop/port.js';
+import type { OperationMemoryStore } from '../../memory/operations.js';
 
 /** 假桥：记录调用，按需返回或抛错 */
 function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
@@ -306,6 +307,171 @@ describe('★ 阶梯级（D-32）：能不动鼠标键盘就不动', () => {
   });
 });
 
+/** 假的操作记忆仓储：只记录调用，不实现真实逻辑 */
+function fakeOps(over: Partial<OperationMemoryStore> = {}): OperationMemoryStore {
+  const calls: Array<Record<string, unknown>> = [];
+  const store = {
+    recordAttempt: vi.fn((args: Record<string, unknown>) => {
+      calls.push(args);
+      return {
+        id: 'op_1',
+        userId: 'local',
+        kind: 'method',
+        taskSignature: 'convert|word|',
+        content: '',
+        createdAt: 0,
+        updatedAt: 0,
+        effectiveness: { attempts: 1, succeeded: 1, lastUsedAt: 0, avgDurationMs: 0 },
+      };
+    }),
+    recommend: vi.fn(() => ({
+      taskSignature: 'convert|word|',
+      ranked: [],
+      discouraged: [],
+      usedMemory: false,
+    })),
+    ...over,
+  } as unknown as OperationMemoryStore;
+  (store as unknown as { __calls: typeof calls }).__calls = calls;
+  return store;
+}
+
+describe('★ 操作记忆接线（方案 §6.3 ① 方法记忆）', () => {
+  it('给了仓储 → 会多出一个 desktop_experience 工具', () => {
+    const specs = desktopTools(fakeBridge(), ALL_CAPS, fakeOps());
+    expect(specs.map((s) => s.name)).toContain('desktop_experience');
+  });
+
+  it('不给仓储 → 行为与之前完全一致（记忆是旁路，不是依赖）', () => {
+    const specs = desktopTools(fakeBridge(), ALL_CAPS);
+    expect(specs.map((s) => s.name)).not.toContain('desktop_experience');
+  });
+
+  it('★★ 成功动作按 task 记录（阶梯级 1 → api）', async () => {
+    const ops = fakeOps();
+    const specs = desktopTools(fakeBridge(), ALL_CAPS, ops);
+    const tool = specs.find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute(
+      { source: 'a.docx', target: 'b.pdf' },
+      { task: '把一批 Word 转成 PDF', clock: {} as never, taskId: 't1' } as never,
+    );
+
+    const calls = (ops as unknown as { __calls: Array<Record<string, unknown>> }).__calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.['task']).toBe('把一批 Word 转成 PDF');
+    expect(calls[0]?.['path']).toBe('api');
+    expect(calls[0]?.['success']).toBe(true);
+  });
+
+  it('★★ 失败动作也记录，并带上失败原因', async () => {
+    const bridge = fakeBridge({
+      officeConvert: vi.fn(async () => {
+        throw new Error('源文件不存在');
+      }),
+    });
+    const ops = fakeOps();
+    const tool = desktopTools(bridge, ALL_CAPS, ops).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await expect(
+      tool.execute({ source: 'x.docx', target: 'y.pdf' }, { task: '转换文档', clock: {} as never, taskId: 't' } as never),
+    ).rejects.toThrow(/源文件不存在/);
+
+    const calls = (ops as unknown as { __calls: Array<Record<string, unknown>> }).__calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.['success']).toBe(false);
+    expect(String(calls[0]?.['failureReason'])).toContain('源文件不存在');
+  });
+
+  it('★ ctx.task 缺失 → 不记录（没有签名就别污染记忆）', async () => {
+    const ops = fakeOps();
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute({ source: 'a.docx', target: 'b.pdf' }, { clock: {} as never, taskId: 't' } as never);
+    const calls = (ops as unknown as { __calls: unknown[] }).__calls;
+    expect(calls).toHaveLength(0);
+  });
+
+  it('★★★ 记忆写入抛错**不能**影响工具结果（旁路原则）', async () => {
+    const ops = fakeOps({
+      recordAttempt: vi.fn(() => {
+        throw new Error('记忆库炸了');
+      }) as never,
+    });
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_office_convert');
+    if (!tool) throw new Error('工具缺失');
+
+    // 记忆写入失败，但工具本身必须照常成功
+    const r = await tool.execute(
+      { source: 'a.docx', target: 'b.pdf' },
+      { task: '转换', clock: {} as never, taskId: 't' } as never,
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('★ UIA 模式调用记成 uia 路径（阶梯 2）', async () => {
+    const ops = fakeOps();
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_uia_invoke');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute(
+      { window: '设置', name: '开关', action: 'toggle' },
+      { task: '打开动态光效', clock: {} as never, taskId: 't' } as never,
+    );
+
+    const calls = (ops as unknown as { __calls: Array<Record<string, unknown>> }).__calls;
+    expect(calls[0]?.['path']).toBe('uia');
+    // app 从 window 参数推出来
+    expect(calls[0]?.['app']).toBe('设置');
+  });
+
+  it('读类工具不记录（阶梯只描述"动手"）', async () => {
+    const ops = fakeOps();
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_uia_read');
+    if (!tool) throw new Error('工具缺失');
+
+    await tool.execute({ window: '设置', name: '确定' }, { task: '看看界面', clock: {} as never, taskId: 't' } as never);
+    const calls = (ops as unknown as { __calls: unknown[] }).__calls;
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('desktop_experience —— 查历史经验', () => {
+  it('没有历史 → 明说"还没有记录"，并给出默认顺序', async () => {
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, fakeOps()).find((s) => s.name === 'desktop_experience');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ task: '把 Word 转 PDF' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('还没有历史记录');
+    expect(r.output).toContain('应用接口');
+  });
+
+  it('有历史 → 列出路径成功率与"已知不可行"', async () => {
+    const ops = fakeOps({
+      recommend: vi.fn(() => ({
+        taskSignature: 'convert|word|',
+        ranked: [
+          { path: 'api' as const, score: 0.9, why: '5 次成功 5 次', fromExperience: true },
+          { path: 'uia' as const, score: 0.2, why: '2 次失败', fromExperience: true, adviseGivingUp: true },
+        ],
+        discouraged: ['uia' as const],
+        usedMemory: true,
+      })) as never,
+    });
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_experience');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ task: '把 Word 转 PDF' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('实测');
+    expect(r.output).toContain('已知不可行');
+    expect(r.output).toContain('建议放弃');
+  });
+});
 describe('desktop_uia_read —— 查找与结构', () => {
   it('给 name → 报告匹配数与可用模式', async () => {
     const tool = desktopTools(fakeBridge(), ALL_CAPS).find((s) => s.name === 'desktop_uia_read');

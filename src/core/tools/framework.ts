@@ -114,6 +114,14 @@ export class ToolFramework {
     readonly toolName: string;
     readonly args: unknown;
     readonly taskId: string;
+    /**
+     * 本次任务的自然语言目标 —— 透传给工具的 `ToolContext.task`。
+     *
+     * ⚠️ **必须逐次传递，不能挂在 ToolFramework 上**：
+     *    运行时里所有会话**共享同一个 ToolFramework 实例**，
+     *    挂一个"当前任务"字段会在并发会话之间串味。
+     */
+    readonly task?: string;
   }): Promise<ToolResult> {
     const started = this.clock.now();
     const spec = this.tools.get(args.toolName);
@@ -210,7 +218,11 @@ export class ToolFramework {
       createdAt: this.clock.now(),
     });
 
-    const ctx: ToolContext = { clock: this.clock, taskId: args.taskId };
+    const ctx: ToolContext = {
+      clock: this.clock,
+      taskId: args.taskId,
+      ...(args.task !== undefined ? { task: args.task } : {}),
+    };
     let result: ToolResult;
     try {
       result = await spec.execute(args.args, ctx);

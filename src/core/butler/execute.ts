@@ -252,6 +252,13 @@ async function runWithTools(
       clock: args.clock,
       taskId: args.taskId,
       /**
+       * ★ 把**用户这次的任务**透传给工具（方案 §6.3 ① 方法记忆的签名来源）。
+       *   桌面工具据此记录"这类任务用 COM 成功 / 用 UIA 失败"，
+       *   下次同类任务才能给出"直接走 COM"的建议。
+       *   ⚠️ 不传的话操作记忆拿不到签名 —— 宁可不记录，不编造。
+       */
+      task: args.userGoal,
+      /**
        * ★ 与旧 `runServant` 的关键差别：**没有按领域的工具白名单**。
        *   只排除终止工具本身（它由循环内部处理）。
        *   权限由 `ToolFramework` 的分级闸门统一管 —— 那比按领域白名单更严格。

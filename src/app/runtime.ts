@@ -252,7 +252,12 @@ async function initRuntime(): Promise<ButlerRuntime> {
     void bridge
       .ping()
       .then((caps) => {
-        const specs = desktopTools(bridge, caps.capabilities);
+        /**
+         * ★ 把操作记忆仓储传进去（方案 §6.3 ① 方法记忆）：
+         *   从这次起，桌面动作的**成功/失败**都会按任务签名归档，
+         *   下次同类任务就能给出"该走哪条路"的建议。
+         */
+        const specs = desktopTools(bridge, caps.capabilities, bootstrapped.operations);
         if (specs.length === 0) {
           bridge.close();
           return;

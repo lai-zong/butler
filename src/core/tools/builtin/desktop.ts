@@ -21,7 +21,176 @@
  */
 
 import type { DesktopBridgePort } from '../../desktop/port.js';
-import type { ToolSpec } from '../types.js';
+import { PATH_LABEL, type ExecutionPath } from '../../memory/operation.js';
+import type { OperationMemoryStore } from '../../memory/operations.js';
+import type { ToolResult, ToolSpec } from '../types.js';
+
+/**
+ * 让模型**主动查历史经验**（只读）。
+ *
+ * ★ 为什么做成工具而不是塞进系统提示：
+ *   ① 不用改提示词装配链（少一处耦合）
+ *   ② 只在真要动手时查一次，比每次会话都注入更省 token
+ *   ③ 查不到就明说"没有历史" —— 不编造经验
+ *
+ * ⚠️ 但必须配合"工具描述里提示它存在"，否则模型不知道要查。
+ *    这件事在 `withMemory` 包装的动作工具描述里做了（见下方 `hintExperience`）。
+ */
+export function experienceTool(ops: OperationMemoryStore): ToolSpec {
+  return {
+    name: 'desktop_experience',
+    description:
+      '查这类任务在本机的操作历史：哪条路成功率高、哪条试过多次都失败。' +
+      '动手前不确定该用哪种方式（应用接口 / 无障碍 / 坐标点击）时先查一次。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '要做什么（自然语言，例如「把一批 Word 转成 PDF」）' },
+        app: { type: 'string', description: '目标应用（可选，例如「设置」「酷狗音乐」）' },
+      },
+      required: ['task'],
+    },
+    tier: 'readOnly',
+    summarize: (args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      return `查操作历史：${String(a['task'] ?? '?')}`;
+    },
+    execute: async (args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const task = requireString(a, 'task');
+      const app = typeof a['app'] === 'string' ? a['app'] : undefined;
+
+      const r = ops.recommend({ task, ...(app !== undefined ? { app } : {}) });
+
+      if (!r.usedMemory) {
+        return {
+          ok: true,
+          output:
+            `这类任务（签名 ${r.taskSignature}）在本机**还没有历史记录**。` +
+            `\n按默认顺序尝试即可：应用接口 → 无障碍模式调用 → 坐标点击（能不动鼠标键盘就不动）。`,
+          data: r,
+          durationMs: 0,
+        };
+      }
+
+      const lines = r.ranked.map((p, i) => {
+        const label = PATH_LABEL[p.path];
+        const flag = p.fromExperience ? '实测' : '先验';
+        const giveUp = p.adviseGivingUp === true ? '  ⚠️ 试过多次都失败，建议放弃这条路' : '';
+        return `${i + 1}. ${label}（${flag}，得分 ${p.score.toFixed(2)}）：${p.why}${giveUp}`;
+      });
+
+      const discouraged =
+        r.discouraged.length > 0
+          ? `\n\n⛔ 已知不可行：${r.discouraged.map((p) => PATH_LABEL[p]).join('、')}`
+          : '';
+
+      return {
+        ok: true,
+        output: `这类任务的历史经验（签名 ${r.taskSignature}）：\n${lines.join('\n')}${discouraged}`,
+        data: r,
+        durationMs: 0,
+      };
+    },
+  };
+}
+
+/**
+ * 阶梯级 → 执行路径（操作记忆里的 `ExecutionPath`）。
+ *
+ * ★ 两套编号早就该对齐：`ExecutionPath` 本来就是按"用哪种方式"分的
+ *   （`api` / `cli` / `uia` / `vision` / `manual`），与方案 §9.4 的四级阶梯同构。
+ */
+export function rungToPath(rung: 1 | 2 | 3 | 4): ExecutionPath {
+  switch (rung) {
+    case 1:
+      return 'api'; // 应用接口 / COM
+    case 2:
+      return 'uia'; // 无障碍模式调用
+    case 3:
+      return 'uia'; // 窗口消息：仍属无障碍手段，只是兼容性更差
+    case 4:
+      return 'vision'; // 真实鼠标键盘注入（视觉/坐标路线）
+  }
+}
+
+/** 从参数里猜"这是哪个应用"（用于签名里的 app 维度） */
+function appOf(args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const a = args as Record<string, unknown>;
+  // 桌面工具都用 window 指目标应用
+  const w = a['window'];
+  if (typeof w === 'string' && w.trim().length > 0) return w.trim();
+  const src = a['source'];
+  if (typeof src === 'string' && src.trim().length > 0) {
+    const base = src.split(/[\\/]/).pop() ?? src;
+    const ext = base.includes('.') ? (base.split('.').pop() ?? '') : '';
+    return ext.length > 0 ? ext.toLowerCase() : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * 把一次桌面动作的结果记进操作记忆（方案 §6.3 ①）。
+ *
+ * ★★ 为什么要包一层而不是改每个工具：
+ *   ① 记录逻辑只有一处，不会出现"某个工具忘了记"
+ *   ② **成功和失败都要记** —— 只记成功就学不到"这条路上次失败了"
+ *
+ * ⚠️ 三条纪律：
+ *   ① `ctx.task` 缺失时**不记录** —— 没有任务文本就没有签名，
+ *      硬记只会污染记忆（下次匹配不上，还占位置）
+ *   ② 记录失败**不能影响工具结果** —— 记忆是旁路，不是主路径
+ *   ③ 失败要把原因带上（`lastFailure`），下次才知道"该规避什么"
+ */
+function withMemory(spec: ToolSpec, ops: OperationMemoryStore): ToolSpec {
+  const original = spec.execute;
+  return {
+    ...spec,
+    execute: async (args, ctx): Promise<ToolResult> => {
+      const started = Date.now();
+      let result: ToolResult | undefined;
+      let thrown: unknown;
+      try {
+        result = await original(args, ctx);
+        return result;
+      } catch (err) {
+        thrown = err;
+        throw err;
+      } finally {
+        // ⚠️ 记录本身失败绝不能盖住真实结果（旁路原则）
+        try {
+          const task = ctx.task;
+          if (task !== undefined && task.trim().length > 0) {
+            const ok = result?.ok === true && thrown === undefined;
+            const path = rungToPath(spec.rung ?? 1);
+            const app = appOf(args);
+            ops.recordAttempt({
+              task,
+              ...(app !== undefined ? { app } : {}),
+              path,
+              success: ok,
+              durationMs: Date.now() - started,
+              ...(ok
+                ? {}
+                : {
+                    failureReason:
+                      thrown !== undefined
+                        ? thrown instanceof Error
+                          ? thrown.message
+                          : String(thrown)
+                        : (result?.output ?? '未知失败'),
+                  }),
+              method: spec.summarize(args),
+            });
+          }
+        } catch {
+          // 旁路失败，静默
+        }
+      }
+    },
+  };
+}
 
 /**
  * 拼接输出路径时**不做任何路径归一化** —— 交给 Python 侧的 `os.path.abspath`。
@@ -525,6 +694,13 @@ function sleep(ms: number): Promise<void> {
 export function desktopTools(
   bridge: DesktopBridgePort,
   caps: Readonly<Record<string, boolean>>,
+  /**
+   * 操作记忆仓储（可选）。
+   *
+   * ★ 给了才会记录"这类任务用哪种方式成功"（方案 §6.3 ①）。
+   *   ⚠️ 不给时行为**与之前完全一致** —— 记忆是旁路，不是依赖。
+   */
+  ops?: OperationMemoryStore,
 ): readonly ToolSpec[] {
   const out: ToolSpec[] = [];
   // ① COM 需要 win32com
@@ -539,5 +715,10 @@ export function desktopTools(
   }
   // ③ 视觉需要 mss 或 PIL 之一
   if (caps['mss'] === true || caps['PIL'] === true) out.push(screenshotTool(bridge));
-  return out;
+
+  // ★ 只对**会动手**的工具包记忆（读类不记：阶梯描述的是"动手"的手段）
+  if (ops === undefined) return out;
+  // 让模型知道可以查历史（否则它不会主动调 desktop_experience）
+  out.push(experienceTool(ops));
+  return out.map((s) => (s.rung !== undefined ? withMemory(s, ops) : s));
 }

@@ -21,6 +21,9 @@ import { spawnSync } from 'node:child_process';
 import { PythonDesktopBridge } from '../adapters/desktop/pythonBridge.js';
 import { desktopTools } from '../core/tools/builtin/desktop.js';
 import { isDesktopPlatform } from '../core/desktop/port.js';
+import { EventLog } from '../core/events/log.js';
+import { OperationMemoryStore } from '../core/memory/operations.js';
+import { FixedClock } from '../core/ports/clock.js';
 
 let passed = 0;
 let failed = 0;
@@ -280,7 +283,64 @@ async function main(): Promise<void> {
       .catch(() => false);
     check('★ 设置确实关掉了', !stillThere);
 
-    hr('⑦ 降级：桥关闭后调用必须失败（而不是假装成功）');
+    hr('⑦ 操作记忆：真实仓储能不能接住这个参数形状');
+
+    /**
+     * ★ 为什么要这一段：单元测试用的是**假仓储**，只能证明"我们调了它"，
+     *   不能证明**真实仓储接受这个参数形状**（少个必填字段、签名算法不认，
+     *   单测都照样绿）。这里用真实 `OperationMemoryStore` 跑一遍。
+     */
+    {
+      const opsLog = new EventLog('__event_log__');
+      // 仓储需要 clock 与 random —— 这里给确定性的，避免验证结果不稳定
+      const opsClock = new FixedClock(1_760_000_000_000);
+      const opsRandom = {
+        next: (): number => 0.5,
+        pick: <T,>(items: readonly T[]): T | undefined => items[0],
+      };
+      const ops = new OperationMemoryStore(opsLog, opsClock, 'local', opsRandom);
+
+      const before = ops.all().length;
+      ops.recordAttempt({
+        task: '把一批 Word 文档转成 PDF',
+        app: 'Word',
+        path: 'api',
+        success: true,
+        durationMs: 1200,
+        method: 'Word COM SaveAs PDF',
+      });
+      check('★ 真实仓储记录成功（新增 1 条）', ops.all().length === before + 1, `${before} → ${ops.all().length}`);
+
+      // 再记一次失败，验证"失败也能记、并且推荐会把它降级"
+      ops.recordAttempt({
+        task: '把一批 Word 文档转成 PDF',
+        app: 'Word',
+        path: 'uia',
+        success: false,
+        durationMs: 800,
+        failureReason: '找不到"导出为 PDF"菜单项',
+        method: 'UIA 点击菜单',
+      });
+      check('★ 真实仓储记录失败（累计 2 条）', ops.all().length === before + 2);
+
+      const rec = ops.recommend({ task: '把一批 Word 文档转成 PDF', app: 'Word' });
+      check('★★ 推荐用上了历史（usedMemory=true）', rec.usedMemory === true, rec.taskSignature);
+      check(
+        '★★ 成功过的 api 排在失败过的 uia 前面',
+        rec.ranked.findIndex((p) => p.path === 'api') < rec.ranked.findIndex((p) => p.path === 'uia'),
+        rec.ranked.map((p) => `${p.path}:${p.score.toFixed(2)}`).join(' > '),
+      );
+
+      // ★ 事件必须落下来（否则重放后记忆就没了）
+      // ⚠️ 事件类型是 `fitness.updated`（不是 `operation.recorded`）——
+      //    仓储复用了这个事件，payload 里用 `kind: 'operation'` 区分
+      const opEvents = opsLog
+        .byType('fitness.updated')
+        .filter((e) => (e.payload as { kind?: string }).kind === 'operation').length;
+      check('★★ 记录写进了事件流（可重放）', opEvents >= 2, `fitness.updated(operation) × ${opEvents}`);
+    }
+
+    hr('⑧ 降级：桥关闭后调用必须失败（而不是假装成功）');
 
     bridge.close();
     let failedAfterClose = false;

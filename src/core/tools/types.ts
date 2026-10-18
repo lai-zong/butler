@@ -83,6 +83,17 @@ export interface ToolContext {
   readonly clock: ClockPort;
   /** 本次调用属于哪次任务（用于授权按任务失效） */
   readonly taskId: string;
+  /**
+   * 本次任务的**自然语言目标**（用户这次要干什么）。
+   *
+   * ★ 为什么工具需要它：操作记忆按"任务签名"归档（方案 §6.3 ①）。
+   *   没有任务文本，就只剩"某工具成功/失败"这种无签名记录 ——
+   *   下次无法回答"**这类任务**该用哪种方式"。
+   *
+   * ⚠️ 可能为空（不是所有调用都来自一趟带目标的会话），
+   *    缺失时**不要编造**签名，宁可不记录。
+   */
+  readonly task?: string;
   /** 工具可主动报告它实际触碰的敏感项，供审计 */
   readonly reportTouch?: (what: string) => void;
 }
