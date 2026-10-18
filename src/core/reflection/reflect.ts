@@ -33,6 +33,7 @@ import { DOMAIN_DISCIPLINE, domainName, type DomainId } from '../domain/types.js
 import type { ExecutionReport } from '../execution/types.js';
 import type { ClockPort } from '../ports/clock.js';
 import { artifactToText } from '../execution/render.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 // ═══════════════════════════════════════════════════════════
 // 反思产出的候选
@@ -164,7 +165,7 @@ export async function reflectDomain(args: {
     schema: reflectionSchema,
     schemaName: 'ReflectionOutput',
     temperature: 0.3,
-    maxOutputTokens: 2048,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages: [
       msg.system(domainReflectionSystem(domain)),
       msg.user(
@@ -325,7 +326,7 @@ export async function reflectButler(args: {
     schema: reflectionSchema,
     schemaName: 'ReflectionOutput',
     temperature: 0.3,
-    maxOutputTokens: 2048,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages: [
       msg.system(butlerReflectionSystem()),
       msg.user(

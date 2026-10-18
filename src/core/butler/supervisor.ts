@@ -37,6 +37,7 @@ import { renderContractForReview, type TaskContract } from './contract.js';
 import { DOMAIN_DISCIPLINE, domainName } from '../domain/types.js';
 import type { ExecutionReport } from '../execution/types.js';
 import { artifactToText } from '../execution/render.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 /**
  * 归一化后的发现 —— message **必定存在**。
@@ -118,7 +119,7 @@ export async function supervise(args: {
     // ⚠️ 结构化调用关思考 —— 思考会吃掉 max_tokens 导致 JSON 截断
     thinking: 'disabled',
     temperature: 0,
-    maxOutputTokens: 1_400,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages: [
       msg.system(BUTLER_SYSTEM),
       msg.user(

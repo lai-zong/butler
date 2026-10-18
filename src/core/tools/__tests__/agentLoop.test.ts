@@ -19,6 +19,8 @@ import { ToolFramework } from '../framework.js';
 import {
   DEFAULT_MAX_ROUNDS,
   MAX_TOOL_RESULTS_IN_HISTORY,
+  TOOL_RESULT_CHAR_LIMIT,
+  defaultMaxRounds,
   defaultTrustFor,
   runAgentLoop,
   trimHistory,
@@ -464,8 +466,14 @@ describe('④ ★ 循环有界（防止烧光 token）', () => {
     expect(ev.some((e) => (e.payload as { reason?: string }).reason === 'agent_round_limit')).toBe(true);
   });
 
-  it('默认上限是 8 轮', () => {
-    expect(DEFAULT_MAX_ROUNDS).toBe(8);
+  it('★ 默认不设轮次上限（v8 · 方案 §14 / D-30）', () => {
+    /**
+     * ⚠️ 由 8 改为 Infinity。
+     *   理由：任务没干完就被轮次掐断，是**功能失败**，不是省钱。DSH 也没有硬上限。
+     *   保护改由三条真实约束承担：上下文预算 / 日成本熔断 / 循环终止条件。
+     */
+    expect(DEFAULT_MAX_ROUNDS).toBe(Number.POSITIVE_INFINITY);
+    expect(defaultMaxRounds()).toBe(Number.POSITIVE_INFINITY);
   });
 
   it('★ 历史里的工具结果被裁剪（控制上下文增长）', () => {
@@ -533,7 +541,8 @@ describe('④ ★ 循环有界（防止烧光 token）', () => {
     ]);
 
     const r = await runAgentLoop({ model, tools, log, clock, taskId: 't' }, [msg.user('x')]);
-    expect(r.traces[0]?.output?.length).toBeLessThan(4200);
+    // ★ 阈值由 4,000 改为标准档的 8,192（v8 · 方案 §14）
+    expect(r.traces[0]?.output?.length).toBeLessThan(TOOL_RESULT_CHAR_LIMIT + 200);
     expect(r.traces[0]?.output).toContain('已截断');
   });
 });

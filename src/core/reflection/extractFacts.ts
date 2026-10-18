@@ -34,6 +34,7 @@ import type { MemoryStore } from '../memory/store.js';
 import type { MemoryCandidate } from './reflect.js';
 import { memoryExtractionSchema } from '../prompts/schemas.js';
 import { msg } from '../ports/model.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 // ═══════════════════════════════════════════════════════════
 // 常量与类型
@@ -131,7 +132,7 @@ export async function extractFacts(args: {
       schema: memoryExtractionSchema,
       schemaName: 'ExtractedFacts',
       temperature: 0.1,
-      maxOutputTokens: 1024,
+      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
       messages: [msg.system(EXTRACT_SYSTEM), msg.user(buildExtractPrompt(text, args.existing))],
     });
     parsed = { facts: result.value.facts as ExtractedFact[] };

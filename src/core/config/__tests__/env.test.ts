@@ -60,7 +60,8 @@ describe('★ 默认值与原硬编码值一致（这次改动不改变任何现
     expect(memoryConfig.dormantAfterMs).toBe(60 * 24 * 60 * 60 * 1000);
     expect(memoryConfig.archiveBelowFitness).toBe(0.25);
     expect(memoryConfig.exploratoryRatio).toBe(0.1);
-    expect(limitsConfig.maxRoundsPerSession).toBe(8);
+    // ★ v8：默认**不设轮次上限**（方案 §14 / D-30），不再是 8
+    expect(limitsConfig.maxRoundsPerSession).toBe(Number.POSITIVE_INFINITY);
     expect(limitsConfig.toolTimeoutMs).toBe(15_000);
     expect(limitsConfig.dailyTokenTaskLimit).toBe(10);
     expect(privacyConfig.behaviorObservationEnabled).toBe(false);
@@ -148,7 +149,8 @@ describe('边界保护', () => {
   it('★ 轮次上限 0 会让工具循环一次都不跑 —— 必须挡住', () => {
     saved['MAX_ROUNDS_PER_SESSION'] = process.env['MAX_ROUNDS_PER_SESSION'];
     process.env['MAX_ROUNDS_PER_SESSION'] = '0';
-    expect(limitsConfig.maxRoundsPerSession).toBe(8);
+    // v8：拦截后回退到"不设上限"（Infinity），而不是 8
+    expect(limitsConfig.maxRoundsPerSession).toBe(Number.POSITIVE_INFINITY);
   });
 
   it('★ EMA α = 0 会让适应度永不更新 —— 必须挡住', () => {

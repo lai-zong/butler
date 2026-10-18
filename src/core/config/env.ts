@@ -221,10 +221,24 @@ export const memoryConfig = {
 // ═══════════════════════════════════════════════════════════
 
 export const limitsConfig = {
-  /** 单会话最大推理轮次 */
+  /**
+   * 单会话最大推理轮次。
+   *
+   * ★ v8 · 2026-10-18：默认**不设上限**（方案 §14 / D-30）。
+   *
+   *   理由：任务没干完就被轮次掐断，是**功能失败**，不是省钱。
+   *   DSH 也没有硬上限。上限该来自真实约束（成本熔断 / 上下文预算），不来自拍脑袋。
+   *
+   * ⚠️ 不设上限 ≠ 没有保护，实际有三道：
+   *   ① 上下文预算（`planHistory` 装不下才摘要）
+   *   ② 日成本熔断（`dailyBudgetCny`）
+   *   ③ 循环终止条件（模型提交报告 / 某轮无工具调用）
+   *
+   * ⚠️ 仍保留环境变量覆盖：调试或压测时可用 `MAX_ROUNDS_PER_SESSION=5` 人为收紧。
+   */
   get maxRoundsPerSession(): number {
     // ⚠️ 下限 1：0 会让工具循环一次都不跑
-    return num('MAX_ROUNDS_PER_SESSION', 8, { min: 1 });
+    return num('MAX_ROUNDS_PER_SESSION', Number.POSITIVE_INFINITY, { min: 1 });
   },
 
   /** 全局日额度上限（元） */

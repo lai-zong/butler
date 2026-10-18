@@ -42,6 +42,7 @@ import {
 import { BUTLER_SYSTEM, butlerExecuteTask, PROMPT_VERSIONS } from '../prompts/butler.js';
 import type { TaskContract } from './contract.js';
 import type { DomainId } from '../domain/types.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 import type {
   Finding,
   InjectedConstraint,
@@ -228,7 +229,7 @@ async function runSingleShot(
     schemaName: 'ExecutionReport',
     thinking: 'disabled',
     temperature: 0.2,
-    maxOutputTokens: 3_072,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages,
   });
   return { raw: result.value, usage: result.usage, attempts: result.attempts };

@@ -52,6 +52,7 @@ import type { ClockPort } from '../ports/clock.js';
 import { msg } from '../ports/model.js';
 import type { ModelStreamPort, StreamCall } from '../ports/stream.js';
 import type { TranslationPort } from './translate.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 // ═══════════════════════════════════════════════════════════
 // 形状
@@ -217,7 +218,7 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
      *    （测得 reasoning=600 片、text=0 片，看起来像"模型不产正文"）。
      *    放宽到 2000 后两种内容都正常产出。
      */
-    maxOutputTokens: 2000,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     // ⚠️ 用 msg 助手而不是对象字面量 ——
     //    ModelMessage.content 是 ModelPart[] 不是 string，
     //    自己写字面量很容易漏掉 kind: 'text' 这层

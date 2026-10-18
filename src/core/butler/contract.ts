@@ -40,6 +40,7 @@ import type { ScoredMemory } from '../memory/recall.js';
 import { inferDomains, type DomainId } from '../domain/types.js';
 import { contractSchema, type TaskContractPlan } from '../prompts/schemas.js';
 import { BUTLER_SYSTEM, contractTask, PROMPT_VERSIONS } from '../prompts/butler.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 /** 契约（内部形态，含领域标签）。 */
 export interface TaskContract {
@@ -114,7 +115,7 @@ export async function writeContract(args: {
     //    （实测：1024 token + 默认思考 → 重试 3 次全截断，任务失败）
     thinking: 'disabled',
     temperature: 0,
-    maxOutputTokens: 1_200,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages: [
       msg.system(BUTLER_SYSTEM),
       ...(args.history ?? []),

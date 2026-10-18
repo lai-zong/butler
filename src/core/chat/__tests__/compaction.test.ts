@@ -16,7 +16,6 @@ import {
   COMPACTION_THRESHOLD_RATIO,
   CONTEXT_WINDOW_TOKENS,
   HISTORY_TOKEN_BUDGET,
-  TOOL_OUTPUT_PRUNE_CHARS,
   buildSummaryPrompt,
   estimateTokens,
   normalizeSummary,
@@ -25,6 +24,9 @@ import {
   pruneToolOutput,
   summarizeOlder,
 } from '../compaction.js';
+// ★ `pruneToolOutput` 现在**必须显式传阈值**（旧常量已删除，它生产无调用方）。
+//   测试用标准档的真实阈值，与生产路径（agentLoop）保持一致。
+import { DEFAULT_TOOL_RESULT_CHAR_LIMIT } from '../../config/budget.js';
 import type { ChatMessage } from '../types.js';
 
 function mkMsg(
@@ -68,31 +70,32 @@ describe('① estimateTokens · 保守估算', () => {
 
 describe('② pruneToolOutput · 剪枝不调模型', () => {
   it('未超阈值时原样返回', () => {
-    const r = pruneToolOutput('短内容');
+    const r = pruneToolOutput('短内容', DEFAULT_TOOL_RESULT_CHAR_LIMIT);
     expect(r.pruned).toBe(false);
     expect(r.text).toBe('短内容');
   });
 
   it('超阈值时剪成头 + 中略 + 尾', () => {
-    const long = 'A'.repeat(3000);
-    const r = pruneToolOutput(long);
+    // ★ 阈值由 1,200 改为标准档的 8,192（v8 · 方案 §14）—— 样本要真的超过它
+    const long = 'A'.repeat(DEFAULT_TOOL_RESULT_CHAR_LIMIT + 2_000);
+    const r = pruneToolOutput(long, DEFAULT_TOOL_RESULT_CHAR_LIMIT);
     expect(r.pruned).toBe(true);
     expect(r.text).toContain('中间略去');
     expect(r.text).toContain('原文见事件日志');
-    expect(r.originalChars).toBe(3000);
-    expect(r.text.length).toBeLessThan(TOOL_OUTPUT_PRUNE_CHARS + 80);
+    expect(r.originalChars).toBe(DEFAULT_TOOL_RESULT_CHAR_LIMIT + 2_000);
+    expect(r.text.length).toBeLessThan(DEFAULT_TOOL_RESULT_CHAR_LIMIT + 80);
   });
 
   it('★ 保留头部与尾部（尾部常有结论，如 EXIT 0）', () => {
-    const body = `${'HEAD'.repeat(400)}${'-'.repeat(2000)}TAIL_MARKER`;
-    const r = pruneToolOutput(body);
+    const body = `${'HEAD'.repeat(2_500)}${'-'.repeat(2_000)}TAIL_MARKER`;
+    const r = pruneToolOutput(body, DEFAULT_TOOL_RESULT_CHAR_LIMIT);
     expect(r.text.startsWith('HEAD')).toBe(true);
     expect(r.text.endsWith('TAIL_MARKER')).toBe(true);
   });
 
   it('边界：刚好等于阈值不剪', () => {
-    const exact = 'x'.repeat(TOOL_OUTPUT_PRUNE_CHARS);
-    expect(pruneToolOutput(exact).pruned).toBe(false);
+    const exact = 'x'.repeat(DEFAULT_TOOL_RESULT_CHAR_LIMIT);
+    expect(pruneToolOutput(exact, DEFAULT_TOOL_RESULT_CHAR_LIMIT).pruned).toBe(false);
   });
 });
 
@@ -247,8 +250,18 @@ describe('⑥ 预算常量的合理性（防回归）', () => {
     expect(HISTORY_TOKEN_BUDGET).toBeGreaterThan(10_000);
   });
 
-  it('预算远小于上下文窗口（否则等于没约束）', () => {
-    expect(HISTORY_TOKEN_BUDGET).toBeLessThan(CONTEXT_WINDOW_TOKENS / 10);
+  it('★ 预算是上下文窗口的一小部分（否则等于没约束）', () => {
+    /**
+     * ⚠️ 原断言是 `< 窗口 / 10`（即 < 100,000）。
+     *    v8 把预算提到标准档的 160,000（= DSH `retainRatio 0.16` × 1M）后，
+     *    那个断言不再成立 —— **但它守的性质仍然成立**：
+     *    预算必须明显小于窗口，否则"预算"就不成其为预算。
+     *
+     *    160,000 / 1,000,000 = 16%，仍在安全范围内（DSH 自己就是 16%）。
+     */
+    const ratio = HISTORY_TOKEN_BUDGET / CONTEXT_WINDOW_TOKENS;
+    expect(ratio).toBeLessThan(0.25);
+    expect(ratio).toBeGreaterThan(0.01);
   });
 
   it('headroom 与阈值来自 dsh 的默认值', () => {

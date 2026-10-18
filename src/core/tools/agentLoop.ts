@@ -29,6 +29,7 @@
  *      而单元测试用 MockModel 走非流式路径更稳定。
  */
 
+import { DEFAULT_TOOL_RESULT_CHAR_LIMIT } from '../config/budget.js';
 import { limitsConfig } from '../config/env.js';
 import type { EventLog } from '../events/log.js';
 import { msg, type ModelMessage, type ModelPort, type ModelToolSpec } from '../ports/model.js';
@@ -50,17 +51,24 @@ import {
 /**
  * 默认最大推理轮次。
  *
- * ★ 可用 MAX_ROUNDS_PER_SESSION 覆盖（默认 8，与原先一致）。
+ * ★ v8 · 2026-10-18：默认**不设上限**（`Infinity`）—— 方案 §14 / D-30。
+ *   可用 `MAX_ROUNDS_PER_SESSION` 环境变量人为收紧（调试/压测用）。
+ *
  * ⚠️ getter 而非常量：环境变量在模块加载后才载入。
  */
 export function defaultMaxRounds(): number {
   return limitsConfig.maxRoundsPerSession;
 }
 
-/** @deprecated 用 defaultMaxRounds() —— 保留是为了不破坏既有测试断言。 */
-export const DEFAULT_MAX_ROUNDS = 8;
+/**
+ * @deprecated 用 `defaultMaxRounds()`。
+ *
+ * ★ v8 · 2026-10-18：由 8 改为 `Infinity`，与"不设上限"的决策一致。
+ *   ⚠️ 保留符号只是因为既有测试引用了它；**生产代码用 `defaultMaxRounds()`**。
+ */
+export const DEFAULT_MAX_ROUNDS = Number.POSITIVE_INFINITY;
 
-/** 历史里保留的最大工具结果条数（更早的被摘要替换，控制上下文增长）。 */
+/** 历史里保留的最大工具结果条数。 */
 export const MAX_TOOL_RESULTS_IN_HISTORY = 12;
 
 // ═══════════════════════════════════════════════════════════
@@ -270,8 +278,19 @@ function parseStreamedArgs(raw: string): unknown {
   }
 }
 
-/** 单个工具结果进上下文的最大字符数。 */
-export const TOOL_RESULT_CHAR_LIMIT = 4000;
+/**
+ * 单个工具结果进上下文的最大字符数。
+ *
+ * ★ v8 · 2026-10-18：由 4,000 改为标准档的 **8,192**（方案 §14）。
+ *
+ *   ⚠️ 这是**真正生效**的那个阈值 —— 不是 `compaction.ts` 里那个
+ *      `TOOL_OUTPUT_PRUNE_CHARS`（那个已删除，它生产无调用方）。
+ *      方案 §14 的「工具输出的三个不同位置」把这件事写清了。
+ *
+ *   DSH 对应实现是 `dsh-compaction-tool-result-pruner`：
+ *   threshold 8,192 / keepHead 4,096 / keepTail 1,024。
+ */
+export const TOOL_RESULT_CHAR_LIMIT = DEFAULT_TOOL_RESULT_CHAR_LIMIT;
 
 export interface AgentLoopOptions {
   readonly model: ModelPort;

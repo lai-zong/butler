@@ -42,6 +42,11 @@
  * 前者保命，后者保质量。
  */
 
+import {
+  DEFAULT_HISTORY_TOKEN_BUDGET,
+  DEFAULT_SUMMARY_MAX_TOKENS,
+  DEFAULT_SUMMARY_TARGET_CHARS,
+} from '../config/budget.js';
 import { msg, type ModelMessage, type ModelPurpose } from '../ports/model.js';
 import type { ChatMessage } from './types.js';
 
@@ -54,25 +59,33 @@ import type { ChatMessage } from './types.js';
  *
  * ★ 这个值替代了原来的 `MAX_HISTORY_TURNS = 4`。
  *
- *   24K 的来历（不是拍的）：
- *     · 原实现：4 轮 × 800 字 ≈ 3K token —— **远低于需要**
- *     · 一轮真实问答约 300—800 token（含回复正文）
- *     · 24K 大约装得下 **30—60 轮**，足够覆盖一次完整会话的指代需要
- *     · 再往上（比如 100K）历史会开始干扰判断，且每轮都贵
+ * ★★ v8 · 2026-10-18：**由 24,000 改为标准档的 160,000**（方案 §14）。
  *
- *   ⚠️ 这是**质量与成本的平衡点**，不是物理上限 ——
- *      物理上限由 `CONTEXT_WINDOW_TOKENS` 与 `pressureOf` 管。
+ *   · 旧值 24K 是按"30—60 轮够用"估的 —— 但实测长会话在 60 轮之后
+ *     更早的内容就被压成 1,200 字摘要，**细节全丢**。
+ *   · 新值 160,000 = DSH `retainRatio 0.16` × 1M 窗口，**照抄成熟产品的默认值**。
+ *   · 它是**天花板不是固定支出**：会话只有 5,000 token 时就只发 5,000。
+ *
+ *   ⚠️ 物理上限由 `CONTEXT_WINDOW_TOKENS` 与 `pressureOf` 管。
  */
-export const HISTORY_TOKEN_BUDGET = 24_000;
+export const HISTORY_TOKEN_BUDGET = DEFAULT_HISTORY_TOKEN_BUDGET;
 
 /**
  * 工具结果剪枝阈值（字符）。
  *
- * 实测依据：单条工具结果通常在 13—538 字之间，最大 1742 字。
- * 超过 1200 字的基本是「整个文件内容」或「长命令输出」，
- * 而历史里只需要知道"它读到了什么"，不需要全文。
+ * ⚠️ **v8 · 2026-10-18：本常量已删除**（方案 §14「工具输出的三个不同位置」）。
+ *
+ *   原因：它**在生产代码里没有调用方** —— 唯一使用方是 `validate:9`。
+ *   真实路径用的是 `agentLoop.ts` 的 `TOOL_RESULT_CHAR_LIMIT`（现为标准档 8,192）
+ *   与其内部的 `shrinkResult`。
+ *
+ *   ⚠️ 留着一个"参数表瞄准它、但没人调它"的常量，比没有更糟 ——
+ *      它会让读代码的人以为剪枝阈值就是 1,200。
+ *
+ *   `pruneToolOutput()` 函数本身保留（它面向 `ChatMessage`，
+ *   与 agentLoop 面向 `ModelMessage` 内容块的实现同构但用途不同），
+ *   调用方**必须显式传阈值**，不再有默认值。
  */
-export const TOOL_OUTPUT_PRUNE_CHARS = 1_200;
 
 /**
  * 上下文压力参数 —— **照抄 `dsh-compaction-basic` 的默认值**。
@@ -149,7 +162,7 @@ export interface PrunedOutput {
  * ⚠️ 剪枝**不销毁原文** —— 事件日志里的 `toolResult` 事件保持完整，
  *    所以"精确重放"与"用户查看原始输出"都不受影响。
  */
-export function pruneToolOutput(output: string, maxChars: number = TOOL_OUTPUT_PRUNE_CHARS): PrunedOutput {
+export function pruneToolOutput(output: string, maxChars: number): PrunedOutput {
   const original = output.length;
   if (original <= maxChars) {
     return { text: output, pruned: false, originalChars: original };
@@ -358,7 +371,14 @@ export function buildSummaryPrompt(
   older: readonly ChatMessage[],
   opts?: { readonly maxChars?: number },
 ): SummaryPrompt {
-  const maxChars = opts?.maxChars ?? 1_200;
+  /**
+   * ★ 摘要目标长度：由 1,200 改为标准档的 6,000 字（方案 §14）。
+   *
+   *   1,200 字只能装下"决定了什么"，装不下"为什么""具体数量""菜名" ——
+   *   而后续对话最需要的恰恰是这些。6,000 字仍是保留预算（160,000）的 3.75%，
+   *   不会让每轮输入变贵。
+   */
+  const maxChars = opts?.maxChars ?? DEFAULT_SUMMARY_TARGET_CHARS;
 
   const transcript = older
     .map((m) => {
@@ -449,7 +469,9 @@ export async function summarizeOlder(args: SummarizeArgs): Promise<CompactedHist
     const res = await args.model.complete({
       purpose: 'compaction',
       temperature: 0.1,
-      maxOutputTokens: 1_200,
+      // ★ 摘要硬上限：由 1,200 改为标准档的 65,536（= DSH 的 headroomTokens 默认值）。
+      //   ⚠️ 这是**安全阀**不是目标长度 —— 目标由提示词里的 maxChars（6,000 字）决定。
+      maxOutputTokens: DEFAULT_SUMMARY_MAX_TOKENS,
       messages: [msg.system(prompt.system), msg.user(user)],
     });
 

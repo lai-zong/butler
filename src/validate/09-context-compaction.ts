@@ -20,7 +20,6 @@ import { EventLog } from '../core/events/log.js';
 import { FixedClock } from '../core/ports/clock.js';
 import {
   HISTORY_TOKEN_BUDGET,
-  TOOL_OUTPUT_PRUNE_CHARS,
   estimateTokens,
   planHistory,
   pressureOf,
@@ -29,15 +28,19 @@ import {
   buildSummaryPrompt,
   normalizeSummary,
 } from '../core/chat/compaction.js';
-import { buildHistoryMessages, MAX_HISTORY_CHARS } from '../core/chat/history.js';
+import { buildHistoryMessages } from '../core/chat/history.js';
 import { trimHistory } from '../core/tools/agentLoop.js';
 import { msg } from '../core/ports/model.js';
 import type { ChatMessage } from '../core/chat/types.js';
 import type { ModelMessage } from '../core/ports/model.js';
+import { DEFAULT_TOOL_RESULT_CHAR_LIMIT } from '../core/config/budget.js';
 
 // ═══════════════════════════════════════════════════════════
 // 断言框架
 // ═══════════════════════════════════════════════════════════
+
+/** 标准档的工具结果剪枝阈值（旧常量已删除，这里显式取标准档值）*/
+const PRUNE_LIMIT = DEFAULT_TOOL_RESULT_CHAR_LIMIT;
 
 let passed = 0;
 let failed = 0;
@@ -130,19 +133,22 @@ check('保留的是最新的（最后一条在 recent）', hugePlan.recent[hugeP
 
 hr('④ ★ 工具结果剪枝：保住头尾（旧实现全丢）');
 
-// ⚠️ 必须超过 TOOL_OUTPUT_PRUNE_CHARS 才会触发剪枝 ——
-//    我第一次只造了 669 字，低于阈值 1200，于是"没剪枝"被判成失败
+// ⚠️ 必须超过 PRUNE_LIMIT 才会触发剪枝 ——
+//    我第一次只造了 669 字，低于当时的阈值 1,200，于是"没剪枝"被判成失败
 //    （是测试数据错，不是代码错 —— 这条注释留着防止再犯）
-const longOutput = `${'头'.repeat(1_400)}...中间...${'尾'.repeat(50)}结论：文件共 12 项`;
-const pruned = pruneToolOutput(longOutput);
+//
+// ★ v8：阈值由 1,200 提到标准档的 8,192（方案 §14），样本也必须跟着加长 ——
+//    否则会重犯同一个错：样本没到阈值，却断言"应该触发剪枝"。
+const longOutput = `${'头'.repeat(9_000)}...中间...${'尾'.repeat(50)}结论：文件共 12 项`;
+const pruned = pruneToolOutput(longOutput, PRUNE_LIMIT);
 
-check('超阈值触发剪枝', pruned.pruned === true, `${pruned.originalChars} 字 > ${TOOL_OUTPUT_PRUNE_CHARS}`);
+check('超阈值触发剪枝', pruned.pruned === true, `${pruned.originalChars} 字 > ${PRUNE_LIMIT}`);
 check('★ 头部保留', pruned.text.startsWith('头'));
 check('★★ 尾部结论保留', pruned.text.includes('结论：文件共 12 项'));
 check('标注了略去多少字', pruned.text.includes('中间略去'));
 check(
   `剪枝后不超过阈值 + 标注开销`,
-  pruned.text.length <= TOOL_OUTPUT_PRUNE_CHARS + 80,
+  pruned.text.length <= PRUNE_LIMIT + 80,
   `${pruned.text.length} 字`,
 );
 
@@ -205,7 +211,27 @@ check('产出 1 条 system 消息（不是多轮 user/assistant）', assembled.l
 const sysText = String((assembled[0]?.content[0] as { text?: string }).text ?? '');
 check('含"最近对话"小节', sysText.includes('本次会话的最近对话'));
 check('含"背景，不是当前任务"的边界说明', sysText.includes('背景'));
-check('单条消息被限制在 MAX_HISTORY_CHARS 内', !sysText.includes('问'.repeat(MAX_HISTORY_CHARS + 1)));
+
+/**
+ * ★ 单条消息不再被字符截断（v8 · 方案 §14 / D-30）。
+ *
+ * ⚠️ 这里**自成一体**地造一条 5,000 字的消息来验 ——
+ *    不要指望 `conv` 那个短样本里恰好有长消息（上一版就是这么写错的：
+ *    断言 `sysText.includes('问'.repeat(5_000))`，但样本里根本没有长消息，
+ *    于是这条永远失败，还看不出是"断言写错"还是"功能坏了"）。
+ */
+const LONG_BODY = 5_000;
+const longConv = [
+  mkMsg('L1', 'user', '问'.repeat(LONG_BODY)),
+  mkMsg('L2', 'butler', '答'),
+];
+const longAssembled = buildHistoryMessages(longConv, { excludeLast: false });
+const longText = String((longAssembled[0]?.content[0] as { text?: string }).text ?? '');
+check(
+  '★ 单条消息不再被字符截断（v8 取消 800 字上限）',
+  longText.includes('问'.repeat(LONG_BODY)),
+  `${LONG_BODY} 字完整保留`,
+);
 
 const layeredAssembled = buildHistoryMessages(hugeConv, { excludeLast: false });
 const layeredText = String((layeredAssembled[0]?.content[0] as { text?: string }).text ?? '');

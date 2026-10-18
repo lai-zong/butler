@@ -40,12 +40,21 @@ import { HISTORY_TOKEN_BUDGET, planHistory } from './compaction.js';
 // ═══════════════════════════════════════════════════════════
 
 /**
- * 单条历史消息的最大字符数（超出则截断头部保留尾部）。
+ * 单条历史消息的最大字符数。
  *
- * ⚠️ **这个常量现在只是兜底**，不再是主要的分层依据。
- *    主依据是 `HISTORY_TOKEN_BUDGET`（按 token 装，约 30—60 轮）。
- *    保留它是因为**单条超长消息**仍需截断 —— 否则一条 5 万字的回复
- *    会独占全部预算，把别的轮次全挤出去。
+ * ⚠️ **v8 · 2026-10-18：该上限已取消**（方案 §14 / D-30）。
+ *    保留符号只为兼容旧引用；**不再有任何截断行为**。
+ *
+ * ★ 为什么取消：
+ *   · 这是"双重压缩"的第一层 —— 先把每条消息砍到 800 字，
+ *     再把更老的内容压成摘要。长回复的细节**两层都丢**。
+ *   · 它想解决的问题（一条 5 万字回复独占预算）**已由 token 预算解决**：
+ *     `planHistory` 从最新往前装，装不下就停，一条超长消息只会占掉它能占的部分，
+ *     不会"把别的轮次全挤出去"。
+ *
+ * ⚠️ DSH 没有这个机制；我们照抄它的做法 —— 上限该来自真实约束，不来自拍脑袋。
+ *
+ * @deprecated 不再参与任何判断。删除调用点后本常量即可移除。
  */
 export const MAX_HISTORY_CHARS = 800;
 
@@ -141,10 +150,15 @@ export function buildHistoryMessages(
   }
 
   // ── 层①：预算内的最近对话 ──
+  //
+  // ★ v8 · 2026-10-18：**不再按字符截断单条消息**（方案 §14 / D-30）。
+  //   旧的 `truncateHead(m.text, MAX_HISTORY_CHARS)` 会把每条消息砍到 800 字，
+  //   与"更老内容压摘要"叠加成双重压缩，长回复的细节两层都丢。
+  //   单条超长消息由 token 预算自然约束（装不下就停），不需要额外的字符上限。
   const lines: string[] = [];
   for (const m of plan.recent) {
     const who = m.role === 'user' ? '用户' : m.role === 'butler' ? '管家' : m.role;
-    lines.push(`${who}：${truncateHead(m.text, MAX_HISTORY_CHARS)}`);
+    lines.push(`${who}：${m.text}`);
   }
   if (lines.length > 0) {
     parts.push(`## 本次会话的最近对话（供你理解指代，不是当前任务）\n\n${lines.join('\n\n')}`);
