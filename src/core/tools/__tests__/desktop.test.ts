@@ -459,6 +459,7 @@ describe('desktop_experience —— 查历史经验', () => {
           { path: 'uia' as const, score: 0.2, why: '2 次失败', fromExperience: true, adviseGivingUp: true },
         ],
         discouraged: ['uia' as const],
+        stale: [],
         usedMemory: true,
       })) as never,
     });
@@ -470,6 +471,35 @@ describe('desktop_experience —— 查历史经验', () => {
     expect(r.output).toContain('实测');
     expect(r.output).toContain('已知不可行');
     expect(r.output).toContain('建议放弃');
+  });
+
+  it('★★ 过期经验也照实提示（但仍留在列表里）', async () => {
+    const ops = fakeOps({
+      recommend: vi.fn(() => ({
+        taskSignature: 'toggle|switch|设置',
+        ranked: [
+          {
+            path: 'uia' as const,
+            score: 0.3,
+            why: '历史记录：尝试 2 次、成功 0 次',
+            fromExperience: true,
+            stale: true,
+          },
+        ],
+        discouraged: [],
+        stale: ['uia' as const],
+        usedMemory: true,
+      })) as never,
+    });
+    const tool = desktopTools(fakeBridge(), ALL_CAPS, ops).find((s) => s.name === 'desktop_experience');
+    if (!tool) throw new Error('工具缺失');
+
+    const r = await tool.execute({ task: '打开动态光效' }, {} as never);
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('可能已过期');
+    expect(r.output).toContain('用之前必须先验证');
+    // 关键：仍然出现在列表里，而不是被删掉
+    expect(r.output).toContain('无障碍接口 UIA');
   });
 });
 describe('desktop_uia_read —— 查找与结构', () => {

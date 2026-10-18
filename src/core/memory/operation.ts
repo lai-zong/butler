@@ -56,6 +56,17 @@ export interface OperationEffectiveness {
   readonly lastFailure?: string;
   /** 平均耗时（毫秒），用于在成功率相同时比较 */
   readonly avgDurationMs: number;
+  /**
+   * **连续**失败次数（方案 §6.3⑤ 第 3 层：失败即降信心，连续失败自动归档）。
+   *
+   * ★ 为什么必须与"累计失败"分开：
+   *   累计失败反映"这条路历史上不太行"，但**成功多少次都冲不掉它**；
+   *   连续失败反映"**这条路现在可能已经不行了**"（软件更新、界面改版），
+   *   而且**一次成功就该清零** —— 那才是"发现路修好了就继续走"。
+   *
+   * ⚠️ 可选：旧事件里没有这个字段，读回时按 0 处理（不破坏历史）。
+   */
+  readonly consecutiveFailures?: number;
 }
 
 export interface OperationMemory {

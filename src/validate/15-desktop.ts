@@ -338,6 +338,35 @@ async function main(): Promise<void> {
         .byType('fitness.updated')
         .filter((e) => (e.payload as { kind?: string }).kind === 'operation').length;
       check('★★ 记录写进了事件流（可重放）', opEvents >= 2, `fitness.updated(operation) × ${opEvents}`);
+
+      // ── 记忆会过期（方案 §6.3⑤ 第 3 层）──
+      //
+      // ★ 用**真实仓储**验证"连续失败 → 标记过期、但不从列表删除"。
+      //   这条是用户明确担心的场景：软件更新后，旧经验可能已经不对了。
+      for (let i = 0; i < 2; i++) {
+        ops.recordAttempt({
+          task: '打开动态光效',
+          app: '设置',
+          path: 'uia',
+          success: false,
+          durationMs: 300,
+          failureReason: '找不到开关控件',
+        });
+      }
+      const staleRec = ops.recommend({ task: '打开动态光效', app: '设置' });
+      const uiaRec = staleRec.ranked.find((p) => p.path === 'uia');
+      check('★★ 连续失败 2 次 → 标记为可能已过期', uiaRec?.stale === true, `stale=${String(uiaRec?.stale)}`);
+      check('★★ 过期提示写进了推荐理由', (uiaRec?.why ?? '').includes('先验证'));
+      check('★★★ 但**仍留在推荐列表里**（环境可能已变，不能永久排除）', uiaRec !== undefined);
+
+      // 一次成功 → 过期标记消失（"路修好了就继续走"）
+      ops.recordAttempt({ task: '打开动态光效', app: '设置', path: 'uia', success: true, durationMs: 150 });
+      const revived = ops.recommend({ task: '打开动态光效', app: '设置' });
+      check(
+        '★★ 成功一次就摘掉过期标记（可自愈）',
+        revived.ranked.find((p) => p.path === 'uia')?.stale === undefined,
+        revived.stale.join(',') || 'stale 为空',
+      );
     }
 
     hr('⑧ 降级：桥关闭后调用必须失败（而不是假装成功）');

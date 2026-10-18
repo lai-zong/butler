@@ -77,17 +77,29 @@ export function experienceTool(ops: OperationMemoryStore): ToolSpec {
         const label = PATH_LABEL[p.path];
         const flag = p.fromExperience ? '实测' : '先验';
         const giveUp = p.adviseGivingUp === true ? '  ⚠️ 试过多次都失败，建议放弃这条路' : '';
-        return `${i + 1}. ${label}（${flag}，得分 ${p.score.toFixed(2)}）：${p.why}${giveUp}`;
+        /**
+         * ★ 过期提示（方案 §6.3⑤ 第 3 层）——
+         *   与"建议放弃"分开说：那条是"一直不行"，这条是"**现在**可能不行了"，
+         *   要求模型**先验证再用**，而不是永久排除（环境可能已经变了）。
+         */
+        const stale = p.stale === true ? '  ⚠️ **可能已过期**（连续失败），用之前先验证' : '';
+        return `${i + 1}. ${label}（${flag}，得分 ${p.score.toFixed(2)}）：${p.why}${giveUp}${stale}`;
       });
 
       const discouraged =
         r.discouraged.length > 0
           ? `\n\n⛔ 已知不可行：${r.discouraged.map((p) => PATH_LABEL[p]).join('、')}`
           : '';
+      const staleNote =
+        r.stale.length > 0
+          ? `\n\n⚠️ 有 ${r.stale.length} 条经验**可能已过期**（连续失败）：` +
+            `${r.stale.map((p) => PATH_LABEL[p]).join('、')}。` +
+            `\n它们**仍在推荐里**（软件可能已经修好了），但**用之前必须先验证**，别盲信。`
+          : '';
 
       return {
         ok: true,
-        output: `这类任务的历史经验（签名 ${r.taskSignature}）：\n${lines.join('\n')}${discouraged}`,
+        output: `这类任务的历史经验（签名 ${r.taskSignature}）：\n${lines.join('\n')}${discouraged}${staleNote}`,
         data: r,
         durationMs: 0,
       };
@@ -249,6 +261,23 @@ export function officeConvertTool(bridge: DesktopBridgePort): ToolSpec {
         throw new Error('target 必须以 .pdf 结尾');
       }
       const r = await bridge.officeConvert(source, target);
+      /**
+       * ★★ 校验**效果**，不校验动作（方案 §6.3⑤ 第 2 层）。
+       *
+       * ⚠️ 后端返回 `bytes: getsize(dst) if isfile(dst) else 0` ——
+       *    也就是说**文件没生成时它不报错，只是给个 0**。
+       *    如果这里直接把"调用没抛异常"当作成功，就会出现
+       *    "工具说转好了，磁盘上什么也没有"。
+       *    所以 0 字节必须判失败。
+       */
+      if (r.bytes <= 0) {
+        return {
+          ok: false,
+          output: `转换**未成功**：命令没报错，但目标文件是 0 字节或不存在（${r.target}）。这通常意味着 Word 其实没保存成功。`,
+          data: r,
+          durationMs: 0,
+        };
+      }
       return {
         ok: true,
         output: `已生成 PDF：${r.target}（${r.bytes} 字节）`,

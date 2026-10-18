@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { EventLog } from '../../events/log.js';
 import { FixedClock, SeededRandom } from '../../ports/clock.js';
 import {
+  ARCHIVE_AFTER_CONSECUTIVE_FAILURES,
   GIVE_UP_AFTER_FAILURES,
   OperationMemoryStore,
   PATH_PRIOR,
@@ -402,5 +403,84 @@ describe('⑦ 确定性', () => {
     const { store, clock } = setup();
     const m = store.recordAttempt({ task: '加一列', path: 'api', success: true, durationMs: 100 });
     expect(m.createdAt).toBe(clock.now());
+  });
+});
+
+describe('⑤ ★ 记忆会过期：连续失败即降信心并标记（方案 §6.3⑤ 第 3 层）', () => {
+  it('★ 连续失败累计计数；一次成功清零', () => {
+    const { store } = setup();
+
+    store.recordAttempt({ task: '开关', path: 'uia', success: false, durationMs: 100 });
+    store.recordAttempt({ task: '开关', path: 'uia', success: false, durationMs: 100 });
+    const m1 = store.all().find((x) => x.path === 'uia');
+    expect(m1?.effectiveness?.consecutiveFailures).toBe(2);
+
+    // 一次成功 → 清零（"路修好了就继续走"）
+    store.recordAttempt({ task: '开关', path: 'uia', success: true, durationMs: 100 });
+    const m2 = store.all().find((x) => x.path === 'uia');
+    expect(m2?.effectiveness?.consecutiveFailures).toBe(0);
+  });
+
+  it('★★ 连续失败达到阈值 → 标记 stale，并在 why 里说明原因', () => {
+    const { store } = setup();
+    for (let i = 0; i < ARCHIVE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      store.recordAttempt({
+        task: '打开动态光效',
+        path: 'uia',
+        success: false,
+        durationMs: 200,
+        failureReason: '找不到开关控件',
+      });
+    }
+
+    const r = store.recommend({ task: '打开动态光效' });
+    const uia = r.ranked.find((x) => x.path === 'uia');
+    expect(uia?.stale).toBe(true);
+    expect(uia?.why).toContain('可能已过期');
+    expect(uia?.why).toContain('先验证');
+    expect(r.stale).toContain('uia');
+  });
+
+  it('★★★ 但**不从列表里删除** —— 环境可能变了，不能永久排除', () => {
+    /**
+     * 这条是对既有原则的守护：失败路径仍需可见，
+     * 否则"软件修好了"这件事永远学不回来。
+     */
+    const { store } = setup();
+    for (let i = 0; i < 5; i++) {
+      store.recordAttempt({ task: '打开动态光效', path: 'uia', success: false, durationMs: 200 });
+    }
+    const r = store.recommend({ task: '打开动态光效' });
+    expect(r.ranked.some((x) => x.path === 'uia')).toBe(true);
+  });
+
+  it('★ 只失败 1 次 → 不算过期（一次失败可能只是偶发）', () => {
+    const { store } = setup();
+    store.recordAttempt({ task: '打开动态光效', path: 'uia', success: false, durationMs: 200 });
+    const r = store.recommend({ task: '打开动态光效' });
+    expect(r.ranked.find((x) => x.path === 'uia')?.stale).toBeUndefined();
+    expect(r.stale).toHaveLength(0);
+  });
+
+  it('★ 成功后 stale 消失、重新回到正常推荐', () => {
+    const { store } = setup();
+    for (let i = 0; i < ARCHIVE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      store.recordAttempt({ task: '打开动态光效', path: 'uia', success: false, durationMs: 200 });
+    }
+    store.recordAttempt({ task: '打开动态光效', path: 'uia', success: true, durationMs: 150 });
+
+    const r = store.recommend({ task: '打开动态光效' });
+    expect(r.ranked.find((x) => x.path === 'uia')?.stale).toBeUndefined();
+    expect(r.stale).toHaveLength(0);
+  });
+
+  it('★ 旧记录没有 consecutiveFailures 字段 → 视为 0（不破坏历史）', () => {
+    const { store } = setup();
+    store.recordAttempt({ task: '加一列', path: 'api', success: true, durationMs: 100 });
+    const m = store.all().find((x) => x.path === 'api');
+    // 成功记录会显式写 0，不是 undefined
+    expect(m?.effectiveness?.consecutiveFailures).toBe(0);
+    // recommend 对没有该字段的记忆不应崩
+    expect(() => store.recommend({ task: '加一列' })).not.toThrow();
   });
 });

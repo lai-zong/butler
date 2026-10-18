@@ -61,6 +61,13 @@ export interface PathRecommendation {
   readonly memoryId?: string;
   /** 是否应当提示"这条路试过多次都失败，考虑放弃" */
   readonly adviseGivingUp?: boolean;
+  /**
+   * 是否**可能已过期**（连续失败达到阈值，方案 §6.3⑤）。
+   *
+   * ⚠️ 与 `adviseGivingUp` 不同：这条**仍在列表里**（环境可能变了），
+   *    只是提醒"用之前先验证"，而不是"永久放弃"。
+   */
+  readonly stale?: boolean;
 }
 
 export interface RecommendResult {
@@ -69,6 +76,14 @@ export interface RecommendResult {
   readonly ranked: readonly PathRecommendation[];
   /** 已知不可行的路径（失败次数过多）*/
   readonly discouraged: readonly ExecutionPath[];
+  /**
+   * 连续失败过多、判定为**可能已过期**的路径（方案 §6.3⑤ 第 3 层）。
+   *
+   * ⚠️ 它们**不参与推荐**，但记忆本身保留（供审计），
+   *    且某次成功会让它自动回到 `ranked`。
+   *    与 `discouraged` 的区别：那个是"一直不行"，这个是"现在可能不行了"。
+   */
+  readonly stale: readonly ExecutionPath[];
   /** 本次是否用到了历史经验 */
   readonly usedMemory: boolean;
 }
@@ -79,6 +94,14 @@ export interface RecommendResult {
 
 /** 连续失败多少次后提示放弃该路径。 */
 export const GIVE_UP_AFTER_FAILURES = 3;
+
+/**
+ * **连续**失败多少次后判定该条经验"可能已过期"（方案 §6.3⑤：连续 2 次失败 → 归档）。
+ *
+ * ⚠️ 为什么是 2 而不是 1：一次失败可能只是偶发（超时、焦点被抢），
+ *    两次连续失败才更像"这条路真的变了"。
+ */
+export const ARCHIVE_AFTER_CONSECUTIVE_FAILURES = 2;
 
 export class OperationMemoryStore {
   private readonly entries = new Map<string, OperationMemory>();
@@ -159,6 +182,7 @@ export class OperationMemoryStore {
     }
 
     const ranked: PathRecommendation[] = [];
+  const stalePaths: ExecutionPath[] = [];
 
     for (const path of Object.keys(PATH_PRIOR) as ExecutionPath[]) {
       const mem = byPath.get(path);
@@ -184,6 +208,24 @@ export class OperationMemoryStore {
 
       const giveUp = failures >= GIVE_UP_AFTER_FAILURES && rate <= 0.34;
 
+      /**
+       * ★★ 连续失败 → 标记为**可能已过期**（方案 §6.3⑤ 第 3 层）。
+       *
+       * ⚠️ **刻意不从列表里删掉**：
+       *    既有设计原则是「失败路径仍然在列表里，因为环境可能变了，不能永久排除」。
+       *    把它删掉会让"软件修好了"这件事永远学不回来。
+       *
+       *    所以这里只做三件事：**降序、打标、说明**。
+       *    模型看到 `⚠️ 可能已过期` 就会先验证再用，而不是盲信。
+       *
+       * 与 `giveUp` 的区别（两个不同判断）：
+       *   - `giveUp`：累计失败多、成功率低 → "这条路一直不行"
+       *   - `stale` ：**连续**失败达到阈值 → "这条路**现在**可能不行了"
+       */
+      const consecutive = eff?.consecutiveFailures ?? 0;
+      const isStale = consecutive >= ARCHIVE_AFTER_CONSECUTIVE_FAILURES;
+      if (isStale) stalePaths.push(path);
+
       ranked.push({
         path,
         score,
@@ -191,10 +233,14 @@ export class OperationMemoryStore {
           `历史记录：尝试 ${eff?.attempts ?? 0} 次、成功 ${eff?.succeeded ?? 0} 次` +
           (eff?.avgDurationMs ? `，平均耗时 ${Math.round(eff.avgDurationMs)}ms` : '') +
           (eff?.lastFailure ? `；上次失败原因：${eff.lastFailure}` : '') +
+          (isStale
+            ? ` ⚠️ 可能已过期：连续失败 ${consecutive} 次（软件更新或界面改版？）—— 用之前先验证`
+            : '') +
           (giveUp ? ' ⚠️ 该路径反复失败，建议放弃' : ''),
         fromExperience: true,
         memoryId: mem.id,
         ...(giveUp ? { adviseGivingUp: true } : {}),
+        ...(isStale ? { stale: true } : {}),
       });
     }
 
@@ -204,6 +250,7 @@ export class OperationMemoryStore {
       taskSignature: signature,
       ranked,
       discouraged: ranked.filter((r) => r.adviseGivingUp === true).map((r) => r.path),
+      stale: stalePaths,
       usedMemory: ranked.some((r) => r.fromExperience),
     };
   }
@@ -269,6 +316,12 @@ export class OperationMemoryStore {
           succeeded,
           lastUsedAt: now,
           avgDurationMs,
+          /**
+           * ★ 连续失败计数（方案 §6.3⑤ 第 3 层）：
+           *   失败 +1，**成功清零**。
+           *   清零是关键 —— 否则"软件更新后这条路又行了"也永远回不来。
+           */
+          consecutiveFailures: args.success ? 0 : (eff.consecutiveFailures ?? 0) + 1,
           ...(args.success
             ? {}
             : { lastFailure: args.failureReason ?? '未说明原因' }),
@@ -318,6 +371,13 @@ export class OperationMemoryStore {
         succeeded: args.success ? 1 : 0,
         lastUsedAt: now,
         avgDurationMs: args.durationMs,
+        /**
+         * ★ 首次记录也要写连续失败计数（方案 §6.3⑤）。
+         *   ⚠️ 我第一版只在"更新已有记录"的分支里加了它，
+         *      于是**第一次失败记成 undefined、第二次才变 1** —— 差一次，
+         *      而阈值是 2 次，意味着"过期判定"永远慢一次。测试直接抓到了。
+         */
+        consecutiveFailures: args.success ? 0 : 1,
         ...(args.success ? {} : { lastFailure: args.failureReason ?? '未说明原因' }),
       },
       // 首次记录置信度不高 —— 一次成功不足以证明这条路永远可行
