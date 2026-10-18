@@ -44,6 +44,7 @@ import { isDesktopPlatform } from '@/core/desktop/port.js';
 import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
 import { ActivityObserver } from '@/core/activity/observe.js';
+import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import type { ActivitySourcePort } from '@/core/activity/observe.js';
 import { desktopActivitySource } from '@/core/activity/desktopSource.js';
 import { createActivityRuntime, startActivityLoop } from '@/core/activity/runtime.js';
@@ -331,8 +332,26 @@ async function initRuntime(): Promise<ButlerRuntime> {
     observer: activityObserver,
     source: lazySource,
     sessionCount: () => bootstrapped.chat.listSessions().length,
-    // ⚠️ 暂不接 `reflect`：它需要模型与反思引擎，接线属于后续步骤。
-    //    不接也能跑聚合（聚合完全不需要模型）。
+    /**
+     * ★★ 定时反思接线（A10 的"周期总结"）。
+     *
+     * 没有模型时**不接** —— 那样每日/周任务会如实返回「未接入反思引擎」，
+     * 而不是假装跑过（聚合任务不需要模型，照常工作）。
+     */
+    ...(model !== null
+      ? {
+          reflect: (a: { readonly scope: 'daily' | 'weekly' }) =>
+            reflectScheduled({
+              scope: a.scope,
+              model: model as ModelPort,
+              log: bootstrapped.log,
+              clock,
+              store: bootstrapped.memory,
+              chat: bootstrapped.chat,
+              userId: DEFAULT_USER_ID,
+            }),
+        }
+      : {}),
   });
   startActivityLoop({
     runtime: activityRuntime,
