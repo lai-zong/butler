@@ -24,6 +24,7 @@ import type { NextRequest } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
 import { runTurn } from '@/core/chat/service.js';
+import { denyAllPending, SseApprovals } from '@/core/tools/approval.js';
 import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
 import type { ProgressEvent } from '@/core/runtime/orchestrator.js';
 
@@ -107,6 +108,29 @@ export async function POST(req: NextRequest): Promise<Response> {
       send({ type: 'session', sessionId: session.id });
 
       /**
+       * ★ C6 询问通道：本轮专用。
+       *
+       * 需要确认的动作会通过它推一条 `approval` 事件给前端，
+       * 然后**停在那里等**（前端 POST `/api/approval` 答复）。
+       * 超时 120 秒自动拒绝；流结束/断开时全部拒绝。
+       *
+       * ⚠️ 必须**每轮新建**：工具框架与权限策略都是全局共享的，
+       *    把询问状态挂在共享对象上会在并发会话之间串味。
+       */
+      const approvals = new SseApprovals({
+        emit: (req) =>
+          send({
+            type: 'approval',
+            id: req.id,
+            toolName: req.toolName,
+            tier: req.tier,
+            summary: req.summary,
+            ...(req.preview !== undefined ? { preview: req.preview } : {}),
+            timeoutMs: req.timeoutMs,
+          }),
+      });
+
+      /**
        * ★ 记下这一轮的起始 seq —— 界面据此取「本轮依据」。
        *
        *   ⚠️ 用 seq 区间而不是消息 id 关联：
@@ -123,6 +147,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           userText: text,
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(images.length > 0 ? { images } : {}),
+    // ★ 本轮询问通道（C6）
+    asker: approvals,
           userId: session.userId,
           model: rt.model!,
           random: rt.random,
@@ -263,6 +289,14 @@ export async function POST(req: NextRequest): Promise<Response> {
           message: err instanceof Error ? err.message : String(err),
         });
       } finally {
+        /**
+         * ★ 流结束 → 把所有还挂着的确认**全部拒绝**。
+         *
+         * ⚠️ 不这么做的话，工具循环会一直等到超时（最长 2 分钟），
+         *    而实际上页面已经结束了，没人会来点"允许"。
+         */
+        denyAllPending();
+
         send({ type: 'done' });
         try {
           controller.close();

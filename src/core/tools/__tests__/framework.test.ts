@@ -547,3 +547,85 @@ describe('文件工具 · 行为', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ★ C6 询问开关：工具真的会停下来问
+// ═══════════════════════════════════════════════════════════
+
+describe('★★★ C6 询问开关（工具真的停下来问人）', () => {
+  it('★★ 传了 asker 且用户允许 → 动作执行', async () => {
+    const { fw, fs } = setup();
+    const asked: string[] = [];
+    const r = await fw.execute({
+      toolName: 'write_file',
+      args: { path: 'a.txt', content: '你好' },
+      taskId: 't',
+      asker: {
+        request: async (req) => {
+          asked.push(req.summary);
+          return true;
+        },
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(await fs.readText('a.txt')).toBe('你好');
+  });
+
+  it('★★★ 用户拒绝 → 动作**不执行**', async () => {
+    const { fw, fs } = setup();
+    await expect(
+      fw.execute({
+        toolName: 'write_file',
+        args: { path: 'a.txt', content: '你好' },
+        taskId: 't',
+        asker: { request: async () => false },
+      }),
+    ).rejects.toThrow(/拒绝/);
+    // 关键：文件**没有**被写
+    expect(await fs.exists('a.txt')).toBe(false);
+  });
+
+  it('★ 没传 asker → 退回策略默认实现（不崩，行为与改造前一致）', async () => {
+    const { fw } = setup('allow');
+    const r = await fw.execute({ toolName: 'write_file', args: { path: 'b.txt', content: 'x' }, taskId: 't' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('★ 只读工具不打扰用户（asker 根本不会被调用）', async () => {
+    const { fw, fs } = setup();
+    fs.seedFile('a.txt', '你好');
+    let called = 0;
+    await fw.execute({
+      toolName: 'read_file',
+      args: { path: 'a.txt' },
+      taskId: 't',
+      asker: {
+        request: async () => {
+          called++;
+          return true;
+        },
+      },
+    });
+    expect(called).toBe(0);
+  });
+
+  it('★ 询问时带上只读预览（用户得看到"要动到什么"）', async () => {
+    const { fw } = setup();
+    let preview: string | undefined;
+    await fw.execute({
+      toolName: 'write_file',
+      args: { path: 'c.txt', content: '内容' },
+      taskId: 't',
+      asker: {
+        request: async (req) => {
+          preview = req.preview;
+          return true;
+        },
+      },
+    });
+    // `write_file` 确实实现了 preview（见 file.ts:157），所以这里必须是字符串
+    expect(typeof preview).toBe('string');
+    expect(preview).toContain('c.txt');
+  });
+});

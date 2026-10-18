@@ -12,6 +12,7 @@
 
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
+import type { ApprovalAsker } from './approval.js';
 import { redactArgs, redactText } from './redact.js';
 import {
   ToolError,
@@ -122,6 +123,13 @@ export class ToolFramework {
      *    挂一个"当前任务"字段会在并发会话之间串味。
      */
     readonly task?: string;
+    /**
+     * 本轮专用的询问通道（C6 询问开关）。
+     *
+     * ⚠️ 逐次传递，不挂在框架实例上 —— 所有会话共享同一个框架，
+     *    挂上去会在并发会话间串味。
+     */
+    readonly asker?: ApprovalAsker;
   }): Promise<ToolResult> {
     const started = this.clock.now();
     const spec = this.tools.get(args.toolName);
@@ -168,7 +176,7 @@ export class ToolFramework {
     } else if (requirement === 'auto') {
       authorization = 'allow';
     } else {
-      authorization = await this.askUser(spec, args.args, args.taskId);
+      authorization = await this.askUser(spec, args.args, args.taskId, args.asker);
     }
 
     if (authorization !== 'allow') {
@@ -304,7 +312,20 @@ export class ToolFramework {
 
   // ── 内部 ──
 
-  private async askUser(spec: ToolSpec, args: unknown, taskId: string): Promise<Authorization> {
+  private async askUser(
+    spec: ToolSpec,
+    args: unknown,
+    taskId: string,
+    /**
+     * 本轮专用的询问通道（C6）。
+     *
+     * ★ 为什么从这里传而不是挂在 `this.policy` 上：
+     *   运行时里**所有会话共享同一个策略实例**，
+     *   把"本轮怎么问用户"挂在共享对象上会在并发会话之间串味。
+     *   没有它时退回 `policy.ask`（Web 版实现直接拒绝，行为与之前一致）。
+     */
+    asker?: ApprovalAsker,
+  ): Promise<Authorization> {
     const ctx: ToolContext = { clock: this.clock, taskId };
 
     let preview: string | undefined;
@@ -332,6 +353,19 @@ export class ToolFramework {
     });
 
     try {
+      /**
+       * ★ 有本轮专用通道就用它（真的停下来问）；否则退回策略默认实现
+       *   （Web 版策略直接拒绝 —— 与改造前的行为完全一致）。
+       */
+      if (asker !== undefined) {
+        const allow = await asker.request({
+          toolName: spec.name,
+          tier: spec.tier,
+          summary: spec.summarize(args),
+          ...(preview !== undefined ? { preview } : {}),
+        });
+        return allow ? 'allow' : 'deny';
+      }
       return await this.policy.ask({
         toolName: spec.name,
         tier: spec.tier,

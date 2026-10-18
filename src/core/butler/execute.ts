@@ -43,6 +43,7 @@ import { BUTLER_SYSTEM, butlerExecuteTask, PROMPT_VERSIONS } from '../prompts/bu
 import type { TaskContract } from './contract.js';
 import type { DomainId } from '../domain/types.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
+import type { ApprovalAsker } from '../tools/approval.js';
 import type {
   Finding,
   InjectedConstraint,
@@ -77,6 +78,14 @@ export interface ButlerRunArgs {
     readonly url: string;
     readonly detail?: 'low' | 'high' | 'original' | 'auto';
   }[];
+
+  /**
+   * 本轮专用的询问通道（C6 询问开关）。
+   *
+   * ★ 有它时"需要确认"的动作会**真的停下来问用户**（SSE 推确认请求）；
+   *   没有它时退回策略默认实现（Web 版直接拒绝）—— 与改造前一致。
+   */
+  readonly asker?: ApprovalAsker;
   /** 对话历史（精简版） */
   readonly history?: readonly ModelMessage[];
   readonly streamPort?: ModelStreamPort;
@@ -296,6 +305,8 @@ async function runWithTools(
        *   ⚠️ 不传的话操作记忆拿不到签名 —— 宁可不记录，不编造。
        */
       task: args.userGoal,
+      // ★ 询问通道（C6）：一路传到工具闸门
+      ...(args.asker !== undefined ? { asker: args.asker } : {}),
       /**
        * ★ 与旧 `runServant` 的关键差别：**没有按领域的工具白名单**。
        *   只排除终止工具本身（它由循环内部处理）。

@@ -47,6 +47,7 @@ import { planHistory, summarizeOlder } from './compaction.js';
 import { createTraceCollector } from './trace.js';
 import { toExecutionReportData } from './reports.js';
 import { artifactToText } from '../execution/render.js';
+import type { ApprovalAsker } from '../tools/approval.js';
 
 // ═══════════════════════════════════════════════════════════
 // 一轮的执行
@@ -67,6 +68,14 @@ export interface RunTurnArgs {
     readonly url: string;
     readonly detail?: 'low' | 'high' | 'original' | 'auto';
   }[];
+
+  /**
+   * 本轮专用的询问通道（C6 询问开关）。
+   *
+   * ★ 有它时"需要确认"的动作会**真的停下来问用户**（SSE 推确认请求）；
+   *   没有它时退回策略默认实现（Web 版直接拒绝）—— 与改造前一致。
+   */
+  readonly asker?: ApprovalAsker;
   /** 记忆归属的用户 */
   readonly userId: string;
   readonly random: RandomPort;
@@ -347,6 +356,8 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     userGoal: userText,
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
+    // ★ 本轮询问通道（C6）：需要确认的动作会真的停下来问
+    ...(args.asker !== undefined ? { asker: args.asker } : {}),
     recalled,
     log: args.log,
     store: args.store,

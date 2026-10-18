@@ -29,6 +29,7 @@ import type { TaskContract } from '../butler/contract.js';
 import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
+import type { ApprovalAsker } from '../tools/approval.js';
 
 export interface RunSessionArgs {
   readonly model: ModelPort;
@@ -43,6 +44,14 @@ export interface RunSessionArgs {
     readonly url: string;
     readonly detail?: 'low' | 'high' | 'original' | 'auto';
   }[];
+
+  /**
+   * 本轮专用的询问通道（C6 询问开关）。
+   *
+   * ★ 有它时"需要确认"的动作会**真的停下来问用户**（SSE 推确认请求）；
+   *   没有它时退回策略默认实现（Web 版直接拒绝）—— 与改造前一致。
+   */
+  readonly asker?: ApprovalAsker;
   readonly recalled: readonly ScoredMemory[];
   /**
    * 工具框架。给出时仆人走工具循环（能读写文件、跑命令）；
@@ -425,6 +434,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       userGoal: args.userGoal,
       // ★ 本轮图片透传给管家执行层（模型在那里才真正看到图）
       ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
+      // ★ 询问通道（C6）继续往下传
+      ...(args.asker !== undefined ? { asker: args.asker } : {}),
       ...(args.domainHistory !== undefined ? { history: args.domainHistory } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
       ...(args.onAgentProgress !== undefined ? { onAgentProgress: args.onAgentProgress } : {}),

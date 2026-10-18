@@ -38,6 +38,7 @@ import type { ModelStreamPort } from '../ports/stream.js';
 import type { ToolFramework } from './framework.js';
 import type { ToolSpec } from './types.js';
 import { issuesToMessage, validateArgs } from './validate.js';
+import type { ApprovalAsker } from './approval.js';
 import {
   buildAlert,
   isUntrusted,
@@ -305,6 +306,10 @@ export interface AgentLoopOptions {
    *   ⚠️ 不传就意味着操作记忆拿不到签名 —— 那宁可不记录，也不编造。
    */
   readonly task?: string;
+  /**
+   * 本轮专用的询问通道（C6）。逐次传递 —— 工具框架是共享的，挂上去会串味。
+   */
+  readonly asker?: ApprovalAsker;
   readonly toolFilter?: (t: ToolSpec) => boolean;
   readonly maxRounds?: number;
   /**
@@ -572,6 +577,7 @@ export async function runAgentLoop(
           args: check.value,
           taskId: opts.taskId,
           ...(opts.task !== undefined ? { task: opts.task } : {}),
+          ...(opts.asker !== undefined ? { asker: opts.asker } : {}),
         });
         output = r.output;
         ok = r.ok;
