@@ -43,7 +43,8 @@ import { PythonDesktopBridge } from '@/adapters/desktop/pythonBridge.js';
 import { isDesktopPlatform } from '@/core/desktop/port.js';
 import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
-import { ActivityObserver } from '@/core/activity/observe.js';
+import { ActivityObserver, DEFAULT_CONSENT } from '@/core/activity/observe.js';
+import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
 import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
@@ -108,6 +109,8 @@ export interface ButlerRuntime {
   readonly restoreSummary: string;
   /** 当前会话 id */
   sessionId: string;
+  /** 行为观察器（同意开关由界面通过 /api/observation 操作）*/
+  readonly activityObserver: ActivityObserver;
 }
 
 const GLOBAL_KEY = '__butlerRuntime__';
@@ -349,12 +352,24 @@ async function initRuntime(): Promise<ButlerRuntime> {
    *   ② 没有前台采样数据源时**如实报"没有数据源"**，不编造应用名
    *   ③ 定时循环用 `globalThis` 单例 + `unref()`，避免热重载重复注册、避免挂住进程
    */
-  const activityObserver = new ActivityObserver(bootstrapped.log, clock, DEFAULT_USER_ID);
-  const behaviorEnabled = process.env['BEHAVIOR_OBSERVATION_ENABLED'] === '1';
-  if (behaviorEnabled) {
-    // 只有显式开启才视为"用户同意"（默认关闭，不"帮你打开"）
-    activityObserver.grantConsent(clock.now());
-  }
+  /**
+   * ★★ 同意状态**从事件流重建**（不再只看 env）。
+   *
+   * ⚠️ 原来只读 `BEHAVIOR_OBSERVATION_ENABLED`：
+   *    用户在界面上点过"同意"之后，重启就变回"未同意"——
+   *    界面显示与事件流里的记录会互相矛盾。
+   *    现在以事件为真相源；env 只在**从未有过记录**时作为初始值。
+   */
+  const envConsent = process.env['BEHAVIOR_OBSERVATION_ENABLED'] === '1';
+  const replayedConsent = replayConsent(bootstrapped.log);
+  const initialConsent =
+    replayedConsent.granted || replayedConsent.enabled
+      ? replayedConsent
+      : envConsent
+        ? { ...DEFAULT_CONSENT, granted: true, grantedAt: clock.now(), enabled: true }
+        : DEFAULT_CONSENT;
+
+  const activityObserver = new ActivityObserver(bootstrapped.log, clock, DEFAULT_USER_ID, initialConsent);
   /**
    * ★ 采样数据源的**延迟注入**：
    *
@@ -419,6 +434,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     startedAt: clock.now(),
     restoreSummary: renderRestoreSummary(bootstrapped),
     sessionId,
+    activityObserver,
   };
 }
 
@@ -449,4 +465,5 @@ export async function flush(): Promise<void> {
   const rt = await getRuntime();
   await rt.bootstrapped.log.flushPersistence();
 }
+
 

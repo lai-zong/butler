@@ -1,251 +1,299 @@
 /**
- * 总览页 —— 打开就看到"它现在知道什么"
+ * `/overview` —— 概览
  *
- * 设计依据：方案 § 3.3（成长对比是"最强演示件"）、§ 8.6（演化可观测）
+ * ★ 回答"它现在知道什么、学到了什么"，顺序刻意如此：
+ *   先给数字（一眼看到）→ 再给结论（原则有没有用）→ 最后给细节（领域/规律/操作/外部工具）
  *
- * ★ 这一页的回答顺序是刻意的：
- *   ① 它记得你多少（数字，一眼看到）
- *   ② 有没有需要你处理的事（待审核）
- *   ③ 它在哪些方面了解你（领域分布）
- *   ④ 它学到的东西有没有用（原则效果）
- *   ⑤ 它的"经验"（记忆化执行 / 行为规律）
- *
- *   ——先给结论，再给细节。这是"管家"该有的汇报方式。
+ * ⚠️ 数字都来自 `buildOverview`，页面**不做二次计算** ——
+ *    否则同一件事在两个地方算出两个值，是"界面与事实不一致"的根源。
  */
 
-import Link from 'next/link';
-
+import { toMemoryCard, autonomousIdsOf, buildOverview } from '@/app/server/view.js';
+import {
+  Badge,
+  Bars,
+  Empty,
+  KV,
+  Page,
+  Section,
+  Stat,
+  clockText,
+  humanDuration,
+} from '@/app/ui/primitives.js';
 import { getRuntime } from '@/app/runtime';
-import { Shell } from '@/app/shell';
-import { buildOverview } from '@/app/server/view';
 
 export const dynamic = 'force-dynamic';
 
-function Stat({ value, label, tone }: { readonly value: string | number; readonly label: string; readonly tone?: 'warn' | 'ok' }) {
-  return (
-    <div className="stat">
-      <div className="stat-value" style={tone === 'warn' ? { color: 'var(--warn)' } : tone === 'ok' ? { color: 'var(--ok)' } : undefined}>
-        {value}
-      </div>
-      <div className="stat-label">{label}</div>
-    </div>
-  );
-}
-
-export default async function OverviewPage() {
+export default async function OverviewPage(): Promise<React.ReactElement> {
   const rt = await getRuntime();
   const view = buildOverview(rt.bootstrapped, {
     model: rt.model !== null ? rt.model.describe().model : null,
   });
 
-  const { memory, principles, resume, domains, patterns, operations } = view;
+  const autonomous = autonomousIdsOf(rt.bootstrapped);
+  const topPrinciples = rt.bootstrapped.memory
+    .all()
+    .filter((m) => m.kind === 'principle')
+    .map((m) => toMemoryCard(m, autonomous))
+    .sort((a, b) => (b.effectiveness?.applied ?? 0) - (a.effectiveness?.applied ?? 0))
+    .slice(0, 5);
+
+  const kindBar = Object.entries(view.memory.byKind).map(([k, n]) => ({
+    label: kindName(k),
+    value: n,
+    text: String(n),
+  }));
+  const maxDomain = Math.max(1, ...view.domains.map((d) => d.memories));
 
   return (
-    <Shell title="总览" subtitle="它现在知道什么，以及它的判断有多少依据">
-      {/* ── 启动恢复提示（持久化是否真的生效，用户应当看得见）── */}
-      <div className={resume.resumed ? 'notice notice-info' : 'notice notice-info'}>
-        <div>
-          {resume.resumed ? (
-            <>
-              已从历史恢复 <b className="mono">{resume.historicalEvents}</b> 条事件 —— 记忆{' '}
-              <b className="mono">{resume.restored.memories}</b> 条、产出物{' '}
-              <b className="mono">{resume.restored.artifacts}</b> 个、操作记忆{' '}
-              <b className="mono">{resume.restored.operationMemories}</b> 条。
-              {resume.badLines > 0 && <> 事件文件有 {resume.badLines} 行损坏（已跳过）。</>}
-              {resume.issues > 0 && <> {resume.issues} 处信息不足（多为加字段前写入的老事件）。</>}
-            </>
-          ) : (
-            <>首次启动，还没有历史记录。所有的记忆都会随着对话逐步积累，并写入本地事件文件。</>
-          )}
-          {!view.model.configured && (
-            <>
-              {' '}
-              <b>当前未配置模型</b>（.env.local 里缺 DEEPSEEK_API_KEY），
-              记忆治理功能可用，但对话与反思不可用。
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* ── ① 核心数字 ── */}
-      <h2>它记得你多少</h2>
-      <div className="stats">
-        <Stat value={memory.total} label="记忆总数" />
-        <Stat value={memory.byLifecycle['active'] ?? 0} label="生效中" tone="ok" />
-        <Stat
-          value={memory.pendingReview}
-          label="待你确认"
-          {...(memory.pendingReview > 0 ? { tone: 'warn' as const } : {})}
-        />
-        <Stat value={principles.total} label="原则" />
-        <Stat value={memory.autonomous} label="它自己学的" />
-        <Stat value={patterns.total} label="生活节奏" />
-      </div>
-
-      {memory.pendingReview > 0 && (
-        <div className="notice notice-warn" style={{ marginTop: 16 }}>
-          <div>
-            有 <b className="mono">{memory.pendingReview}</b> 条记忆在等你确认 ——
-            它们是 AI 的**推断**而非你的原话，所以没有自动生效。
-            <Link href="/memory?filter=candidate" style={{ textDecoration: 'underline', marginLeft: 6 }}>
-              去看
-            </Link>
-          </div>
+    <Page
+      title="概览"
+      desc="它记得你多少、学到了什么、这些经验有没有用。数字都来自事件重放，不是估算。"
+    >
+      {view.resume.resumed && (
+        <div className="note" style={{ marginBottom: 24 }}>
+          已从历史恢复：{view.resume.historicalEvents} 条事件 · 记忆{' '}
+          {view.resume.restored.memories} 条 · 产出物 {view.resume.restored.artifacts} 个
+          {view.resume.issues > 0
+            ? ` · ${view.resume.issues} 条数据问题（已跳过并记录）`
+            : ''}
         </div>
       )}
 
-      {/* ── ② 原则效果：学过的东西有没有用 ── */}
-      <h2>它学到的东西有用吗</h2>
-      {principles.total === 0 ? (
-        <div className="empty">
-          还没有提炼出可复用的原则
-          <div className="empty-hint">原则来自多次同类任务后的反思，需要先积累一些对话</div>
-        </div>
-      ) : (
-        <>
-          <div className="stats">
-            <Stat
-              value={`${principles.avgSuccessPercent}%`}
-              label="平均奏效率"
-              {...(principles.avgSuccessPercent >= 70 ? { tone: 'ok' as const } : {})}
-            />
-            <Stat value={principles.applied} label="累计应用次数" />
-            <Stat value={principles.succeeded} label="其中奏效" />
-            <Stat value={principles.everApplied} label="被用过的原则" />
-          </div>
-          <div className="list" style={{ marginTop: 8 }}>
-            {(await getRuntime()).bootstrapped.memory
-              .all()
-              .filter((m) => m.kind === 'principle' && m.lifecycle === 'active')
-              .sort((a, b) => (b.effectiveness?.applied ?? 0) - (a.effectiveness?.applied ?? 0))
-              .slice(0, 5)
-              .map((p) => {
-                const applied = p.effectiveness?.applied ?? 0;
-                const succeeded = p.effectiveness?.succeeded ?? 0;
-                const rate = applied === 0 ? null : Math.round((succeeded / applied) * 100);
-                return (
-                  <div className="row" key={p.id}>
-                    <div className="row-main">
-                      <div className="row-title">{p.content}</div>
-                      <div className="row-meta">
-                        <span>适应度 {Math.round(p.fitness * 100)}%</span>
-                        {rate !== null && (
-                          <>
-                            <span>·</span>
-                            <span>
-                              用 {applied} 次 / 奏效 {succeeded} 次（{rate}%）
-                            </span>
-                          </>
-                        )}
-                        {rate === null && (
-                          <>
-                            <span>·</span>
-                            <span>尚未被用到</span>
-                          </>
-                        )}
-                      </div>
+      <div className="stats" style={{ marginBottom: 40 }}>
+        <Stat
+          k="记忆总数"
+          v={view.memory.total}
+          u={`${view.memory.byLifecycle['active'] ?? 0} 条正在使用`}
+        />
+        <Stat
+          k="待你审核"
+          v={view.memory.pendingReview}
+          u={view.memory.pendingReview > 0 ? '去「记忆」处理' : '没有待办'}
+        />
+        <Stat k="原则生效" v={view.principles.active} u={`累计应用 ${view.principles.applied} 次`} />
+        <Stat k="行为规律" v={view.patterns.total} u={`观察 ${view.patterns.observedDays} 天`} />
+      </div>
+
+      <Section title="它学到的东西有用吗" hint="原则被用了几次、成了几次">
+        {view.principles.total === 0 ? (
+          <Empty>还没有提炼出原则。做过几次任务之后，复盘会产出候选。</Empty>
+        ) : (
+          <div className="stack-lg">
+            <div className="card card-pad">
+              <KV
+                rows={[
+                  ['原则总数', `${view.principles.total} 条（生效 ${view.principles.active} 条）`],
+                  ['被应用过', `${view.principles.everApplied} 条`],
+                  ['应用次数', `${view.principles.applied} 次`],
+                  ['成功率', `${view.principles.avgSuccessPercent}%`],
+                ]}
+              />
+            </div>
+            {topPrinciples.length > 0 && (
+              <div className="rows">
+                {topPrinciples.map((p) => (
+                  <div className="item" key={p.id}>
+                    <div className="body">{p.content}</div>
+                    <div className="meta">
+                      <Badge tone={p.lifecycle === 'active' ? 'ok' : undefined}>
+                        {p.lifecycleLabel}
+                      </Badge>
+                      {p.effectiveness !== undefined ? (
+                        <span>
+                          应用 {p.effectiveness.applied} 次 · 成功 {p.effectiveness.succeeded} 次（
+                          {p.effectiveness.successPercent}%）
+                        </span>
+                      ) : (
+                        <span>还没被应用过</span>
+                      )}
+                      {p.autonomous && <span>系统自主生效</span>}
                     </div>
                   </div>
-                );
-              })}
+                ))}
+              </div>
+            )}
           </div>
-        </>
-      )}
+        )}
+      </Section>
 
-      {/* ── ③ 领域分布（v8：原「仆人分布」；「职责边界」列改为「专业纪律」）── */}
-      <h2>它在哪些方面了解你</h2>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>领域</th>
-            <th>专业纪律</th>
-            <th style={{ textAlign: 'right' }}>记忆</th>
-            <th style={{ textAlign: 'right' }}>原则</th>
-          </tr>
-        </thead>
-        <tbody>
-          {domains.map((s) => (
-            <tr key={s.id}>
-              <td style={{ whiteSpace: 'nowrap' }}>{s.name}</td>
-              <td style={{ color: 'var(--text-mute)', fontSize: 12 }}>
-                {s.disciplineCount > 0 ? `${s.disciplineCount} 条` : '—'}
-              </td>
-              <td className="mono" style={{ textAlign: 'right' }}>
-                {s.memories}
-              </td>
-              <td className="mono" style={{ textAlign: 'right' }}>
-                {s.principles}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {/* ── ④ 记忆化执行：越做越快 ── */}
-      {operations.length > 0 && (
-        <>
-          <h2>它记住的操作方法</h2>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>任务</th>
-                <th>走哪条路</th>
-                <th style={{ textAlign: 'right' }}>尝试</th>
-                <th style={{ textAlign: 'right' }}>成功</th>
-                <th style={{ textAlign: 'right' }}>平均耗时</th>
-              </tr>
-            </thead>
-            <tbody>
-              {operations.map((o) => (
-                <tr key={o.id}>
-                  <td>{o.task}</td>
-                  <td>
-                    <span className={o.successPercent >= 50 ? 'tag tag-ok' : 'tag tag-warn'}>
-                      {o.pathLabel}
-                    </span>
-                  </td>
-                  <td className="mono" style={{ textAlign: 'right' }}>
-                    {o.attempts}
-                  </td>
-                  <td className="mono" style={{ textAlign: 'right' }}>
-                    {o.succeeded}
-                  </td>
-                  <td className="mono" style={{ textAlign: 'right' }}>
-                    {o.avgDurationMs}ms
-                  </td>
-                </tr>
+      <Section title="它在哪些方面了解你" count={view.domains.length}>
+        {view.domains.length === 0 ? (
+          <Empty>还没有按领域归类的内容。</Empty>
+        ) : (
+          <div className="card card-pad">
+            <div className="bars">
+              {view.domains.map((d) => (
+                <div className="line" key={d.id}>
+                  <span className="label">{d.name}</span>
+                  <span className="bar">
+                    <i style={{ width: `${Math.round((d.memories / maxDomain) * 100)}%` }} />
+                  </span>
+                  <span className="num">{d.memories}</span>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </>
-      )}
-
-      {/* ── ⑤ 生活节奏 ── */}
-      {patterns.list.length > 0 && (
-        <>
-          <h2>它观察到的生活节奏</h2>
-          <div className="row-meta" style={{ marginTop: -4, marginBottom: 8 }}>
-            基于 <span className="mono">{patterns.observedDays}</span> 天的行为观察
+            </div>
+            {kindBar.length > 0 && (
+              <>
+                <div className="dim tiny" style={{ margin: '20px 0 10px' }}>
+                  按类型
+                </div>
+                <Bars items={kindBar} />
+              </>
+            )}
           </div>
-          <div className="list">
-            {patterns.list.slice(0, 6).map((p) => (
-              <div className="row" key={p.id}>
-                <div className="row-main">
-                  <div className="row-title">{p.pattern}</div>
-                  <div className="row-meta">
-                    <span className="tag">{p.kindLabel}</span>
-                    <span>{p.appliesToLabel}</span>
-                    <span>·</span>
-                    <span>置信度 {p.confidencePercent}%</span>
-                    <span>·</span>
-                    <span>观察 {p.observedDays} 天</span>
-                  </div>
+        )}
+      </Section>
+
+      <Section title="它观察到的生活节奏" count={view.patterns.total} hint="样本不足时不会产出规律">
+        {view.patterns.list.length === 0 ? (
+          <Empty>
+            还没有足够的数据（需要连续观察若干天）。行为观察默认关闭，可在「设置」里开启。
+          </Empty>
+        ) : (
+          <div className="rows">
+            {view.patterns.list.map((p) => (
+              <div className="item" key={p.id}>
+                <div className="body">{p.pattern}</div>
+                <div className="meta">
+                  <span>{p.kindLabel}</span>
+                  <span>{p.appliesToLabel}</span>
+                  <span>把握 {p.confidencePercent}%</span>
+                  <span>观察 {p.observedDays} 天</span>
                 </div>
               </div>
             ))}
           </div>
-        </>
-      )}
-    </Shell>
+        )}
+      </Section>
+
+      <Section title="它记住的操作方法" count={view.operations.length} hint="同一任务下次该走哪条路">
+        {view.operations.length === 0 ? (
+          <Empty>还没有桌面/接口类操作记录。</Empty>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>任务</th>
+                <th>路径</th>
+                <th>成功 / 尝试</th>
+                <th>平均耗时</th>
+                <th>最近失败</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.operations.map((o) => (
+                <tr key={o.id}>
+                  <td>{o.task}</td>
+                  <td className="dim">{o.pathLabel}</td>
+                  <td>
+                    {o.succeeded}/{o.attempts}
+                    <span className="dim tiny">（{o.successPercent}%）</span>
+                  </td>
+                  <td className="dim">{humanDuration(o.avgDurationMs)}</td>
+                  <td className="dim tiny">{o.lastFailure ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Section>
+
+      <Section title="外部工具（MCP）" count={view.mcp.length}>
+        {view.mcp.length === 0 ? (
+          <Empty>
+            还没有接入外部 MCP 服务器。在项目根目录放 <code>mcp.json</code> 后重启即可接入。
+          </Empty>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>传输</th>
+                <th>状态</th>
+                <th>工具数</th>
+                <th>权限</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.mcp.map((m) => (
+                <tr key={m.id}>
+                  <td>{m.name}</td>
+                  <td className="dim">{m.transport}</td>
+                  <td>
+                    <Badge tone={m.stateLabel.includes('已连接') ? 'ok' : undefined}>
+                      {m.stateLabel}
+                    </Badge>
+                  </td>
+                  <td>{m.toolCount}</td>
+                  <td className="dim">{m.policyLevel}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Section>
+
+      <Section title="定时任务" count={view.schedule.length}>
+        {view.schedule.length === 0 ? (
+          <Empty>定时任务还没注册（首次启动后会自动注册）。</Empty>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>任务</th>
+                <th>上次运行</th>
+                <th>结果</th>
+                <th>总次数</th>
+                <th>失败</th>
+              </tr>
+            </thead>
+            <tbody>
+              {view.schedule.map((s) => (
+                <tr key={s.kind}>
+                  <td>
+                    {s.label}
+                    {s.costsTokens && <span className="dim tiny"> · 耗 token</span>}
+                  </td>
+                  <td className="dim">{s.lastRunAt > 0 ? clockText(s.lastRunAt) : '还没跑过'}</td>
+                  <td className="dim">{s.lastOutcome ?? '—'}</td>
+                  <td>{s.totalRuns}</td>
+                  <td className={s.failedRuns > 0 ? undefined : 'dim'}>{s.failedRuns}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Section>
+
+      <Section title="系统状态">
+        <div className="card card-pad">
+          <KV
+            rows={[
+              ['模型', view.model.configured ? <code key="m">{view.model.name ?? '—'}</code> : '未配置'],
+              [
+                '产出物',
+                view.artifacts.length === 0
+                  ? '暂无'
+                  : `${view.artifacts.length} 个（最新：${view.artifacts[0]?.label ?? '—'} v${String(
+                      view.artifacts[0]?.currentVersion ?? 0,
+                    )}）`,
+              ],
+              ['检查点', `${view.checkpoints} 个`],
+              ['系统自主生效的记忆', `${view.memory.autonomous} 条`],
+            ]}
+          />
+        </div>
+      </Section>
+    </Page>
+  );
+}
+
+function kindName(k: string): string {
+  return (
+    ({ fact: '事实', preference: '偏好', principle: '原则', summary: '长期总结' } as Record<
+      string,
+      string
+    >)[k] ?? k
   );
 }

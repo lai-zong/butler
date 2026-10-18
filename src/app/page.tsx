@@ -1,25 +1,77 @@
 /**
- * 根路径 —— 一律转到 `/app`
+ * `/` —— 对话（首页）
  *
- * ★★ v8（批次A-1）：这里原来渲染 `ConversationView`（1,967 行的旧界面），
- *    而 `/app` 已经是当前唯一在维护的对话界面。
+ * ★ 服务端只做一件事：把**最近的会话**读出来交给客户端组件。
+ *   所有交互都在 `ui/chat.tsx` 里（流式、图片、确认）。
  *
- * ⚠️ 为什么要重定向而不是"两个都留着"：
- *    两份对话界面并存时，**改一处另一处就漂移**，而且读者分不清哪个是"现在"。
- *    旧界面的 105 处「仆人」引用就是漂移的结果 —— 它写在多仆人架构的时代，
- *    代码早已改成单执行者，界面描述还停在过去。
- *
- * ★ 重定向不丢功能：`/app` 已支持 `initialMessages` 恢复历史会话
- *   （`app/app/page.tsx` 自己从 runtime 取最近会话的消息）。
- *
- * ⚠️ 保留这个文件而不是直接删：
- *    根路径需要一个页面，否则访问 `/` 会 404。
+ * ⚠️ 跨持久化边界的数据是**不可信输入**：
+ *    落盘消息里的 `agentTrace` 可能缺字段（旧数据），
+ *    所以形状不对就**整体不显示过程**，而不是显示半截。
  */
 
-import { redirect } from 'next/navigation';
+import { parseExecutionReports } from '@/core/chat/parse.js';
+import type { AgentTraceData } from '@/core/chat/types.js';
+
+import { getRuntime } from './runtime.js';
+import { Chat, type Trace } from './ui/chat.js';
 
 export const dynamic = 'force-dynamic';
 
-export default function HomePage(): never {
-  redirect('/app');
+export default async function ChatPage(): Promise<React.ReactElement> {
+  const rt = await getRuntime();
+  const chat = rt.bootstrapped.chat;
+
+  const session = chat.listSessions()[0] ?? null;
+  const raw = session !== null ? chat.messagesOf(session.id) : [];
+
+  const messages = raw
+    .filter((m) => m.text.trim().length > 0)
+    .map((m) => {
+      const trace = m.agentTrace !== undefined ? toTrace(m.agentTrace) : null;
+      return {
+        id: m.id,
+        role: m.role === 'user' ? ('user' as const) : ('butler' as const),
+        text: m.text,
+        ...(trace !== null ? { trace } : {}),
+      };
+    });
+
+  // 只为触发一次解析校验（旧数据形状不对时不让页面 500）
+  void raw.map((m) => parseExecutionReports(m.servantReports));
+
+  return (
+    <Chat
+      sessionId={session?.id ?? null}
+      initialMessages={messages}
+      modelConfigured={rt.model !== null}
+    />
+  );
 }
+
+/** 把落盘的执行轨迹转成界面要的形状；形状不对就返回 null（不显示过程）。 */
+function toTrace(t: AgentTraceData): Trace | null {
+  if (!Array.isArray(t.rounds) || t.rounds.length === 0) return null;
+  return {
+    rounds: t.rounds.map((r) => ({
+      round: r.round,
+      reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
+      tools: Array.isArray(r.toolCalls)
+        ? r.toolCalls.map((c: AgentTraceData['rounds'][number]['toolCalls'][number]) => ({
+            callId: c.callId,
+            name: c.name,
+            ok: c.ok,
+            denied: c.denied,
+            args: c.argsText,
+            output: c.output,
+            durationMs: c.durationMs,
+          }))
+        : [],
+    })),
+    /**
+     * ⚠️ 落盘形状里 `finished` 可能是 `null`（进行中被中断），
+     *    而界面用的 `Trace.finished` 是"可选"。null 要转成"不存在"。
+     */
+    ...(t.finished !== null && t.finished !== undefined ? { finished: t.finished } : {}),
+  };
+}
+

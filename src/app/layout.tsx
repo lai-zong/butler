@@ -1,6 +1,19 @@
+/**
+ * 根布局 —— 全站唯一外壳
+ *
+ * ★ 这一层只做两件事：
+ *   ① 装全局样式
+ *   ② 把「待审核条数」交给侧栏（用户一眼能看到有没有事要处理）
+ *
+ * ⚠️ 外壳**只在这里包一次**。页面自己不再包 `<Shell>` ——
+ *    否则切换路由时侧栏会重建、收起状态与深浅色会丢。
+ */
+
 import type { Metadata, Viewport } from 'next';
 
 import './globals.css';
+import { Shell } from './ui/shell.js';
+import { getRuntime } from './runtime.js';
 
 export const metadata: Metadata = {
   title: '管家式 AI · 记忆治理',
@@ -12,10 +25,32 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export const dynamic = 'force-dynamic';
+
+export default async function RootLayout({
+  children,
+}: {
+  readonly children: React.ReactNode;
+}): Promise<React.ReactElement> {
+  /**
+   * ⚠️ 取不到运行时（例如数据目录不可写）时**不能让整站白屏**：
+   *    外壳仍要渲染，页面自己会显示错误。
+   */
+  let pendingReview = 0;
+  try {
+    const rt = await getRuntime();
+    pendingReview = rt.bootstrapped.memory
+      .all()
+      .filter((m) => m.lifecycle === 'candidate').length;
+  } catch {
+    pendingReview = 0;
+  }
+
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        <Shell pendingReview={pendingReview}>{children}</Shell>
+      </body>
     </html>
   );
 }
