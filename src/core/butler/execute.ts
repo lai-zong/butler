@@ -179,6 +179,11 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
    * ⚠️ 顺序要求：必须在 `butler.executed` **之后**、产出物落盘之前。
    *    这样即使后面消息落盘失败，答案事件也已存在 ——
    *    宁可多一份没有题目的答案（无害），也不要"有题目没答案"（批改永远失败）。
+   *
+   * ★ 事件里同时带**题目本身**（不含答案）：
+   *    回复 payload 里的产出物已被压平成文本（`{kind, text, itemCount}`），
+   *    结构化题目只活在这里。批改端点要按 `questions[].options` 归一化作答，
+   *    没有它就无从校验。
    */
   artifacts.forEach((artifact, index) => {
     if (artifact.kind !== 'quiz') return;
@@ -192,8 +197,8 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
       payload: {
         taskId: args.taskId,
         artifactIndex: index,
-        // 题目 id 也记下来：批改时要能校验"提交的题目 id 确实存在"
-        questionIds: [...ids],
+        // 题目（含 id/stem/options，**无答案**）
+        questions: artifact.content,
         answers: mine,
       },
       createdAt: args.now,

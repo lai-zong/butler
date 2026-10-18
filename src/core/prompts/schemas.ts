@@ -10,6 +10,9 @@
 import { z } from 'zod';
 
 import type { QuizAnswer, QuizQuestion, TableContent } from '../execution/types.js';
+// ★ 答案字母归一化只有一份实现（`core/quiz/letters.ts`）——
+//   模型输出侧与用户提交侧共用，否则两侧规则漂移会导致"批改永远判错"。
+import { stripOptionPrefix, toOptionLetter } from '../quiz/letters.js';
 
 // ═══════════════════════════════════════════════════════════
 // 仆人提交的「发现」
@@ -245,57 +248,6 @@ export interface ArtifactNormalization {
   readonly artifact: NormalizedArtifact;
   /** 非 quiz 时为空数组 */
   readonly answers: readonly NormalizedQuizAnswer[];
-}
-
-const OPTION_LETTERS = 'ABCDEFGH';
-
-/**
- * 把模型给的"正确答案"归一化成选项字母。
- *
- * ⚠️ 实测模型会用五种写法，少处理一种就会导致**批改永远判错**：
- *   ① 纯字母     `"B"`
- *   ② 字母+分隔  `"B. 清蒸"` / `"B、清蒸"`
- *   ③ 数字下标   `2`（1 基）
- *   ④ 选项原文   `"清蒸"`
- *   ⑤ 互相包含   `"清蒸"` vs 选项 `"清蒸（少油）"`
- */
-function toOptionLetter(raw: string | number, options: readonly string[]): string | undefined {
-  const t = String(raw).trim();
-  if (t.length === 0) return undefined;
-
-  const bare = /^([A-Ha-h])$/.exec(t);
-  if (bare?.[1] !== undefined) return bare[1].toUpperCase();
-
-  const prefixed = /^([A-Ha-h])\s*[.、,:：)）]/.exec(t);
-  if (prefixed?.[1] !== undefined) return prefixed[1].toUpperCase();
-
-  const n = Number(t);
-  if (Number.isInteger(n) && n >= 1 && n <= options.length && n <= OPTION_LETTERS.length) {
-    const idx = n - 1;
-    return OPTION_LETTERS[idx];
-  }
-
-  const exact = options.findIndex((o) => o.trim() === t);
-  if (exact >= 0 && exact < OPTION_LETTERS.length) {
-    const idx = exact;
-    return OPTION_LETTERS[idx];
-  }
-
-  const partial = options.findIndex((o) => {
-    const ot = o.trim();
-    return ot.length > 0 && (ot.includes(t) || t.includes(ot));
-  });
-  if (partial >= 0 && partial < OPTION_LETTERS.length) {
-    const idx = partial;
-    return OPTION_LETTERS[idx];
-  }
-
-  return undefined;
-}
-
-/** 去掉选项自带的 `A.` / `1.` 前缀 —— 否则界面会显示「A. A. 油炸」。 */
-function stripOptionPrefix(option: string): string {
-  return option.replace(/^\s*(?:[A-Ha-h]|\d{1,2})\s*[.、,:：)）]\s*/, '').trim();
 }
 
 function asText(v: unknown): string {
