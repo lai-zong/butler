@@ -627,6 +627,72 @@ def op_uia_set_value(args):
     }
 
 
+# ═══════════════════════════════════════════════════════════
+# 行为采集用的前台窗口探测（A10）
+# ═══════════════════════════════════════════════════════════
+#
+# ★ 为什么要单独一个 op，而不是复用 `list_windows` 取第一个：
+#   `list_windows` 返回的是 UIA 根控件的子窗口，顺序**不保证**是前台最上层。
+#   "猜第一个是前台"就是猜。这里用 `GetForegroundWindow` 精确取。
+#
+# ⚠️ 只返回**应用名**与是否空闲，**不返回窗口标题** ——
+#    标题里常有文档名、网页标题（可能含隐私内容），方案 §7 明确不采集。
+
+def op_foreground_window(_args):
+    """返回当前前台窗口的进程名与空闲状态。
+
+    ★ `had_input` 的判据是"最近一次输入距今多久"，而不是看窗口内容。
+    """
+    import win32gui
+    import win32process
+    import ctypes
+
+    hwnd = win32gui.GetForegroundWindow()
+    if not hwnd:
+        return {"app": None, "hadInput": False, "reason": "没有前台窗口"}
+
+    try:
+        _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+    except Exception:
+        return {"app": None, "hadInput": False, "reason": "拿不到进程 id"}
+
+    # 进程名（例如 Code.exe）
+    app = None
+    try:
+        import psutil  # type: ignore
+        app = psutil.Process(pid).name()
+    except Exception:
+        try:
+            app = win32process.GetModuleFileNameEx if False else None
+        except Exception:
+            app = None
+    if not app:
+        # 退路：用窗口类名代替（不含隐私内容）
+        try:
+            app = win32gui.GetClassName(hwnd) or None
+        except Exception:
+            app = None
+
+    # 空闲时长：GetLastInputInfo 给出最后一次输入的系统刻度
+    idle_ms = None
+    try:
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        li = LASTINPUTINFO()
+        li.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)):
+            now_tick = ctypes.windll.kernel32.GetTickCount()
+            idle_ms = int(now_tick - li.dwTime)
+    except Exception:
+        idle_ms = None
+
+    # 空闲超过 60 秒视为"无输入"
+    had_input = True if idle_ms is None else idle_ms < 60_000
+
+    return {"app": app, "hadInput": had_input, "idleMs": idle_ms}
+
+
 OPS = {
     "ping": op_ping,
     "list_windows": op_list_windows,
@@ -636,6 +702,7 @@ OPS = {
     "uia_find": op_uia_find,
     "uia_action": op_uia_action,
     "uia_set_value": op_uia_set_value,
+    "foreground_window": op_foreground_window,
 }
 
 

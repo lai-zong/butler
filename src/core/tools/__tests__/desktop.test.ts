@@ -64,6 +64,7 @@ function fakeBridge(over: Partial<DesktopBridgePort> = {}): DesktopBridgePort {
       after: '显示',
       verified: true,
     })),
+    foregroundWindow: vi.fn(async () => ({ app: 'Code.exe', hadInput: true, idleMs: 1000 })),
     close: vi.fn(),
     ...over,
   };

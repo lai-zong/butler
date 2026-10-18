@@ -44,6 +44,8 @@ import { isDesktopPlatform } from '@/core/desktop/port.js';
 import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
 import { ActivityObserver } from '@/core/activity/observe.js';
+import type { ActivitySourcePort } from '@/core/activity/observe.js';
+import { desktopActivitySource } from '@/core/activity/desktopSource.js';
 import { createActivityRuntime, startActivityLoop } from '@/core/activity/runtime.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
 import type { ModelPort } from '@/core/ports/model.js';
@@ -265,6 +267,20 @@ async function initRuntime(): Promise<ButlerRuntime> {
           return;
         }
         tools.registerAll(specs);
+
+        /**
+         * ★ 桥就绪 → 把真实的前台采样源接上（A10）。
+         *
+         * ⚠️ 这里**不判断同意开关**：同意是由 `observe.ts` 在**读窗口之前**
+         *    检查的（`sampleOnce` 已修过这个顺序）。两处重复判断容易不一致，
+         *    所以只在数据源里负责"怎么读"，不负责"该不该读"。
+         */
+        desktopSource = desktopActivitySource(bridge, {
+          onError: (err) => {
+            // 采样失败不该打扰用户，只在服务端日志留一行
+            console.warn('[activity] 前台采样失败：', err instanceof Error ? err.message : String(err));
+          },
+        });
       })
       .catch((err: unknown) => {
         // 仅记录，不抛 —— 桌面能力缺席是"降级"，不是启动失败
@@ -292,12 +308,28 @@ async function initRuntime(): Promise<ButlerRuntime> {
     // 只有显式开启才视为"用户同意"（默认关闭，不"帮你打开"）
     activityObserver.grantConsent(clock.now());
   }
+  /**
+   * ★ 采样数据源的**延迟注入**：
+   *
+   *   桥是异步拉起的（`ping` 几百毫秒），而 activityRuntime 要在同一处同步创建。
+   *   所以先给一个**代理源**：桥没就绪时它返回 null（如实表示"没有数据源"），
+   *   就绪后由桌面那段把真实源填进来。
+   *
+   * ⚠️ 不用"等桥就绪再创建 activityRuntime"：那样会让运行时就绪时间
+   *    被 Python 启动时间拖住，而定时任务本身不依赖桥。
+   */
+  let desktopSource: ActivitySourcePort | null = null;
+  const lazySource: ActivitySourcePort = {
+    sample: async () => (desktopSource === null ? null : desktopSource.sample()),
+  };
+
   const activityRuntime = createActivityRuntime({
     log: bootstrapped.log,
     clock,
     store: bootstrapped.memory,
     userId: DEFAULT_USER_ID,
     observer: activityObserver,
+    source: lazySource,
     sessionCount: () => bootstrapped.chat.listSessions().length,
     // ⚠️ 暂不接 `reflect`：它需要模型与反思引擎，接线属于后续步骤。
     //    不接也能跑聚合（聚合完全不需要模型）。

@@ -59,8 +59,22 @@ export interface UiaFindResult {
   readonly matches: readonly UiaControl[];
 }
 
-/** 控件树（**必须能表达"被截断了"**）*/
-export interface UiaTreeResult {
+/**
+ * 前台窗口（行为采集用 · A10）。
+ *
+ * ⚠️ **刻意不含窗口标题**：标题里常有文档名、网页标题、邮件主题，
+ *    属于方案 §7 明确不采集的内容。这里只给进程名。
+ */
+export interface ForegroundWindow {
+  /** 进程名或类名（如 `Code.exe`）；拿不到时为 null */
+  readonly app: string | null;
+  /** 最近 60 秒内是否有输入（由空闲时长推出，不看内容）*/
+  readonly hadInput: boolean;
+  /** 空闲毫秒数（拿不到时为 null）*/
+  readonly idleMs?: number | null;
+}
+
+/** 控件树（**必须能表达"被截断了"**）*/export interface UiaTreeResult {
   readonly nodes: readonly UiaNode[];
   /**
    * 是否可能被上限截断。
@@ -124,6 +138,14 @@ export interface DesktopBridgePort {
   ): Promise<UiaActionResult>;
   /** 给标准输入框设值（自绘 UI 会如实失败）*/
   uiaSetValue(window: string, name: string, value: string): Promise<UiaSetValueResult>;
+
+  /**
+   * 当前前台窗口（只给应用名，**不给窗口标题**）。
+   *
+   * ★ 行为采集用它：`list_windows` 的顺序不保证是前台最上层，
+   *   靠"取第一个"来猜前台是错的。
+   */
+  foregroundWindow(): Promise<ForegroundWindow>;
 
   /** 关掉子进程（进程退出/测试清理时调）*/
   close(): void;

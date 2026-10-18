@@ -58,11 +58,29 @@ describe('★★ A10 接线：定时任务真的被注册了', () => {
 });
 
 describe('★★★ 采样：同意才采、按间隔采', () => {
-  it('★★ 未同意 → 不记录（默认关闭，不能"帮你打开"）', async () => {
-    const { runtime, observer } = setup({ consent: false, source: fakeSource() });
+  it('★★★ 未同意 → **连窗口都不读**（不只是不记录）', async () => {
+    /**
+     * ⚠️ 这条断言是本轮复查补上的：
+     *    原来的实现是"先读前台窗口，再在 observe() 里查同意"，
+     *    于是未同意时**仍然每 5 分钟读一次窗口**，只是把结果丢掉。
+     *    旧测试只断言"记录为 0"，**放过了这个缺陷**。
+     *
+     *    "不采集"必须等于"连读都不读" —— 读到了就有泄漏可能，
+     *    而用户看到的是"采集没开"。
+     */
+    let calls = 0;
+    const countingSource: ActivitySourcePort = {
+      sample: async () => {
+        calls++;
+        return { app: 'VS Code', hadInput: true };
+      },
+    };
+    const { runtime, observer } = setup({ consent: false, source: countingSource });
+
     const r = await runtime.tickOnce(T0);
     expect(r.sampled).toBe(false);
     expect(observer.rawRecords(T0)).toHaveLength(0);
+    expect(calls).toBe(0); // ★ 关键：数据源一次都没被调用
   });
 
   it('★★ 已同意 → 记录一条（应用名来自数据源）', async () => {

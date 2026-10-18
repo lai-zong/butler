@@ -249,6 +249,24 @@ export class ActivityObserver {
     if (!this.shouldSampleNow(t)) {
       return { recorded: false, reason: '未到采样间隔（避免变成持续监听）' };
     }
+
+    /**
+     * ★★ 同意/开关的检查**必须在读窗口之前**。
+     *
+     * ⚠️ 这是一个真实缺陷（复查时发现）：
+     *    原来的顺序是"先 `source.sample()` 读前台窗口 → 再在 `observe()` 里查同意"，
+     *    于是**未同意时仍然每 5 分钟读一次窗口**，只是把结果丢掉。
+     *
+     *    "不采集"应当等于**连读都不读** —— 读到了就有日志/崩溃转储泄漏的可能，
+     *    而用户看到的却是"没开采集"。
+     */
+    if (!this.consent.granted) {
+      return { recorded: false, reason: '用户未同意采集（默认关闭）' };
+    }
+    if (!this.consent.enabled) {
+      return { recorded: false, reason: '采集已被用户关闭' };
+    }
+
     this.lastSampleAt = t;
 
     const sample = await source.sample();

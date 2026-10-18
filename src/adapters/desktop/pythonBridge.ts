@@ -23,6 +23,7 @@ import type {
   DesktopBridgePort,
   DesktopCapabilities,
   DesktopWindow,
+  ForegroundWindow,
   ShotResult,
   UiaActionResult,
   UiaControl,
@@ -361,6 +362,19 @@ export class PythonDesktopBridge implements DesktopBridgePort {
       before: typeof o['before'] === 'string' ? o['before'] : '',
       after: typeof o['after'] === 'string' ? o['after'] : '',
       verified: o['verified'] === true,
+    };
+  }
+
+  async foregroundWindow(): Promise<ForegroundWindow> {
+    const raw = await this.call('foreground_window', {}, 15_000);
+    if (typeof raw !== 'object' || raw === null) {
+      return { app: null, hadInput: false };
+    }
+    const o = raw as Record<string, unknown>;
+    return {
+      app: typeof o['app'] === 'string' && o['app'].length > 0 ? o['app'] : null,
+      hadInput: o['hadInput'] === true,
+      ...(typeof o['idleMs'] === 'number' ? { idleMs: o['idleMs'] } : {}),
     };
   }
 
