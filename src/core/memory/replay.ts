@@ -58,6 +58,8 @@ export const MEMORY_STATE_EVENTS: readonly string[] = [
   'memory.dormant',
   'memory.revived',
   'fitness.updated',
+  // ★ v9：遗忘必须参与重放。少了这一条，删除只活到下一次重启。
+  'intervention.forgotten',
 ];
 
 /**
@@ -119,6 +121,31 @@ export function replayMemory(events: readonly SessionEvent[]): ReplayMemoryResul
         break;
       }
 
+      case 'intervention.forgotten': {
+        /**
+         * ★ v9：删除也参与重放。
+         *
+         *   没有这一支时：重启后 `memory.created` 会把条目建回来，
+         *   用户在界面上看到的"已删除"只活到下一次打开应用。
+         */
+        const id = typeof p['memoryId'] === 'string' ? p['memoryId'] : '';
+        if (id.length === 0) {
+          skipped.push({
+            seq: e.seq,
+            type: e.type,
+            why: '遗忘事件没有 memoryId，无法确定删的是哪条',
+          });
+          break;
+        }
+        if (!entries.has(id)) {
+          // 删除一条本就不存在的记忆：如实记录，不编造状态
+          anomalies.push(`seq ${e.seq}：遗忘事件引用了不存在的记忆 ${id}`);
+          break;
+        }
+        entries.delete(id);
+        break;
+      }
+
       case 'memory.approved':
       case 'memory.rejected':
       case 'memory.archived':
@@ -151,7 +178,8 @@ export function replayMemory(events: readonly SessionEvent[]): ReplayMemoryResul
 
   return {
     entries: [...entries.values()],
-    revisions,
+    // 已删除记忆的版本历史不再返回 —— 否则界面/导出仍能拼回原文
+    revisions: revisions.filter((r) => entries.has(r.memoryId)),
     consumedEvents: consumed,
     skippedEvents: skipped,
     anomalies,
@@ -277,7 +305,7 @@ function isObject(v: unknown): boolean {
 
 function parseRevision(
   payload: Record<string, unknown>,
-  seq: number,
+  _seq: number,
   createdAt: number,
 ): MemoryRevision | null {
   const memoryId = payload['memoryId'];
@@ -292,7 +320,6 @@ function parseRevision(
     patch: (payload['patch'] ?? {}) as MemoryRevision['patch'],
     reason: typeof payload['reason'] === 'string' ? payload['reason'] : '',
   } as MemoryRevision & { readonly at: number };
-  void seq;
 }
 
 function num(v: unknown, fallback: number): number {

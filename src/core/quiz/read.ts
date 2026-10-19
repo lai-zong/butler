@@ -8,9 +8,9 @@
  *      旧落盘数据缺该字段，`as X` 只贴标签不检查，首页直接 500。
  *
  *   ② **答案与题目在返回类型上就分开**：
- *      · `readQuizzes()` 返回 `QuizItem`（**无答案**）—— 给前端
+ *      · `readQuizzes()` 返回 `QuizItem`（**无答案**）—— 给调用方
  *      · `readAnswerKey()` 返回 `QuizAnswerKey`（有答案）—— 只给批改逻辑
- *      两者是不同接口，"答案漏进前端"写不出来。
+ *      两者是不同接口，"答案漏进调用方"写不出来。
  */
 
 import type { EventLog } from '../events/log.js';
@@ -103,7 +103,7 @@ function parseGraded(payload: unknown): QuizGrade | null {
  * 读出某会话的全部题（**不含答案**）。
  *
  * `id` 用 `quiz.created` 事件的 `seq`：事件日志全局单调递增 ⇒ 天然唯一。
- * 这样前端不必依赖"第几轮/第几个产出物"这类当前架构并不明确的量。
+ * 这样调用方不必依赖"第几轮/第几个产出物"这类当前架构并不明确的量。
  *
  * ★★ 一个必须分清的字段（曾经写错，见下方注释）：
  *
@@ -152,6 +152,8 @@ export function readQuizzes(log: EventLog, sessionId: string): readonly QuizItem
       // ⚠️ 不是 `e.sessionId`（那是日志 id）—— 回填入参里的聊天会话 id
       sessionId,
       questions: parsed.questions,
+      // 答案卷不存在（如从脱敏备份导入）→ 明确标记不可批改
+      gradable: parsed.answers.length > 0,
       ...(grade !== undefined ? { grade } : {}),
     });
   }

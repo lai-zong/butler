@@ -82,7 +82,7 @@ export interface TaskBundle {
  * 构造四个任务处理器。
  *
  * ⚠️ 处理器都设计成**幂等且可手动触发** ——
- *    方案要求"每个任务都提供「立即执行」按钮，演示时不依赖等待"。
+ *    方案要求"每个任务都提供「立即执行」操作项，演示时不依赖等待"。
  */
 export function buildTasks(ctx: TaskContext): TaskBundle {
   let latest: ProfileSnapshot | null = null;

@@ -29,7 +29,7 @@ import { z } from 'zod';
  *   所以导入时必须**精确匹配**而不是"兼容就好" ——
  *   猜错字段语义比拒绝导入危险得多。
  */
-export const EXPORT_SCHEMA = 'butler-export@1';
+export const EXPORT_SCHEMA = 'butler-export@2';
 
 /** 事件的最小结构校验（宽容：只要求导入后能重放的基本字段） */
 const eventSchema = z.object({
@@ -69,28 +69,60 @@ export const exportDocumentSchema = z.object({
   }),
 
   /**
-   * ★ 是否包含凭证。**恒为 false**（方案 §5.5）。
+   * ★ 是否包含凭证。**恒为 false** —— 导出时会自动把凭证替换成占位符。
    *
-   * 目前事件流里本来就没有凭证（`mcp.serverAdded` 只记 serverId/名称/传输方式/
-   * 策略等级，不含 env 与 command）。这个字段是**显式声明**，
-   * 让导入方不必猜。
+   * 与 v1 的区别：v1 是"扫到就拒绝导出"；v2 是"自动脱敏、写清单"。
+   * 这样用户不会因为说过一次手机号就永远导不出备份（v1 的真实缺陷）。
    */
   includesCredentials: z.literal(false),
 
+  /** 导出文件里是否含个人信息（手机号/身份证/银行卡）—— 保留但标记。 */
+  containsPII: z.boolean(),
+
   /**
-   * 凭证扫描结果（防御性）：导出时扫一遍全部 payload，
-   * 若发现像凭证的字符串，**拒绝导出**而不是把它写进文件。
+   * 自动脱敏清单（**不是**悄悄替换）：
+   * 文件自己声明改了哪些路径、每处是什么类型，导入方/用户都能核对。
    */
-  credentialScan: z.object({
-    scannedEvents: z.number().int().min(0),
-    suspicious: z.number().int().min(0),
+  sanitization: z.object({
+    policy: z.literal('auto'),
+    /** 被替换的字段数（凭证 + 被移除的练习答案） */
+    redacted: z.number().int().min(0),
+    /** 检测到的个人信息条数（未替换） */
+    pii: z.number().int().min(0),
+    fields: z
+      .array(
+        z.object({
+          path: z.string().min(1),
+          kind: z.string().min(1),
+        }),
+      )
+      .max(200),
   }),
 
   /** 事件流（唯一真相源）*/
   events: z.array(eventSchema),
 });
 
+/** v1（旧版本）导出文档：导入时仍然接受。 */
+export const exportDocumentV1Schema = z.object({
+  schema: z.literal('butler-export@1'),
+  exportedAt: z.number(),
+  userId: z.string().min(1),
+  appVersion: z.string().min(1),
+  counts: z.object({
+    events: z.number().int().min(0),
+    lastSeq: z.number().int().min(0),
+  }),
+  includesCredentials: z.literal(false),
+  credentialScan: z.object({
+    scannedEvents: z.number().int().min(0),
+    suspicious: z.number().int().min(0),
+  }),
+  events: z.array(eventSchema),
+});
+
 export type ExportDocument = z.infer<typeof exportDocumentSchema>;
+export type ExportDocumentV1 = z.infer<typeof exportDocumentV1Schema>;
 export type ExportEvent = z.infer<typeof eventSchema>;
 
 /** 导入判定的结果（**为什么不抛错**：调用方要把原因转成用户可读提示）*/

@@ -2,7 +2,7 @@
  * 询问通道测试（C6）
  *
  * ★ 这一层的核心不是"能问"，而是**问不到时怎么走**：
- *   用户不响应、页面关了、id 已作废 —— 三种情况都必须**拒绝**。
+ *   用户不响应、客户端关了、id 已作废 —— 三种情况都必须**拒绝**。
  *   任何一条走了"放行"，就是安全漏洞。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -32,7 +32,7 @@ describe('SseApprovals —— 正常答复', () => {
     expect(sent[0]?.toolName).toBe('write_file');
     expect(pendingApprovalCount()).toBe(1);
 
-    // 模拟前端 POST /api/approval
+    // 模拟调用方 POST /api/approval
     expect(resolveApproval(sent[0]!.id, true)).toBe(true);
     await expect(pending).resolves.toBe(true);
     expect(pendingApprovalCount()).toBe(0);
@@ -46,7 +46,7 @@ describe('SseApprovals —— 正常答复', () => {
     await expect(pending).resolves.toBe(false);
   });
 
-  it('preview 会原样推给前端（用户得看到"要动到什么"）', async () => {
+  it('preview 会原样推给调用方（用户得看到"要动到什么"）', async () => {
     const sent: ApprovalRequest[] = [];
     const asker = new SseApprovals({ emit: (r) => sent.push(r) });
     void asker.request({ ...REQ, preview: '将覆盖 a.txt（原 12 字节）' });

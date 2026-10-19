@@ -222,7 +222,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
    * ★ 题目的答案单独落事件 —— **绝不进产出物**。
    *
    * ⚠️ 每个 quiz 产出物单独一条事件，用 `artifactIndex` 对应到产出物数组的下标
-   *    （即前端渲染的那一份的顺序）。合成一条会让"一份报告有多组题"时对不上号。
+   *    （即调用方渲染的那一份的顺序）。合成一条会让"一份报告有多组题"时对不上号。
    *
    * ⚠️ 顺序要求：必须在 `butler.executed` **之后**、产出物落盘之前。
    *    这样即使后面消息落盘失败，答案事件也已存在 ——

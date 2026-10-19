@@ -312,7 +312,7 @@ function buildSummary(args: {
   return `${parts.join('、')}。`;
 }
 
-/** 从 store 直接取一份原则统计（供界面卡片用）。 */
+/** 从 store 直接取一份原则统计（供调用方使用）。 */
 export function snapshotStats(store: MemoryStore): ReturnType<typeof principleStats> {
   return principleStats(store);
 }

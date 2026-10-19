@@ -1,7 +1,7 @@
 /**
  * 验证 13：做题与批改（v8 批次A）
  *
- * ★ 本验证要证明五件事（都是"任务窗格能成立"的前提）：
+ * ★ 本验证要证明五件事（都是"任务视图能成立"的前提）：
  *   ① **题目与答案在产出物里就分开了** —— 产出物序列化后不含答案
  *   ② **答案能落事件、能被读回**（重启后仍可批改，因为答案在 `events.jsonl` 里）
  *   ③ **批改是确定性的、零 LLM** —— 同一份作答跑两次结果一致，且全程无模型调用
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
   check('★ 用日志 id 查不到题（过滤依据是 payload.taskId）', readQuizzes(log, LOG_ID).length === 0);
 
   const readBackDump = JSON.stringify(readBack);
-  check('★★ 给前端的结构里不含答案（它会被直接放进 HTTP 响应）',
+  check('★★ 给调用方的结构里不含答案（它会被直接放进 HTTP 响应）',
     !readBackDump.includes('correct') && !readBackDump.includes('explanation'));
 
   const key = readAnswerKey(log, SESSION, quizId);

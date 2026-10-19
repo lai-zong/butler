@@ -434,6 +434,7 @@ describe('⑤ ★★ 建档必须落"可重建"的事件', () => {
       confidence: 0.9,
       evidence: ['e1'],
       lifecycle: 'active',
+      domain: 'health',
     });
 
     const created = log.byType('memory.created');
@@ -441,9 +442,17 @@ describe('⑤ ★★ 建档必须落"可重建"的事件', () => {
     const entry = (created[0]?.payload as { entry?: Record<string, unknown> }).entry;
     expect(entry).toBeDefined();
     // ★ 重建所需的字段都在
-    for (const f of ['id', 'memClass', 'kind', 'content', 'confidence', 'fitness', 'lifecycle', 'createdAt', 'version']) {
+    for (const f of ['id', 'memClass', 'kind', 'content', 'confidence', 'fitness', 'lifecycle', 'createdAt', 'version', 'domain']) {
       expect(entry?.[f], `entry 缺字段 ${f}`).toBeDefined();
     }
+
+    /**
+     * ⚠️ domain 曾经不在 entry 里：重放后所有记忆的领域标签都消失，
+     *    而类型检查与大部分测试都发现不了。这里直接断言重建结果。
+     */
+    expect(entry?.['domain']).toBe('health');
+    const replayed = replayMemory(log.all());
+    expect(replayed.entries[0]?.domain).toBe('health');
   });
 
   it('★ 语义事件（candidate/approved）与状态事件（created）并存', () => {

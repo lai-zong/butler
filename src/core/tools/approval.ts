@@ -10,7 +10,7 @@
  *
  * ⚠️ 三条硬规则：
  *   ① **超时即拒绝**（fail-closed）—— 用户不响应不等于同意
- *   ② **流断即拒绝** —— 页面关了、请求取消了，挂着的确认全部作废
+ *   ② **流断即拒绝** —— 客户端关了、请求取消了，挂着的确认全部作废
  *   ③ **不记得"这个工具以后都允许"** —— C5 的"记住本次会话"是另一层，
  *      这层只回答"这一次允不允许"
  */
@@ -62,7 +62,7 @@ export function pendingApprovalCount(): number {
 }
 
 export interface SseApprovalsOptions {
-  /** 把确认请求推给前端（通常是 SSE 的 `send`） */
+  /** 把确认请求推给调用方（通常是 SSE 的 `send`） */
   readonly emit: (req: ApprovalRequest) => void;
   /** 默认超时（毫秒）。默认 120 秒 —— 太短用户来不及看，太长会占着工具循环 */
   readonly timeoutMs?: number;
@@ -104,7 +104,7 @@ export class SseApprovals implements ApprovalAsker {
 
       PENDING.set(id, settle);
 
-      // ② 推给前端。推送本身出错也必须收敛成"拒绝"，不能让 Promise 永远挂着。
+      // ② 推给调用方。推送本身出错也必须收敛成"拒绝"，不能让 Promise 永远挂着。
       try {
         this.opts.emit(full);
       } catch {
@@ -117,7 +117,7 @@ export class SseApprovals implements ApprovalAsker {
 /**
  * 把**所有**挂着的确认一次性拒绝。
  *
- * ★ 用在流结束/连接关闭时：页面都关了，没人会来点"允许"。
+ * ★ 用在流结束/连接关闭时：客户端都关了，没人会来点"允许"。
  *   不这么做的话，工具循环会一直等到超时（最长 2 分钟）。
  */
 export function denyAllPending(): number {

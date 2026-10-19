@@ -146,7 +146,7 @@ export function generateDemoRecords(args: {
   return out;
 }
 
-/** 预置画像清单（界面下拉用）。 */
+/** 预置画像清单（供调用方枚举）。 */
 export const DEMO_PROFILES: readonly DemoProfile[] = [DEMO_OFFICE_DEV, DEMO_STUDENT];
 
 /** 演示数据的诚实标注文本（界面必须显示）。 */

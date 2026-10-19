@@ -1,54 +1,29 @@
 /**
- * 导出（v8 · 方案 §5.5）
+ * 导出（v8 · 方案 §5.5；v9 改为**自动脱敏**）
  *
  * ★ 纯函数：不读文件、不写文件、不碰运行时的 log 实例。
- *   调用方把事件数组传进来，拿到一个可序列化的文档。
- *   这样导出逻辑可以脱离环境单测，也不会顺手改到运行时状态。
  *
- * ⚠️ 凭证处理（方案 §5.5「凭证隔离」）：
- *   导出文件会经过用户的手，这是最常见的数据泄露路径。
- *   所以这里**先扫一遍**：任何 payload 里出现像凭证的字符串，
- *   **拒绝导出**并说明是哪条事件 —— 而不是悄悄写进文件、
- *   也不是悄悄替换成 `***`（那会让导入后的数据与原文不符）。
+ * ★★ v9 的核心变化（针对真实缺陷）：
+ *
+ *   旧策略是"扫到疑似凭证 → 拒绝导出"。但脱敏规则把手机号/身份证/银行卡
+ *   也算作凭证，而事件流是 append-only、用户无法清理历史 ——
+ *   只要说过一次手机号，导出就**永久 400**（实测确认）。
+ *
+ *   新策略（无需用户确认，程序自动决定）：
+ *     · 真凭证（sk-/JWT/私钥/Bearer/密码键值）→ 自动替换为占位符；
+ *     · 个人信息（手机号/身份证/银行卡）→ 保留，但文件标记 containsPII；
+ *     · 练习答案 `answers` → 一律不导出（它不该出现在任何可读文件里）；
+ *     · 所有替换写入 `sanitization.fields`，导入方可核对，不是"悄悄改"。
  */
 
-import { containsCredentials } from '../tools/redact.js';
-import { EXPORT_SCHEMA, exportDocumentSchema, type ExportDocument, type ExportEvent } from './schema.js';
+import { containsCredential, containsPII, redactCredentials } from '../tools/redact.js';
+import {
+  EXPORT_SCHEMA,
+  exportDocumentSchema,
+  type ExportDocument,
+  type ExportEvent,
+} from './schema.js';
 import type { SessionEvent } from '../events/types.js';
-
-/**
- * 递归收集一个值里所有"像凭证"的字符串。
- *
- * ⚠️ 只在导出时跑一次，所以用简单递归就够了 ——
- *    不需要为它做流式或剪枝。
- */
-function findSuspicious(value: unknown, path: string, out: string[]): void {
-  if (typeof value === 'string') {
-    if (containsCredentials(value)) out.push(path);
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => findSuspicious(v, `${path}[${i}]`, out));
-    return;
-  }
-  if (typeof value === 'object' && value !== null) {
-    for (const [k, v] of Object.entries(value)) {
-      findSuspicious(v, `${path}.${k}`, out);
-    }
-  }
-}
-
-/** 导出失败的原因（调用方转成用户可读提示）*/
-export type ExportRejection =
-  | { readonly kind: 'credentials-found'; readonly where: readonly string[] };
-
-export interface ExportResult {
-  /** 成功时给文档；失败时给原因 */
-  readonly doc?: ExportDocument;
-  readonly rejection?: ExportRejection;
-  /** 扫描到的事件条数（无论成败都给，便于排查）*/
-  readonly scanned: number;
-}
 
 export interface BuildExportArgs {
   readonly events: readonly SessionEvent[];
@@ -57,18 +32,84 @@ export interface BuildExportArgs {
   readonly now: number;
 }
 
+interface SanitizeField {
+  readonly path: string;
+  readonly kind: string;
+}
+
+interface SanitizeState {
+  redacted: number;
+  pii: number;
+  readonly fields: SanitizeField[];
+}
+
+const MAX_FIELDS = 200;
+
+function record(state: SanitizeState, path: string, kind: string): void {
+  state.redacted += 1;
+  if (state.fields.length < MAX_FIELDS) state.fields.push({ path, kind });
+}
+
+function sanitizeString(value: string, path: string, state: SanitizeState): string {
+  if (containsCredential(value)) {
+    record(state, path, 'credential');
+    return redactCredentials(value);
+  }
+  if (containsPII(value)) {
+    state.pii += 1;
+  }
+  return value;
+}
+
+function sanitizeValue(value: unknown, path: string, state: SanitizeState): unknown {
+  if (typeof value === 'string') return sanitizeString(value, path, state);
+  if (Array.isArray(value)) {
+    return value.map((v, i) => sanitizeValue(v, `${path}[${i}]`, state));
+  }
+  if (typeof value === 'object' && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = sanitizeValue(v, `${path}.${k}`, state);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * 练习答案不进入导出文件。
+ *
+ * 已批改的答案仍在 `quiz.graded.items[].correct`（那是批改结果，不是"答案卷"）。
+ * 未批改的练习导入后会缺答案 —— 批改端点会明确拒绝，界面标注"来自脱敏备份"。
+ */
+function stripQuizAnswers(
+  payload: unknown,
+  path: string,
+  state: SanitizeState,
+): unknown {
+  if (typeof payload !== 'object' || payload === null) return payload;
+  const rec = payload as Record<string, unknown>;
+  if (!('answers' in rec)) return payload;
+  const { answers: _answers, ...rest } = rec;
+  record(state, `${path}.answers`, 'quiz.answers');
+  return rest;
+}
+
 /**
  * 构建导出文档。
  *
- * ⚠️ 失败**不抛异常**：返回 `rejection`，由 API 层转成 400 + 明确原因。
- *    导出失败是"用户要求的事做不了"，不是程序异常。
+ * 不再因为"数据像凭证"而拒绝 —— 那是把不可执行的清理责任丢给用户。
  */
-export function buildExport(args: BuildExportArgs): ExportResult {
-  const suspicious: string[] = [];
+export function buildExport(args: BuildExportArgs): ExportDocument {
+  const state: SanitizeState = { redacted: 0, pii: 0, fields: [] };
 
   const events: ExportEvent[] = [];
   for (const e of args.events) {
-    findSuspicious(e.payload, `${e.type}#seq${e.seq}`, suspicious);
+    const basePath = `${e.type}#seq${e.seq}`;
+    const payload =
+      e.type === 'quiz.created'
+        ? stripQuizAnswers(e.payload, basePath, state)
+        : e.payload;
     events.push({
       id: e.id,
       sessionId: e.sessionId,
@@ -76,31 +117,28 @@ export function buildExport(args: BuildExportArgs): ExportResult {
       type: e.type,
       actor: e.actor,
       createdAt: e.createdAt,
-      payload: e.payload,
+      payload: sanitizeValue(payload, basePath, state),
       ...(e.parentEventId !== undefined ? { parentEventId: e.parentEventId } : {}),
       ...(e.servantId !== undefined ? { servantId: e.servantId } : {}),
     });
   }
 
-  if (suspicious.length > 0) {
-    return {
-      rejection: { kind: 'credentials-found', where: suspicious },
-      scanned: args.events.length,
-    };
-  }
-
   const lastSeq = events.reduce((max, e) => Math.max(max, e.seq), 0);
 
-  const doc = exportDocumentSchema.parse({
+  return exportDocumentSchema.parse({
     schema: EXPORT_SCHEMA,
     exportedAt: args.now,
     userId: args.userId,
     appVersion: args.appVersion,
     counts: { events: events.length, lastSeq },
     includesCredentials: false,
-    credentialScan: { scannedEvents: events.length, suspicious: 0 },
+    containsPII: state.pii > 0,
+    sanitization: {
+      policy: 'auto',
+      redacted: state.redacted,
+      pii: state.pii,
+      fields: state.fields,
+    },
     events,
   });
-
-  return { doc, scanned: args.events.length };
 }

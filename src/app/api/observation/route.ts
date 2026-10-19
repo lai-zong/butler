@@ -18,6 +18,7 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
+import { RETENTION_OPTIONS } from '@/core/activity/observe.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,6 +26,8 @@ export const runtime = 'nodejs';
 interface ObservationBody {
   readonly granted?: unknown;
   readonly enabled?: unknown;
+  /** 原始记录保留天数（7 / 14 / 30 / 0） */
+  readonly retentionDays?: unknown;
 }
 
 export async function GET(): Promise<NextResponse> {
@@ -33,8 +36,10 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json({
     granted: c.granted,
     enabled: c.enabled,
+    grantedAt: c.grantedAt ?? null,
     retentionDays: c.retentionDays,
     recordedBlocks: rt.activityObserver.rawRecords().length,
+    aggregates: rt.activityObserver.allAggregates().length,
   });
 }
 
@@ -49,9 +54,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const rt = await getRuntime();
   const observer = rt.activityObserver;
 
+  let touched = false;
+
   if (typeof body.granted === 'boolean') {
     if (body.granted) observer.grantConsent();
     else observer.revokeConsent();
+    touched = true;
   } else if (typeof body.enabled === 'boolean') {
     // 只有已经同意过才谈得上"开关采集"
     if (!observer.getConsent().granted) {
@@ -62,9 +70,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     if (body.enabled) observer.enable();
     else observer.disable();
-  } else {
+    touched = true;
+  }
+
+  if (body.retentionDays !== undefined) {
+    const days = body.retentionDays;
+    if (
+      typeof days !== 'number' ||
+      !(RETENTION_OPTIONS as readonly number[]).includes(days)
+    ) {
+      return NextResponse.json(
+        { error: `retentionDays 只能是 ${RETENTION_OPTIONS.join(' / ')}` },
+        { status: 400 },
+      );
+    }
+    observer.setRetentionDays(days);
+    touched = true;
+  }
+
+  if (!touched) {
     return NextResponse.json(
-      { error: '需要 granted 或 enabled（布尔值）' },
+      { error: '需要 granted / enabled（布尔值）或 retentionDays' },
       { status: 400 },
     );
   }
@@ -74,7 +100,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     ok: true,
     granted: c.granted,
     enabled: c.enabled,
+    grantedAt: c.grantedAt ?? null,
     retentionDays: c.retentionDays,
     recordedBlocks: observer.rawRecords().length,
+    aggregates: observer.allAggregates().length,
   });
 }

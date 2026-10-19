@@ -1,15 +1,15 @@
 /**
  * 做题与批改的类型（v8 批次A）。
  *
- * ★★ 这里有一条必须守住的边界：**答案不出现在任何"给前端"的类型里**。
+ * ★★ 这里有一条必须守住的边界：**答案不出现在任何"给调用方"的类型里**。
  *
  *   答案的存放位置是 `quiz.created` 事件（`.butler-data` 受保护，
  *   模型的文件工具读不到）。本文件里：
- *     · `QuizItem`      —— 给前端（题目 + 已有批改结果，**无答案**）
+ *     · `QuizItem`      —— 给调用方（题目 + 已有批改结果，**无答案**）
  *     · `QuizAnswerKey` —— 只在服务端内部流转（**有答案**）
  *
  *   两者是不同接口，不是同一个接口加可选字段 ——
- *   "答案漏进前端"因此在类型层面就写不出来。
+ *   "答案漏进调用方"因此在类型层面就写不出来。
  */
 
 import type { QuizQuestion } from '../execution/types.js';
@@ -20,7 +20,7 @@ export interface QuizItemResult {
   readonly stem: string;
   /** 用户选了什么（未作答为 undefined） */
   readonly picked?: string;
-  /** 正确答案 —— ⚠️ 只在该题**已批改**时下发给前端 */
+  /** 正确答案 —— ⚠️ 只在该题**已批改**时下发给调用方 */
   readonly correct?: string;
   readonly right: boolean;
 }
@@ -33,7 +33,7 @@ export interface QuizGrade {
 }
 
 /**
- * 一份题（给前端）。
+ * 一份题（给调用方）。
  *
  * `id` 是 `quiz.created` 事件的 `seq` —— 事件日志全局单调递增，
  * 因此它天然唯一，不需要新造 id，也不需要给产出物加字段。
@@ -44,9 +44,17 @@ export interface QuizItem {
   readonly questions: readonly QuizQuestion[];
   /** 已批改过则带上结果（未批改为 undefined） */
   readonly grade?: QuizGrade;
+  /**
+   * 是否还能批改。
+   *
+   * ★ v9：导出时答案卷不落文件；从脱敏备份导入的**未批改**练习
+   *   会缺答案 → `false`。界面据此禁用提交并说明原因，
+   *   而不是让用户做完才发现批改端点 404。
+   */
+  readonly gradable?: boolean;
 }
 
-/** 服务端内部的答案表（**绝不**直接返回给前端）。 */
+/** 服务端内部的答案表（**绝不**直接返回给调用方）。 */
 export interface QuizAnswerKey {
   readonly id: number;
   readonly sessionId: string;

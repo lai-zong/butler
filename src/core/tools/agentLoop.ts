@@ -83,7 +83,7 @@ export const MAX_TOOL_RESULTS_IN_HISTORY = 12;
  *   「思考 → 工具 → 再思考」的流，就是这些事件拼出来的。
  *
  * ⚠️ 刻意**逐类区分**而不是一个通用的 `message`：
- *   界面要对它们做不同渲染（思考是灰字、工具是卡片、结果是代码块），
+ *   界面要对它们做不同渲染（思考 / 工具 / 结果三类要分开），
  *   一个通用事件会让界面不得不自己解析文本去猜类型。
  */
 export type AgentProgressEvent =
@@ -619,7 +619,7 @@ export async function runAgentLoop(
         durationMs: opts.clock.now() - started,
       });
 
-      // ★ 界面进度：工具结果（这是 dsh/codex 画面里那个可展开的卡片）
+      // ★ 界面进度：工具结果（这是 dsh/codex 画面里那个可展开的结构）
       emitProgress({
         kind: 'toolResult',
         round,

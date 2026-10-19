@@ -6,7 +6,7 @@
  *   ② ★ **答案与题目在归一化内部就已分离** —— 产出物里根本没有答案
  *
  * ② 是安全属性，不是功能属性：一旦答案漏进产出物，
- *    它会随消息一起重放给前端，"做题窗格"等于把答案印在题目下面。
+ *    它会随消息一起重放给调用方，"做题视图"等于把答案印在题目下面。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -57,7 +57,7 @@ describe('normalizeArtifact —— table（真结构）', () => {
     expect(n?.answers).toEqual([]);
   });
 
-  it('★ 行比列长时截断、比列短时补空 —— 否则前端会错列', () => {
+  it('★ 行比列长时截断、比列短时补空 —— 否则调用方会错列', () => {
     const content = tableOf(
       normalizeArtifact({
         kind: 'table',

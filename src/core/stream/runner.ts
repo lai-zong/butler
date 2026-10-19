@@ -1,7 +1,7 @@
 /**
  * 推理流编排 —— 把模型分片、增量翻译、事件流串起来
  *
- * 设计依据：方案 § 13.3、§ 13.4（状态可视化）
+ * 设计依据：状态可视化
  *
  * ★ 本模块让 `thought.delta` / `thought.done` 事件**活起来**。
  *   这两个事件在类型里定义了但从未被发出（审查发现的死事件）。
@@ -250,7 +250,7 @@ export async function runReasoningStream(opts: StreamRunOptions): Promise<Stream
     }
   } catch (err) {
     // ⚠️ 流本身报错时也要收尾：落 done 事件、把已生成内容交出去 ——
-    //    方案 § 13.4 明确"流式中断：断点续传或重生成该段，**不丢已生成内容**"
+    //    明确"流式中断：断点续传或重生成该段，**不丢已生成内容**"
     done = true;
     flushDelta(true);
     const message = err instanceof Error ? err.message : String(err);

@@ -140,7 +140,7 @@ export interface ToolSpec {
    * 高风险操作应当实现它 —— 用户看不到预览就没法真正判断。
    */
   preview?(args: unknown, ctx: ToolContext): Promise<string>;
-  /** 一句话摘要，给确认界面用 */
+  /** 一句话摘要，给确认流程用 */
   summarize(args: unknown): string;
   execute(args: unknown, ctx: ToolContext): Promise<ToolResult>;
 }

@@ -13,6 +13,7 @@
  */
 
 import type { EventLog } from '../events/log.js';
+import { hashContent } from '../events/scrub.js';
 import { snapshotOf } from './snapshot.js';
 import type { ClockPort } from '../ports/clock.js';
 import {
@@ -427,22 +428,14 @@ export class MemoryStore {
       type: 'memory.created',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
       payload: {
-        // 完整条目 —— 重放器直接用它恢复，不做任何推断
-        entry: {
-          id: entry.id,
-          memClass: entry.memClass,
-          kind: entry.kind,
-          content: entry.content,
-          subject: entry.subject ?? null,
-          confidence: entry.confidence,
-          evidence: entry.evidence,
-          owner: entry.owner,
-          lifecycle: entry.lifecycle,
-          fitness: entry.fitness,
-          createdAt: entry.createdAt,
-          updatedAt: entry.updatedAt,
-          version: entry.version,
-        },
+        /**
+         * 完整条目 —— 重放器直接用它恢复，不做任何推断。
+         *
+         * ⚠️ 用 `snapshotOf` 而不是手抄字段：
+         *   手抄时漏掉 `domain` 会导致**重启后领域标签消失**（实测踩过），
+         *   而这类缺口不会被类型检查发现 —— 它只是 payload 里少一个键。
+         */
+        entry: snapshotOf(entry) ?? {},
         // 便于界面与日志快速读取（不必解包 entry）
         memoryId: id,
         memClass: entry.memClass,
@@ -582,7 +575,15 @@ export class MemoryStore {
    * 遗忘权：彻底删除。
    *
    * ⚠️ 硬约束不可遗忘 —— 否则会出现"把用户的过敏史删掉"这种荒唐结果。
-   * 事件日志里保留删除事实（不含内容），因为这本身是"该删的已经删了"的证据。
+   *
+   * ★ v9：这次删除必须能**扛过重启与导出/导入**。
+   *   之前只做了"从内存表删掉 + 记一条删除事件"，重放只认 `memory.created`，
+   *   于是关掉应用再打开，删掉的记忆会原样回来（实测确认过）。
+   *   现在同时做三件事：
+   *     ① 删条目、删版本历史；
+   *     ② 写墓碑（只留 id / 分类 / 内容哈希，不留原文）；
+   *     ③ 抹掉历史事件里引用了这条记忆的原文（`log.scrubForMemory`），
+   *        重写文件后，审计页与导出文件里也不会再有原文。
    */
   forget(actor: MemoryActor, id: string): { ok: boolean; reason?: string } {
     const entry = this.entries.get(id);
@@ -595,14 +596,29 @@ export class MemoryStore {
     const deny = this.canWrite(actor, entry);
     if (deny) return { ok: false, reason: deny };
 
+    const content = entry.content;
     this.entries.delete(id);
-    // 只记录"已删除"，不记内容 —— 遗忘权要求内容真的消失
+    // 版本历史里也有 patch.before/after（可能带原文），一并删掉。
+    const kept = this.revisions.filter((r) => r.memoryId !== id);
+    this.revisions.splice(0, this.revisions.length, ...kept);
+
     this.log.append({
       type: 'intervention.forgotten',
       actor: actor.kind === 'user' ? 'user' : actor.kind,
-      payload: { memoryId: id, memClass: entry.memClass, hardConstraint: false },
+      payload: {
+        memoryId: id,
+        memClass: entry.memClass,
+        hardConstraint: false,
+        erased: true,
+        // 只留指纹：能证明"曾经有过这段内容"，但不能还原。
+        contentHash: hashContent(content),
+      },
       createdAt: this.clock.now(),
     });
+
+    // ★ 顺序：先写墓碑（seq 更大），再抹除更早事件里的原文。
+    //   重写会带上墓碑，不会把它弄丢。
+    this.log.scrubForMemory(id, content);
 
     return { ok: true };
   }

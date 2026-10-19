@@ -37,20 +37,20 @@ const SAFE_EVENT = {
 describe('buildExport', () => {
   it('正常导出：事件一条不少，并显式声明不含凭证', () => {
     const log = logWith(SAFE_EVENT, { ...SAFE_EVENT, createdAt: T0 + 1 });
-    const r = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
+    const doc = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
 
-    expect(r.doc).toBeDefined();
-    expect(r.doc?.events).toHaveLength(2);
-    expect(r.doc?.includesCredentials).toBe(false);
-    expect(r.doc?.credentialScan).toEqual({ scannedEvents: 2, suspicious: 0 });
-    expect(r.doc?.counts.lastSeq).toBe(2);
+    expect(doc.events).toHaveLength(2);
+    expect(doc.includesCredentials).toBe(false);
+    expect(doc.sanitization).toMatchObject({ policy: 'auto', redacted: 0, pii: 0 });
+    expect(doc.containsPII).toBe(false);
+    expect(doc.counts.lastSeq).toBe(2);
   });
 
-  it('★★ payload 里出现密钥 → 拒绝导出（不写进文件、也不悄悄替换）', () => {
+  it('★★ payload 里出现密钥 → **自动脱敏并写清单**（不再拒绝导出）', () => {
     /**
-     * ⚠️ 为什么不脱敏后照常导出：
-     *    脱敏会让导出文件与原文不一致，导回去之后行为可能变
-     *    （某个工具参数被替换成 `***`）。宁可拒绝，也不制造"看着完整、其实被改过"的数据。
+     * v1 的行为是"扫到就拒绝"，但事件流 append-only、用户无法清理历史：
+     * 一旦说过一次手机号/密钥，导出就永久 400（实测）。
+     * v2 改为自动替换 + 清单，用户始终能拿到一份可导入的备份。
      */
     const log = logWith({
       type: 'tool.result',
@@ -59,16 +59,18 @@ describe('buildExport', () => {
       createdAt: T0,
     });
 
-    const r = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
+    const doc = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
 
-    expect(r.doc).toBeUndefined();
-    expect(r.rejection?.kind).toBe('credentials-found');
-    expect(r.rejection?.where.length).toBeGreaterThan(0);
-    // 位置信息要能指到具体事件，否则用户没法排查
-    expect(r.rejection?.where[0]).toContain('tool.result');
+    const text = JSON.stringify(doc);
+    expect(text).not.toContain('sk-abcdefghijklmnopqrstuvwxyz');
+    expect(text).toContain('[已脱敏');
+    expect(doc.sanitization.redacted).toBeGreaterThan(0);
+    // 位置信息要能指到具体事件，否则用户没法核对
+    expect(doc.sanitization.fields[0]?.path).toContain('tool.result');
+    expect(doc.includesCredentials).toBe(false);
   });
 
-  it('嵌套结构里的密钥也能扫到（不是只看顶层）', () => {
+  it('嵌套结构里的密钥也能脱敏（不是只看顶层）', () => {
     const log = logWith({
       type: 'mcp.serverAdded',
       actor: 'user',
@@ -76,14 +78,51 @@ describe('buildExport', () => {
       createdAt: T0,
     });
 
-    const r = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
-    expect(r.rejection?.kind).toBe('credentials-found');
+    const doc = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
+    expect(JSON.stringify(doc)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz');
+    expect(doc.sanitization.redacted).toBeGreaterThan(0);
+  });
+
+  it('★ 手机号属于个人信息：保留但标记，不再导致导出失败', () => {
+    const log = logWith({
+      type: 'memory.created',
+      actor: 'butler',
+      payload: { entry: { id: 'm1', content: '我的手机号是 13812345678' } },
+      createdAt: T0,
+    });
+
+    const doc = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
+    expect(JSON.stringify(doc)).toContain('13812345678');
+    expect(doc.containsPII).toBe(true);
+    expect(doc.sanitization.pii).toBeGreaterThan(0);
+    expect(doc.sanitization.redacted).toBe(0);
+  });
+
+  it('练习答案不进入导出文件（但题目保留）', () => {
+    const log = logWith({
+      type: 'quiz.created',
+      actor: 'butler',
+      payload: {
+        taskId: 'chat_1',
+        artifactIndex: 0,
+        questions: [{ id: 'q1', stem: '哪种用油最少？', options: ['油炸', '清蒸'] }],
+        answers: [{ id: 'q1', correct: 'B' }],
+      },
+      createdAt: T0,
+    });
+
+    const doc = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
+    const text = JSON.stringify(doc);
+    expect(text).not.toContain('"answers"');
+    expect(text).not.toContain('"correct"');
+    expect(text).toContain('哪种用油最少');
+    expect(doc.sanitization.fields.some((f) => f.kind === 'quiz.answers')).toBe(true);
   });
 
   it('空事件流也能导出（0 条是合法状态，不是错误）', () => {
-    const r = buildExport({ events: [], userId: 'local', appVersion: 'v8', now: T0 });
-    expect(r.doc?.events).toHaveLength(0);
-    expect(r.doc?.counts).toEqual({ events: 0, lastSeq: 0 });
+    const doc = buildExport({ events: [], userId: 'local', appVersion: 'v8', now: T0 });
+    expect(doc.events).toHaveLength(0);
+    expect(doc.counts).toEqual({ events: 0, lastSeq: 0 });
   });
 });
 
@@ -91,9 +130,38 @@ describe('parseImportDocument', () => {
   /** 造一份合法的导出文本 */
   function goodText(): string {
     const log = logWith(SAFE_EVENT);
-    const r = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
-    return JSON.stringify(r.doc);
+    const doc = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
+    return JSON.stringify(doc);
   }
+
+  it('v1 旧备份仍可导入（升级不把旧文件挡在门外）', () => {
+    const legacy = {
+      schema: 'butler-export@1',
+      exportedAt: T0,
+      userId: 'local',
+      appVersion: 'v8',
+      counts: { events: 1, lastSeq: 1 },
+      includesCredentials: false,
+      credentialScan: { scannedEvents: 1, suspicious: 0 },
+      events: [
+        {
+          id: 'evt_1',
+          sessionId: 's_1',
+          seq: 1,
+          type: 'session.ended',
+          actor: 'butler',
+          createdAt: T0,
+          payload: {},
+        },
+      ],
+    };
+    const r = parseImportDocument(JSON.stringify(legacy));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.candidate.doc.schema).toBe(EXPORT_SCHEMA);
+      expect(r.candidate.doc.sanitization.redacted).toBe(0);
+    }
+  });
 
   it('合法文档通过，并给出**强类型**的 events', () => {
     const r = parseImportDocument(goodText());
@@ -170,7 +238,7 @@ describe('parseImportDocument', () => {
   it('seq 重复 → 拒绝', () => {
     const log = logWith(SAFE_EVENT, { ...SAFE_EVENT, createdAt: T0 + 1 });
     const built = buildExport({ events: log.all(), userId: 'local', appVersion: 'v8', now: T0 + 10 });
-    const doc = JSON.parse(JSON.stringify(built.doc)) as Record<string, unknown>;
+    const doc = JSON.parse(JSON.stringify(built)) as Record<string, unknown>;
     const events = doc['events'] as Record<string, unknown>[];
     // 把第 2 条的 seq 改成与第 1 条相同
     if (events[1] !== undefined) events[1]['seq'] = 1;

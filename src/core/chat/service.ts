@@ -137,7 +137,7 @@ export interface RunTurnResult {
    *
    * ⚠️ 与 `session.reports` 的区别：
    *    · `session.reports` 是**领域对象**（完整产出物，给管家校验用）
-   *    · 这个是**已截断的展示形状**（给界面排版用）
+   *    · 这个是**已截断的展示形状**（给调用方组织用）
    *
    *   ★ 在 `runTurn` 里**只转换一次**，然后复用到两个地方
    *     （落进消息 + 通过 SSE 推给界面）——

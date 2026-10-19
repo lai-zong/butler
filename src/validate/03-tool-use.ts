@@ -143,7 +143,7 @@ async function main(): Promise<void> {
      *
      * ⚠️ 本验证测的是**工具循环**（读文件 / 写文件 / 权限闸门 / 结构化汇报），
      *    不是契约生成 —— 所以这里直接内联一份契约，不调模型去写。
-     *    契约生成由 alidate:11 单独验证。
+     *    契约生成由 validate:11 单独验证。
      */
     const contract: TaskContract = {
       deliverable: '家里缺什么、需要采购什么的清单，写入 shopping-list.txt',

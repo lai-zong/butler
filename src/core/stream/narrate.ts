@@ -251,7 +251,7 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
     const durationMs = args.clock.now() - startedAt;
 
     /**
-     * ⚠️ 中断也要**保留已生成内容**（方案 § 13.4：
+     * ⚠️ 中断也要**保留已生成内容**（
      *    「流式中断：断点续传或重生成该段，**不丢已生成内容**」）。
      */
     args.log.append({
@@ -352,7 +352,7 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
  * 按句边界切分后逐句翻译。
  *
  * ★ 为什么**按句**而不是整段：
- *   方案 § 13.3 明确对比过 ——
+ *   明确对比过 ——
  *     ❌ 等完整生成 → 整段翻译 → 渲染（**这不叫流式**）
  *     ✅ 按句边界切分，第一句到边界即开始翻译（中文与英文同步增长）
  *

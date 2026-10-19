@@ -193,7 +193,7 @@ export const artifactSchema = z.object({
    * ★ 题目的**专用字段**（首选写法）。
    *
    * ⚠️ `answer` 会由 `normalizeArtifact` **搬走**，绝不进入 `ExecutionArtifact`。
-   *    这是「答案不出现在前端」的第一道防线。
+   *    这是「答案不出现在调用方」的第一道防线。
    */
   quiz: z
     .array(
@@ -225,7 +225,7 @@ export type RawArtifact = z.infer<typeof artifactSchema>;
  */
 export type NormalizedQuizQuestion = QuizQuestion;
 
-/** 题目的正确答案（服务端专用；落事件，不进前端）。 */
+/** 题目的正确答案（服务端专用；落事件，不进调用方）。 */
 export type NormalizedQuizAnswer = QuizAnswer;
 
 export type NormalizedTable = TableContent;
@@ -295,7 +295,7 @@ function normalizeTable(a: RawArtifact): NormalizedTable | null {
     if (columns.length === 0) return null;
     const rows = a.table.rows
       .map((r) => r.map((cell) => String(cell).trim()))
-      // 对齐列数：多了截断、少了补空 —— 否则前端渲染会错列
+      // 对齐列数：多了截断、少了补空 —— 否则调用方渲染会错列
       .map((r) => columns.map((_, i) => r[i] ?? ''))
       .filter((r) => r.some((cell) => cell.length > 0));
     if (rows.length === 0) return null;

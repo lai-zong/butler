@@ -25,6 +25,7 @@ import type { SessionEvent } from '../events/types.js';
 import type { ClockPort, RandomPort } from '../ports/clock.js';
 import { MemoryStore } from '../memory/store.js';
 import { hydrateStore, replayMemory, type ReplayMemoryResult } from '../memory/replay.js';
+import { repairForgottenContent } from '../memory/repair.js';
 import { InMemoryArtifactStore } from '../artifact/store.js';
 import {
   hydrateArtifactStore,
@@ -94,6 +95,12 @@ export interface BootstrapResult {
 
   /** 重建过程中的异常（事件信息不足、引用不存在等） */
   readonly issues: readonly BootstrapIssue[];
+
+  /** 启动时为旧数据补抹的遗忘内容（幂等迁移；0 表示不需要） */
+  readonly forgottenScrubbed: {
+    readonly memories: number;
+    readonly events: number;
+  };
 
   /** 各 store 恢复出的条数（界面"恢复摘要"用） */
   readonly restored: {
@@ -166,6 +173,15 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
     );
   }
   if (args.persistence !== undefined) log.attachPersistence(args.persistence);
+
+  // ── ①.5 旧数据迁移：把"删了但原文还在"的历史抹干净（幂等）──
+  const forgottenRepair = repairForgottenContent(log);
+  if (forgottenRepair.memories > 0) {
+    issues.push({
+      area: 'memory',
+      detail: `遗忘迁移：补抹 ${forgottenRepair.memories} 条记忆的 ${forgottenRepair.events} 条历史事件`,
+    });
+  }
 
   // ── ② 各 store 重放 ──
   const memoryResult = replayMemory(log.all());
@@ -247,6 +263,7 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
     badLines: args.badLines ?? 0,
     replayed: { memory: memoryResult, artifacts: artifactResult, operations: operationResult },
     issues,
+    forgottenScrubbed: forgottenRepair,
     restored: {
       memories: memory.all().length,
       artifacts: artifacts.all().length,

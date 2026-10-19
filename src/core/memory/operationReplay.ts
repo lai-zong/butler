@@ -151,6 +151,25 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
+/**
+ * 比较两份操作记忆状态（重放正确性的验收标准）。
+ *
+ * ⚠️ 不能直接 `JSON.stringify(a) === JSON.stringify(b)`：
+ *    两者字段语义相同、但**键顺序**可能不同（建档路径与重放路径的对象字面量顺序不同），
+ *    于是验证 7 会把"完全一致"误报成差异（实测：唯一差异是 app/content 的先后）。
+ *    这里按 key 排序后再比较。
+ */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
 /** 比较两份操作记忆状态（重放正确性的验收标准）。 */
 export function diffOperations(
   a: readonly OperationMemory[],
@@ -161,7 +180,7 @@ export function diffOperations(
   const differing: string[] = [];
   for (const ea of a) {
     const eb = mapB.get(ea.id);
-    if (!eb || JSON.stringify(ea) !== JSON.stringify(eb)) differing.push(ea.id);
+    if (!eb || stableJson(ea) !== stableJson(eb)) differing.push(ea.id);
   }
   return { identical: differing.length === 0, differing };
 }

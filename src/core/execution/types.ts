@@ -95,7 +95,7 @@ export interface ExecutionReport {
  * 表格产出物的内容。
  *
  * ★ `columns` 是**单一真相**：每一行都按它对齐（多了截断、少了补空）。
- *   不这么做的话，模型偶尔漏列会让前端错列渲染。
+ *   不这么做的话，模型偶尔漏列会让调用方错列渲染。
  */
 export interface TableContent {
   readonly columns: readonly string[];

@@ -103,7 +103,7 @@ export interface RunSessionArgs {
    * ⚠️ 不给则行为与之前完全一致。
    */
   readonly streamPort?: ModelStreamPort;
-  /** 工具循环进度（供界面实时渲染工具卡片） */
+  /** 工具循环进度（供界面实时反映工具进度） */
   readonly onAgentProgress?: (e: AgentProgressEvent) => void;
   /**
    * 进度回调 —— 让**界面能实时看到**任务执行到哪一步。
@@ -111,7 +111,7 @@ export interface RunSessionArgs {
    * ★ 为什么需要它：`runSession` 是「跑完才返回」，而界面需要在过程中
    *   就显示「正在派发给生活仆人」「健康仆人校验中」。
    *   没有这个回调，界面只能在结束时一次性拿到结果 ——
-   *   那就成了「转圈等待」，而方案 § 13.3 要求的是**过程可见**。
+ *   那就成了「转圈等待」，而进度可见是基本要求。
    *
    * ⚠️ 回调是**单向的、纯通知**：
    *   它不能改变编排结果，也不能因抛错影响流程。
@@ -131,14 +131,13 @@ export interface RunSessionArgs {
  *      `stepId: 'execute'` + `index: 1, total: 1` 来模拟「一步」，
  *      字段本身仍在暗示「有多步」。
  *   ② 这三个变体**没有任何消费者** —— `route.ts` 原样转发成
- *      SSE `{type:'progress'}`，而客户端 `conversation.tsx` 只处理
- *      `session`/`agent`/`narration`/`reply`/`reports`/`verdict`/`error`，
- *      **没有 `progress` 分支**。
+ *      SSE `{type:'progress'}`，而事件消费端没有 `progress` 分支。
  *
  *    ⚠️ 也就是说这条通道整体是**死的**（`stage` 也无人消费）。
- *       保留 `stage` 是因为它是通用形态、后续可能接界面；
+ *       保留 `stage` 是因为它是通用形态；
  *       但**不要再基于它做新功能而不接消费端**。
  */
+
 export type ProgressEvent = { readonly kind: 'stage'; readonly stage: string; readonly label: string };
 
 export interface RunSessionResult {

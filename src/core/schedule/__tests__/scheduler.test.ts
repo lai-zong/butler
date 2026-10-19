@@ -67,6 +67,32 @@ describe('① 到期判断', () => {
     expect(new Date(due).getDate()).toBe(12);
   });
 
+  it('★★ 重启后不会重复执行今天已经跑过的任务', () => {
+    const log = new EventLog('s_sch_restart');
+    const clock = new FixedClock(MON_9AM);
+    // 推进到周一 23:30 —— 今天的 23:00 已经该跑了
+    clock.advance(14.5 * HOUR);
+    const at = clock.now();
+
+    log.append({
+      type: 'schedule.triggered',
+      actor: 'scheduler',
+      payload: { kind: 'dailyReflection', outcome: 'succeeded', scheduledAt: at },
+      createdAt: at,
+    });
+
+    // 模拟重启：新 Scheduler，但事件流还在
+    const restarted = new Scheduler(log, clock);
+    restarted.register({ kind: 'dailyReflection', handler: async () => ({ summary: 'ok' }) });
+
+    // 今天这一次已经跑过 → 不再到期
+    expect(restarted.isDue('dailyReflection')).toBe(false);
+
+    // 到了明天 23:30，应该再次到期
+    clock.advance(DAY);
+    expect(restarted.isDue('dailyReflection')).toBe(true);
+  });
+
   it('每小时任务取当前小时整点', () => {
     const due = lastDueAt({ hour: -1, minute: 0 }, MON_9AM);
     if (due === null) throw new Error('应为到期');

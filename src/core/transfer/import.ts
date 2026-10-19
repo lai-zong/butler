@@ -18,7 +18,18 @@
  */
 
 import { ALL_EVENT_TYPES, type EventType, type SessionEvent } from '../events/types.js';
-import { exportDocumentSchema, EXPORT_SCHEMA, type ImportCandidate, type ImportRejection } from './schema.js';
+import {
+  EXPORT_SCHEMA,
+  exportDocumentSchema,
+  exportDocumentV1Schema,
+  type ExportDocument,
+  type ExportDocumentV1,
+  type ImportCandidate,
+  type ImportRejection,
+} from './schema.js';
+
+/** v1 的格式标识：仍然接受（旧备份不能因为升级就导不进来）。 */
+const EXPORT_SCHEMA_V1 = 'butler-export@1';
 
 /**
  * 已知事件类型集合。
@@ -54,6 +65,21 @@ export type ImportResult =
  *   ④ 有没有事件
  *   ⑤ seq 是否 1..N 连续（事件日志的不变量 I1）
  */
+/** v1 文档升级成当前内存形状（不改事件内容）。 */
+function upgradeV1(v1: ExportDocumentV1): ExportDocument {
+  return {
+    schema: EXPORT_SCHEMA,
+    exportedAt: v1.exportedAt,
+    userId: v1.userId,
+    appVersion: v1.appVersion,
+    counts: v1.counts,
+    includesCredentials: false,
+    containsPII: false,
+    sanitization: { policy: 'auto', redacted: 0, pii: 0, fields: [] },
+    events: v1.events,
+  };
+}
+
 export function parseImportDocument(raw: string): ImportResult {
   // ① JSON
   let parsed: unknown;
@@ -66,12 +92,12 @@ export function parseImportDocument(raw: string): ImportResult {
     };
   }
 
-  // ② 版本：**精确匹配**，不兼容就明确说清楚"文件是哪一版、程序要哪一版"
+  // ② 版本：接受当前版本与 v1；其它版本明确拒绝
   const schemaField =
     typeof parsed === 'object' && parsed !== null
       ? (parsed as Record<string, unknown>)['schema']
       : undefined;
-  if (schemaField !== EXPORT_SCHEMA) {
+  if (schemaField !== EXPORT_SCHEMA && schemaField !== EXPORT_SCHEMA_V1) {
     return {
       ok: false,
       rejection: {
@@ -83,21 +109,40 @@ export function parseImportDocument(raw: string): ImportResult {
   }
 
   // ③ 结构
-  const result = exportDocumentSchema.safeParse(parsed);
-  if (!result.success) {
-    const first = result.error.issues[0];
-    return {
-      ok: false,
-      rejection: {
-        kind: 'malformed',
-        detail:
-          first !== undefined
-            ? `${first.path.join('.') || '(根)'}：${first.message}`
-            : '文档结构不符合导出格式',
-      },
-    };
+  let doc: ExportDocument;
+  if (schemaField === EXPORT_SCHEMA_V1) {
+    const legacy = exportDocumentV1Schema.safeParse(parsed);
+    if (!legacy.success) {
+      const first = legacy.error.issues[0];
+      return {
+        ok: false,
+        rejection: {
+          kind: 'malformed',
+          detail:
+            first !== undefined
+              ? `${first.path.join('.') || '(根)'}：${first.message}`
+              : '文档结构不符合 v1 导出格式',
+        },
+      };
+    }
+    doc = upgradeV1(legacy.data);
+  } else {
+    const result = exportDocumentSchema.safeParse(parsed);
+    if (!result.success) {
+      const first = result.error.issues[0];
+      return {
+        ok: false,
+        rejection: {
+          kind: 'malformed',
+          detail:
+            first !== undefined
+              ? `${first.path.join('.') || '(根)'}：${first.message}`
+              : '文档结构不符合导出格式',
+        },
+      };
+    }
+    doc = result.data;
   }
-  const doc = result.data;
 
   // ④ 空文档
   if (doc.events.length === 0) {

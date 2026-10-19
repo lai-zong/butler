@@ -1,7 +1,7 @@
 /**
  * 对话端点 —— SSE 流式
  *
- * 设计依据：方案 § 13.3（流式呈现规范）
+ * 设计依据：字符级流式与增量输出
  *
  * ★ 为什么用 SSE 而不是普通 POST：
  *   方案要求「**过程可见**」——用户要看到「判断该由谁处理 → 拆解任务 →
@@ -37,11 +37,11 @@ interface ChatBody {
   readonly sessionId?: string;
   readonly text?: string;
   /**
-   * 前端是否**能处理确认请求**（`{ type:'approval' }` 事件 + POST 答复）。
+   * 调用方是否**能处理确认请求**（`{ type:'approval' }` 事件 + POST 答复）。
    *
-   * ⚠️ 默认 false，必须由前端**显式声明**。
+   * ⚠️ 默认 false，必须由调用方**显式声明**。
    *    原因（真实回归）：C6 通道建好后，如果无条件启用，
-   *    而前端还没实现确认界面，那么任何"需要确认"的工具调用都会
+   *    而调用方还没实现确认流程，那么任何"需要确认"的工具调用都会
    *    **挂满 120 秒超时**才被拒绝 —— 比改造前（立刻拒绝）体验更差。
    *    所以这里按能力协商：能处理才开，不能处理就退回"立即拒绝"。
    */
@@ -50,7 +50,7 @@ interface ChatBody {
    * 本轮图片：`data:image/png;base64,...` 或 http(s) 链接。
    *
    * ⚠️ 只对**这一轮**有效 —— 不落历史、不进事件、不写长期记忆。
-   *    界面刷新后图片不会回来（消息文本仍在）。
+   *    调用方重新加载后图片不会回来（消息文本仍在）。
    */
   readonly images?: readonly {
     readonly url?: unknown;
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       {
         error:
           '未配置模型。请在 .env.local 里设置 DEEPSEEK_API_KEY 后重启服务。' +
-          '（记忆治理相关页面不依赖模型，仍可使用）',
+          '（记忆治理相关功能不依赖模型，仍可使用）',
       },
       { status: 503 },
     );
@@ -118,9 +118,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       send({ type: 'session', sessionId: session.id });
 
       /**
-       * ★ C6 询问通道：**仅当前端声明能处理时才启用**。
+       * ★ C6 询问通道：**仅当调用方声明能处理时才启用**。
        *
-       * ⚠️ 无条件启用会造成真实回归：前端还没做确认界面时，
+       * ⚠️ 无条件启用会造成真实回归：调用方还没做确认流程时，
        *    "需要确认"的工具调用会挂满 120 秒才拒绝，
        *    而改造前是**立刻拒绝**。
        *    所以这里是能力协商：能处理才开，否则退回原行为。
@@ -158,7 +158,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           userText: text,
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(images.length > 0 ? { images } : {}),
-    // ★ 本轮询问通道（C6）：仅前端声明能处理时才有，否则退回"立即拒绝"
+    // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"
     ...(approvals !== undefined ? { asker: approvals } : {}),
           userId: session.userId,
           model: rt.model!,
@@ -274,8 +274,61 @@ export async function POST(req: NextRequest): Promise<Response> {
         });
 
         send({ type: 'user', messageId: result.userMessageId });
+
+        /**
+         * ★ 本轮「承诺了什么」—— 任务契约与假设。
+         *
+         *   契约原本只在事件里（`contract.written`），界面上看不到；
+         *   而它是监督员逐条核对的**唯一标准**，也是用户判断
+         *   “它理解对了没有”的直接依据。所以随结果一并推给界面。
+         *
+         * ⚠️ 只推展示所需字段，`contract.raw` 是模型原始产出，留在事件里。
+         */
+        const contract = result.session.contract;
+        send({
+          type: 'contract',
+          contract:
+            contract !== undefined
+              ? {
+                  deliverable: contract.deliverable,
+                  criteria: contract.criteria,
+                  mustObey: contract.mustObey,
+                  domains: contract.domains,
+                  confidence: contract.confidence,
+                  clarifyingQuestion: contract.clarifyingQuestion ?? null,
+                }
+              : null,
+          assumption: result.session.assumption ?? null,
+          injectedConstraints: result.session.injectedConstraints.map((c) => ({
+            memoryId: c.memoryId,
+            content: c.content,
+            source: c.source,
+            negotiable: c.negotiable,
+          })),
+        });
+
         send({ type: 'reply', messageId: result.replyMessageId, text: result.replyText });
         send({ type: 'verdict', verdict: result.verdict });
+        /**
+         * ★ 本轮反思的结果 —— 「刚学到几条、几条等你确认」。
+         *
+         *   反思发生在对话之后，用户本来完全看不到。
+         *   把 pendingReview 推给界面，治理闭环才在**对话现场**成立：
+         *   用户当场就知道“它想记什么”，而不是过几天在记忆页里翻出来。
+         */
+        send({
+          type: 'reflection',
+          reflection:
+            result.reflection !== undefined
+              ? {
+                  pendingReview: result.reflection.pendingReview,
+                  admittedAutonomously: result.reflection.admittedAutonomously,
+                  skippedDuplicates: result.reflection.skippedDuplicates,
+                  failed: result.reflection.failed,
+                  failureReason: result.reflection.failureReason ?? null,
+                }
+              : null,
+        });
         /**
          * ★ 各仆人各自的产出 —— 右侧「仆人面板」的数据。
          *
@@ -304,7 +357,7 @@ export async function POST(req: NextRequest): Promise<Response> {
          * ★ 流结束 → 把所有还挂着的确认**全部拒绝**。
          *
          * ⚠️ 不这么做的话，工具循环会一直等到超时（最长 2 分钟），
-         *    而实际上页面已经结束了，没人会来点"允许"。
+         *    而实际上客户端已经结束了，没人会来点"允许"。
          */
         denyAllPending();
 
@@ -314,7 +367,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         } catch {
           // 已关闭
         }
-        // ★ 每轮结束都刷盘 —— 用户刷新页面不该看到"刚才说的话没了"
+        // ★ 每轮结束都刷盘 —— 用户重新加载不该看到"刚才说的话没了"
         await rt.bootstrapped.log.flushPersistence().catch(() => undefined);
       }
     },

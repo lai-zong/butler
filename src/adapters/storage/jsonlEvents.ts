@@ -21,7 +21,14 @@
  */
 
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { EventPersistencePort } from '../../core/events/log.js';
@@ -207,6 +214,47 @@ export class JsonlEventStore implements EventPersistencePort {
   /** 已确认落盘到哪个 seq。 */
   durableUpTo(): number {
     return this.durableSeq;
+  }
+
+  /** 缓冲里还有几条（界面"未落盘"用）。 */
+  pending(): number {
+    return this.buffer.length;
+  }
+
+  /**
+   * 整体重写（遗忘权抹除内容后调用）。
+   *
+   * ★ 顺序：先 `flush()` 把缓冲写掉，再**同步**取全量并原子替换。
+   *   `flush()` 之后到 `writeAllSync()` 之间没有 await ——
+   *   事件循环不会插进新的 append，因此不会丢事件。
+   */
+  async rewrite(getEvents: () => readonly SessionEvent[]): Promise<void> {
+    await this.flush();
+    const ordered = [...getEvents()].sort((a, b) => a.seq - b.seq);
+    this.writeAllSync(ordered);
+    this.buffer = [];
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private writeAllSync(events: readonly SessionEvent[]): void {
+    const dir = dirname(this.file);
+    mkdirSync(dir, { recursive: true });
+
+    // 留一份备份：抹除是破坏性操作，出问题时至少能人工回看。
+    if (existsSync(this.file)) {
+      copyFileSync(this.file, `${this.file}.bak`);
+    }
+
+    const tmp = `${this.file}.tmp`;
+    const text = events.map((e) => JSON.stringify(e)).join('\n') + (events.length > 0 ? '\n' : '');
+    writeFileSync(tmp, text, 'utf8');
+    // Windows 上 rename 到已存在文件会失败 —— 先删目标（与 onTruncate 同策略）。
+    rmSync(this.file, { force: true });
+    renameSync(tmp, this.file);
+    this.durableSeq = events.reduce((m, e) => Math.max(m, e.seq), 0);
   }
 
   lastFlushError(): Error | null {

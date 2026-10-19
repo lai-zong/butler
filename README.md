@@ -201,7 +201,7 @@ pnpm dev
   *代码为基于 pywin32 / pyautogui / mss 等通用库的独立实现，未复制其源码*
 - 检查点式回退：参考交互式调试与版本控制系统的通用范式
 
-**使用的第三方依赖**：React、Vite、TypeScript、Zustand、TanStack Query、Dexie、官方 MCP SDK、
+**使用的第三方依赖**：Next.js、React、TypeScript、react-markdown、remark-gfm、Zod、Vitest、
 pywin32 / pyautogui / mss / pyperclip 等。均以**依赖包**形式正常引用，**未修改其源码**。
 
 全部 Git 提交历史可追溯，每个功能模块与设计决策均有对应提交记录。

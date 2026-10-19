@@ -530,7 +530,7 @@ export function capabilitiesOf(model: string): ModelCapabilities {
   );
 }
 
-/** 已知模型的清单（供界面下拉）。 */
+/** 已知模型的清单（供调用方枚举）。 */
 export function knownModels(): readonly string[] {
   return Object.keys(CAPABILITY_TABLE);
 }

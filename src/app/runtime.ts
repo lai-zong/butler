@@ -207,7 +207,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
    * ⚠️ 权限策略用 `WebPermissionPolicy`：只读放行、写操作**拒绝**。
    *    理由见 `server/permission.ts`：SSE 响应没法中途停下来等用户确认，
    *    而"静默放行写操作"会让安全闸门形同虚设。
-   *    被拒的调用会在界面上显示成红色卡片 —— 用户看得见「它想做什么」。
+   *    被拒的调用会在界面上显示成明确的拒绝结果 —— 用户看得见「它想做什么」。
    */
   const tools = new ToolFramework({
     log: bootstrapped.log,

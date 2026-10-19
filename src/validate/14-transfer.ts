@@ -156,28 +156,27 @@ function main(): void {
 
     const sourceLog = buildFixtureLog();
     const original = sourceLog.all();
-    const result = buildExport({ events: original, userId: USER, appVersion: APP, now: T0 + 100 });
+    const doc = buildExport({ events: original, userId: USER, appVersion: APP, now: T0 + 100 });
 
-    check('导出成功', result.doc !== undefined);
-    if (result.doc === undefined) {
-      console.log('\n▶ 验证 14 未通过（导出失败，后续无从继续）\n');
-      process.exit(1);
-    }
-    const doc = result.doc;
-
+    check('导出成功', doc.events.length > 0);
     check('事件一条不少', doc.events.length === original.length, `${doc.events.length} / ${original.length}`);
     check('counts.events 与内容一致', doc.counts.events === doc.events.length);
     check('counts.lastSeq = 最大 seq', doc.counts.lastSeq === Math.max(...doc.events.map((e) => e.seq)));
     check('schema 版本号存在', doc.schema === EXPORT_SCHEMA, doc.schema);
-    check('扫描了全部事件', doc.credentialScan.scannedEvents === original.length);
+    check('自动脱敏策略已声明', doc.sanitization.policy === 'auto');
 
     hr('② 导出不含凭证');
 
     check('★ includesCredentials 显式为 false', doc.includesCredentials === false);
-    check('★ 扫描结果可疑项为 0', doc.credentialScan.suspicious === 0);
+    check(
+      '★ 正常数据没有凭证被脱敏',
+      !doc.sanitization.fields.some((f) => f.kind === 'credential'),
+    );
+    check('★ 练习答案剥离被计数', doc.sanitization.redacted === 1, String(doc.sanitization.redacted));
     const dumped = JSON.stringify(doc);
     check('★ 文档里没有 sk- 形式的密钥', !/sk-[A-Za-z0-9]{16,}/.test(dumped));
     check('文档里没有真实密钥字段名', !/"apiKey"\s*:\s*"[^"]+"/.test(dumped));
+    check('★ 练习答案没有进入导出文件', !/"answers"\s*:/.test(dumped));
 
     hr('③ 导入校验：该拒绝的都明确拒绝');
 

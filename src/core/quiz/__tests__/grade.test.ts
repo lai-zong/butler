@@ -108,7 +108,7 @@ describe('gradeQuiz —— 作答写法宽容（与模型侧共用同一套归�
     }
   });
 
-  it('归一化后 picked 一律是大写字母（前端展示统一）', () => {
+  it('归一化后 picked 一律是大写字母（对外展示统一）', () => {
     const g = gradeQuiz({
       answerKey: key([THREE[0]!], { q1: 'B' }),
       submission: { q1: 'b' },

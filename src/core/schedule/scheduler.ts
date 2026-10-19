@@ -173,9 +173,35 @@ export class Scheduler {
       kind: args.kind,
       schedule: args.schedule ?? DEFAULT_SCHEDULES[args.kind],
       handler: args.handler,
-      lastRunAt: 0,
+      /**
+       * ★ 从事件流恢复上次执行时刻。
+       *
+       * ⚠️ 不能固定为 0：`lastRunAt` 只在内存里，进程重启就丢。
+       *    而每日反思 / 每周复盘的首次 tick 会把「今天已经跑过」
+       *    误判成「今天还没跑」—— 本地应用一天重启几次，
+       *    就会凭空多出几轮反思与候选，用户会看到记忆反复增长。
+       *
+       *    事件流是唯一真相源，这里直接读最近一条
+       *    `schedule.triggered` —— 与调度器自己写的事件同源。
+       */
+      lastRunAt: this.restoredLastRunAt(args.kind),
       lastCatchUpKey: '',
     });
+  }
+
+  /** 从历史事件里取某任务最近一次实际执行的时间。 */
+  private restoredLastRunAt(kind: ScheduledTaskKind): number {
+    let last = 0;
+    for (const e of this.log.byType('schedule.triggered')) {
+      const p =
+        typeof e.payload === 'object' && e.payload !== null
+          ? (e.payload as Record<string, unknown>)
+          : {};
+      if (p['kind'] !== kind) continue;
+      // 手动与自动都算「跑过」—— 与内存态里 tick/runNow 的更新口径一致。
+      last = Math.max(last, e.createdAt);
+    }
+    return last;
   }
 
   // ── 额度 ──

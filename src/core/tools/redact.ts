@@ -46,12 +46,13 @@ function isSensitiveKey(key: string): boolean {
 }
 
 /**
- * 常见凭证形态的文本模式。
+ * 常见**凭证**形态的文本模式。
  *
- * 用途：即使键名无害（如 `note`），值本身可能是密钥 ——
- * 例如用户把 key 贴在正文里。这类要按**形态**识别。
+ * ★ v9 起与"个人信息"分开：凭证泄漏是安全事故，个人信息是隐私/导出策略问题。
+ *   导出时凭证自动脱敏；手机号/身份证/银行卡保留并在文件里标记 ——
+ *   否则用户只要说过一次手机号，就永远导不出备份（真实踩过）。
  */
-const SENSITIVE_PATTERNS: readonly { readonly re: RegExp; readonly label: string }[] = [
+const CREDENTIAL_PATTERNS: readonly { readonly re: RegExp; readonly label: string }[] = [
   { re: /\bsk-[A-Za-z0-9_-]{16,}\b/g, label: 'API 密钥' },
   { re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, label: 'GitHub Token' },
   { re: /\bAKIA[0-9A-Z]{16}\b/g, label: 'AWS Access Key' },
@@ -61,6 +62,10 @@ const SENSITIVE_PATTERNS: readonly { readonly re: RegExp; readonly label: string
     label: '私钥',
   },
   { re: /\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*/gi, label: 'Bearer Token' },
+];
+
+/** 个人信息（不是凭证；导出时保留、只标记）。 */
+const PII_PATTERNS: readonly { readonly re: RegExp; readonly label: string }[] = [
   // 中国大陆手机号与身份证
   { re: /\b1[3-9]\d{9}\b/g, label: '手机号' },
   { re: /\b\d{17}[\dXx]\b/g, label: '身份证号' },
@@ -74,14 +79,14 @@ function placeholder(label: string): string {
 }
 
 /**
- * 对一段文本做凭证脱敏。
+ * 对一段文本做**凭证**脱敏（不动手机号/身份证/银行卡）。
  *
  * 顺序：先按形态替换（更可靠），再处理键值对形态。
  */
-export function redactText(input: string): string {
+export function redactCredentials(input: string): string {
   let out = input;
 
-  for (const p of SENSITIVE_PATTERNS) {
+  for (const p of CREDENTIAL_PATTERNS) {
     out = out.replace(p.re, placeholder(p.label));
   }
 
@@ -98,6 +103,19 @@ export function redactText(input: string): string {
     out = out.replace(re, (_m, prefix: string) => `${prefix}${placeholder('凭证')}`);
   }
 
+  return out;
+}
+
+/**
+ * 对一段文本做**全量**脱敏（凭证 + 个人信息）。
+ *
+ * 用于工具输出摘要、参数摘要等"绝不能把原文写进事件"的地方。
+ */
+export function redactText(input: string): string {
+  let out = redactCredentials(input);
+  for (const p of PII_PATTERNS) {
+    out = out.replace(p.re, placeholder(p.label));
+  }
   return out;
 }
 
@@ -135,14 +153,28 @@ function walk(value: unknown, depth: number): unknown {
  *
  * 用途：写入长期记忆前的检查（方案 § 11 第二层"写入白名单"）。
  * 含凭证的内容不该进记忆库 —— 那是"可用不可见"的边界。
+ *
+ * ⚠️ 判定必须与 `redactText` 使用**同一套规则**，不能只看"是否出现敏感词"：
+ *    事件 payload 里正常会有 `"stage":"authorization"`、
+ *    `"authorization":"allow"` 这类字段 —— 它们出现的是**键名/枚举值**，
+ *    不是凭证本身。早先的实现用 `lowered.includes('authorization')`
+ *    做粗判，结果**任何调用过工具的会话都无法导出**。
  */
 export function containsCredentials(input: string): boolean {
-  if (SENSITIVE_PATTERNS.some((p) => new RegExp(p.re.source, p.re.flags).test(input))) return true;
-  const lowered = input.toLowerCase();
-  return SENSITIVE_KEYS.some((k) => lowered.includes(k.toLowerCase()));
+  return containsCredential(input) || containsPII(input);
+}
+
+/** 是否含**凭证**（导出时自动脱敏的那一类）。 */
+export function containsCredential(input: string): boolean {
+  return redactCredentials(input) !== input;
+}
+
+/** 是否含**个人信息**（导出不阻拒，只标记）。 */
+export function containsPII(input: string): boolean {
+  return PII_PATTERNS.some((p) => new RegExp(p.re.source, p.re.flags).test(input));
 }
 
 /** 供测试与调试：列出所有被识别的形态标签。 */
 export function credentialPatternLabels(): readonly string[] {
-  return SENSITIVE_PATTERNS.map((p) => p.label);
+  return [...CREDENTIAL_PATTERNS, ...PII_PATTERNS].map((p) => p.label);
 }

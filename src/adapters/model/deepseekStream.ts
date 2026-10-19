@@ -1,7 +1,7 @@
 /**
  * DeepSeek 流式适配器 —— 把 SSE 分片转成我们的流式分片
  *
- * 设计依据：方案 § 13.3（字符级流式 + 增量翻译）、官方 Chat Completions 文档
+ * 设计依据：字符级流式 + 增量翻译、官方 Chat Completions 文档
  *
  * ★ 关键点（来自官方文档的实测与阅读）：
  *   ① `stream: true` 时返回 **data-only SSE**，以 `data: [DONE]` 终止
@@ -310,7 +310,7 @@ export class DeepSeekStream implements ModelStreamPort {
     } catch (err) {
       finish = 'error';
       // ⚠️ 这里**不抛** —— 先让 done 分片发出去，
-      //    否则调用方拿不到已生成内容（方案 § 13.4：流式中断不丢已生成内容）
+    //    否则调用方拿不到已生成内容（流式中断不丢已生成内容）
       yield {
         kind: 'done',
         finishReason: 'error',

@@ -14,6 +14,7 @@ import {
   type RollbackTarget,
   type SessionEvent,
 } from './types.js';
+import { scrubEventForMemory } from './scrub.js';
 
 export interface AppendInput<T extends EventType = EventType, P = unknown> {
   readonly type: T;
@@ -59,6 +60,21 @@ export interface EventPersistencePort {
   onTruncate(keepSeq: number): void;
   /** 进程退出前把缓冲刷干净。 */
   flush(): Promise<void>;
+  /**
+   * 还有多少条事件在落盘缓冲里（供界面显示"未落盘"）。
+   *
+   * ⚠️ 可选：纯内存实现没有缓冲，不应假装有；没有实现时
+   *    `EventLog` 回退到自己的计数（只对 NULL 端口有意义）。
+   */
+  pending?(): number;
+  /**
+   * 用给定的事件数组**整体重写**文件（遗忘权抹除内容时用）。
+   *
+   * ⚠️ 参数是**取数函数**而不是数组：实现应先在内部 `flush()`，
+   *    再取当前全量事件并同步写入 —— 这样在 await 期间新追加的事件
+   *    不会被一次"旧快照"覆盖掉。
+   */
+  rewrite?(getEvents: () => readonly SessionEvent[]): Promise<void>;
 }
 
 /** 空实现：不需要持久化时用（测试、纯内存场景）。 */
@@ -83,8 +99,10 @@ export class EventLog {
   private events: SessionEvent[] = [];
   private readonly listeners = new Set<EventListener>();
   private persistence: EventPersistencePort = NULL_PERSISTENCE;
-  /** 落盘尚未确认的事件数（供界面显示"保存中"）。 */
+  /** 落盘尚未确认的事件数（供界面显示"未落盘"）。 */
   private pendingPersist = 0;
+  /** 有待完成的"整体重写"（遗忘权抹除；flush 时一起等）。 */
+  private pendingRewrite: Promise<void> | null = null;
 
   constructor(readonly sessionId: string) {}
 
@@ -101,12 +119,58 @@ export class EventLog {
 
   /** 还有多少事件在落盘缓冲里。 */
   pendingPersistence(): number {
-    return this.pendingPersist;
+    // 端口自己知道缓冲长度时以它为准；`pendingPersist` 只用于没有缓冲概念的端口。
+    return this.persistence.pending?.() ?? this.pendingPersist;
+  }
+
+  /**
+   * 遗忘权：把某条记忆的原文从事件载荷里抹掉。
+   *
+   * ★ 与 `store.forget()` 的分工：
+   *   store 负责"状态上删除 + 记墓碑"；这里负责"历史里不再有原文"。
+   *   两边都做，才算"删除"在**重启后仍然成立**。
+   *
+   * 返回被改动的事件数（0 表示本来就没有原文，通常是旧数据迁移）。
+   */
+  scrubForMemory(memoryId: string, content: string): number {
+    let changed = 0;
+    const next: SessionEvent[] = [];
+    for (const e of this.events) {
+      const hit = scrubEventForMemory(e, memoryId, content);
+      if (hit === null) {
+        next.push(e);
+        continue;
+      }
+      next.push(hit.event);
+      changed += 1;
+    }
+    if (changed === 0) return 0;
+
+    this.events = next;
+    /**
+     * 重写磁盘：先 flush，再由端口取当前全量事件同步写。
+     * 这里不 await —— 调用方（forget 路由）随后会 `flushPersistence()`，
+     * 那一步会等这个 Promise 完成，因此"删除已落盘"仍有保证。
+     */
+    const port = this.persistence;
+    if (port.rewrite !== undefined) {
+      this.pendingRewrite = (this.pendingRewrite ?? Promise.resolve())
+        .then(() => port.rewrite?.(() => this.events))
+        .catch(() => undefined);
+    }
+    this.pendingPersist = 0;
+    return changed;
   }
 
   /** 刷盘（进程退出前调用）。 */
   async flushPersistence(): Promise<void> {
     await this.persistence.flush();
+    // 抹除后的整体重写排在 flush 之后；一起等，保证"删除已落盘"。
+    if (this.pendingRewrite !== null) {
+      const rewrite = this.pendingRewrite;
+      this.pendingRewrite = null;
+      await rewrite;
+    }
     this.pendingPersist = 0;
   }
 
@@ -226,6 +290,10 @@ export class EventLog {
         onAppend: (evs) => held.push(...evs),
         onTruncate: (seq) => real.onTruncate(seq),
         flush: () => real.flush(),
+        ...(real.pending !== undefined ? { pending: () => real.pending?.() ?? 0 } : {}),
+        ...(real.rewrite !== undefined
+          ? { rewrite: (getEvents: () => readonly SessionEvent[]) => real.rewrite?.(getEvents) ?? Promise.resolve() }
+          : {}),
       };
 
       const out = inputs.map((i) => this.append(i));
@@ -287,12 +355,12 @@ export class EventLog {
     if (events.length === 0) return;
     try {
       this.persistence.onAppend(events);
-      this.pendingPersist += events.length;
+      // 端口能报"缓冲里还有几条"时，以自己的计数为准（那个数才是真的）。
+      if (this.persistence.pending === undefined) this.pendingPersist += events.length;
     } catch {
       /**
        * ⚠️ 落盘通知失败**不能**让编排崩掉 —— 内存状态依然是对的。
-       *    但要留下痕迹：`pendingPersist` 会持续增长，
-       *    界面显示"保存中"时用户能看出异常。
+       *    但要留下痕迹：界面能看到"未落盘"，用户能看出异常。
        */
       this.pendingPersist += events.length;
     }

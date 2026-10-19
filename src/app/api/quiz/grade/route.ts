@@ -2,7 +2,7 @@
  * 批改端点 —— 确定性比对，**零 LLM 调用**（v8 批次A）。
  *
  * 设计依据：
- *   · 方案 §13.10：「直接批改」走服务端确定性比对；「解析答案」才交给管家
+ *   · 「直接批改」走服务端确定性比对；「解析答案」才交给管家
  *   · 方案 D-23：客观判定不交给模型（与 `verifyHardConstraints` 同一原则）
  *   · 方案 D-24：⚠️ 批改结果**不能**直接当 `fitness` 的负反馈（语义陷阱）
  *
@@ -67,7 +67,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const answerKey = readAnswerKey(log, sessionId, quizId);
   if (!answerKey) {
-    // ⚠️ 区分"不存在"与"存在但无答案"对调用方没意义 —— 两者都不能批改
+    /**
+     * ★ 区分两种"不能批改"：
+     *   · 题目根本不存在 → 404（调用方参数错了）
+     *   · 题目存在但答案卷缺失（从脱敏备份导入）→ 409 + 明确原因
+     *     （让界面能说"这一轮不能批改"，而不是含糊的"找不到题目"）
+     */
+    const created = log.byType('quiz.created').find((e) => {
+      if (e.seq !== quizId) return false;
+      const p = e.payload;
+      if (typeof p !== 'object' || p === null) return false;
+      return (p as Record<string, unknown>)['taskId'] === sessionId;
+    });
+    if (created !== undefined) {
+      return NextResponse.json(
+        {
+          error: '这份练习来自脱敏备份：答案没有随文件导出，因此无法再批改。',
+          code: 'answers_unavailable',
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { error: `找不到可批改的题目（sessionId=${sessionId}, quizId=${quizId}）` },
       { status: 404 },

@@ -201,11 +201,11 @@ export type EventType =
   // ── 题目与批改（v8 新增）──
   //
   // ★★ `quiz.created` 存的是**正确答案**，它必须与产出物分离：
-  //   · 产出物（`ExecutionArtifact`）走 `session.reply` → **进前端**；
+  //   · 产出物（`ExecutionArtifact`）走 `session.reply` → **进调用方**；
   //   · 答案走这里 → **只给服务端**（`.butler-data` 对模型的文件工具是受保护路径）。
   //
   //   ⚠️ 为什么答案不能塞进产出物：一旦进了产出物，它会随消息一起
-  //      重放给前端，"做题窗格"就等于把答案直接印在题目下面。
+  //      重放给调用方，"做题视图"就等于把答案直接印在题目下面。
   | 'quiz.created'
   | 'quiz.graded';
 

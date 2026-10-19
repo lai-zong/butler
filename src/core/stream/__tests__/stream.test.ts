@@ -57,8 +57,7 @@ class FakeTranslator implements TranslationPort {
 /** 从分片数组造一个流端口。 */
 function portOf(chunks: readonly ModelStreamChunk[]): ModelStreamPort {
   return {
-    // eslint-disable-next-line @typescript-eslint/require-await
-    async *stream() {
+        async *stream() {
       for (const c of chunks) yield c;
     },
   };
@@ -503,11 +502,10 @@ describe('④ 推理流编排', () => {
     expect(r.toolCalls[0]?.args).toBe('{"path":"a.txt"}');
   });
 
-  it('★★ 流中断保留已生成内容（方案 § 13.4）', async () => {
+  it('★★ 流中断保留已生成内容', async () => {
     const { log, clock } = setup();
     const failing: ModelStreamPort = {
-      // eslint-disable-next-line @typescript-eslint/require-await
-      async *stream() {
+            async *stream() {
         yield { kind: 'reasoning', delta: 'Partial thinking. ' };
         yield { kind: 'text', delta: 'Partial answer' };
         throw new Error('连接中断');
@@ -538,8 +536,7 @@ describe('④ 推理流编排', () => {
   it('中断时 partial 内容可被取回', async () => {
     const { log, clock } = setup();
     const failing: ModelStreamPort = {
-      // eslint-disable-next-line @typescript-eslint/require-await
-      async *stream() {
+            async *stream() {
         yield { kind: 'text', delta: 'kept' };
         throw new Error('boom');
       },
