@@ -13,12 +13,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { CommandPalette } from './components/CommandPalette';
 import { ToastStack } from './components/Toast';
+import { BootScreen } from './components/BootScreen';
 import { ChatView } from './chat/ChatView';
 import { MemoryView } from './memory/MemoryView';
 import { AuditView } from './audit/AuditView';
 import { GrowthView } from './growth/GrowthView';
 import { SettingsView } from './settings/SettingsView';
 import { errorMessage, fetchJson } from './lib/api.js';
+import { computeBootStatus, type ChatBootState } from './lib/boot.js';
 import type { MemoryPreset, MemoryTarget, Overview, ToastMessage, ViewId } from './lib/types.js';
 
 const VIEWS: readonly ViewId[] = ['chat', 'memory', 'audit', 'growth', 'settings'];
@@ -41,6 +43,12 @@ export function ButlerApp(): JSX.Element {
   const [view, setView] = useState<ViewId>('chat');
   const [overview, setOverview] = useState<Overview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+
+  const [booting, setBooting] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
+  const [chatBoot, setChatBoot] = useState<ChatBootState>({ state: 'loading', phase: 'sessions' });
+  const [bootTimedOut, setBootTimedOut] = useState(false);
+  const appShellRef = useRef<HTMLDivElement | null>(null);
 
   const [toasts, setToasts] = useState<readonly ToastMessage[]>([]);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -86,6 +94,54 @@ export function ButlerApp(): JSX.Element {
     return () => window.clearInterval(timer);
   }, [refreshOverview]);
 
+  const handleChatBoot = useCallback((state: ChatBootState): void => {
+    setChatBoot(state);
+  }, []);
+
+  const finishBoot = useCallback((): void => {
+    setBooting(false);
+  }, []);
+
+  const retryBoot = useCallback((): void => {
+    window.location.reload();
+  }, []);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  const bootStatus = computeBootStatus({
+    hydrated,
+    overview: overview !== null ? 'ready' : overviewError !== null ? 'error' : 'loading',
+    overviewError,
+    chat: chatBoot,
+    timedOut: bootTimedOut,
+  });
+
+  // 启动期间隔离背后的应用：不能 Tab 进去、不能输入、读屏也不应读到。
+  useEffect(() => {
+    const shell = appShellRef.current;
+    if (shell === null) return;
+    if (booting) {
+      shell.setAttribute('inert', '');
+      shell.setAttribute('aria-hidden', 'true');
+    } else {
+      shell.removeAttribute('inert');
+      shell.removeAttribute('aria-hidden');
+    }
+    return () => {
+      shell.removeAttribute('inert');
+      shell.removeAttribute('aria-hidden');
+    };
+  }, [booting]);
+
+  // 真实加载迟迟不完成时给一个可恢复的错误，而不是无限等待。
+  useEffect(() => {
+    if (!booting || bootStatus.ready || bootStatus.error !== null) return;
+    const timer = window.setTimeout(() => setBootTimedOut(true), 30_000);
+    return () => window.clearTimeout(timer);
+  }, [booting, bootStatus.ready, bootStatus.error]);
+
   // 清理 toast 定时器
   useEffect(() => {
     const current = timers.current;
@@ -112,11 +168,12 @@ export function ButlerApp(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    document.title = `${TITLES[view]} · 管家`;
+    document.title = `butler · ${TITLES[view]}`;
   }, [view]);
 
-  // ⌘K / Ctrl+K
+  // ⌘K / Ctrl+K（启动期间不响应，避免在 inert 启动层后面打开命令面板）
   useEffect(() => {
+    if (booting) return;
     const onKey = (e: KeyboardEvent): void => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -125,7 +182,7 @@ export function ButlerApp(): JSX.Element {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [booting]);
 
   const navigate = useCallback((next: ViewId): void => {
     if (next === 'audit') setAuditRange(null);
@@ -195,9 +252,16 @@ export function ButlerApp(): JSX.Element {
     void refreshOverview();
   }, [refreshOverview]);
 
+  /**
+   * React 18 的 DOM 类型还没有 `inert` 属性；浏览器支持它，但服务端和客户端
+   * 首帧都无法可靠输出这个属性。所以用 CSS 在 hydration 前隐藏工作台：
+   * 隐藏的子树不可聚焦，也不进读屏。挂载后再由 effect 设置 inert/aria-hidden。
+   * 无 JS 时由 layout 的 <noscript> 覆盖这条规则，让工作台保持可见。
+   */
   return (
-    <div className="app-shell">
-      <Sidebar
+    <>
+      <div className={`app-shell${hydrated ? '' : ' is-boot-pending'}`} ref={appShellRef}>
+        <Sidebar
         view={view}
         overview={overview}
         onNavigate={navigate}
@@ -227,6 +291,7 @@ export function ButlerApp(): JSX.Element {
         <div className="view-frame view-frame--chat" hidden={view !== 'chat'}>
           <ChatView
             active={view === 'chat'}
+            focusEnabled={!booting}
             overview={overview}
             newChatNonce={newChatNonce}
             dataResetNonce={dataResetNonce}
@@ -235,6 +300,7 @@ export function ButlerApp(): JSX.Element {
             onOpenSettings={openSettings}
             notify={notify}
             onRefreshOverview={() => void refreshOverview()}
+            onBootState={handleChatBoot}
           />
         </div>
 
@@ -297,7 +363,19 @@ export function ButlerApp(): JSX.Element {
       />
 
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
-    </div>
+      </div>
+
+      {booting && (
+        <BootScreen
+          progress={bootStatus.progress}
+          stage={bootStatus.stage}
+          ready={bootStatus.ready}
+          error={bootStatus.error}
+          onRetry={retryBoot}
+          onDone={finishBoot}
+        />
+      )}
+    </>
   );
 }
 

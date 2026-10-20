@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 管家式 AI · 命令行入口
+ * butler · 命令行入口
  *
  * 设计依据：用户要求「靠 cmd 窗口中输入 butler web 就能成功启动」
  *
@@ -178,6 +178,48 @@ async function findFreePort(startPort) {
   return null;
 }
 
+/** 用系统默认浏览器打开一个 URL；打不开不是启动失败。 */
+function openUrl(url) {
+  const opener =
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    : process.platform === 'darwin' ? ['open', [url]]
+    : ['xdg-open', [url]];
+  try {
+    spawn(opener[0], opener[1], { stdio: 'ignore', detached: true }).unref();
+  } catch {
+    // 无头环境、容器里打不开浏览器是正常的
+  }
+}
+
+/**
+ * 等页面真正可访问后再打开浏览器。
+ *
+ * 固定延时（原来 5 秒）不可靠：Next 首次编译可能更慢，提前打开只会
+ * 看到连接错误；这里用 GET 轮询到 2xx/3xx 再打开，和 `pnpm dev`
+ * 的 scripts/dev.mjs 保持同一条启动语义。
+ */
+async function openWhenReady(url, child) {
+  const started = Date.now();
+  while (Date.now() - started < 120_000) {
+    if (child.exitCode !== null) return;
+    try {
+      const res = await fetch(url, {
+        cache: 'no-store',
+        redirect: 'manual',
+        signal: globalThis.AbortSignal.timeout(30_000),
+      });
+      if (res.status >= 200 && res.status < 400) {
+        openUrl(url);
+        return;
+      }
+    } catch {
+      // 还没监听或本次编译未完成，继续等
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 300));
+  }
+  warn('等待页面超时，请手动打开上面的 URL');
+}
+
 // ═══════════════════════════════════════════════════════════
 // 子命令：web
 // ═══════════════════════════════════════════════════════════
@@ -226,7 +268,7 @@ async function cmdWeb(flags) {
   const url = `http://localhost:${port}`;
 
   say();
-  say(`  ${C.bold}管家式 AI${C.reset} ${C.dim}v${pkg.version}${C.reset}`);
+  say(`  ${C.bold}butler${C.reset} ${C.dim}v${pkg.version}${C.reset}`);
   say(`  ${C.dim}模式：${prod ? '生产' : '开发（改代码即时生效）'}${C.reset}`);
   say(`  ${C.dim}数据：${process.env['BUTLER_DATA_DIR'] ?? join(ROOT, '.butler-data')}${C.reset}`);
   say();
@@ -249,19 +291,9 @@ async function cmdWeb(flags) {
     env: process.env,
   });
 
-  // 自动开浏览器（等一下就绪）
+  // 自动开浏览器：等页面真正可访问后再打开，确保第一屏是启动动画
   if (shouldOpen) {
-    setTimeout(() => {
-      const opener =
-        process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
-        : process.platform === 'darwin' ? ['open', [url]]
-        : ['xdg-open', [url]];
-      try {
-        spawn(opener[0], opener[1], { stdio: 'ignore', detached: true }).unref();
-      } catch {
-        // 打不开浏览器不是错误（无头环境、容器里都正常）
-      }
-    }, prod ? 1200 : 5000);
+    void openWhenReady(url, child);
   }
 
   /**
@@ -293,7 +325,7 @@ async function cmdWeb(flags) {
 
 async function cmdDoctor() {
   say();
-  say(`  ${C.bold}管家式 AI · 环境自检${C.reset}`);
+  say(`  ${C.bold}butler · 环境自检${C.reset}`);
   say(`  ${'─'.repeat(52)}`);
 
   let fatal = 0;
@@ -522,7 +554,7 @@ async function cmdDoctor() {
  */
 async function cmdLauncherCheck() {
   say();
-  say(`  ${C.bold}管家式 AI${C.reset} ${C.dim}— 可审计的记忆治理与自进化系统${C.reset}`);
+  say(`  ${C.bold}butler${C.reset} ${C.dim}— 可审计的记忆治理与自进化系统${C.reset}`);
   say(`  ${'─'.repeat(46)}`);
   say();
 
@@ -703,7 +735,7 @@ async function cmdValidate(positional) {
 
 function usage() {
   say();
-  say(`  ${C.bold}管家式 AI${C.reset} ${C.dim}v${pkg.version}${C.reset}`);
+  say(`  ${C.bold}butler${C.reset} ${C.dim}v${pkg.version}${C.reset}`);
   say(`  ${C.dim}可审计的记忆治理与自进化系统${C.reset}`);
   say();
   say(`  ${C.bold}用法${C.reset}`);

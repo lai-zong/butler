@@ -1,0 +1,328 @@
+/* ═══════════════════════════════════════════════════════════
+   启动门（桌面端）
+   服务端首帧即渲染；进度由真实加载单元计算，不靠计时器。
+   没有“跳过”，失败只能重试。
+   ═══════════════════════════════════════════════════════════ */
+
+/* hydration 前先隐藏工作台：隐藏子树不可聚焦，也不进读屏。
+   挂载后 ButlerApp 会移除这个 class，并用 inert 继续隔离。 */
+.app-shell.is-boot-pending {
+  visibility: hidden;
+}
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  outline: none;
+  background:
+    radial-gradient(900px 520px at 50% 16%, rgba(255, 255, 255, 0.72), transparent 62%),
+    var(--paper);
+  transition:
+    opacity 0.43s var(--ease),
+    visibility 0.43s var(--ease);
+}
+
+.boot-screen.is-leaving {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.boot-screen::before {
+  position: absolute;
+  width: min(72vw, 780px);
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  content: "";
+  opacity: 0.55;
+  animation: bootHalo 9s ease-in-out infinite;
+}
+
+.boot-texture {
+  position: absolute;
+  inset: -14%;
+  background-image: radial-gradient(circle, rgba(30, 29, 25, 0.16) 1px, transparent 1px);
+  background-size: 26px 26px;
+  opacity: 0.2;
+  -webkit-mask-image: radial-gradient(circle at 50% 44%, #000 0%, transparent 58%);
+  mask-image: radial-gradient(circle at 50% 44%, #000 0%, transparent 58%);
+  animation: bootDrift 42s linear infinite;
+}
+
+.boot-center {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(440px, calc(100vw - 48px));
+  text-align: center;
+  animation: bootIn 0.75s var(--ease-out) both;
+  transition: transform 0.43s var(--ease);
+}
+
+.boot-screen.is-leaving .boot-center {
+  transform: translateY(-7px) scale(0.99);
+}
+
+.boot-orbit {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  margin-bottom: 25px;
+}
+
+.boot-ring {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.boot-ring--1 {
+  inset: 0;
+  border: 1px solid var(--line-strong);
+  animation: bootSpin 24s linear infinite;
+}
+
+.boot-ring--1::after {
+  position: absolute;
+  top: -2.5px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 91, 76, 0.1);
+  content: "";
+}
+
+.boot-ring--2 {
+  inset: 11px;
+  border: 1px dashed #cfd8d0;
+  animation: bootSpin 17s linear infinite reverse;
+}
+
+.boot-mark {
+  position: absolute;
+  inset: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #f4f1e8;
+  box-shadow:
+    0 8px 22px rgba(47, 91, 76, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.boot-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+
+.boot-brand strong {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
+
+.boot-brand span {
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+}
+
+.boot-tagline {
+  margin-top: 13px;
+  color: var(--ink-3);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.boot-progress {
+  width: min(300px, calc(100vw - 48px));
+  margin-top: 34px;
+}
+
+.boot-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.boot-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.boot-stage-dot {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.boot-percent {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.boot-track {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.boot-fill {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-bright));
+  transition: width 0.3s var(--ease);
+}
+
+.boot-fill::after {
+  position: absolute;
+  top: 50%;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 91, 76, 0.12);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.boot-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(440px, calc(100vw - 48px));
+  margin-top: 28px;
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(30, 29, 25, 0.06);
+}
+
+.boot-error-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.boot-error-text {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.boot-retry {
+  margin-top: 14px;
+  padding: 7px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #f4f1e8;
+  font-size: 12px;
+  transition:
+    background 0.16s var(--ease),
+    border-color 0.16s var(--ease);
+}
+
+.boot-retry:hover {
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+}
+
+.boot-retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.boot-error-hint {
+  margin: 12px 0 0;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@keyframes bootIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes bootSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes bootDrift {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 26px 52px;
+  }
+}
+
+@keyframes bootHalo {
+  0%,
+  100% {
+    opacity: 0.38;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.62;
+    transform: scale(1.025);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-screen,
+  .boot-center,
+  .boot-fill {
+    transition: none;
+  }
+
+  .boot-screen::before,
+  .boot-texture,
+  .boot-ring--1,
+  .boot-ring--2,
+  .boot-stage-dot,
+  .boot-center {
+    animation: none;
+  }
+}

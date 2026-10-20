@@ -408,6 +408,11 @@ svg {
   text-transform: uppercase;
 }
 
+.eyebrow--brand {
+  text-transform: none;
+  letter-spacing: 0.08em;
+}
+
 .page-title {
   font-size: 31px;
   font-weight: 600;

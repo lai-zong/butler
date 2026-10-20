@@ -7,6 +7,7 @@
  *    需要用户决策的事情一律用对话框，不用 toast。
  */
 
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { ToastMessage } from '../lib/types.js';
@@ -25,7 +26,21 @@ interface ToastStackProps {
 }
 
 export function ToastStack({ toasts, onDismiss }: ToastStackProps): JSX.Element | null {
-  if (typeof document === 'undefined') return null;
+  /**
+   * ★ 首帧必须与服务端一致（服务端没有 DOM，返回 null）。
+   *
+   * 直接 `typeof document === 'undefined'` 会让客户端首帧就创建 portal，
+   * 而服务端这一块是空的；启动层接入后，React 会把 body 里已有的启动层
+   * DOM 误认成 portal 的子节点，报 hydration 错误。
+   * 等挂载后再创建 portal，是“仅客户端存在”结构的标准做法。
+   */
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) return null;
 
   return createPortal(
     <div className="toast-stack" role="status" aria-live="polite">

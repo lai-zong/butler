@@ -46,13 +46,13 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" aria-label="主导航">
-      <button type="button" className="brand" onClick={() => onNavigate('chat')} aria-label="管家 · 回到对话">
+      <button type="button" className="brand" onClick={() => onNavigate('chat')} aria-label="butler · 回到对话">
         <span className="brand-mark">
           <Icon name="memory" size={17} strokeWidth={1.7} />
         </span>
         <span className="brand-text">
-          <strong>管家</strong>
-          <small>BUTLER · 记忆治理</small>
+          <strong>butler</strong>
+          <small>记得你，也懂你</small>
         </span>
       </button>
 

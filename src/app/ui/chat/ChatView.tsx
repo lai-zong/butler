@@ -31,6 +31,7 @@ import {
   truncate,
 } from '../lib/format.js';
 import { applyEvent, asSseEvent, emptyAssistant } from '../lib/chatLive.js';
+import type { ChatBootState } from '../lib/boot.js';
 import type {
   AgentTrace,
   AuditResponse,
@@ -62,6 +63,7 @@ import { QuizSection } from './Quiz';
 
 interface ChatViewProps {
   readonly active: boolean;
+  readonly focusEnabled: boolean;
   readonly overview: Overview | null;
   readonly newChatNonce: number;
   readonly dataResetNonce: number;
@@ -70,6 +72,7 @@ interface ChatViewProps {
   readonly onOpenSettings: () => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onRefreshOverview: () => void;
+  readonly onBootState: (state: ChatBootState) => void;
 }
 
 interface Attachment {
@@ -143,6 +146,7 @@ async function readAsDataUrl(file: File): Promise<string> {
 
 export function ChatView({
   active,
+  focusEnabled,
   overview,
   newChatNonce,
   dataResetNonce,
@@ -151,6 +155,7 @@ export function ChatView({
   onOpenSettings,
   notify,
   onRefreshOverview,
+  onBootState,
 }: ChatViewProps): JSX.Element {
   const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -194,7 +199,7 @@ export function ChatView({
     }
   }, []);
 
-  const loadSession = useCallback(async (id: string): Promise<void> => {
+  const loadSession = useCallback(async (id: string): Promise<{ readonly ok: boolean; readonly error: string | null }> => {
     const token = ++loadSeqRef.current;
     abortRef.current?.abort();
     abortRef.current = null;
@@ -211,13 +216,16 @@ export function ChatView({
 
     try {
       const res = await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(id)}`);
-      if (token !== loadSeqRef.current) return;
+      if (token !== loadSeqRef.current) return { ok: false, error: null };
       setMessages(res.messages);
       setVerdicts(res.verdicts);
       setQuizzes(res.quizzes);
+      return { ok: true, error: null };
     } catch (err) {
-      if (token !== loadSeqRef.current) return;
-      setSessionError(errorMessage(err));
+      if (token !== loadSeqRef.current) return { ok: false, error: null };
+      const message = errorMessage(err);
+      setSessionError(message);
+      return { ok: false, error: message };
     } finally {
       if (token === loadSeqRef.current) setLoadingSession(false);
     }
@@ -250,17 +258,37 @@ export function ChatView({
   useEffect(() => {
     if (bootRef.current) return;
     bootRef.current = true;
+    let cancelled = false;
+    onBootState({ state: 'loading', phase: 'sessions' });
+
     void (async () => {
       try {
         const res = await fetchJson<SessionsResponse>('/api/sessions');
+        if (cancelled) return;
         setSessions(res.sessions);
         const first = res.sessions[0];
-        if (first !== undefined) await loadSession(first.id);
+        if (first !== undefined) {
+          onBootState({ state: 'loading', phase: 'session' });
+          const outcome = await loadSession(first.id);
+          if (cancelled) return;
+          if (!outcome.ok) {
+            onBootState({ state: 'error', error: outcome.error ?? '会话加载失败' });
+            return;
+          }
+        }
+        onBootState({ state: 'ready' });
       } catch (err) {
-        setSessionError(errorMessage(err));
+        if (cancelled) return;
+        const message = errorMessage(err);
+        setSessionError(message);
+        onBootState({ state: 'error', error: message });
       }
     })();
-  }, [loadSession]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadSession, onBootState]);
 
   // 外部「新建对话」指令
   useEffect(() => {
@@ -309,9 +337,9 @@ export function ChatView({
   }, [active, messages, liveTurns]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || !focusEnabled) return;
     textareaRef.current?.focus();
-  }, [active]);
+  }, [active, focusEnabled]);
 
   useEffect(() => {
     return () => {
@@ -698,7 +726,7 @@ export function ChatView({
                   <Icon name="memory" size={22} />
                 </span>
               </div>
-              <p className="eyebrow">BUTLER · 常驻在你的电脑里</p>
+              <p className="eyebrow eyebrow--brand">butler · 常驻在你的电脑里</p>
               <h1>
                 {mounted ? greeting() : '你好'}
                 ，今天想做点什么？
