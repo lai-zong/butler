@@ -102,17 +102,17 @@ butler-ai/
 ├── src/
 │   ├── core/                 业务核心：事件流、记忆、对话、butler、执行、工具、领域
 │   ├── adapters/             模型、文件、时钟、桌面等外部适配
-│   ├── app/                  Next.js App Router：五空间界面 + API
+│   ├── app/                  Next.js App Router：主界面 + 控制台 + API
 │   └── validate/             18 个可执行验证脚本
 ├── scripts/                  dev.mjs 启动器、可访问性检查
 ├── bin/                      butler CLI（web / doctor / validate）
-├── docs/                     方案、ADR、界面与结构文档
+├── docs/                     方案、ADR、界面、结构与实现审计文档
 ├── .butler-data/             运行时本地事件流（不提交）
 ├── package.json
 └── tsconfig.json
 ```
 
-设计文档见仓库外的《参赛方案》与仓库内 `docs/web-ui.md`、`docs/STRUCTURE.md`。
+设计文档见 `docs/design/参赛方案.md`、`docs/web-ui.md`、`docs/STRUCTURE.md`；当前实现状态见 `docs/design/implementation-audit-2026-10-24.md`。
 
 ---
 ## 快速开始
@@ -228,7 +228,7 @@ pywin32 / pyautogui / mss / pyperclip 等。均以**依赖包**形式正常引�
 | 构建与工程配置 | `package.json` / `tsconfig.json` / `next.config.ts` 等 | 环境配置是规则要求的交付物 |
 | 环境变量模板 | `.env.example` | 规则明确要求"含环境变量模板" |
 | 本 README | `README.md` | 规则要求的"项目介绍 / 技术架构 / 安装运行指南 / 团队信息" |
-| **技术方案文档** | `docs/`（发布时从外部复制） | **原创性的核心证据**，建议提交 |
+| **技术方案文档** | `docs/design/参赛方案.md`（已入库） | **原创性的核心证据**，建议提交 |
 
 ### 绝不提交
 
