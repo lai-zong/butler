@@ -245,6 +245,7 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
   }
   for (const m of sessionReplay.messages) chat.restoreMessage(m);
   for (const v of sessionReplay.verdicts) chat.restoreVerdict(v);
+  for (const r of sessionReplay.reviewRuns) chat.restoreReviewRun(r);
 
   const mcp = new McpClient(log, args.clock);
   const scheduler = new Scheduler(log, args.clock, DEFAULT_QUOTA);

@@ -1,0 +1,82 @@
+/**
+ * 语义相似度索引 —— 纯计算层，不加载模型。
+ *
+ * 输入：EmbeddingPort + 可见记忆；输出：memoryId → 余弦相似度。
+ * 记忆向量的缓存键包含内容/版本/更新时间，记忆修订后不会复用旧向量。
+ */
+
+import type { EmbeddingPort } from '../ports/embedding.js';
+import type { MemoryEntry } from './types.js';
+
+export const SEMANTIC_BATCH_SIZE = 16;
+
+function embeddingTextOf(memory: MemoryEntry): string {
+  const p = memory.principle;
+  return p !== undefined
+    ? `${memory.content}\n当：${p.condition}\n则：${p.action}`
+    : memory.content;
+}
+
+function cosine(a: readonly number[], b: readonly number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
+}
+
+export class SemanticIndex {
+  private readonly cache = new Map<string, { readonly key: string; readonly vector: readonly number[] }>();
+
+  constructor(private readonly embedding: EmbeddingPort) {}
+
+  async scores(
+    query: string,
+    candidates: readonly MemoryEntry[],
+  ): Promise<ReadonlyMap<string, number>> {
+    if (query.trim().length === 0 || candidates.length === 0) return new Map();
+
+    const [queryVector] = await this.embedding.embed([query]);
+    if (queryVector === undefined) return new Map();
+
+    const missing: { readonly id: string; readonly key: string; readonly text: string }[] = [];
+    const vectors = new Map<string, readonly number[]>();
+
+    for (const memory of candidates) {
+      const text = embeddingTextOf(memory);
+      const key = `${memory.id}|${memory.version}|${memory.updatedAt}|${memory.content.length}`;
+      const hit = this.cache.get(memory.id);
+      if (hit !== undefined && hit.key === key) {
+        vectors.set(memory.id, hit.vector);
+      } else {
+        missing.push({ id: memory.id, key, text });
+      }
+    }
+
+    for (let i = 0; i < missing.length; i += SEMANTIC_BATCH_SIZE) {
+      const batch = missing.slice(i, i + SEMANTIC_BATCH_SIZE);
+      const out = await this.embedding.embed(batch.map((m) => m.text));
+      for (let j = 0; j < batch.length; j++) {
+        const vector = out[j];
+        const item = batch[j];
+        if (vector === undefined || item === undefined) continue;
+        this.cache.set(item.id, { key: item.key, vector });
+        vectors.set(item.id, vector);
+      }
+    }
+
+    const result = new Map<string, number>();
+    for (const memory of candidates) {
+      const vector = vectors.get(memory.id);
+      if (vector !== undefined) result.set(memory.id, cosine(queryVector, vector));
+    }
+    return result;
+  }
+}

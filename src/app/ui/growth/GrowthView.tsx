@@ -8,10 +8,11 @@
  *   所以这里只呈现真实累积出来的生命周期、适应度与事件。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   Badge,
+  InlineError,
   Meter,
   PageHeader,
   SectionHeading,
@@ -19,19 +20,33 @@ import {
   StatCard,
 } from '../components/Common';
 import { Icon } from '../components/Icon';
+import { errorMessage, fetchJson } from '../lib/api.js';
 import {
+  DOMAIN_LABEL,
   formatDateTime,
   formatNumber,
   formatPercent,
   relativeTime,
 } from '../lib/format.js';
-import type { MemoryItem, MemoryTarget, Overview, ViewId } from '../lib/types.js';
+import type {
+  MemoryItem,
+  MemoryTarget,
+  Overview,
+  ProfileDeltaView,
+  ProfileDiffResponse,
+  ProfilesResponse,
+  ProfileSnapshotView,
+  ProfileSummary,
+  ViewId,
+} from '../lib/types.js';
 
 interface GrowthViewProps {
   readonly overview: Overview | null;
   readonly onNavigate: (view: ViewId) => void;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly onRefreshOverview: () => void;
+  /** overview 可用时调用一次，用于控制台的真实进度。 */
+  readonly onFirstReady?: () => void;
 }
 
 const LIFECYCLE_COLORS = {
@@ -46,13 +61,91 @@ export function GrowthView({
   onNavigate,
   onOpenMemory,
   onRefreshOverview,
+  onFirstReady,
 }: GrowthViewProps): JSX.Element {
   const [ready, setReady] = useState(false);
+  const firstReadyRef = useRef(false);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => setReady(true));
     return () => cancelAnimationFrame(raf);
   }, []);
+
+  useEffect(() => {
+    if (overview === null || firstReadyRef.current) return;
+    firstReadyRef.current = true;
+    onFirstReady?.();
+  }, [overview, onFirstReady]);
+
+  // ── 成长对比：快照列表 + 两份快照的 diff ──
+  const [profiles, setProfiles] = useState<readonly ProfileSummary[]>([]);
+  const [profileSkipped, setProfileSkipped] = useState(0);
+  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [profilesNonce, setProfilesNonce] = useState(0);
+  const [fromId, setFromId] = useState<string | null>(null);
+  const [toId, setToId] = useState<string | null>(null);
+  const [diff, setDiff] = useState<ProfileDeltaView | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [diffNonce, setDiffNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setProfilesLoading(true);
+    setProfilesError(null);
+    void (async () => {
+      try {
+        const res = await fetchJson<ProfilesResponse>('/api/profiles');
+        if (cancelled) return;
+        setProfiles(res.profiles);
+        setProfileSkipped(res.skipped);
+
+        const first = res.profiles[0];
+        const last = res.profiles[res.profiles.length - 1];
+        setFromId((cur) =>
+          cur !== null && res.profiles.some((p) => p.id === cur) ? cur : (first?.id ?? null),
+        );
+        setToId((cur) =>
+          cur !== null && res.profiles.some((p) => p.id === cur) ? cur : (last?.id ?? null),
+        );
+      } catch (err) {
+        if (!cancelled) setProfilesError(errorMessage(err));
+      } finally {
+        if (!cancelled) setProfilesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profilesNonce]);
+
+  useEffect(() => {
+    if (fromId === null || toId === null || fromId === toId) {
+      setDiff(null);
+      setDiffLoading(false);
+      setDiffError(null);
+      return;
+    }
+    let cancelled = false;
+    setDiffLoading(true);
+    setDiffError(null);
+    void (async () => {
+      try {
+        const res = await fetchJson<ProfileDiffResponse>(
+          `/api/profiles?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`,
+        );
+        if (!cancelled) setDiff(res.delta);
+      } catch (err) {
+        if (!cancelled) setDiffError(errorMessage(err));
+      } finally {
+        if (!cancelled) setDiffLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fromId, toId, diffNonce]);
 
   if (overview === null) {
     return (
@@ -90,6 +183,7 @@ export function GrowthView({
   const passCount = overview.totals.accepted;
   const verdicts = overview.totals.verdicts;
   const passRate = verdicts > 0 ? passCount / verdicts : null;
+  const sameSnapshot = fromId !== null && fromId === toId;
 
   const segments: readonly { key: keyof typeof LIFECYCLE_COLORS; label: string; value: number }[] = [
     { key: 'active', label: '活跃', value: m.active },
@@ -220,6 +314,23 @@ export function GrowthView({
           note={`近 7 天命中 ${m.hitLast7Days} 条`}
         />
       </div>
+
+      <GrowthCompare
+        profiles={profiles}
+        skipped={profileSkipped}
+        loading={profilesLoading}
+        error={profilesError}
+        fromId={fromId}
+        toId={toId}
+        sameSnapshot={sameSnapshot}
+        diff={diff}
+        diffLoading={diffLoading}
+        diffError={diffError}
+        onFrom={setFromId}
+        onTo={setToId}
+        onReload={() => setProfilesNonce((n) => n + 1)}
+        onRefreshDiff={() => setDiffNonce((n) => n + 1)}
+      />
 
       <div className="growth-grid">
         <section className="panel growth-lifecycle">
@@ -464,6 +575,279 @@ export function GrowthView({
       </p>
     </div>
   );
+}
+
+function GrowthCompare({
+  profiles,
+  skipped,
+  loading,
+  error,
+  fromId,
+  toId,
+  sameSnapshot,
+  diff,
+  diffLoading,
+  diffError,
+  onFrom,
+  onTo,
+  onReload,
+  onRefreshDiff,
+}: {
+  readonly profiles: readonly ProfileSummary[];
+  readonly skipped: number;
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly fromId: string | null;
+  readonly toId: string | null;
+  readonly sameSnapshot: boolean;
+  readonly diff: ProfileDeltaView | null;
+  readonly diffLoading: boolean;
+  readonly diffError: string | null;
+  readonly onFrom: (id: string) => void;
+  readonly onTo: (id: string) => void;
+  readonly onReload: () => void;
+  readonly onRefreshDiff: () => void;
+}): JSX.Element {
+  const complete = profiles.length >= 2;
+
+  return (
+    <section className="panel growth-compare" aria-labelledby="growth-compare-title">
+      <SectionHeading
+        title={<span id="growth-compare-title">成长对比</span>}
+        description="两份画像快照并排 —— 看得见的成长，而不是口头声称。"
+        actions={
+          <div className="compare-actions">
+            <Badge tone={complete ? 'accent' : 'neutral'}>
+              {profiles.length} 份完整快照
+            </Badge>
+            <button type="button" className="text-btn" onClick={onReload} disabled={loading}>
+              <Icon name="refresh" size={13} /> 刷新
+            </button>
+          </div>
+        }
+      />
+
+      {loading ? (
+        <Skeleton rows={4} height={16} />
+      ) : error !== null ? (
+        <InlineError message={error} onRetry={onReload} />
+      ) : !complete ? (
+        <GrowthCompareEmpty count={profiles.length} skipped={skipped} />
+      ) : (
+        <>
+          <div className="compare-pickers">
+            <label className="compare-pick">
+              起始快照
+              <select
+                value={fromId ?? ''}
+                onChange={(e) => onFrom(e.target.value)}
+                aria-label="起始快照"
+              >
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>{profileOptionLabel(p)}</option>
+                ))}
+              </select>
+            </label>
+            <span className="compare-arrow" aria-hidden="true">→</span>
+            <label className="compare-pick">
+              目标快照
+              <select
+                value={toId ?? ''}
+                onChange={(e) => onTo(e.target.value)}
+                aria-label="目标快照"
+              >
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>{profileOptionLabel(p)}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="text-btn compare-run"
+              onClick={onRefreshDiff}
+              disabled={sameSnapshot || diffLoading}
+            >
+              对比
+            </button>
+          </div>
+
+          {sameSnapshot ? (
+            <p className="compare-note">起始与目标选了同一份快照 —— 换一份再比。</p>
+          ) : diffLoading ? (
+            <Skeleton rows={4} height={16} />
+          ) : diffError !== null ? (
+            <InlineError message={diffError} onRetry={onRefreshDiff} />
+          ) : diff !== null ? (
+            <>
+              <div className="compare-headline" role="status" aria-live="polite">
+                <span className="compare-mark" aria-hidden="true">
+                  <Icon name="growth" size={15} />
+                </span>
+                <div>
+                  <strong>{diff.headline}</strong>
+                  <div className="compare-headline-sub">
+                    原则 {formatNumber(diff.from.principles)} → {formatNumber(diff.to.principles)} · 生活节奏{' '}
+                    {formatNumber(diff.from.temporalPatterns)} → {formatNumber(diff.to.temporalPatterns)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="compare-cols">
+                <SnapshotCard snapshot={diff.from} />
+                <SnapshotCard snapshot={diff.to} />
+                <DeltaCard delta={diff} />
+              </div>
+
+              <p className="compare-foot">
+                <Icon name="info" size={13} />
+                数据来自事件流中的 profile.snapshot；旧版本只有计数的快照会被跳过并标注，不补造。
+              </p>
+            </>
+          ) : null}
+
+          {skipped > 0 && (
+            <p className="compare-skipped">
+              另有 {formatNumber(skipped)} 份旧版本快照只有计数，无法参与对比。
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function GrowthCompareEmpty({
+  count,
+  skipped,
+}: {
+  readonly count: number;
+  readonly skipped: number;
+}): JSX.Element {
+  return (
+    <div className="compare-empty">
+      <span className="compare-empty-mark" aria-hidden="true">
+        <Icon name="growth" size={18} />
+      </span>
+      <strong>{count === 0 ? '还没有完整快照' : '只有 1 份完整快照'}</strong>
+      <p>
+        {count === 0
+          ? '周复盘会自动生成画像快照；有了两份之后，这里才能并排对比。'
+          : '有了第一份快照，还不足以对比；下一轮周复盘后会生成第二份。'}
+        旧版本只记了计数的快照会被跳过，不补造。
+      </p>
+      {skipped > 0 && (
+        <span className="compare-empty-hint">
+          已有 {formatNumber(count)} 份完整快照 · {formatNumber(skipped)} 份旧快照不可对比
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SnapshotCard({ snapshot }: { readonly snapshot: ProfileSnapshotView }): JSX.Element {
+  const total = snapshot.facts + snapshot.preferences + snapshot.principles;
+  const domains = Object.entries(snapshot.perDomain).filter(
+    ([, v]) => v.memories > 0 || v.principles > 0,
+  );
+
+  return (
+    <article className="compare-snap">
+      <div className="compare-snap-head">
+        <strong>会话 {formatNumber(snapshot.sessionCount)}</strong>
+        <span className="mono">{formatDateTime(snapshot.capturedAt)}</span>
+      </div>
+      <div className="compare-big">
+        <b>{formatNumber(total)}</b>
+        <span>条记忆</span>
+      </div>
+      <div className="compare-rows">
+        <CompareRow label="事实" value={snapshot.facts} />
+        <CompareRow label="偏好" value={snapshot.preferences} />
+        <CompareRow label="原则" value={snapshot.principles} />
+        <CompareRow
+          label="生活节奏"
+          value={snapshot.temporalPatterns}
+          empty={snapshot.temporalPatterns === 0}
+        />
+      </div>
+      {domains.length > 0 ? (
+        <div className="compare-domains">
+          {domains.map(([id, v]) => (
+            <span key={id}>{DOMAIN_LABEL[id] ?? id} {formatNumber(v.memories)}</span>
+          ))}
+        </div>
+      ) : (
+        <p className="compare-domains-empty">还没有领域记忆</p>
+      )}
+      <p className="compare-summary">{snapshot.summary}</p>
+    </article>
+  );
+}
+
+function CompareRow({
+  label,
+  value,
+  empty = false,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly empty?: boolean;
+}): JSX.Element {
+  return (
+    <div className="compare-row">
+      <span>{label}</span>
+      <b className="mono">{empty ? '—' : formatNumber(value)}</b>
+    </div>
+  );
+}
+
+function DeltaCard({ delta }: { readonly delta: ProfileDeltaView }): JSX.Element {
+  const cells: readonly { readonly label: string; readonly value: number }[] = [
+    { label: '事实', value: delta.facts },
+    { label: '偏好', value: delta.preferences },
+    { label: '原则', value: delta.principles },
+    { label: '节奏', value: delta.temporalPatterns },
+  ];
+
+  return (
+    <aside className="compare-delta">
+      <h4>变化 / DELTA</h4>
+      <div className="compare-delta-grid">
+        {cells.map((c) => (
+          <div key={c.label} className="compare-cell">
+            <span>{c.label}</span>
+            <b className={`mono ${c.value === 0 ? 'is-zero' : ''}`}>{signed(c.value)}</b>
+          </div>
+        ))}
+      </div>
+
+      <h5>新学到的原则</h5>
+      {delta.newPrinciples.length === 0 ? (
+        <p className="compare-empty-line">这次对比没有新增原则。</p>
+      ) : (
+        <ul className="compare-new">
+          {delta.newPrinciples.slice(0, 4).map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </ul>
+      )}
+      {delta.newPrinciples.length > 4 && (
+        <p className="compare-more">还有 {formatNumber(delta.newPrinciples.length - 4)} 条</p>
+      )}
+
+      <p className="compare-applied">
+        其中 {formatNumber(delta.appliedPrinciples.length)} 条已经在实际任务中被用到 —— 学过的东西真的在用。
+      </p>
+    </aside>
+  );
+}
+
+function signed(n: number): string {
+  return n > 0 ? `+${formatNumber(n)}` : formatNumber(n);
+}
+
+function profileOptionLabel(p: ProfileSummary): string {
+  return `会话 ${formatNumber(p.sessionCount)} · ${formatDateTime(p.capturedAt)}`;
 }
 
 function PrincipleRow({ memory, onOpen }: { readonly memory: MemoryItem; readonly onOpen: () => void }): JSX.Element {

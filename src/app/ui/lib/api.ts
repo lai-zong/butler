@@ -62,10 +62,18 @@ export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> 
   return data as T;
 }
 
-export async function postJson<T>(url: string, body: unknown): Promise<T> {
+export async function postJson<T>(
+  url: string,
+  body: unknown,
+  init?: Omit<RequestInit, 'method' | 'body'>,
+): Promise<T> {
   return fetchJson<T>(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
     body: JSON.stringify(body),
   });
 }

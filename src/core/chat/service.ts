@@ -35,7 +35,11 @@ import { runNarration, type NarrationResult, type NarrationState } from '../stre
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
+import type { EvolutionEngine } from '../memory/evolution.js';
+import type { SemanticIndex } from '../memory/semantic.js';
+import { rerankRecall } from '../memory/rerank.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
+import { throwIfAborted } from '../runtime/abort.js';
 import {
   SessionStore,
   type ExecutionReportData,
@@ -87,8 +91,14 @@ export interface RunTurnArgs {
   readonly log: EventLog;
   readonly clock: ClockPort;
   readonly store: MemoryStore;
+  /** 记忆演化引擎；调用方不给时召回仍可用，但不更新命中/生命周期。 */
+  readonly evolution?: EvolutionEngine;
+  /** 本地语义索引；不给或加载失败时回退到字面召回。 */
+  readonly semantic?: SemanticIndex;
   readonly chat: SessionStore;
   readonly tools?: ToolFramework;
+  /** 用户停止信号（贯穿本轮叙述与工具循环）。 */
+  readonly signal?: AbortSignal;
   readonly onProgress?: (e: ProgressEvent) => void;
   /**
    * 流式叙述端口（流式的「边说边想」）。
@@ -156,9 +166,11 @@ export interface RunTurnResult {
  *   Route Handler 只负责把它接成 SSE —— 不掺业务逻辑。
  */
 export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
+  throwIfAborted(args.signal);
   const { sessionId, userText, chat } = args;
 
   // ── ① 记下用户发言（落事件，供回退与重放）──
+  const auditFrom = args.log.nextSeq();
   const userMsg = chat.appendMessage(sessionId, { role: 'user', text: userText });
 
   /**
@@ -294,6 +306,15 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   //    不能"先全拿再筛"：那等于把不该看的（其他仆人的领域记忆、
   //    无授权的敏感域）也读进了内存，分权就成了摆设。
   const candidates = args.store.visibleTo({ kind: 'butler', userId: args.userId });
+  // 语义向量在适配器层计算；模型不可用时静默回退字面召回，不阻断对话。
+  let semanticScores: ReadonlyMap<string, number> | undefined;
+  if (args.semantic !== undefined && candidates.length > 0) {
+    try {
+      semanticScores = await args.semantic.scores(userText, candidates);
+    } catch {
+      semanticScores = undefined;
+    }
+  }
   const recallResult = recall({
     query: userText,
     candidates,
@@ -303,8 +324,26 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     // ⚠️ 参数演化（第三层）的当前值应由演化引擎持有；
     //    当前用默认值 —— 演化引擎自适应后需要把当前参数取回来传这里。
     params: DEFAULT_PARAMS,
+    ...(semanticScores !== undefined ? { semantic: semanticScores } : {}),
   });
-  const recalled = recallResult.selected;
+  let recalled = recallResult.selected;
+
+  // 语义召回的第二阶段：只对已选候选做精排，模型失败则保持原顺序。
+  // 没有语义分时不额外调用模型 —— 字面召回路径不增加成本。
+  if (semanticScores !== undefined && semanticScores.size > 0 && recalled.length > 1) {
+    const reranked = await rerankRecall({
+      model: args.model,
+      query: userText,
+      candidates: recalled,
+    });
+    recalled = reranked.items;
+  }
+
+  // 召回即命中：记录 fitness 与唤醒（休眠/归档记忆被再次命中会回升）。
+  // ⚠️ 只在实际进入本轮上下文后记录，不能把候选集全算成命中。
+  for (const r of recalled) {
+    args.evolution?.recordHit(r.memory.id);
+  }
 
   const memRefs = recalled.map((r) => ({
     id: r.memory.id,
@@ -337,6 +376,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           userGoal: userText,
           context: narrationContext(args.store, recalled, args.userId),
           onUpdate: (s) => args.onNarration?.(s),
+          ...(args.signal !== undefined ? { signal: args.signal } : {}),
         }).catch(() => null)
       : Promise.resolve(null);
 
@@ -365,6 +405,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     recalled,
     log: args.log,
     store: args.store,
+    ...(args.evolution !== undefined ? { evolution: args.evolution } : {}),
     // 管家要理解指代（「按你说的」）
     ...(history.length > 0 ? { history } : {}),
     // 仆人用精简历史（只有用户本轮原话）
@@ -379,8 +420,11 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
       args.onAgentProgress?.(e);
     },
     ...(args.tools !== undefined ? { tools: args.tools } : {}),
+    ...(args.signal !== undefined ? { signal: args.signal } : {}),
     ...(args.onProgress !== undefined ? { onProgress: args.onProgress } : {}),
   });
+
+  throwIfAborted(args.signal);
 
   // ── ④ ★ 管家审查（唯一决策点）──
   const verdict = buildVerdict({
@@ -418,12 +462,35 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    *   （落进消息 + 通过返回值给 SSE）。
    */
   const executionReports = toExecutionReportData(session);
+  const auditTo = args.log.nextSeq() - 1;
+  const reviewSnapshot =
+    session.contract !== undefined
+      ? {
+          userGoal: userText,
+          contract: session.contract,
+          hardConstraints: session.hardConstraints.verdicts.map((v) => v.content),
+          outputSummary: executionReports
+            .map((r) =>
+              [
+                r.reply,
+                r.artifacts.map((a) => a.text).join('；'),
+                (r.findings ?? []).map((f) => `[${f.kind}] ${f.statement}`).join('；'),
+              ]
+                .filter((s) => s.length > 0)
+                .join(' ‖ '),
+            )
+            .join('\n---\n')
+            .slice(0, 4000),
+        }
+      : undefined;
 
   const reply = chat.appendMessage(sessionId, {
     role: 'butler',
     text: replyText,
     status: 'done',
     memoryRefs: memRefs,
+    auditRange: { fromSeq: auditFrom, toSeq: auditTo },
+    ...(reviewSnapshot !== undefined ? { reviewSnapshot } : {}),
     // ★ 工具循环过程随消息落盘 —— 刷新后仍能看到「它读了哪个文件」
     ...(trace.hasContent() ? { agentTrace: trace.build() } : {}),
     /**
@@ -465,6 +532,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    * ⚠️ 刻意放在汇报**之后**：用户先拿到结果，反思是"附赠的积累"。
    *    反思失败也**不影响**已交付的结果。
    */
+  throwIfAborted(args.signal);
   args.onProgress?.({ kind: 'stage', stage: 'reflect', label: '整理这次的经验' });
 
   let reflection: ReflectTurnResult | null = null;
@@ -479,7 +547,10 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
       userId: args.userId,
       accepted: verdict.outcome === 'accepted',
     });
+    throwIfAborted(args.signal);
   } catch (err) {
+    // 取消不是反思失败：不能在这里被吞掉
+    if (args.signal?.aborted === true) throw err;
     // 反思失败不该让用户拿不到结果 —— 但要留痕，不静默吞
     args.log.append({
       type: 'reflection.done',
@@ -755,6 +826,21 @@ export function buildVerdict(args: {
 
   const artifactIds = args.session.artifacts.map((a) => a.id);
 
+  // 会话累计用量：之前各轮的累计 + 本轮。旧结论若没有 sessionUsage，退回其本轮 usage。
+  const prior = args.chat.verdictsOf(args.sessionId);
+  const priorInput = prior.reduce(
+    (n, v) => n + (v.sessionUsage?.inputTokens ?? v.usage.inputTokens),
+    0,
+  );
+  const priorOutput = prior.reduce(
+    (n, v) => n + (v.sessionUsage?.outputTokens ?? v.usage.outputTokens),
+    0,
+  );
+  const sessionUsage = {
+    inputTokens: priorInput + args.session.totalUsage.inputTokens,
+    outputTokens: priorOutput + args.session.totalUsage.outputTokens,
+  };
+
   const outcome = blocking.length > 0 ? 'rejected' : 'accepted';
 
   const summary =
@@ -786,6 +872,7 @@ export function buildVerdict(args: {
     steps,
     durationMs: args.session.endedAt - args.session.startedAt,
     usage: args.session.totalUsage,
+    sessionUsage,
     artifactIds,
   });
 }
@@ -801,23 +888,33 @@ export function buildVerdict(args: {
  *   所以这里不出现"是否继续？[是/否]"这类话 —— 那是把决策推回给用户。
  *   但**治理入口要留着**（"看依据"），因为本项目的主线是"可查看可修改"。
  */
-function buildAcceptedReply(session: RunSessionResult, verdict: Verdict): string {
+export function buildAcceptedReply(
+  session: Pick<RunSessionResult, 'reports'>,
+  verdict: Verdict,
+): string {
   const lines: string[] = [];
 
-  // 管家自己的汇总（监督层产出的结论文本）
-  if (session.supervision.summary.length > 0) {
-    lines.push(session.supervision.summary.trim());
-    lines.push('');
-  }
-
-  // 仆人的产出
+  /**
+   * ★ 用户正文只能来自执行者的 `reply`。
+   *
+   * 曾经这里把 `session.supervision.summary` 放在最前面，又把
+   * `artifacts.text`（执行指令）拼进去，于是用户说“你好”会看到
+   * “四条判据全部满足……”——监督员的内部复核结论被当成了回答。
+   *
+   * 现在：
+   *   · 监督员 summary 完全不进用户正文；
+   *   · 优先使用 report.reply；
+   *   · 没有 reply 时才回退到 artifacts。
+   */
   for (const rep of session.reports) {
-    const arts = rep.artifacts;
-    if (arts.length === 0) continue;
-
-    for (const a of arts) {
-      const body = artifactToText(a, '\n');
-      lines.push(body);
+    const reply = rep.reply.trim();
+    if (reply.length > 0) {
+      lines.push(reply);
+      lines.push('');
+      continue;
+    }
+    for (const a of rep.artifacts) {
+      lines.push(artifactToText(a, '\n'));
       lines.push('');
     }
   }

@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const NEXT_BIN = join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next');
-const HOST = 'localhost';
+const HOST = '127.0.0.1';
 const WAIT_TIMEOUT_MS = 120_000;
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -136,7 +136,7 @@ console.log('\u001b[2m▸ 管家 · 正在启动本地服务…\u001b[0m');
 console.log('\u001b[2m  首次编译需要一点时间；页面就绪后会自动打开。\u001b[0m');
 
 let childExited = false;
-const child = spawn(process.execPath, [NEXT_BIN, 'dev', '-p', String(port)], {
+const child = spawn(process.execPath, [NEXT_BIN, 'dev', '-p', String(port), '-H', '127.0.0.1'], {
   cwd: ROOT,
   stdio: 'inherit',
   env: { ...process.env, PORT: String(port) },

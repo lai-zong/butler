@@ -102,6 +102,108 @@ export class ActivityObserver {
 
   // ── 防线三：用户控制 ──
 
+  /**
+   * 从事件流恢复原始记录与聚合。
+   *
+   * ⚠️ 旧事件没有 `recordId` / `startedAt` / `endedAt` / 聚合明细：
+   *    - 记录按事件时间与时长近似重建（只用于展示，不再参与原始采集）；
+   *    - 旧 `activity.aggregated` 只有计数，无法凭空恢复明细，因此跳过。
+   *      新事件会带完整 `aggregates`，重启后可恢复。
+   */
+  replayFromLog(now?: number): void {
+    this.records = [];
+    this.aggregates.clear();
+    this.seq = 0;
+
+    const categories = new Set<ActivityCategory>([
+      'work',
+      'study',
+      'entertainment',
+      'communication',
+      'other',
+    ]);
+
+    for (const e of this.log.all()) {
+      if (e.type === 'activity.sampled') {
+        const p = (e.payload ?? {}) as Record<string, unknown>;
+        const action = typeof p['action'] === 'string' ? p['action'] : '';
+
+        if (action === 'consentRevoked' || action === 'deleteAll') {
+          this.records = [];
+          this.aggregates.clear();
+          continue;
+        }
+        if (action === 'deleteRecord') {
+          const id = typeof p['recordId'] === 'string' ? p['recordId'] : '';
+          if (id.length > 0) this.records = this.records.filter((r) => r.id !== id);
+          continue;
+        }
+
+        if (typeof p['app'] !== 'string' || typeof p['durationMs'] !== 'number') continue;
+        const app = sanitizeAppName(p['app']);
+        const durationMs = Math.max(0, p['durationMs']);
+        const startedAt = typeof p['startedAt'] === 'number' ? p['startedAt'] : e.createdAt;
+        const endedAt = typeof p['endedAt'] === 'number' ? p['endedAt'] : startedAt + durationMs;
+        const rawCategory = p['category'];
+        const category =
+          typeof rawCategory === 'string' && categories.has(rawCategory as ActivityCategory)
+            ? (rawCategory as ActivityCategory)
+            : categorize(app);
+        const rawSource = p['source'];
+        const source =
+          rawSource === 'sample' || rawSource === 'session' || rawSource === 'demo'
+            ? rawSource
+            : 'session';
+        const id = typeof p['recordId'] === 'string' ? p['recordId'] : `act_replay_${e.seq}`;
+
+        this.records.push({
+          id,
+          userId: this.userId,
+          app,
+          category,
+          startedAt,
+          endedAt,
+          durationMs,
+          hadInput: p['hadInput'] === true,
+          source,
+        });
+        this.seq += 1;
+        continue;
+      }
+
+      if (e.type === 'activity.aggregated') {
+        const p = (e.payload ?? {}) as Record<string, unknown>;
+        const raw = p['aggregates'];
+        if (!Array.isArray(raw)) continue;
+        for (const item of raw) {
+          if (typeof item !== 'object' || item === null) continue;
+          const a = item as Record<string, unknown>;
+          if (
+            typeof a['id'] !== 'string' ||
+            typeof a['bucket'] !== 'string' ||
+            typeof a['category'] !== 'string' ||
+            typeof a['minutes'] !== 'number' ||
+            !Array.isArray(a['topApps'])
+          ) {
+            continue;
+          }
+          const category = a['category'] as ActivityCategory;
+          if (!categories.has(category)) continue;
+          this.aggregates.set(a['id'], {
+            id: a['id'],
+            userId: typeof a['userId'] === 'string' ? a['userId'] : this.userId,
+            bucket: a['bucket'],
+            category,
+            minutes: Math.max(0, a['minutes']),
+            topApps: a['topApps'].filter((x): x is string => typeof x === 'string').slice(0, 5),
+          });
+        }
+      }
+    }
+
+    this.purgeExpired(now);
+  }
+
   getConsent(): ObservationConsent {
     return this.consent;
   }
@@ -217,8 +319,11 @@ export class ActivityObserver {
       actor: 'system',
       payload: {
         // ⚠️ 事件里也只写应用名与时长，不写任何可推断内容的信息
+        recordId: record.id,
         app: record.app,
         category: record.category,
+        startedAt: record.startedAt,
+        endedAt: record.endedAt,
         durationMs: record.durationMs,
         hadInput: record.hadInput,
         source: record.source,
@@ -359,6 +464,8 @@ export class ActivityObserver {
         buckets: out.length,
         categories: [...new Set(out.map((a) => a.category))],
         totalMinutes: Math.round(out.reduce((s, a) => s + a.minutes, 0)),
+        // ★ 持久化完整聚合，重启后才能恢复明细；旧事件只有计数。
+        aggregates: out,
         note: '原始记录将在保留期后清除，聚合结果长期保留',
       },
       createdAt: t,
@@ -393,7 +500,14 @@ export class ActivityObserver {
   deleteRecord(id: string): boolean {
     const before = this.records.length;
     this.records = this.records.filter((r) => r.id !== id);
-    return this.records.length < before;
+    if (this.records.length === before) return false;
+    this.log.append({
+      type: 'activity.sampled',
+      actor: 'user',
+      payload: { action: 'deleteRecord', recordId: id, note: '用户删除单条原始记录' },
+      createdAt: this.clock.now(),
+    });
+    return true;
   }
 }
 

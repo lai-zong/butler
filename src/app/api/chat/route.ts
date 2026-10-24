@@ -101,6 +101,15 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const encoder = new TextEncoder();
 
+  /**
+   * ★ 用户点“停止”时，浏览器会 abort fetch。
+   *   这里把请求信号接到本轮任务：不是只停止发送，而是真的停止后台循环。
+   */
+  const abort = new AbortController();
+  const onRequestAbort = (): void => abort.abort();
+  if (req.signal.aborted) abort.abort();
+  else req.signal.addEventListener('abort', onRequestAbort, { once: true });
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -109,7 +118,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
         } catch {
-          // 客户端已断开 —— 标记后停止发送，但**不中断任务**
+          // 客户端已断开 —— 只标记停止发送；后台取消由 request.signal / cancel() 负责
           closed = true;
         }
       };
@@ -152,6 +161,18 @@ export async function POST(req: NextRequest): Promise<Response> {
        */
       const fromSeq = rt.bootstrapped.log.length + 1;
 
+      // 本轮开始前的会话累计用量（界面用“累计”= 已完成轮次 + 本轮实时）。
+      const priorVerdicts = rt.bootstrapped.chat.verdictsOf(session.id);
+      const baseInputTokens = priorVerdicts.reduce(
+        (n, v) => n + (v.sessionUsage?.inputTokens ?? v.usage.inputTokens),
+        0,
+      );
+      const baseOutputTokens = priorVerdicts.reduce(
+        (n, v) => n + (v.sessionUsage?.outputTokens ?? v.usage.outputTokens),
+        0,
+      );
+
+      rt.activeTurns += 1;
       try {
         const result = await runTurn({
           sessionId: session.id,
@@ -166,9 +187,12 @@ export async function POST(req: NextRequest): Promise<Response> {
           log: rt.bootstrapped.log,
           clock: rt.clock,
           store: rt.bootstrapped.memory,
+          evolution: rt.evolution,
+          semantic: rt.semantic,
           chat: rt.bootstrapped.chat,
           // ★ 装配好的工具框架 —— 不给则仆人不调工具
           tools: rt.tools,
+          signal: abort.signal,
           onProgress: (e: ProgressEvent) => send({ type: 'progress', event: e }),
 
           /**
@@ -209,7 +233,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           onAgentProgress: (e) => {
             switch (e.kind) {
               case 'roundStarted':
-                send({ type: 'agent', kind: 'round', round: e.round, maxRounds: e.maxRounds });
+                send({ type: 'agent', kind: 'round', round: e.round });
                 break;
               case 'reasoning':
                 send({
@@ -260,12 +284,23 @@ export async function POST(req: NextRequest): Promise<Response> {
                   durationMs: e.durationMs,
                 });
                 break;
+              case 'usage':
+                send({
+                  type: 'usage',
+                  round: e.round,
+                  inputTokens: e.inputTokens,
+                  outputTokens: e.outputTokens,
+                  totalInputTokens: e.totalInputTokens,
+                  totalOutputTokens: e.totalOutputTokens,
+                  sessionInputTokens: baseInputTokens + e.totalInputTokens,
+                  sessionOutputTokens: baseOutputTokens + e.totalOutputTokens,
+                });
+                break;
               case 'finished':
                 send({
                   type: 'agent',
                   kind: 'finished',
                   rounds: e.rounds,
-                  hitRoundLimit: e.hitRoundLimit,
                   reason: e.reason,
                 });
                 break;
@@ -305,6 +340,22 @@ export async function POST(req: NextRequest): Promise<Response> {
             source: c.source,
             negotiable: c.negotiable,
           })),
+        });
+
+        // 最终用量以 verdict 为准：它包含工具循环之后的监督/反思调用。
+        const finalSessionUsage = result.verdict.sessionUsage ?? {
+          inputTokens: baseInputTokens + result.verdict.usage.inputTokens,
+          outputTokens: baseOutputTokens + result.verdict.usage.outputTokens,
+        };
+        send({
+          type: 'usage',
+          round: 0,
+          inputTokens: result.verdict.usage.inputTokens,
+          outputTokens: result.verdict.usage.outputTokens,
+          totalInputTokens: result.verdict.usage.inputTokens,
+          totalOutputTokens: result.verdict.usage.outputTokens,
+          sessionInputTokens: finalSessionUsage.inputTokens,
+          sessionOutputTokens: finalSessionUsage.outputTokens,
         });
 
         send({ type: 'reply', messageId: result.replyMessageId, text: result.replyText });
@@ -348,11 +399,16 @@ export async function POST(req: NextRequest): Promise<Response> {
           range: { fromSeq, toSeq: rt.bootstrapped.log.length },
         });
       } catch (err) {
-        send({
-          type: 'error',
-          message: err instanceof Error ? err.message : String(err),
-        });
+        // 用户主动停止不是错误：界面已经标记“已断开接收”，不要再补一条报错。
+        if (!abort.signal.aborted) {
+          send({
+            type: 'error',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
       } finally {
+        rt.activeTurns = Math.max(0, rt.activeTurns - 1);
+        req.signal.removeEventListener('abort', onRequestAbort);
         /**
          * ★ 流结束 → 把所有还挂着的确认**全部拒绝**。
          *
@@ -370,6 +426,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         // ★ 每轮结束都刷盘 —— 用户重新加载不该看到"刚才说的话没了"
         await rt.bootstrapped.log.flushPersistence().catch(() => undefined);
       }
+    },
+    cancel() {
+      // 客户端断开连接时，ReadableStream 会走这里；与 request.signal 双保险。
+      abort.abort();
     },
   });
 

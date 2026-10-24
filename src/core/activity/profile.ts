@@ -137,6 +137,19 @@ export function captureProfile(args: {
       principles,
       temporalPatterns: snapshot.temporalPatterns,
       activeMemories: active.length,
+      /**
+       * ★★ 完整快照必须落事件，否则重启后无法做"成长对比"。
+       *
+       * ⚠️ 原实现只写计数：`profile.snapshot` 事件里没有 perDomain /
+       *    principleList / summary，`tasks.ts` 的 previous/latest 又只是
+       *    模块变量 —— 进程一重启，两份快照都没了，diff 只能在同一进程
+       *    的两次周任务之间发生。
+       *
+       *    现在把 snapshot 原样放进 payload：事件是唯一真相源，
+       *    重放/回看/导出都能拿到完整画像；旧事件没有这个字段，
+       *    读取端会按"不完整快照"跳过（见 activity/profileHistory.ts）。
+       */
+      snapshot,
       // 只读派生 —— 明确不写记忆库
       readOnlyDerivation: true,
     },

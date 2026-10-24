@@ -5,17 +5,22 @@
  *   `buildTasks`、`Scheduler` 各自都有测试，但**没人把它们装上**。
  *   这里测的正是"装上之后，整条链路真的会动"。
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createActivityRuntime } from '../runtime.js';
 import { ActivityObserver, SAMPLE_INTERVAL_MS, type ActivitySourcePort } from '../observe.js';
 import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
 import { MemoryStore } from '../../memory/store.js';
+import type { EvolutionPassResult } from '../../memory/evolution.js';
 
 const T0 = 1_760_000_000_000;
 
-function setup(opts?: { consent?: boolean; source?: ActivitySourcePort }) {
+function setup(opts?: {
+  consent?: boolean;
+  source?: ActivitySourcePort;
+  evolve?: () => EvolutionPassResult;
+}) {
   const log = new EventLog('s_activity');
   const clock = new FixedClock(T0);
   const store = new MemoryStore(log, clock, 'local');
@@ -30,6 +35,7 @@ function setup(opts?: { consent?: boolean; source?: ActivitySourcePort }) {
     observer,
     sessionCount: () => 0,
     ...(opts?.source !== undefined ? { source: opts.source } : {}),
+    ...(opts?.evolve !== undefined ? { evolve: opts.evolve } : {}),
   });
 
   return { log, clock, observer, runtime };
@@ -137,5 +143,43 @@ describe('★ 撤回同意后不再采集', () => {
     const r = await runtime.tickOnce(T0 + SAMPLE_INTERVAL_MS);
     expect(r.sampled).toBe(false);
     void clock;
+  });
+});
+
+describe('★ D-44 单飞：tick 不重入', () => {
+  it('上一次 tick 未结束时，第二次直接跳过', async () => {
+    let release!: (v: { app: string; hadInput: boolean }) => void;
+    const source: ActivitySourcePort = {
+      sample: () => new Promise((resolve) => { release = resolve; }),
+    };
+    const { runtime } = setup({ consent: true, source });
+
+    const first = runtime.tickOnce(T0);
+    const second = await runtime.tickOnce(T0);
+    expect(second.ran).toHaveLength(0);
+    expect(second.sampleReason).toContain('尚未结束');
+
+    release({ app: 'VS Code', hadInput: true });
+    const done = await first;
+    expect(done.sampled).toBe(true);
+  });
+});
+
+describe('★ 演化引擎接入每日任务', () => {
+  it('每日反思调用 evolve，并把结果写进摘要', async () => {
+    const evolve = vi.fn(() => ({
+      evaluated: 5,
+      dormant: ['m1'],
+      archived: [],
+      revived: [],
+      threshold: 0.3,
+    }));
+    const { runtime } = setup({ evolve });
+
+    const r = await runtime.tickOnce(T0);
+    const daily = r.ran.find((x) => x.kind === 'dailyReflection');
+    expect(evolve).toHaveBeenCalledTimes(1);
+    expect(daily?.summary).toContain('演化：评估 5 条');
+    expect(daily?.summary).toContain('休眠 1');
   });
 });

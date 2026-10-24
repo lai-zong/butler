@@ -15,9 +15,11 @@ import { EventLog } from '../events/log.js';
 import { domainName } from '../domain/types.js';
 import type { ToolFramework } from '../tools/framework.js';
 import type { MemoryStore } from '../memory/store.js';
+import type { EvolutionEngine } from '../memory/evolution.js';
 import type { ScoredMemory } from '../memory/recall.js';
 import {
   checkPrinciples,
+  recordEffect,
   recordInjection,
   recordViolation,
   selectPrinciples,
@@ -30,6 +32,7 @@ import type { ClockPort, ModelMessage, ModelPort } from '../ports/index.js';
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
 import type { ApprovalAsker } from '../tools/approval.js';
+import { isAbortError, throwIfAborted } from './abort.js';
 
 export interface RunSessionArgs {
   readonly model: ModelPort;
@@ -63,6 +66,8 @@ export interface RunSessionArgs {
    * 不给则跳过原则环节（纯编排验证时不必要）。
    */
   readonly store?: MemoryStore;
+  /** 记忆演化引擎；给出时把原则效果反馈进 fitness。 */
+  readonly evolution?: EvolutionEngine;
   /**
    * 事件日志。
    *
@@ -103,6 +108,8 @@ export interface RunSessionArgs {
    * ⚠️ 不给则行为与之前完全一致。
    */
   readonly streamPort?: ModelStreamPort;
+  /** 用户停止信号（一路传到管家工具循环）。 */
+  readonly signal?: AbortSignal;
   /** 工具循环进度（供界面实时反映工具进度） */
   readonly onAgentProgress?: (e: AgentProgressEvent) => void;
   /**
@@ -252,6 +259,7 @@ export function buildAssumption(
 const CONFIDENCE_THRESHOLD = 0.6;
 
 export async function runSession(args: RunSessionArgs): Promise<RunSessionResult> {
+  throwIfAborted(args.signal);
   // ⚠️ 用传入的 log（它挂了持久化端口）；不传时内部新建一个仅内存的，供测试用
   const log = args.log ?? new EventLog(args.sessionId);
 
@@ -437,11 +445,14 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       ...(args.asker !== undefined ? { asker: args.asker } : {}),
       ...(args.domainHistory !== undefined ? { history: args.domainHistory } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
+      ...(args.signal !== undefined ? { signal: args.signal } : {}),
       ...(args.onAgentProgress !== undefined ? { onAgentProgress: args.onAgentProgress } : {}),
       ...(args.tools !== undefined ? { tools: args.tools } : {}),
       now: args.clock.now(),
     });
   } catch (err) {
+    // 取消不是“执行失败”，不能伪装成失败汇报继续跑校验/监督。
+    if (args.signal?.aborted === true || isAbortError(err)) throw err;
     /**
      * ⚠️ 执行抛异常 — **不让整轮失败**，而是产出一份"失败的汇报"。
      *
@@ -474,6 +485,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     };
   }
 
+  throwIfAborted(args.signal);
   inputTokens += run.usage.inputTokens;
   outputTokens += run.usage.outputTokens;
   reports.push(run.report);
@@ -494,6 +506,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   }
 
   // ── ⑥ 硬约束机械校验（确定性，先于 LLM 监督）──
+  throwIfAborted(args.signal);
   stage('verify', '校验产出');
   // 方案 § 2.1：硬约束拦截是"管家对全局层第 1 类记忆的机械校验"，
   // 不能交给模型的严重性判断 —— 验证 1 的实测教训。
@@ -519,6 +532,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     hardConstraints: hardConstraintMemories.map((x) => x.memory.content),
     now: args.clock.now(),
   });
+  throwIfAborted(args.signal);
   inputTokens += sup.usage.inputTokens;
   outputTokens += sup.usage.outputTokens;
 
@@ -546,6 +560,31 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
 
     for (const v of check.violated) {
       recordViolation({ log, taskId: args.sessionId, check: v, clock: args.clock });
+      // 先让演化引擎读 store 现值，再改 effectiveness —— 否则 acc 初始化
+      // 会把 recordEffect 刚加的 succeeded 再算一次。
+      args.evolution?.recordOutcome(v.principleId, false, v.evidence);
+      recordEffect({
+        log,
+        store: args.store,
+        clock: args.clock,
+        taskId: args.sessionId,
+        principleId: v.principleId,
+        effective: false,
+        note: v.evidence,
+      });
+    }
+    for (const c of check.checks) {
+      if (!c.satisfied) continue;
+      args.evolution?.recordOutcome(c.principleId, true, c.evidence);
+      recordEffect({
+        log,
+        store: args.store,
+        clock: args.clock,
+        taskId: args.sessionId,
+        principleId: c.principleId,
+        effective: true,
+        note: c.evidence,
+      });
     }
   }
 
@@ -592,6 +631,8 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     },
     createdAt: args.clock.now(),
   });
+
+  throwIfAborted(args.signal);
 
   return {
     log,

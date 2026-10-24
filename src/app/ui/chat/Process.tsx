@@ -6,6 +6,11 @@
  * ★ 它是「可审计」在对话现场的第一落点：
  *   用户不需要相信管家的自述，展开就能看到它调了什么、结果是什么。
  *
+ * ★ v10.3：改成 DSH 式的一行一条。
+ *   · 执行中：每来一行就展示一行（思考显示部分内容，工具显示动作与目标）；
+ *   · 完成：自动收起为摘要（思考次数 / 工具次数 / 构成 / 用时 / 结果与异常）；
+ *   · 不再出现“轮次 / 上限”这类内部执行约束的措辞。
+ *
  * 两种数据源共用同一套渲染：
  *   · 流式中的 LiveRound（逐片到达）
  *   · 刷新后从事件重放出的 AgentTrace（已持久化）
@@ -15,25 +20,20 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Badge, Collapse } from '../components/Common';
 import { Icon } from '../components/Icon';
-import { CLASS_LABEL, formatDuration, truncate } from '../lib/format.js';
-import type { InjectedConstraintView, LiveToolStatus } from '../lib/types.js';
+import { formatDuration, formatTokens } from '../lib/format.js';
+import type { InjectedConstraintView, LiveUsage } from '../lib/types.js';
+import {
+  buildProcessView,
+  describeTool,
+  previewText,
+  type ProcFinished,
+  type ProcLine,
+  type ProcRound,
+  type ProcTool,
+  type ProcessStats,
+} from './processView';
 
-export interface ProcTool {
-  readonly callId: string;
-  readonly name: string;
-  readonly argsText: string;
-  readonly status: LiveToolStatus;
-  readonly output: string;
-  readonly durationMs: number | null;
-}
-
-export interface ProcRound {
-  readonly round: number;
-  readonly maxRounds: number;
-  readonly reasoning: string;
-  readonly text: string;
-  readonly tools: readonly ProcTool[];
-}
+export type { ProcFinished, ProcRound, ProcTool } from './processView';
 
 interface ProcessPanelProps {
   readonly rounds: readonly ProcRound[];
@@ -42,34 +42,22 @@ interface ProcessPanelProps {
   readonly narrationReasoning?: string;
   readonly narrationTranslated?: string;
   readonly firstChunkMs?: number | null;
-  readonly finished?: { readonly rounds: number; readonly hitRoundLimit: boolean; readonly reason: string } | null;
+  readonly finished?: ProcFinished | null;
   readonly streaming?: boolean;
   readonly defaultOpen?: boolean;
   readonly durationMs?: number | null;
   readonly injectedConstraints?: readonly InjectedConstraintView[];
+  /** 本轮/会话累计 token 用量；旧消息没有该数据时为 null。 */
+  readonly usage?: LiveUsage | null;
 }
 
-const REASON_LABEL: Record<string, string> = {
-  noToolCalls: '直接作答',
-  terminalTool: '提交了结果',
-  roundLimit: '达到轮次上限',
+const TOOL_STATUS_LABEL: Record<ProcTool['status'], string> = {
+  pending: '等待',
+  running: '执行中',
+  ok: '成功',
+  denied: '被拒绝',
+  error: '失败',
 };
-
-const TOOL_STATUS: Record<LiveToolStatus, { label: string; cls: string }> = {
-  pending: { label: '等待', cls: 'pending' },
-  running: { label: '执行中', cls: 'running' },
-  ok: { label: '成功', cls: 'ok' },
-  denied: { label: '被拒绝', cls: 'denied' },
-  error: { label: '失败', cls: 'error' },
-};
-
-function ToolIcon({ status }: { readonly status: LiveToolStatus }): JSX.Element {
-  if (status === 'running') return <Icon name="refresh" size={13} className="spin" />;
-  if (status === 'ok') return <Icon name="check" size={13} />;
-  if (status === 'denied') return <Icon name="shield" size={13} />;
-  if (status === 'error') return <Icon name="alert" size={13} />;
-  return <Icon name="clock" size={13} />;
-}
 
 export function ProcessPanel({
   rounds,
@@ -83,73 +71,97 @@ export function ProcessPanel({
   defaultOpen = false,
   durationMs = null,
   injectedConstraints = [],
+  usage = null,
 }: ProcessPanelProps): JSX.Element | null {
-  const [open, setOpen] = useState(defaultOpen);
-  const touched = useRef(false);
+  const [open, setOpen] = useState(defaultOpen || streaming);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const wasStreaming = useRef(streaming);
 
   useEffect(() => {
-    if (streaming && !touched.current) setOpen(true);
-    // 完成时自动收起过程：最终视图应该先看见答案，而不是一长串工具日志。
-    // 用户手动展开过（touched）则尊重他的选择，不再自动收起。
-    if (wasStreaming.current && !streaming && !touched.current) setOpen(false);
+    if (streaming) setOpen(true);
+    // 执行完成、开始输出结果时收起过程；用户想回看再点摘要。
+    else if (wasStreaming.current) {
+      setOpen(false);
+      setExpanded(null);
+    }
     wasStreaming.current = streaming;
   }, [streaming]);
 
-  const toolCount = rounds.reduce((n, r) => n + r.tools.length, 0);
+  const view = buildProcessView({ rounds, finished, durationMs, streaming });
+  const { stats, lines } = view;
+
   const hasAny =
-    rounds.length > 0 ||
+    lines.length > 0 ||
     stages.length > 0 ||
     narration.length > 0 ||
     narrationReasoning.length > 0 ||
     narrationTranslated.length > 0 ||
-    injectedConstraints.length > 0;
+    injectedConstraints.length > 0 ||
+    usage !== null;
 
   if (!hasAny && !streaming) return null;
 
-  const summary = streaming
-    ? stages[stages.length - 1] ?? (rounds.length > 0 ? `第 ${rounds.length} 轮` : '正在处理')
-    : [
-        rounds.length > 0 ? `${rounds.length} 轮` : '',
-        toolCount > 0 ? `${toolCount} 次工具` : '',
-        finished !== null ? REASON_LABEL[finished.reason] ?? finished.reason : '',
-        durationMs !== null && durationMs > 0 ? formatDuration(durationMs) : '',
-      ]
-        .filter((x) => x.length > 0)
-        .join(' · ');
-
   return (
-    <section className={`process ${open ? 'is-open' : ''}`}>
+    <section className={`process ${open ? 'is-open' : ''} ${streaming ? 'is-live' : ''}`}>
       <button
         type="button"
         className="process-head"
-        onClick={() => {
-          touched.current = true;
-          setOpen((v) => !v);
-        }}
+        onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
         <span className="process-title">
           <span className={`process-pulse ${streaming ? 'is-live' : ''}`} aria-hidden="true" />
           过程
         </span>
-        <span className="process-summary">{summary}</span>
+
+        <span className="process-summary">
+          {streaming ? (
+            <>
+              <span className="proc-live">执行中</span>
+              <StatChip label="思考" value={stats.thinkingCount} />
+              <StatChip label="工具" value={stats.toolCount} />
+            </>
+          ) : (
+            <>
+              <StatChip label="思考" value={stats.thinkingCount} />
+              <StatChip label="工具" value={stats.toolCount} />
+              {stats.durationMs !== null && stats.durationMs > 0 && (
+                <span className="proc-chip mono">{formatDuration(stats.durationMs)}</span>
+              )}
+              {stats.composition.map((c) => (
+                <span className="proc-chip proc-chip--muted" key={c.label}>
+                  {c.label} {c.count}
+                </span>
+              ))}
+              {finished !== null && <OutcomeChip stats={stats} />}
+              {stats.denied > 0 && (
+                <span className="proc-chip proc-chip--warn">被拒 {stats.denied}</span>
+              )}
+              {stats.failed > 0 && (
+                <span className="proc-chip proc-chip--danger">失败 {stats.failed}</span>
+              )}
+            </>
+          )}
+        </span>
+
+        {usage !== null && (
+          <span className="proc-usage" title="本轮 / 本会话累计 token 用量">
+            <span>
+              本轮 <b>{formatTokens(usage.turnInputTokens)}</b> in /{' '}
+              <b>{formatTokens(usage.turnOutputTokens)}</b> out
+            </span>
+            <span>
+              累计 <b>{formatTokens(usage.sessionInputTokens)}</b> in /{' '}
+              <b>{formatTokens(usage.sessionOutputTokens)}</b> out
+            </span>
+          </span>
+        )}
+
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={15} className="process-chevron" />
       </button>
 
       <Collapse open={open}>
         <div className="process-body">
-          {stages.length > 0 && (
-            <ol className="stage-trail" aria-label="阶段">
-              {stages.map((s, i) => (
-                <li key={`${s}-${i}`} className={i === stages.length - 1 && streaming ? 'is-current' : ''}>
-                  <span className="stage-dot" aria-hidden="true" />
-                  <span>{s}</span>
-                </li>
-              ))}
-            </ol>
-          )}
-
           {narration.length > 0 && (
             <div className="proc-block proc-narration">
               <div className="proc-block-head">
@@ -170,19 +182,28 @@ export function ProcessPanel({
             />
           ) : null}
 
-          {rounds.map((r) => (
-            <RoundView key={r.round} round={r} />
-          ))}
+          {lines.length > 0 && (
+            <ul className="flow-list" aria-label="执行步骤">
+              {lines.map((line) => (
+                <ProcessLine
+                  key={line.key}
+                  line={line}
+                  expanded={expanded === line.key}
+                  onToggle={() => setExpanded((cur) => (cur === line.key ? null : line.key))}
+                />
+              ))}
+            </ul>
+          )}
 
-          {finished !== null && (
-            <div className="proc-finished">
-              <Icon name={finished.hitRoundLimit ? 'alert' : 'checkCircle'} size={14} />
-              <span>
-                {finished.hitRoundLimit
-                  ? `达到 ${finished.rounds} 轮上限，已停止继续调用`
-                  : `循环结束 · ${REASON_LABEL[finished.reason] ?? finished.reason}`}
-              </span>
-            </div>
+          {stages.length > 0 && (
+            <ol className="flow-stage-list" aria-label="阶段">
+              {stages.map((s, i) => (
+                <li key={`${s}-${i}`}>
+                  <span className="flow-dot flow-dot--ok" aria-hidden="true" />
+                  {s}
+                </li>
+              ))}
+            </ol>
           )}
 
           {injectedConstraints.length > 0 && (
@@ -194,9 +215,7 @@ export function ProcessPanel({
               <ul>
                 {injectedConstraints.map((c, i) => (
                   <li key={`${c.memoryId ?? 'c'}-${i}`}>
-                    <Badge tone={c.negotiable ? 'neutral' : 'accent'}>
-                      {CLASS_LABEL[c.source as keyof typeof CLASS_LABEL] ?? c.source}
-                    </Badge>
+                    <Badge tone={c.negotiable ? 'neutral' : 'accent'}>{c.source}</Badge>
                     <span>{c.content}</span>
                     {!c.negotiable && <small>不可协商</small>}
                   </li>
@@ -210,66 +229,115 @@ export function ProcessPanel({
   );
 }
 
-function RoundView({ round }: { readonly round: ProcRound }): JSX.Element {
-  const [openTool, setOpenTool] = useState<string | null>(null);
+function StatChip({ label, value }: { readonly label: string; readonly value: number }): JSX.Element {
+  return (
+    <span className="proc-chip">
+      {label} <b>{value}</b>
+    </span>
+  );
+}
+
+function OutcomeChip({ stats }: { readonly stats: ProcessStats }): JSX.Element {
+  const tone = stats.failed > 0 || stats.outcome.includes('未完成') ? 'warn' : 'ok';
+  return <span className={`proc-outcome proc-outcome--${tone}`}>{stats.outcome}</span>;
+}
+
+function ProcessLine({
+  line,
+  expanded,
+  onToggle,
+}: {
+  readonly line: ProcLine;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+}): JSX.Element {
+  if (line.kind === 'thinking') {
+    return (
+      <li className="flow-item">
+        <button type="button" className="flow-line" onClick={onToggle} aria-expanded={expanded}>
+          <span className="flow-icon flow-icon--think">
+            <Icon name="sparkle" size={14} />
+          </span>
+          <span className="flow-main">
+            <span className="flow-label">思考</span>
+            <span className="flow-preview">{previewText(line.text, 140)}</span>
+          </span>
+          <span className="flow-meta">
+            <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={13} />
+          </span>
+        </button>
+        <Collapse open={expanded}>
+          <div className="flow-detail">
+            <p className="flow-reasoning">{line.text}</p>
+          </div>
+        </Collapse>
+      </li>
+    );
+  }
+
+  if (line.kind === 'text') {
+    return (
+      <li className="flow-item">
+        <button type="button" className="flow-line" onClick={onToggle} aria-expanded={expanded}>
+          <span className="flow-icon flow-icon--text">
+            <Icon name="quote" size={14} />
+          </span>
+          <span className="flow-main">
+            <span className="flow-label">输出</span>
+            <span className="flow-preview">{previewText(line.text, 140)}</span>
+          </span>
+          <span className="flow-meta">
+            <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={13} />
+          </span>
+        </button>
+        <Collapse open={expanded}>
+          <div className="flow-detail">
+            <p className="flow-reasoning">{line.text}</p>
+          </div>
+        </Collapse>
+      </li>
+    );
+  }
+
+  const tool = line.tool;
+  const display = describeTool(tool);
+  const target = previewText(display.detail, 80);
+  const isOpen = expanded;
 
   return (
-    <div className="proc-round">
-      <div className="proc-round-head">
-        <span className="proc-round-label">第 {round.round} 轮</span>
-        {round.maxRounds > 0 && <span className="proc-round-limit">上限 {round.maxRounds}</span>}
-      </div>
-
-      {round.reasoning.length > 0 && <ReasoningBlock text={round.reasoning} label="思考" />}
-
-      {round.tools.length > 0 && (
-        <ul className="tool-list">
-          {round.tools.map((tool) => {
-            const status = TOOL_STATUS[tool.status];
-            const isOpen = openTool === tool.callId;
-            return (
-              <li key={tool.callId} className={`tool tool--${status.cls}`}>
-                <button
-                  type="button"
-                  className="tool-head"
-                  onClick={() => setOpenTool(isOpen ? null : tool.callId)}
-                  aria-expanded={isOpen}
-                >
-                  <span className="tool-status">
-                    <ToolIcon status={tool.status} />
-                  </span>
-                  <span className="tool-name mono">{tool.name.length > 0 ? tool.name : '工具调用'}</span>
-                  {tool.argsText.length > 0 && (
-                    <span className="tool-args mono">{truncate(tool.argsText, 64)}</span>
-                  )}
-                  <span className="tool-meta">
-                    {tool.durationMs !== null && <span className="mono">{formatDuration(tool.durationMs)}</span>}
-                    <span className={`tool-state tool-state--${status.cls}`}>{status.label}</span>
-                    <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={13} />
-                  </span>
-                </button>
-                <Collapse open={isOpen}>
-                  <div className="tool-detail">
-                    {tool.argsText.length > 0 && (
-                      <div>
-                        <p className="tool-detail-label">参数</p>
-                        <pre className="code-block">{tool.argsText}</pre>
-                      </div>
-                    )}
-                    <p className="tool-detail-label">结果</p>
-                    <pre className="code-block tool-output">
-                      {tool.output.length > 0 ? tool.output : '（没有返回内容）'}
-                    </pre>
-                  </div>
-                </Collapse>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {round.text.length > 0 && <p className="proc-round-text">{round.text}</p>}
-    </div>
+    <li className={`flow-item flow-item--tool is-${tool.status}`}>
+      <button type="button" className="flow-line" onClick={onToggle} aria-expanded={isOpen}>
+        <span className={`flow-icon flow-icon--${display.category}`}>
+          <Icon name={display.icon} size={14} />
+        </span>
+        <span className="flow-main">
+          <span className="flow-label">{display.label}</span>
+          {target.length > 0 && <span className="flow-target mono">{target}</span>}
+          <span className="sr-only">{TOOL_STATUS_LABEL[tool.status]}</span>
+        </span>
+        <span className="flow-meta">
+          {tool.durationMs !== null && tool.durationMs > 0 && (
+            <span className="mono">{formatDuration(tool.durationMs)}</span>
+          )}
+          <span className={`flow-dot flow-dot--${tool.status}`} aria-hidden="true" />
+          <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={13} />
+        </span>
+      </button>
+      <Collapse open={isOpen}>
+        <div className="flow-detail">
+          {tool.argsText.length > 0 && (
+            <div>
+              <p className="flow-detail-label">参数</p>
+              <pre className="code-block">{tool.argsText}</pre>
+            </div>
+          )}
+          <p className="flow-detail-label">结果</p>
+          <pre className="code-block flow-output">
+            {tool.output.length > 0 ? tool.output : '（没有返回内容）'}
+          </pre>
+        </div>
+      </Collapse>
+    </li>
   );
 }
 

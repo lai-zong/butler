@@ -770,6 +770,39 @@ export class MemoryStore {
     this.emitStateChanged(memoryId, 'mergedFrom');
   }
 
+  /**
+   * 检查点回退后，把「回退之后才被依赖」的记忆标记为待复核。
+   *
+   * ⚠️ 全局硬约束**不降级**：它本来就该始终生效，不能因为回退变成候选。
+   * 其余记忆切成 candidate，并落 `memory.candidate` 事件；重放能恢复这个状态。
+   */
+  markForReview(memoryId: string, note = '检查点回退后待复核'): boolean {
+    const e = this.entries.get(memoryId);
+    if (!e || e.memClass === 'global_constraint') return false;
+    if (e.lifecycle === 'candidate') return true;
+
+    const now = this.clock.now();
+    const next: MemoryEntry = {
+      ...e,
+      lifecycle: 'candidate',
+      updatedAt: now,
+    };
+    this.entries.set(memoryId, next);
+    this.log.append({
+      type: 'memory.candidate',
+      actor: 'system',
+      payload: {
+        memoryId,
+        snapshot: snapshotOf(next),
+        note,
+        decidedBy: 'system',
+        audit: 'rollbackReview',
+      },
+      createdAt: now,
+    });
+    return true;
+  }
+
   /** 写入生命周期与相关时间戳（演化引擎专用，同样不经过 canWrite）。 */
   setLifecycle(
     memoryId: string,

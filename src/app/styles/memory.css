@@ -432,6 +432,22 @@
   margin-bottom: 6px;
 }
 
+.detail-evolve-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detail-evolve-actions .btn {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+}
+
+.detail-evolve .detail-footnote {
+  margin-top: 6px;
+}
+
 .principle-box {
   padding: 10px 11px;
   border: 1px solid var(--line-soft);

@@ -21,6 +21,13 @@ import {
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { Switch } from '../components/Switch';
+import { AutomationPanel } from './AutomationPanel';
+import { PermissionsPanel } from './PermissionsPanel';
+import { ActivityDetail } from './ActivityDetail';
+import { McpPanel } from './McpPanel';
+import { ToolsPanel } from './ToolsPanel';
+import { OperationsPanel } from './OperationsPanel';
+import { ArtifactsPanel } from './ArtifactsPanel';
 import { errorMessage, fetchJson } from '../lib/api.js';
 import {
   formatDateTime,
@@ -433,6 +440,21 @@ export function SettingsView({
           )}
         </section>
 
+        {/* ── 自动化 / 定时任务（只读） ── */}
+        <AutomationPanel />
+
+        {/* ── C5 三档权限 ── */}
+        <PermissionsPanel notify={notify} />
+
+        {/* ── 工具分级矩阵 ── */}
+        <ToolsPanel />
+
+        {/* ── 操作记忆（只读） ── */}
+        <OperationsPanel />
+
+        {/* ── 产出物版本（只读） ── */}
+        <ArtifactsPanel />
+
         {/* ── 隐私 ── */}
         <section className="panel settings-panel">
           <SectionHeading
@@ -533,6 +555,8 @@ export function SettingsView({
               )}
             </>
           )}
+
+          <ActivityDetail notify={notify} />
         </section>
 
         {/* ── 数据 ── */}
@@ -603,6 +627,9 @@ export function SettingsView({
             </div>
           )}
         </section>
+
+        {/* ── MCP 扩展 ── */}
+        <McpPanel notify={notify} />
 
         {/* ── 关于 ── */}
         <section className="panel settings-panel">

@@ -11,7 +11,7 @@
     "butler": "node bin/butler.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "next build",
-    "preview": "next start",
+    "preview": "next start -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "check:a11y": "node scripts/a11y-contrast.mjs",
@@ -38,6 +38,7 @@
     "validate:18": "node node_modules/tsx/dist/cli.mjs src/validate/18-mcp-wiring.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
     "next": "15",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

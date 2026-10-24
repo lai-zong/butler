@@ -82,6 +82,11 @@ export class ToolFramework {
     for (const s of specs) this.register(s);
   }
 
+  /** 移除一个已注册工具（MCP 断连/停用/删除时使用）。 */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   get(name: string): ToolSpec | undefined {
     return this.tools.get(name);
   }
@@ -151,6 +156,27 @@ export class ToolFramework {
 
     // ① 分级是否已被用户开启
     const requirement = TIER_REQUIREMENT[spec.tier];
+    /**
+     * C5 三档模式：显式配置时，未开启的档位直接拒绝。
+     * 未配置 mode 时保持旧行为（normal/highRisk 仍走 ask）。
+     */
+    if (this.policy.mode !== undefined && !this.policy.isTierEnabled(spec.tier)) {
+      const blockedAudit = this.finishAudit({
+        toolName: spec.name,
+        tier: spec.tier,
+        taskId: args.taskId,
+        argsSummary: redactArgs(args.args),
+        authorization: 'blocked',
+        outcome: 'denied',
+        started,
+        outputSummary: `权限模式 ${this.policy.mode} 未开启该档位`,
+      });
+      this.emitBlocked(spec, args.taskId, blockedAudit);
+      throw new ToolError(
+        `「${spec.name}」属于 ${spec.tier} 级别，当前权限模式 ${this.policy.mode} 未开启该档位。`,
+        'tier_disabled',
+      );
+    }
     if (requirement === 'disabled' && !this.policy.isTierEnabled(spec.tier)) {
       const blockedAudit = this.finishAudit({
         toolName: spec.name,

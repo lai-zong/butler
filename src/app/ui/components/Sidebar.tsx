@@ -5,6 +5,9 @@
  *
  * ★ 侧栏只放「去哪」和「现在怎么样」，不放操作。
  *   操作属于各自空间（这样每个界面只有一处主操作，结构不打架）。
+ *
+ * ★ v10.2：记忆 / 审计 / 演化 合并成一个「控制台」入口，
+ *   主界面只保留对话与设置。
  */
 
 import { Icon, type IconName } from './Icon';
@@ -18,31 +21,59 @@ interface NavItem {
   readonly icon: IconName;
 }
 
-const NAV: readonly NavItem[] = [
+const NAV_TOP: readonly NavItem[] = [
   { id: 'chat', label: '对话', hint: '与管家工作', icon: 'chat' },
-  { id: 'memory', label: '记忆', hint: '审核与治理', icon: 'memory' },
-  { id: 'audit', label: '审计', hint: '依据与事件', icon: 'audit' },
-  { id: 'growth', label: '演化', hint: '生长与画像', icon: 'growth' },
+];
+
+const NAV_BOTTOM: readonly NavItem[] = [
   { id: 'settings', label: '设置', hint: '运行与数据', icon: 'settings' },
 ];
 
 interface SidebarProps {
   readonly view: ViewId;
   readonly overview: Overview | null;
+  readonly collapsed: boolean;
   readonly onNavigate: (view: ViewId) => void;
+  readonly onOpenConsole: () => void;
   readonly onOpenPending: () => void;
   readonly onOpenCommand: () => void;
+  readonly onToggleCollapse: () => void;
 }
 
 export function Sidebar({
   view,
   overview,
+  collapsed,
   onNavigate,
+  onOpenConsole,
   onOpenPending,
   onOpenCommand,
+  onToggleCollapse,
 }: SidebarProps): JSX.Element {
   const pending = overview?.memory.pending ?? 0;
-  const hasModel = overview?.diagnostics.hasModel ?? false;
+
+  function renderNavItem(item: NavItem): JSX.Element {
+    const active = view === item.id;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        className={`nav-item ${active ? 'is-active' : ''}`}
+        aria-current={active ? 'page' : undefined}
+        onClick={() => onNavigate(item.id)}
+        title={`${item.label} · ${item.hint}`}
+      >
+        <span className="nav-icon">
+          <Icon name={item.icon} size={18} />
+        </span>
+        <span className="nav-text">
+          <strong>{item.label}</strong>
+          <small>{item.hint}</small>
+        </span>
+        <span className="nav-indicator" aria-hidden="true" />
+      </button>
+    );
+  }
 
   return (
     <aside className="sidebar" aria-label="主导航">
@@ -58,33 +89,33 @@ export function Sidebar({
 
       <nav className="side-nav">
         <p className="side-caption">工作台</p>
-        {NAV.map((item) => {
-          const active = view === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={`nav-item ${active ? 'is-active' : ''}`}
-              aria-current={active ? 'page' : undefined}
-              onClick={() => onNavigate(item.id)}
-              title={`${item.label} · ${item.hint}`}
-            >
-              <span className="nav-icon">
-                <Icon name={item.icon} size={18} />
-              </span>
-              <span className="nav-text">
-                <strong>{item.label}</strong>
-                <small>{item.hint}</small>
-              </span>
-              {item.id === 'memory' && pending > 0 && (
-                <span className="nav-badge" aria-label={`${pending} 条待审`}>
-                  {pending > 99 ? '99+' : pending}
-                </span>
-              )}
-              <span className="nav-indicator" aria-hidden="true" />
-            </button>
-          );
-        })}
+        {NAV_TOP.map(renderNavItem)}
+
+        <button
+          type="button"
+          className="nav-item nav-item--console"
+          onClick={onOpenConsole}
+          title="控制台 · 记忆 / 审计 / 演化"
+        >
+          <span className="nav-icon">
+            <Icon name="console" size={18} />
+          </span>
+          <span className="nav-text">
+            <strong>控制台</strong>
+            <small>记忆 · 审计 · 演化</small>
+          </span>
+          {pending > 0 && (
+            <span className="nav-badge" aria-label={`${pending} 条待审`}>
+              {pending > 99 ? '99+' : pending}
+            </span>
+          )}
+          <span className="nav-console-arrow" aria-hidden="true">
+            <Icon name="chevronRight" size={13} />
+          </span>
+          <span className="nav-console-line" aria-hidden="true" />
+        </button>
+
+        {NAV_BOTTOM.map(renderNavItem)}
       </nav>
 
       <div className="side-glance">
@@ -138,13 +169,18 @@ export function Sidebar({
           </span>
           <kbd>⌘ K</kbd>
         </button>
-        <button type="button" className="side-status" onClick={() => onNavigate('settings')}>
-          <span className={`status-dot ${hasModel ? 'is-ok' : 'is-warn'}`} aria-hidden="true" />
-          <span className="side-status-text">
-            <strong>{hasModel ? '服务运行中' : '未配置模型'}</strong>
-            <small>{overview?.model?.model ?? '记忆治理仍可用'}</small>
+        <button
+          type="button"
+          className="side-collapse"
+          onClick={onToggleCollapse}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+          title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+        >
+          <span className="side-collapse-icon">
+            <Icon name="panelLeft" size={16} />
           </span>
-          <Icon name="chevronRight" size={15} className="side-status-arrow" />
+          <span className="side-collapse-text">收起侧边栏</span>
         </button>
       </div>
     </aside>

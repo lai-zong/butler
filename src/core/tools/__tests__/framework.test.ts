@@ -12,6 +12,7 @@ import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
 import { fileTools } from '../builtin/file.js';
 import { ToolFramework } from '../framework.js';
+import { WebPermissionPolicy } from '../../../app/server/permission.js';
 import {
   containsCredentials,
   credentialPatternLabels,
@@ -627,5 +628,47 @@ describe('★★★ C6 询问开关（工具真的停下来问人）', () => {
     // `write_file` 确实实现了 preview（见 file.ts:157），所以这里必须是字符串
     expect(typeof preview).toBe('string');
     expect(preview).toContain('c.txt');
+  });
+});
+
+describe('C5 三档模式 · 工具框架真实拦截', () => {
+  it('view 连 normal 写工具都拒绝', async () => {
+    const log = new EventLog('s_c5_view');
+    const clock = new FixedClock(T0);
+    const fs = new MemoryFileSystem({ now: T0 });
+    const policy = new WebPermissionPolicy({ mode: 'view' });
+    const fw = new ToolFramework({ log, clock, policy });
+    fw.registerAll(fileTools(fs));
+    await expect(
+      fw.execute({ toolName: 'write_file', args: { path: 'a.txt', content: 'x' }, taskId: 't1' }),
+    ).rejects.toThrow(/当前权限模式 view/);
+    expect(await fs.exists('a.txt')).toBe(false);
+  });
+
+  it('workspace 允许 normal 写工具（用户批准后）', async () => {
+    const log = new EventLog('s_c5_workspace');
+    const clock = new FixedClock(T0);
+    const fs = new MemoryFileSystem({ now: T0 });
+    const policy = new WebPermissionPolicy({ mode: 'workspace' });
+    policy.ask = (async () => 'allow') as unknown as typeof policy.ask;
+    const fw = new ToolFramework({ log, clock, policy });
+    fw.registerAll(fileTools(fs));
+    const r = await fw.execute({ toolName: 'write_file', args: { path: 'a.txt', content: 'x' }, taskId: 't1' });
+    expect(r.ok).toBe(true);
+    expect(await fs.readText('a.txt')).toBe('x');
+  });
+
+  it('full 仍拒绝 dangerous', async () => {
+    const log = new EventLog('s_c5_full');
+    const clock = new FixedClock(T0);
+    const fs = new MemoryFileSystem({ now: T0 });
+    fs.seedFile('a.txt', 'x');
+    const policy = new WebPermissionPolicy({ mode: 'full' });
+    const fw = new ToolFramework({ log, clock, policy });
+    fw.registerAll(fileTools(fs));
+    await expect(
+      fw.execute({ toolName: 'remove_path', args: { path: 'a.txt' }, taskId: 't1' }),
+    ).rejects.toThrow(/当前权限模式 full/);
+    expect(await fs.exists('a.txt')).toBe(true);
   });
 });

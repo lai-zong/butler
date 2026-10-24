@@ -95,6 +95,8 @@ interface MemoryViewProps {
   readonly onNavigate: (view: ViewId) => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onRefreshOverview: () => void;
+  /** 首次取数结束（成功或失败）时调用一次，用于控制台的真实进度。 */
+  readonly onFirstReady?: () => void;
 }
 
 export function MemoryView({
@@ -103,6 +105,7 @@ export function MemoryView({
   onNavigate,
   notify,
   onRefreshOverview,
+  onFirstReady,
 }: MemoryViewProps): JSX.Element {
   const [items, setItems] = useState<readonly MemoryItem[]>([]);
   const [stats, setStats] = useState<MemoryStats | null>(null);
@@ -110,6 +113,9 @@ export function MemoryView({
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const firstReadyRef = useRef(false);
+  const onFirstReadyRef = useRef(onFirstReady);
+  onFirstReadyRef.current = onFirstReady;
 
   const [q, setQ] = useState('');
   const [lifecycle, setLifecycle] = useState<MemoryLifecycle | null>(null);
@@ -124,6 +130,7 @@ export function MemoryView({
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const [reviewing, setReviewing] = useState<string | null>(null);
+  const [evolutionBusy, setEvolutionBusy] = useState<string | null>(null);
   const [forgetTarget, setForgetTarget] = useState<MemoryItem | null>(null);
   const [forgetting, setForgetting] = useState(false);
 
@@ -160,7 +167,13 @@ export function MemoryView({
       if (token !== loadToken.current) return;
       setError(errorMessage(err));
     } finally {
-      if (token === loadToken.current) setLoading(false);
+      if (token === loadToken.current) {
+        setLoading(false);
+        if (!firstReadyRef.current) {
+          firstReadyRef.current = true;
+          onFirstReadyRef.current?.();
+        }
+      }
     }
   }, [query]);
 
@@ -240,6 +253,29 @@ export function MemoryView({
     }
   }
 
+  async function evolve(item: MemoryItem, action: 'boost' | 'lower' | 'revive' | 'archive'): Promise<void> {
+    setEvolutionBusy(`${action}:${item.id}`);
+    try {
+      await postJson('/api/memory/evolution', { id: item.id, action });
+      const label =
+        action === 'boost'
+          ? '已提升权重'
+          : action === 'lower'
+            ? '已降低权重'
+            : action === 'revive'
+              ? '已唤醒'
+              : '已归档';
+      notify(label, 'success');
+      await load();
+      if (selectedId === item.id) void loadDetail(item.id);
+      onRefreshOverview();
+    } catch (err) {
+      notify(errorMessage(err), 'danger');
+    } finally {
+      setEvolutionBusy(null);
+    }
+  }
+
   async function forget(): Promise<void> {
     const target = forgetTarget;
     if (target === null || forgetting) return;
@@ -285,6 +321,10 @@ export function MemoryView({
       revisions={detail?.revisions ?? []}
       loading={detailLoading}
       reviewing={reviewing === selectedItem?.id}
+      evolving={evolutionBusy !== null && evolutionBusy.endsWith(`:${selectedItem?.id ?? ''}`)}
+      onEvolve={(action) => {
+        if (selectedItem !== null) void evolve(selectedItem, action);
+      }}
       onReview={(decision) => {
         if (selectedItem !== null) void review(selectedItem, decision);
       }}
@@ -688,7 +728,9 @@ function MemoryDetail({
   revisions,
   loading,
   reviewing,
+  evolving,
   onReview,
+  onEvolve,
   onForget,
   now,
 }: {
@@ -696,7 +738,9 @@ function MemoryDetail({
   readonly revisions: readonly MemoryRevision[];
   readonly loading: boolean;
   readonly reviewing: boolean;
+  readonly evolving: boolean;
   readonly onReview: (decision: 'approve' | 'reject') => void;
+  readonly onEvolve: (action: 'boost' | 'lower' | 'revive' | 'archive') => void;
   readonly onForget: () => void;
   readonly now: number;
 }): JSX.Element {
@@ -714,6 +758,8 @@ function MemoryDetail({
 
   const hard = item.memClass === 'global_constraint';
   const candidate = item.lifecycle === 'candidate';
+  const canRevive = item.lifecycle === 'dormant' || item.lifecycle === 'archived';
+  const canArchive = item.lifecycle !== 'archived';
   const successRate =
     item.effectiveness !== null && item.effectiveness.applied > 0
       ? item.effectiveness.succeeded / item.effectiveness.applied
@@ -758,6 +804,53 @@ function MemoryDetail({
           <Meter value={item.fitness} tone={item.fitness >= 0.5 ? 'accent' : 'warn'} />
         </div>
       </div>
+
+      {!hard && !candidate && (
+        <div className="detail-section detail-evolve">
+          <p className="mini-label">手动干预</p>
+          <div className="detail-evolve-actions">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={evolving}
+              onClick={() => onEvolve('boost')}
+            >
+              提升权重
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={evolving}
+              onClick={() => onEvolve('lower')}
+            >
+              降低权重
+            </button>
+            {canRevive && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={evolving}
+                onClick={() => onEvolve('revive')}
+              >
+                唤醒
+              </button>
+            )}
+            {canArchive && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-ghost-danger"
+                disabled={evolving}
+                onClick={() => onEvolve('archive')}
+              >
+                归档
+              </button>
+            )}
+          </div>
+          <p className="detail-footnote">
+            干预会写入审计与演化日志；归档不是删除，之后被命中仍可唤醒。
+          </p>
+        </div>
+      )}
 
       <dl className="detail-grid">
         <div>

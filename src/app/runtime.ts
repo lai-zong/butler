@@ -43,14 +43,19 @@ import { PythonDesktopBridge } from '@/adapters/desktop/pythonBridge.js';
 import { isDesktopPlatform } from '@/core/desktop/port.js';
 import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
+import { isPermissionMode, loadPermissionMode, savePermissionMode } from './server/permissionStore.js';
 import { ActivityObserver, DEFAULT_CONSENT } from '@/core/activity/observe.js';
+import { EvolutionEngine } from '@/core/memory/evolution.js';
+import { SemanticIndex } from '@/core/memory/semantic.js';
+import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
 import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
 import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
 import type { ActivitySourcePort } from '@/core/activity/observe.js';
 import { desktopActivitySource } from '@/core/activity/desktopSource.js';
-import { createActivityRuntime, startActivityLoop } from '@/core/activity/runtime.js';
+import { createActivityRuntime, startActivityLoop, stopActivityLoop } from '@/core/activity/runtime.js';
+import type { ActivityRuntime } from '@/core/activity/runtime.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
 import type { ModelPort } from '@/core/ports/model.js';
 import type { ModelStreamPort } from '@/core/ports/stream.js';
@@ -103,14 +108,26 @@ export interface ButlerRuntime {
    *    界面上也就看不到任何工具调用。
    */
   readonly tools: ToolFramework;
+  readonly permissionPolicy: WebPermissionPolicy;
+  readonly setPermissionMode: (mode: 'view' | 'workspace' | 'full') => Promise<void>;
   /** 启动时间 */
   readonly startedAt: number;
   /** 启动摘要（供界面"已恢复 N 条记忆"展示） */
   readonly restoreSummary: string;
   /** 当前会话 id */
   sessionId: string;
+  /** 正在执行的对话轮数（回退前必须为 0，避免截断运行中的事件流） */
+  activeTurns: number;
+  /** 记忆演化引擎（命中反馈 + 日级迁移） */
+  readonly evolution: EvolutionEngine;
+  /** 本地语义索引；模型缺失时 scores 会抛错，调用方回退字面召回。 */
+  readonly semantic: SemanticIndex;
   /** 行为观察器（同意开关由界面通过 /api/observation 操作）*/
   readonly activityObserver: ActivityObserver;
+  /** 定时任务运行时（调度器在任务注册后才是完整的） */
+  readonly activityRuntime: ActivityRuntime;
+  /** MCP 配置文件路径（管理界面写回用） */
+  readonly mcpConfigPath: string;
 }
 
 const GLOBAL_KEY = '__butlerRuntime__';
@@ -134,6 +151,8 @@ export function getRuntime(): Promise<ButlerRuntime> {
 /** 仅供测试/重置使用。 */
 export async function resetRuntime(): Promise<void> {
   const g = globalThis as GlobalWithRuntime;
+  // 旧 timer 引用旧 runtime；不停止会在重建后继续空转/复用旧 handle。
+  stopActivityLoop();
   const current = g[GLOBAL_KEY];
   if (current) {
     const rt = await current;
@@ -164,6 +183,34 @@ async function initRuntime(): Promise<ButlerRuntime> {
     badLines: loaded.badLines,
     persistence: store,
   });
+  bootstrapped.checkpoints.registerArtifactLabels(
+    new Map(bootstrapped.artifacts.all().map((a) => [a.id, a.label])),
+  );
+
+  /**
+   * 记忆演化引擎：生产实例。
+   *
+   * ★ 不能在定时任务里每次 new —— 那样 stats/evoSeq 会重置；
+   *   它必须跟随 runtime 单例存活，命中反馈与日级迁移共用同一份状态。
+   */
+  const evolution = new EvolutionEngine({
+    log: bootstrapped.log,
+    store: bootstrapped.memory,
+    clock,
+    random,
+    userId: DEFAULT_USER_ID,
+  });
+
+  /**
+   * 本地语义索引。
+   *
+   * ⚠️ 这里只构造，不加载 98MB 模型；首次召回才懒加载。
+   *    模型缺失时 SemanticIndex.scores() 抛错，service 回退字面召回。
+   */
+  const configuredModelRoot = process.env['BUTLER_MODEL_DIR']?.trim() ?? '';
+  const embeddingModelRoot =
+    configuredModelRoot.length > 0 ? configuredModelRoot : join(DATA_DIR, 'models');
+  const semantic = new SemanticIndex(new LocalBgeEmbedding(embeddingModelRoot));
 
   // ── 模型（没有 API Key 时为 null，界面据此提示"未配置模型"）──
   let model: ModelPort | null = null;
@@ -209,12 +256,18 @@ async function initRuntime(): Promise<ButlerRuntime> {
    *    而"静默放行写操作"会让安全闸门形同虚设。
    *    被拒的调用会在界面上显示成明确的拒绝结果 —— 用户看得见「它想做什么」。
    */
+  const persistedMode = await loadPermissionMode(DATA_DIR);
+  const configuredMode = process.env['BUTLER_PERMISSION_MODE'];
+  const initialMode = persistedMode ?? (isPermissionMode(configuredMode) ? configuredMode : undefined);
+  const permissionPolicy = new WebPermissionPolicy({
+    allowWrite: process.env['BUTLER_ALLOW_WRITE'] === '1',
+    ...(initialMode !== undefined ? { mode: initialMode } : {}),
+  });
+
   const tools = new ToolFramework({
     log: bootstrapped.log,
     clock,
-    policy: new WebPermissionPolicy({
-      allowWrite: process.env['BUTLER_ALLOW_WRITE'] === '1',
-    }),
+    policy: permissionPolicy,
   });
 
   const fsPort = new NodeFileSystem({
@@ -308,6 +361,9 @@ async function initRuntime(): Promise<ButlerRuntime> {
    * ⚠️ 异步、失败隔离：单个 server 挂掉不影响启动，也不影响别的 server。
    */
   const mcpConfigPath = process.env['MCP_CONFIG_PATH'] ?? 'mcp.json';
+  // ★ 传输必须无条件注册：没有配置文件时，用户之后从设置页添加第一个 server
+  //   也要能连接；不能在“有配置”分支里才注册。
+  bootstrapped.mcp.registerTransport(stdioTransportFactory());
   const mcpConfig = loadMcpConfigFile(mcpConfigPath);
   if (mcpConfig !== null) {
     if (mcpConfig.rejected.length > 0) {
@@ -370,6 +426,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
         : DEFAULT_CONSENT;
 
   const activityObserver = new ActivityObserver(bootstrapped.log, clock, DEFAULT_USER_ID, initialConsent);
+  // 原始记录/聚合也以事件为真相源；不回放的话重启后明细会变空。
+  activityObserver.replayFromLog(clock.now());
   /**
    * ★ 采样数据源的**延迟注入**：
    *
@@ -393,6 +451,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     observer: activityObserver,
     source: lazySource,
     sessionCount: () => bootstrapped.chat.listSessions().length,
+    evolve: () => evolution.runPass(),
     /**
      * ★★ 定时反思接线（A10 的"周期总结"）。
      *
@@ -425,6 +484,11 @@ async function initRuntime(): Promise<ButlerRuntime> {
   });
 
   return {
+    permissionPolicy,
+    setPermissionMode: async (mode) => {
+      permissionPolicy.setMode(mode);
+      await savePermissionMode(DATA_DIR, mode);
+    },
     bootstrapped,
     clock,
     random,
@@ -434,7 +498,12 @@ async function initRuntime(): Promise<ButlerRuntime> {
     startedAt: clock.now(),
     restoreSummary: renderRestoreSummary(bootstrapped),
     sessionId,
+    activeTurns: 0,
+    evolution,
+    semantic,
     activityObserver,
+    activityRuntime,
+    mcpConfigPath,
   };
 }
 
@@ -465,5 +534,3 @@ export async function flush(): Promise<void> {
   const rt = await getRuntime();
   await rt.bootstrapped.log.flushPersistence();
 }
-
-

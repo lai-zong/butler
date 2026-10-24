@@ -109,8 +109,15 @@ export async function supervise(args: {
   readonly reports: readonly ExecutionReport[];
   readonly hardConstraints: readonly string[];
   readonly now: number;
+  /**
+   * 手动复核用：turn 已持久化产出摘要时直接复用，
+   * 不需要把 ExecutionReport 重新反序列化。
+   */
+  readonly outputSummary?: string;
+  /** 手动审查的取消信号；透传到模型适配器。 */
+  readonly signal?: AbortSignal;
 }): Promise<SupervisionResult> {
-  const outputSummary = args.reports.map(summarize).join('\n---\n');
+  const outputSummary = args.outputSummary ?? args.reports.map(summarize).join('\n---\n');
 
   const result = await args.model.completeStructured({
     purpose: 'routing',
@@ -120,6 +127,7 @@ export async function supervise(args: {
     thinking: 'disabled',
     temperature: 0,
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    ...(args.signal !== undefined ? { signal: args.signal } : {}),
     messages: [
       msg.system(BUTLER_SYSTEM),
       msg.user(

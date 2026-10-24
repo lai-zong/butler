@@ -265,7 +265,7 @@ async function cmdWeb(flags) {
     warn(`端口 ${wantPort} 被占用，已改用 ${port}`);
   }
 
-  const url = `http://localhost:${port}`;
+  const url = `http://127.0.0.1:${port}`;
 
   say();
   say(`  ${C.bold}butler${C.reset} ${C.dim}v${pkg.version}${C.reset}`);
@@ -283,7 +283,7 @@ async function cmdWeb(flags) {
 
   // ★ stdio: 'inherit' —— 让 Next 的输出直接进终端
   //   （不捕获输出：一是要实时看到编译进度，二是避免管道缓冲问题）
-  const args = [nextCli(), prod ? 'start' : 'dev', '-p', String(port)];
+  const args = [nextCli(), prod ? 'start' : 'dev', '-p', String(port), '-H', '127.0.0.1'];
 
   const child = spawn(process.execPath, args, {
     cwd: ROOT,
@@ -427,7 +427,6 @@ async function cmdDoctor() {
     const push = (name, value, fallback) => {
       if (value !== fallback) shown.push(`${name}=${value}`);
     };
-    push('MAX_ROUNDS_PER_SESSION', cfg.limitsConfig?.maxRoundsPerSession, 8);
     push('TOOL_TIMEOUT_MS', cfg.limitsConfig?.toolTimeoutMs, 15000);
     push('ROUTING_CONFIDENCE_THRESHOLD', cfg.routingConfig?.confidenceThreshold, 0.6);
     push('FITNESS_EMA_ALPHA', cfg.memoryConfig?.emaAlpha, 0.15);

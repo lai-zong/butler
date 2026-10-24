@@ -139,7 +139,7 @@ async function main(): Promise<void> {
     const t0 = Date.now();
 
     /**
-     * ★ v8（批次B）：unServant 已随多执行者架构删除，改用 unButler。
+     * ★ v8（批次B）：unServant 已随多执行者架构删除，改用unButler。
      *
      * ⚠️ 本验证测的是**工具循环**（读文件 / 写文件 / 权限闸门 / 结构化汇报），
      *    不是契约生成 —— 所以这里直接内联一份契约，不调模型去写。
@@ -176,7 +176,6 @@ async function main(): Promise<void> {
         },
       ],
       now: clock.now(),
-      maxRounds: 8,
     });
     const elapsed = Date.now() - t0;
 

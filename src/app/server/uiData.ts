@@ -145,6 +145,7 @@ export const EVENT_LABEL: Record<string, string> = {
   'session.message': '消息',
   'session.reply': '回复更新',
   'session.verdict': '复核结论',
+  'review.run': '手动复核',
   'quiz.created': '生成练习',
   'quiz.graded': '批改练习',
   // 历史
@@ -403,6 +404,7 @@ export interface VerdictDto {
   readonly steps: Verdict['steps'];
   readonly durationMs: number;
   readonly usage: Verdict['usage'];
+  readonly sessionUsage?: Verdict['sessionUsage'];
   readonly artifactIds: readonly string[];
   readonly createdAt: number;
 }
@@ -419,6 +421,7 @@ export function toMessageDto(m: ChatMessage): MessageDto {
     reasoningTranslated: m.reasoningTranslated ?? null,
     status: m.status,
     createdAt: m.createdAt,
+    ...(m.auditRange !== undefined ? { auditRange: m.auditRange } : {}),
     memoryRefs: m.memoryRefs ?? [],
     agentTrace: m.agentTrace ?? null,
     servantReports: m.servantReports ?? null,
@@ -437,6 +440,7 @@ export function toVerdictDto(v: Verdict): VerdictDto {
     steps: v.steps,
     durationMs: v.durationMs,
     usage: v.usage,
+    ...(v.sessionUsage !== undefined ? { sessionUsage: v.sessionUsage } : {}),
     artifactIds: v.artifactIds,
     createdAt: v.createdAt,
   };
@@ -615,6 +619,19 @@ export function eventSummary(type: string, payload: unknown): string {
       const summary = str(p, 'summary');
       const issues = num(p, 'issueCount');
       return [outcome === 'accepted' ? '通过' : '打回', clip(summary, 80), issues !== null ? `${issues} 个问题` : '']
+        .filter((x) => x.length > 0)
+        .join(' · ');
+    }
+    case 'review.run': {
+      const run = p['run'];
+      if (typeof run !== 'object' || run === null) return '';
+      const status = (run as { status?: unknown }).status;
+      const report = (run as { report?: unknown }).report;
+      const summary =
+        typeof report === 'object' && report !== null
+          ? str(report as Record<string, unknown>, 'summary')
+          : '';
+      return [typeof status === 'string' ? status : '', clip(summary, 80)]
         .filter((x) => x.length > 0)
         .join(' · ');
     }

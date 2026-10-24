@@ -44,6 +44,7 @@ export function createTraceCollector(): TraceCollector {
   const rounds = new Map<number, RoundState>();
 
   let finished: AgentTraceData['finished'] = null;
+  let usage: { inputTokens: number; outputTokens: number } | null = null;
 
   /**
    * ⚠️ 返回类型显式写出来而不是用 NonNullable<ReturnType<...>> ——
@@ -51,7 +52,6 @@ export function createTraceCollector(): TraceCollector {
    */
   interface RoundState {
     round: number;
-    maxRounds: number;
     reasoning: string;
     text: string;
     toolCalls: {
@@ -67,10 +67,10 @@ export function createTraceCollector(): TraceCollector {
     }[];
   }
 
-  const ensureRound = (n: number, maxRounds: number): RoundState => {
+  const ensureRound = (n: number): RoundState => {
     const existing = rounds.get(n);
     if (existing !== undefined) return existing;
-    const fresh: RoundState = { round: n, maxRounds, reasoning: '', text: '', toolCalls: [] };
+    const fresh: RoundState = { round: n, reasoning: '', text: '', toolCalls: [] };
     rounds.set(n, fresh);
     return fresh;
   };
@@ -80,12 +80,12 @@ export function createTraceCollector(): TraceCollector {
       try {
         switch (e.kind) {
           case 'roundStarted': {
-            ensureRound(e.round, e.maxRounds);
+            ensureRound(e.round);
             break;
           }
 
           case 'reasoning': {
-            const r = ensureRound(e.round, 0);
+            const r = ensureRound(e.round);
             // ⚠️ 保留**尾部** —— 思考的结论在最后，开头往往是铺垫
             r.reasoning =
               e.accumulated.length > TRACE_REASONING_LIMIT
@@ -95,7 +95,7 @@ export function createTraceCollector(): TraceCollector {
           }
 
           case 'text': {
-            const r = ensureRound(e.round, 0);
+            const r = ensureRound(e.round);
             r.text =
               e.accumulated.length > TRACE_TEXT_LIMIT
                 ? `（前文略）…${e.accumulated.slice(-TRACE_TEXT_LIMIT)}`
@@ -104,7 +104,7 @@ export function createTraceCollector(): TraceCollector {
           }
 
           case 'toolCall': {
-            const r = ensureRound(e.round, 0);
+            const r = ensureRound(e.round);
             // 按 callId 找；找不到就用名字（分片首片才带 id）
             let entry = r.toolCalls.find((t) => t.callId === e.callId);
             if (entry === undefined) {
@@ -128,14 +128,14 @@ export function createTraceCollector(): TraceCollector {
           }
 
           case 'toolStarted': {
-            const r = ensureRound(e.round, 0);
+            const r = ensureRound(e.round);
             const entry = r.toolCalls.find((t) => t.callId === e.callId);
             if (entry !== undefined) entry.started = true;
             break;
           }
 
           case 'toolResult': {
-            const r = ensureRound(e.round, 0);
+            const r = ensureRound(e.round);
             const entry = r.toolCalls.find((t) => t.callId === e.callId);
             if (entry !== undefined) {
               entry.ok = e.ok;
@@ -150,10 +150,17 @@ export function createTraceCollector(): TraceCollector {
             break;
           }
 
+          case 'usage': {
+            usage = {
+              inputTokens: e.totalInputTokens,
+              outputTokens: e.totalOutputTokens,
+            };
+            break;
+          }
+
           case 'finished': {
             finished = {
               rounds: e.rounds,
-              hitRoundLimit: e.hitRoundLimit,
               reason: e.reason,
             };
             break;
@@ -174,7 +181,6 @@ export function createTraceCollector(): TraceCollector {
           .sort((a, b) => a.round - b.round)
           .map((r) => ({
             round: r.round,
-            maxRounds: r.maxRounds,
             reasoning: r.reasoning,
             text: r.text,
             toolCalls: r.toolCalls.map((t) => ({
@@ -187,6 +193,7 @@ export function createTraceCollector(): TraceCollector {
               durationMs: t.durationMs,
             })),
           })),
+        ...(usage !== null ? { usage } : {}),
         finished,
       };
     },

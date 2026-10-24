@@ -144,7 +144,6 @@ export function parseAgentTrace(v: unknown): AgentTraceData | undefined {
   // ⚠️ 类型里是 readonly 数组，不能直接 push —— 先用可变局部变量攒
   const rounds: {
     round: number;
-    maxRounds: number;
     reasoning: string;
     text: string;
     toolCalls: {
@@ -161,7 +160,6 @@ export function parseAgentTrace(v: unknown): AgentTraceData | undefined {
     if (!isRecord(r)) continue;
     rounds.push({
       round: num(r['round']),
-      maxRounds: num(r['maxRounds']),
       reasoning: str(r['reasoning']),
       text: str(r['text']),
       toolCalls: (Array.isArray(r['toolCalls']) ? r['toolCalls'] : [])
@@ -181,12 +179,22 @@ export function parseAgentTrace(v: unknown): AgentTraceData | undefined {
   if (rounds.length === 0) return undefined;
 
   const fin = v['finished'];
+  const rawUsage = v['usage'];
+  const usage =
+    isRecord(rawUsage) &&
+    typeof rawUsage['inputTokens'] === 'number' &&
+    typeof rawUsage['outputTokens'] === 'number'
+      ? {
+          inputTokens: rawUsage['inputTokens'],
+          outputTokens: rawUsage['outputTokens'],
+        }
+      : undefined;
   return {
     rounds,
+    ...(usage !== undefined ? { usage } : {}),
     finished: isRecord(fin)
       ? {
           rounds: num(fin['rounds']),
-          hitRoundLimit: bool(fin['hitRoundLimit']),
           reason: str(fin['reason']),
         }
       : null,

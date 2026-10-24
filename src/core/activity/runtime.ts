@@ -30,6 +30,7 @@ import type { ActivityObserver, ActivitySourcePort } from './observe.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
+import type { EvolutionPassResult } from '../memory/evolution.js';
 import { Scheduler, type ScheduledRun } from '../schedule/scheduler.js';
 import { buildTasks, type TaskBundle } from '../schedule/tasks.js';
 
@@ -55,6 +56,8 @@ export interface ActivityRuntimeArgs {
     readonly summary: string;
   }>;
   readonly checkReminders?: () => Promise<readonly { readonly title: string; readonly dueAt: number }[]>;
+  /** 日级演化（每日反思任务调用；不接也能跑） */
+  readonly evolve?: () => EvolutionPassResult;
 }
 
 export interface ActivityRuntime {
@@ -85,6 +88,7 @@ export function createActivityRuntime(args: ActivityRuntimeArgs): ActivityRuntim
     sessionCount: args.sessionCount,
     ...(args.reflect !== undefined ? { reflect: args.reflect } : {}),
     ...(args.checkReminders !== undefined ? { checkReminders: args.checkReminders } : {}),
+    ...(args.evolve !== undefined ? { evolve: args.evolve } : {}),
   });
 
   // ★ 注册全部任务（改造前这里一次都没被调用过）
@@ -92,30 +96,50 @@ export function createActivityRuntime(args: ActivityRuntimeArgs): ActivityRuntim
     scheduler.register({ kind: kind as Parameters<typeof scheduler.register>[0]['kind'], handler });
   }
 
+  let tickInFlight = false;
+
   return {
     scheduler,
     tasks,
     async tickOnce(now) {
-      const t = now ?? args.clock.now();
-
-      // ① 采样（自己判间隔，不走调度器）
-      let sampled = false;
-      let sampleReason: string | undefined;
-      if (args.source !== undefined) {
-        const r = await args.observer.sampleOnce(args.source, t);
-        sampled = r.recorded;
-        if (!r.recorded) sampleReason = r.reason;
-      } else {
-        sampleReason = '没有前台采样数据源';
+      /**
+       * 单飞：上一轮采样/任务没结束，这一轮直接跳过。
+       *
+       * ⚠️ 不只是调度器需要锁：采样本身也可能慢；两层锁合并成这一处，
+       *    保证 60 秒定时器不会叠出第二份 tick。
+       */
+      if (tickInFlight) {
+        return {
+          sampled: false,
+          sampleReason: '上一次 tick 尚未结束',
+          ran: [],
+        };
       }
+      tickInFlight = true;
+      try {
+        const t = now ?? args.clock.now();
 
-      // ② 跑到期任务
-      const ran = await scheduler.tick(t);
-      return {
-        sampled,
-        ...(sampleReason !== undefined ? { sampleReason } : {}),
-        ran,
-      };
+        // ① 采样（自己判间隔，不走调度器）
+        let sampled = false;
+        let sampleReason: string | undefined;
+        if (args.source !== undefined) {
+          const r = await args.observer.sampleOnce(args.source, t);
+          sampled = r.recorded;
+          if (!r.recorded) sampleReason = r.reason;
+        } else {
+          sampleReason = '没有前台采样数据源';
+        }
+
+        // ② 跑到期任务
+        const ran = await scheduler.tick(t);
+        return {
+          sampled,
+          ...(sampleReason !== undefined ? { sampleReason } : {}),
+          ran,
+        };
+      } finally {
+        tickInFlight = false;
+      }
     },
   };
 }
@@ -136,6 +160,22 @@ export interface StartLoopOptions {
 }
 
 const LOOP_KEY = '__butlerActivityLoop';
+
+/**
+ * 停止当前运行时上的定时循环。
+ *
+ * 导入 / 回退会重建 runtime；旧的 timer 还引用旧 runtime，
+ * 不停止的话新运行时的定时任务永远不会启动（单例 handle 被复用）。
+ */
+export function stopActivityLoop(): void {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const existing = g[LOOP_KEY];
+  if (existing !== undefined && typeof existing === 'object' && existing !== null) {
+    const handle = existing as { stop?: () => void };
+    handle.stop?.();
+  }
+  delete g[LOOP_KEY];
+}
 
 export function startActivityLoop(opts: StartLoopOptions): { stop(): void } {
   const intervalMs = opts.intervalMs ?? 60_000;

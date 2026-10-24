@@ -21,6 +21,7 @@ import type { ActivityObserver } from '../activity/observe.js';
 import { derivePatterns, patternGuidance } from '../activity/patterns.js';
 import { captureProfile, diffProfiles, type ProfileSnapshot } from '../activity/profile.js';
 import type { TemporalPattern } from '../activity/types.js';
+import type { EvolutionPassResult } from '../memory/evolution.js';
 import type { ScheduledTaskKind, TaskHandler } from './scheduler.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -53,6 +54,13 @@ export interface TaskContext {
   }) => Promise<{ readonly candidateCount: number; readonly summary: string }>;
   /** 待提醒事项的检查（主动服务）*/
   readonly checkReminders?: () => Promise<readonly { readonly title: string; readonly dueAt: number }[]>;
+  /**
+   * 日级记忆演化（休眠/归档/唤醒）。
+   *
+   * ★ 由 runtime 注入同一个 EvolutionEngine 实例；每日反思任务调用。
+   *   没有注入时任务照常跑，只是不迁移生命周期。
+   */
+  readonly evolve?: () => EvolutionPassResult;
 }
 
 /** 最近一次规律提取的结果（供界面与主动服务复用）。*/
@@ -92,8 +100,21 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
 
   // ── 每日反思 ──
   const dailyReflection: TaskHandler = async () => {
+    let evolutionText = '';
+    if (ctx.evolve) {
+      try {
+        const e = ctx.evolve();
+        evolutionText =
+          `演化：评估 ${e.evaluated} 条，休眠 ${e.dormant.length}，` +
+          `归档 ${e.archived.length}，唤醒 ${e.revived.length}。`;
+      } catch (err) {
+        // 演化失败不阻断反思；如实写进摘要，不假装跑过。
+        evolutionText = `演化失败：${err instanceof Error ? err.message : String(err)}。`;
+      }
+    }
+
     if (!ctx.reflect) {
-      return { summary: '未接入反思引擎，跳过（可手动触发）' };
+      return { summary: `未接入反思引擎，跳过反思（可手动触发）。${evolutionText}`.trim() };
     }
     const r = await ctx.reflect({ scope: 'daily' });
     ctx.log.append({
@@ -106,7 +127,9 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
       },
       createdAt: ctx.clock.now(),
     });
-    return { summary: `每日反思完成，产出 ${r.candidateCount} 条候选。${r.summary}` };
+    return {
+      summary: `每日反思完成，产出 ${r.candidateCount} 条候选。${r.summary}${evolutionText}`,
+    };
   };
 
   // ── 管家周复盘 ──

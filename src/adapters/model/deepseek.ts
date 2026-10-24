@@ -185,7 +185,7 @@ export class DeepSeekModel implements ModelPort {
     if (tools) body['tools'] = tools;
     applyThinking(body, call);
 
-    const data = await this.request(body);
+    const data = await this.request(body, call.signal);
     const choice = data.choices?.[0];
     if (!choice) throw new ModelError('响应中没有 choices', 'BAD_OUTPUT');
 
@@ -275,7 +275,7 @@ export class DeepSeekModel implements ModelPort {
        */
       applyThinking(body, call, 'disabled');
 
-      const data = await this.request(body);
+      const data = await this.request(body, call.signal);
       const choice = data.choices?.[0];
       const raw = choice?.message.content ?? '';
       const finishReason = choice?.finish_reason ?? 'stop';
@@ -339,9 +339,15 @@ export class DeepSeekModel implements ModelPort {
 
   // ── 内部 ──
 
-  private async request(body: Record<string, unknown>): Promise<ApiResponse> {
+  private async request(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onAbort = (): void => controller.abort();
+    if (signal?.aborted === true) controller.abort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
 
     let res: Response;
     try {
@@ -356,6 +362,10 @@ export class DeepSeekModel implements ModelPort {
       });
     } catch (err) {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (signal?.aborted === true) {
+        throw new ModelError('审查已取消', 'ABORTED');
+      }
       const code =
         err instanceof Error && err.name === 'AbortError'
           ? 'TIMEOUT'
@@ -366,6 +376,7 @@ export class DeepSeekModel implements ModelPort {
       );
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
     }
 
     let data: ApiResponse;

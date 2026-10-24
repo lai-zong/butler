@@ -13,7 +13,13 @@ import { describe, expect, it } from 'vitest';
 
 import { SeededRandom } from '../../ports/clock.js';
 import type { MemoryEntry, MemoryLifecycle, MemoryKind } from '../types.js';
-import { relevanceOf, recall, RECALL_WEIGHTS, scoreMemory } from '../recall.js';
+import {
+  relevanceOf,
+  recall,
+  RECALL_WEIGHTS,
+  scoreMemory,
+  SEMANTIC_RELEVANCE_THRESHOLD,
+} from '../recall.js';
 
 const T0 = 1_760_000_000_000;
 
@@ -306,5 +312,43 @@ describe('确定性 · 可重放（ADR 0004）', () => {
     const candidates = [mem({ id: 'a', content: '你偏好清淡口味' })];
     const r = run({ candidates });
     expect(r.selected.length).toBeGreaterThan(0);
+  });
+});
+
+describe('语义扩展 · 保守接入', () => {
+  it('语义相似度达到门槛时，可补字面漏掉的候选', () => {
+    const candidate = mem({
+      id: 'fatloss',
+      content: '用户正在减脂期，需要控制油脂摄入',
+      fitness: 0.8,
+      confidence: 0.8,
+    });
+    const r = recall({
+      query: '我想吃火锅',
+      candidates: [candidate],
+      limit: 5,
+      now: T0,
+      random: new SeededRandom(1),
+      semantic: new Map([['fatloss', SEMANTIC_RELEVANCE_THRESHOLD + 0.1]]),
+    });
+    expect(r.selected.map((s) => s.memory.id)).toContain('fatloss');
+  });
+
+  it('低于门槛的语义分不扩展（避免无关记忆被放进来）', () => {
+    const candidate = mem({
+      id: 'fatloss',
+      content: '用户正在减脂期，需要控制油脂摄入',
+      fitness: 0.8,
+      confidence: 0.8,
+    });
+    const r = recall({
+      query: '我想吃火锅',
+      candidates: [candidate],
+      limit: 5,
+      now: T0,
+      random: new SeededRandom(1),
+      semantic: new Map([['fatloss', SEMANTIC_RELEVANCE_THRESHOLD - 0.01]]),
+    });
+    expect(r.selected.map((s) => s.memory.id)).not.toContain('fatloss');
   });
 });

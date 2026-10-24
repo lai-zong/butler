@@ -1,0 +1,1260 @@
+/* ═══════════════════════════════════════════════════════════
+   控制台 —— 第二界面
+   ═══════════════════════════════════════════════════════════
+   同一套排版与圆角，换一套更冷的墨色与磷光强调：
+   深底、细网格、等宽读数。科技感来自“机架与读数”，
+   不来自发光边框和满屏动画。
+*/
+
+/* ─────────────────────────────────────────────
+   主题变量
+   同时挂在 body 上，是为了让 portal 出来的 Modal / 命令面板
+   也能继承同一套深色变量。
+   ───────────────────────────────────────────── */
+
+.console-layer,
+body.console-mode {
+  --paper: #0a0f0c;
+  --paper-deep: #0d1411;
+  --surface: #111914;
+  --surface-2: #0e1612;
+  --ink: #e6efe9;
+  --ink-2: #b3c4ba;
+  --ink-3: #7d9186;
+  --ink-4: #55675d;
+  --line: #24352c;
+  --line-strong: #32483b;
+  --line-soft: #1a2821;
+  --accent: #7fe0c3;
+  --accent-ink: #c1f8e6;
+  --accent-bright: #9cf3d8;
+  --accent-soft: rgba(127, 224, 195, 0.09);
+  --warn: #e7b37a;
+  --warn-soft: rgba(231, 179, 122, 0.09);
+  --danger: #e58b7a;
+  --danger-soft: rgba(229, 139, 122, 0.09);
+  --info: #8fc7e6;
+  --info-soft: rgba(143, 199, 230, 0.09);
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.02);
+  --shadow-md: 0 14px 34px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 30px 72px rgba(0, 0, 0, 0.56);
+  color-scheme: dark;
+}
+
+body.console-mode {
+  background: #0a0f0c;
+  color: #e6efe9;
+}
+
+/* ─────────────────────────────────────────────
+   外壳
+   ───────────────────────────────────────────── */
+
+/* 首次打开后控制台常驻；回到主界面时只隐藏，不卸载。 */
+.console-host[hidden] {
+  display: none;
+}
+
+.console-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  overflow: hidden;
+  background:
+    radial-gradient(900px 540px at 78% -12%, rgba(127, 224, 195, 0.07), transparent 62%),
+    radial-gradient(680px 420px at 20% 112%, rgba(127, 224, 195, 0.035), transparent 70%),
+    #0a0f0c;
+  color: var(--ink);
+  transition:
+    opacity 0.28s var(--ease),
+    visibility 0.28s var(--ease);
+}
+
+.console-layer::before {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(127, 224, 195, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(127, 224, 195, 0.035) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(ellipse at 64% 16%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse at 64% 16%, #000 0%, transparent 78%);
+  content: "";
+  pointer-events: none;
+}
+
+.console-layer::after {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0.012) 0 1px,
+    transparent 1px 3px
+  );
+  content: "";
+  opacity: 0.45;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+}
+
+.console-layer.is-leaving {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.console-frame {
+  position: absolute;
+  z-index: 4;
+  width: 13px;
+  height: 13px;
+  border-color: rgba(127, 224, 195, 0.32);
+  border-style: solid;
+  pointer-events: none;
+}
+
+.console-frame--tl {
+  top: 11px;
+  left: 11px;
+  border-width: 1px 0 0 1px;
+}
+
+.console-frame--tr {
+  top: 11px;
+  right: 11px;
+  border-width: 1px 1px 0 0;
+}
+
+.console-frame--bl {
+  bottom: 11px;
+  left: 11px;
+  border-width: 0 0 1px 1px;
+}
+
+.console-frame--br {
+  right: 11px;
+  bottom: 11px;
+  border-width: 0 1px 1px 0;
+}
+
+/* ─────────────────────────────────────────────
+   左侧机架
+   ───────────────────────────────────────────── */
+
+.console-rail {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 0 0 86px;
+  flex-direction: column;
+  align-items: center;
+  width: 86px;
+  padding: 17px 0 12px;
+  border-right: 1px solid var(--line);
+  background: rgba(8, 13, 10, 0.68);
+  backdrop-filter: blur(10px);
+}
+
+.console-rail-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 24px;
+}
+
+.cr-mark {
+  display: grid;
+  place-items: center;
+  width: 37px;
+  height: 37px;
+  border: 1px solid rgba(127, 224, 195, 0.32);
+  border-radius: 9px;
+  background: rgba(127, 224, 195, 0.055);
+  color: var(--accent);
+  box-shadow:
+    0 0 22px rgba(127, 224, 195, 0.1),
+    inset 0 0 14px rgba(127, 224, 195, 0.045);
+}
+
+.cr-brand {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: 0.24em;
+}
+
+.console-rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 0 9px;
+}
+
+.cr-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink-3);
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    color 0.18s var(--ease);
+}
+
+.cr-item:hover {
+  background: rgba(127, 224, 195, 0.05);
+  color: var(--ink-2);
+}
+
+.cr-item.is-active {
+  border-color: rgba(127, 224, 195, 0.18);
+  background: rgba(127, 224, 195, 0.07);
+  color: var(--accent);
+  box-shadow: inset 0 0 20px rgba(127, 224, 195, 0.04);
+}
+
+.cr-code {
+  color: var(--ink-4);
+  font-size: 7px;
+  letter-spacing: 0.12em;
+  transition: color 0.18s var(--ease);
+}
+
+.cr-item.is-active .cr-code {
+  color: rgba(127, 224, 195, 0.75);
+}
+
+.cr-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+}
+
+.cr-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.cr-active-line {
+  position: absolute;
+  top: 50%;
+  left: -9px;
+  width: 2px;
+  height: 0;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  box-shadow: 0 0 9px rgba(127, 224, 195, 0.6);
+  transform: translateY(-50%);
+  transition: height 0.22s var(--ease-out);
+}
+
+.cr-item.is-active .cr-active-line {
+  height: 24px;
+}
+
+.console-rail-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  margin-top: auto;
+  padding: 0 9px;
+}
+
+.cr-exit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink-3);
+  font-size: 9.5px;
+  transition:
+    color 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    background 0.18s var(--ease);
+}
+
+.cr-exit:hover {
+  border-color: rgba(127, 224, 195, 0.3);
+  background: rgba(127, 224, 195, 0.05);
+  color: var(--accent);
+}
+
+.cr-local {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+
+.cr-local i,
+.cf-item i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px rgba(127, 224, 195, 0.7);
+  animation: consolePulse 2.6s ease-in-out infinite;
+}
+
+/* ─────────────────────────────────────────────
+   顶栏 / 底栏
+   ───────────────────────────────────────────── */
+
+.console-main {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.console-topbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 54px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(13, 20, 16, 0.92), rgba(10, 15, 12, 0.55));
+  backdrop-filter: blur(10px);
+}
+
+.console-ident {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.console-sigil {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 1px solid rgba(127, 224, 195, 0.28);
+  border-radius: 6px;
+  background: rgba(127, 224, 195, 0.05);
+  color: var(--accent);
+}
+
+.console-ident-title {
+  color: var(--ink-2);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  white-space: nowrap;
+}
+
+.console-ident-tag {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  color: var(--ink-4);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+}
+
+.console-hud {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+}
+
+.console-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.console-metric i {
+  color: var(--ink-4);
+  font-size: 7px;
+  font-style: normal;
+}
+
+.console-metric b {
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.console-metric b.is-warn {
+  color: var(--warn);
+}
+
+.console-clock {
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.console-exit-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-3);
+  font-size: 10px;
+  transition:
+    color 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    background 0.18s var(--ease);
+}
+
+.console-exit-top:hover {
+  border-color: rgba(127, 224, 195, 0.3);
+  background: rgba(127, 224, 195, 0.05);
+  color: var(--accent);
+}
+
+.console-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 18px;
+  height: 26px;
+  padding: 0 18px;
+  border-top: 1px solid var(--line);
+  background: rgba(8, 13, 10, 0.82);
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.cf-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.cf-end {
+  margin-left: auto;
+}
+
+/* ─────────────────────────────────────────────
+   内容区
+   ───────────────────────────────────────────── */
+
+.console-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scroll-behavior: smooth;
+}
+
+.console-surface {
+  min-height: 100%;
+}
+
+.console-surface .page {
+  max-width: 1280px;
+  padding: 28px 34px 58px;
+  animation: consolePageIn 0.32s var(--ease-out) both;
+}
+
+.console-surface .page-head {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.console-surface .page-title {
+  font-size: 28px;
+}
+
+.console-surface .eyebrow {
+  color: var(--accent);
+  opacity: 0.72;
+}
+
+.console-surface .page-desc {
+  color: var(--ink-3);
+}
+
+.console-surface .memory-toolbar {
+  background: linear-gradient(
+    180deg,
+    rgba(10, 15, 12, 0.98) 62%,
+    rgba(10, 15, 12, 0.9) 86%,
+    transparent
+  );
+}
+
+/* ─────────────────────────────────────────────
+   深色下的通用组件修正
+   ───────────────────────────────────────────── */
+
+.console-surface .stat-card--accent {
+  border-color: #274234;
+  background: linear-gradient(170deg, rgba(127, 224, 195, 0.06) 0%, var(--surface) 55%);
+}
+
+.console-surface .stat-card--warn {
+  border-color: #3b3227;
+}
+
+.console-surface .badge--accent,
+body.console-mode .badge--accent {
+  border-color: rgba(127, 224, 195, 0.25);
+  color: var(--accent);
+}
+
+.console-surface .badge--warn,
+body.console-mode .badge--warn {
+  border-color: rgba(231, 179, 122, 0.25);
+  color: var(--warn);
+}
+
+.console-surface .badge--danger,
+body.console-mode .badge--danger {
+  border-color: rgba(229, 139, 122, 0.25);
+  color: var(--danger);
+}
+
+.console-surface .badge--info,
+body.console-mode .badge--info {
+  border-color: rgba(143, 199, 230, 0.25);
+  color: var(--info);
+}
+
+.console-surface .btn-primary,
+body.console-mode .btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #07100c;
+  box-shadow: 0 0 18px rgba(127, 224, 195, 0.15);
+}
+
+.console-surface .btn-primary:hover:not(:disabled),
+body.console-mode .btn-primary:hover:not(:disabled) {
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+  color: #06100b;
+  box-shadow: 0 0 24px rgba(127, 224, 195, 0.22);
+}
+
+.console-surface .btn-danger,
+body.console-mode .btn-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #1b0d0a;
+}
+
+.console-surface .btn-danger:hover:not(:disabled),
+body.console-mode .btn-danger:hover:not(:disabled) {
+  border-color: #f0a493;
+  background: #f0a493;
+}
+
+.console-surface .btn-ghost,
+body.console-mode .btn-ghost {
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+}
+
+.console-surface .btn-ghost:hover:not(:disabled),
+body.console-mode .btn-ghost:hover:not(:disabled) {
+  border-color: rgba(127, 224, 195, 0.3);
+  background: rgba(127, 224, 195, 0.05);
+  color: var(--ink);
+}
+
+.console-surface .btn-ghost-danger,
+body.console-mode .btn-ghost-danger {
+  border-color: rgba(229, 139, 122, 0.28);
+  color: var(--danger);
+}
+
+.console-surface .filter-chip.is-active {
+  border-color: rgba(127, 224, 195, 0.3);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.console-surface .filter-chip.is-active .filter-chip-count {
+  color: rgba(127, 224, 195, 0.7);
+}
+
+.console-surface .search-field:focus-within {
+  border-color: rgba(127, 224, 195, 0.35);
+  background: #0f1713;
+  box-shadow: 0 0 0 3px rgba(127, 224, 195, 0.06);
+}
+
+.console-surface .seg-tabs button.is-active {
+  border-color: rgba(127, 224, 195, 0.22);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.console-surface .inline-error,
+body.console-mode .inline-error {
+  border-color: rgba(229, 139, 122, 0.28);
+  color: var(--danger);
+}
+
+.console-surface .inline-error .text-btn {
+  color: var(--danger);
+}
+
+.console-surface .skeleton::after,
+body.console-mode .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgba(127, 224, 195, 0.08), transparent);
+}
+
+body.console-mode .palette-item.is-active .palette-item-icon {
+  border-color: rgba(127, 224, 195, 0.3);
+  color: var(--accent);
+}
+
+/* 记忆 */
+
+.console-surface .pending-banner {
+  border-color: #3a3125;
+  background: linear-gradient(90deg, rgba(231, 179, 122, 0.09) 0%, var(--surface) 72%);
+}
+
+.console-surface .pending-icon {
+  background: rgba(231, 179, 122, 0.12);
+}
+
+.console-surface .pending-text strong {
+  color: #e7b37a;
+}
+
+.console-surface .pending-text p {
+  color: var(--ink-3);
+}
+
+.console-surface .mem-card.is-candidate {
+  border-left-color: var(--warn);
+  background: linear-gradient(90deg, rgba(231, 179, 122, 0.06) 0%, var(--surface) 42%);
+}
+
+.console-surface .mem-card.is-selected {
+  border-color: rgba(127, 224, 195, 0.38);
+  box-shadow:
+    0 0 0 1px rgba(127, 224, 195, 0.12),
+    0 14px 34px rgba(0, 0, 0, 0.36);
+}
+
+.console-surface .mini-meter {
+  background: #1b2821;
+}
+
+.console-surface .detail-review,
+body.console-mode .detail-review {
+  border-color: #3a3125;
+  background: rgba(231, 179, 122, 0.07);
+}
+
+.console-surface .detail-review p,
+body.console-mode .detail-review p {
+  color: #d8ad78;
+}
+
+.console-surface .principle-box,
+.console-surface .effect-row > div {
+  background: var(--surface-2);
+}
+
+.console-surface .evidence-list {
+  background: #0c1310;
+}
+
+.console-surface .detail-grid,
+.console-surface .detail-danger {
+  border-color: var(--line-soft);
+}
+
+body.console-mode .forget-content {
+  color: #e8a394;
+}
+
+body.console-mode .detail-content,
+body.console-mode .detail-subject,
+body.console-mode .detail-grid dd,
+body.console-mode .detail-metric > span,
+body.console-mode .detail-footnote,
+body.console-mode .forget-note {
+  color: var(--ink-2);
+}
+
+body.console-mode .detail-grid dt,
+body.console-mode .detail-metric > span {
+  color: var(--ink-3);
+}
+
+/* 审核 */
+
+.console-surface .scope-banner {
+  border-color: rgba(143, 199, 230, 0.22);
+  background: linear-gradient(90deg, rgba(143, 199, 230, 0.07) 0%, var(--surface) 70%);
+}
+
+.console-surface .scope-icon {
+  background: rgba(143, 199, 230, 0.1);
+  color: var(--info);
+}
+
+.console-surface .scope-banner strong {
+  color: var(--info);
+}
+
+.console-surface .scope-banner p {
+  color: var(--ink-3);
+}
+
+.console-surface .evidence-card--inject {
+  background: linear-gradient(180deg, rgba(127, 224, 195, 0.04) 0%, var(--surface) 40%);
+}
+
+.console-surface .evidence-card--danger {
+  border-color: rgba(229, 139, 122, 0.28);
+  background: linear-gradient(180deg, rgba(229, 139, 122, 0.06) 0%, var(--surface) 46%);
+}
+
+.console-surface .hard-content {
+  color: #e8a394;
+}
+
+.console-surface .audit-clean {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.console-surface .recall-bar {
+  background: #16221c;
+}
+
+.console-surface .event-dot {
+  background: #0a0f0c;
+}
+
+.console-surface .event-row.is-open .event-main {
+  border-color: rgba(127, 224, 195, 0.3);
+}
+
+/* 演化 */
+
+.console-surface .growth-hero {
+  border-color: var(--line);
+  background:
+    radial-gradient(560px 220px at 0% 0%, rgba(127, 224, 195, 0.07), transparent 65%),
+    var(--surface);
+}
+
+.console-surface .growth-spark {
+  border-color: var(--line-soft);
+}
+
+.console-surface .lifecycle-pill,
+.console-surface .spark-empty,
+.console-surface .summary-card,
+.console-surface .observe-stats > div,
+.console-surface .quiz-stats > div,
+.console-surface .scale-grid > div {
+  background: var(--surface-2);
+}
+
+.console-surface .fitness-track,
+.console-surface .donut-track {
+  background: #16221c;
+}
+
+.console-surface .fitness-fill {
+  opacity: 0.9;
+}
+
+.console-surface .composition span {
+  background: #16221c;
+  color: var(--ink-3);
+}
+
+.console-surface .principle-row:hover {
+  background: rgba(127, 224, 195, 0.04);
+}
+
+.console-surface .growth-footnote {
+  color: var(--ink-4);
+}
+
+/* ─────────────────────────────────────────────
+   打开控制台的转场
+   ───────────────────────────────────────────── */
+
+.ct-overlay {
+  --ct-accent: #7fe0c3;
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  overflow: hidden;
+  background: #f5f3ee;
+  transition:
+    opacity 0.26s var(--ease),
+    visibility 0.26s var(--ease);
+}
+
+.ct-overlay.is-leaving {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ct-dark {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(900px 520px at 72% -10%, rgba(127, 224, 195, 0.08), transparent 62%),
+    #0a0f0c;
+  clip-path: inset(50% 0 50% 0);
+  animation: ctOpen 0.68s 0.12s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.ct-dark::before {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(127, 224, 195, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(127, 224, 195, 0.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 50%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(ellipse at 50% 50%, #000 0%, transparent 78%);
+  content: "";
+}
+
+.ct-line {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    #2f5b4c 18%,
+    var(--ct-accent) 50%,
+    #2f5b4c 82%,
+    transparent
+  );
+  box-shadow: 0 0 18px rgba(127, 224, 195, 0.5);
+  transform: scaleX(0);
+  animation: ctLine 0.9s var(--ease-out) forwards;
+}
+
+.ct-scan {
+  position: absolute;
+  top: -20%;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 18%;
+  background: linear-gradient(180deg, transparent, rgba(127, 224, 195, 0.07), transparent);
+  animation: ctScan 0.75s 0.2s ease-in-out forwards;
+  pointer-events: none;
+}
+
+.ct-content {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 30px;
+  color: #e6efe9;
+  opacity: 0;
+  animation: ctFade 0.45s 0.5s ease forwards;
+}
+
+.ct-top,
+.ct-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: rgba(230, 239, 233, 0.38);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+
+.ct-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(230, 239, 233, 0.68);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+}
+
+.ct-code {
+  color: rgba(127, 224, 195, 0.6);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+}
+
+.ct-center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.ct-glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(127, 224, 195, 0.35);
+  border-radius: 10px;
+  background: rgba(127, 224, 195, 0.05);
+  color: var(--ct-accent);
+  box-shadow:
+    0 0 30px rgba(127, 224, 195, 0.12),
+    inset 0 0 20px rgba(127, 224, 195, 0.04);
+}
+
+.ct-glyph::before,
+.ct-glyph::after {
+  position: absolute;
+  background: rgba(127, 224, 195, 0.28);
+  content: "";
+}
+
+.ct-glyph::before {
+  top: -7px;
+  bottom: -7px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.ct-glyph::after {
+  top: 50%;
+  right: -7px;
+  left: -7px;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.ct-glyph span {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ct-accent);
+  box-shadow: 0 0 8px var(--ct-accent);
+}
+
+.ct-kicker {
+  margin-bottom: 6px;
+  color: rgba(127, 224, 195, 0.72);
+  font-size: 8px;
+  letter-spacing: 0.24em;
+}
+
+.ct-center h2 {
+  color: #eef7f1;
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.ct-sub {
+  margin-top: 7px;
+  color: rgba(230, 239, 233, 0.55);
+  font-size: 11.5px;
+}
+
+.ct-readouts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 30px;
+  width: min(360px, 76vw);
+  margin-top: 27px;
+  color: rgba(230, 239, 233, 0.42);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-align: left;
+}
+
+.ct-readouts span {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.ct-readouts b {
+  color: var(--ct-accent);
+  font-weight: 500;
+  letter-spacing: 0.1em;
+}
+
+.ct-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  width: min(280px, 68vw);
+  margin-top: 22px;
+  color: rgba(230, 239, 233, 0.62);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.ct-progress {
+  width: min(280px, 68vw);
+  height: 2px;
+  margin-top: 7px;
+  overflow: hidden;
+  background: rgba(127, 224, 195, 0.14);
+}
+
+.ct-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #2f5b4c, var(--ct-accent));
+  box-shadow: 0 0 10px var(--ct-accent);
+  transition: width 0.32s var(--ease-out);
+}
+
+@keyframes ctOpen {
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes ctLine {
+  0% {
+    opacity: 1;
+    transform: scaleX(0);
+  }
+  48% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes ctScan {
+  to {
+    top: 110%;
+  }
+}
+
+@keyframes ctFade {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes consolePulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 7px rgba(127, 224, 195, 0.7);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 3px rgba(127, 224, 195, 0.25);
+  }
+}
+
+@keyframes consolePageIn {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── 二次打开：只保留“从中间打开”的画面，不渲染内容层 ── */
+
+.ct-overlay.is-quick .ct-line {
+  animation-duration: 0.42s;
+}
+
+.ct-overlay.is-quick .ct-dark {
+  animation-duration: 0.38s;
+  animation-delay: 0.04s;
+}
+
+.ct-overlay.is-quick .ct-scan {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ct-overlay,
+  .ct-overlay.is-quick {
+    transition: none;
+  }
+
+  .ct-overlay .ct-line,
+  .ct-overlay .ct-scan {
+    display: none;
+  }
+
+  .ct-overlay .ct-dark {
+    animation: none;
+    clip-path: inset(0 0 0 0);
+  }
+
+  .ct-overlay .ct-content {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* ─────────────────────────────────────────────
+   主界面里的“控制台入口”
+   ───────────────────────────────────────────── */
+
+.nav-item--console {
+  margin-top: 2px;
+}
+
+.nav-item--console .nav-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.nav-item--console:hover {
+  border-color: #cfded5;
+  background: linear-gradient(90deg, var(--surface) 0%, #f7fbf8 100%);
+  color: var(--ink);
+}
+
+.nav-console-arrow {
+  display: grid;
+  place-items: center;
+  color: var(--ink-4);
+  transition:
+    color 0.18s var(--ease),
+    transform 0.18s var(--ease);
+}
+
+.nav-item--console:hover .nav-console-arrow {
+  color: var(--accent);
+  transform: translateX(1px);
+}
+
+.nav-console-line {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  width: 18px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent));
+  opacity: 0.4;
+  transition: opacity 0.18s var(--ease);
+}
+
+.nav-item--console:hover .nav-console-line {
+  opacity: 0.9;
+}
+
+/* 手动收起侧栏时，入口的箭头与底线没有空间，隐藏它们。 */
+.app-shell.is-sidebar-collapsed .nav-console-arrow,
+.app-shell.is-sidebar-collapsed .nav-console-line {
+  display: none;
+}
+
+/* ─────────────────────────────────────────────
+   响应式
+   ───────────────────────────────────────────── */
+
+@media (max-width: 1180px) {
+  .console-surface .page {
+    padding: 24px 26px 48px;
+  }
+
+  .console-metric:nth-child(1) {
+    display: none;
+  }
+
+  .nav-console-arrow,
+  .nav-console-line {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .console-ident-tag {
+    display: none;
+  }
+
+  .console-hud {
+    gap: 10px;
+  }
+
+  .console-clock {
+    padding-left: 10px;
+  }
+
+  .console-metric:nth-child(2) {
+    display: none;
+  }
+}
+
+
+
+
+
+@media (prefers-reduced-motion: reduce) {
+  .console-layer,
+  .console-layer::before,
+  .console-layer::after {
+    animation: none !important;
+  }
+}

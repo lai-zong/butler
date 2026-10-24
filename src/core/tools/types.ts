@@ -48,6 +48,8 @@ export type Authorization =
  *    而安全语义不变。
  */
 export interface PermissionPolicy {
+  /** C5 三档模式；旧调用方不填则沿用原有行为。 */
+  readonly mode?: PermissionMode | undefined;
   /** 本会话已针对该工具记住的授权（"本次会话允许"） */
   isRemembered(toolName: string): boolean;
   /** 询问用户。只有在决定为 'ask' 时才会被调用。 */
@@ -184,3 +186,6 @@ export interface ToolAudit {
   /** 结果摘要（**已脱敏**），便于事后追查做了什么 */
   readonly outputSummary: string;
 }
+
+/** C5 三档权限模式；未设置时保持旧的 allowWrite 行为。 */
+export type PermissionMode = 'view' | 'workspace' | 'full';

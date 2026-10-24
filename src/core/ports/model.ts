@@ -131,6 +131,13 @@ export interface ModelToolSpec {
 export interface ModelCall {
   readonly purpose: ModelPurpose;
   readonly messages: readonly ModelMessage[];
+  /**
+   * 外部取消信号（手动审查的“停止”按钮用）。
+   *
+   * ⚠️ 适配器必须把它和超时信号合并；只在前端 abort fetch
+   *    而 HTTP 请求继续跑，等于停止按钮是假的。
+   */
+  readonly signal?: AbortSignal;
   readonly tools?: readonly ModelToolSpec[];
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
@@ -210,7 +217,7 @@ export interface StructuredResult<T> {
 export class ModelError extends Error {
   constructor(
     message: string,
-    readonly code: 'TIMEOUT' | 'RATE_LIMIT' | 'NETWORK' | 'BAD_OUTPUT' | 'AUTH' | 'UNKNOWN',
+    readonly code: 'TIMEOUT' | 'RATE_LIMIT' | 'NETWORK' | 'BAD_OUTPUT' | 'AUTH' | 'ABORTED' | 'UNKNOWN',
     readonly attempts = 1,
   ) {
     super(message);

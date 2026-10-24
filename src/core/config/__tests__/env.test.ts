@@ -60,8 +60,6 @@ describe('★ 默认值与原硬编码值一致（这次改动不改变任何现
     expect(memoryConfig.dormantAfterMs).toBe(60 * 24 * 60 * 60 * 1000);
     expect(memoryConfig.archiveBelowFitness).toBe(0.25);
     expect(memoryConfig.exploratoryRatio).toBe(0.1);
-    // ★ v8：默认**不设轮次上限**（方案 §14 / D-30），不再是 8
-    expect(limitsConfig.maxRoundsPerSession).toBe(Number.POSITIVE_INFINITY);
     expect(limitsConfig.toolTimeoutMs).toBe(15_000);
     expect(limitsConfig.dailyTokenTaskLimit).toBe(10);
     expect(privacyConfig.behaviorObservationEnabled).toBe(false);
@@ -73,9 +71,6 @@ describe('★ 默认值与原硬编码值一致（这次改动不改变任何现
 
   it('设了环境变量时真的生效（这就是修这个问题的目的）', () => {
     clearAll();
-
-    process.env['MAX_ROUNDS_PER_SESSION'] = '20';
-    expect(limitsConfig.maxRoundsPerSession).toBe(20);
 
     process.env['FITNESS_EMA_ALPHA'] = '0.4';
     expect(memoryConfig.emaAlpha).toBe(0.4);
@@ -129,7 +124,7 @@ describe('★ 写错不崩，而是退回默认值并记录', () => {
 // ═══════════════════════════════════════════════════════════
 
 describe('边界保护', () => {
-  const KEYS = ['ROUTING_CONFIDENCE_THRESHOLD', 'MAX_ROUNDS_PER_SESSION', 'FITNESS_EMA_ALPHA'] as const;
+  const KEYS = ['ROUTING_CONFIDENCE_THRESHOLD', 'FITNESS_EMA_ALPHA'] as const;
   const saved: Record<string, string | undefined> = {};
 
   afterEach(() => {
@@ -144,13 +139,6 @@ describe('边界保护', () => {
     process.env['ROUTING_CONFIDENCE_THRESHOLD'] = '1.5';
     // 退回默认值，而不是让路由全部失效
     expect(routingConfig.confidenceThreshold).toBe(0.6);
-  });
-
-  it('★ 轮次上限 0 会让工具循环一次都不跑 —— 必须挡住', () => {
-    saved['MAX_ROUNDS_PER_SESSION'] = process.env['MAX_ROUNDS_PER_SESSION'];
-    process.env['MAX_ROUNDS_PER_SESSION'] = '0';
-    // v8：拦截后回退到"不设上限"（Infinity），而不是 8
-    expect(limitsConfig.maxRoundsPerSession).toBe(Number.POSITIVE_INFINITY);
   });
 
   it('★ EMA α = 0 会让适应度永不更新 —— 必须挡住', () => {

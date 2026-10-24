@@ -44,6 +44,37 @@ describe('applyEvent', () => {
     expect(a.rounds[0]?.tools[0]).toMatchObject({ callId: 'c1', name: 'read_file', status: 'ok', output: 'ok' });
   });
 
+  it('usage：本轮累计与会话累计分别保存', () => {
+    const a = fold([
+      {
+        type: 'usage',
+        round: 1,
+        inputTokens: 100,
+        outputTokens: 20,
+        totalInputTokens: 100,
+        totalOutputTokens: 20,
+        sessionInputTokens: 1_000,
+        sessionOutputTokens: 200,
+      },
+      {
+        type: 'usage',
+        round: 2,
+        inputTokens: 50,
+        outputTokens: 10,
+        totalInputTokens: 150,
+        totalOutputTokens: 30,
+        sessionInputTokens: 1_050,
+        sessionOutputTokens: 210,
+      },
+    ]);
+    expect(a.usage).toEqual({
+      turnInputTokens: 150,
+      turnOutputTokens: 30,
+      sessionInputTokens: 1_050,
+      sessionOutputTokens: 210,
+    });
+  });
+
   it('reply：正文与完成状态', () => {
     const a = fold([{ type: 'reply', messageId: 'm1', text: '你好' }]);
     expect(a.text).toBe('你好');

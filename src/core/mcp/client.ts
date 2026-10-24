@@ -211,6 +211,7 @@ export class McpClient {
         to: policy.level,
         disabledTools: policy.disabledTools,
         allowMemoryWrite: policy.allowMemoryWrite,
+        allowDangerousTools: policy.allowDangerousTools,
       },
       createdAt: this.clock.now(),
     });

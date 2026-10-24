@@ -28,7 +28,8 @@
  *      它是既有的校验入口（含"不许出现凭证明文"）。绕过它就等于没有校验。
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 import type { McpClient, McpTransportFactory } from './client.js';
 import type { McpServerConfig } from './types.js';
@@ -122,20 +123,28 @@ export function parseMcpConfig(raw: unknown): LoadMcpConfigResult {
       continue;
     }
 
+    // ★ 策略也必须从配置恢复；否则写回的 manual/允许项重启后会被默认值覆盖。
+    const rawPolicy = o['policy'];
+    const rp =
+      typeof rawPolicy === 'object' && rawPolicy !== null
+        ? (rawPolicy as Record<string, unknown>)
+        : null;
+    const level =
+      rp?.['level'] === 'manual' || rp?.['level'] === 'readOnly' || rp?.['level'] === 'normal'
+        ? rp['level']
+        : DEFAULT_POLICY.level;
+    const policy: McpServerPolicy = {
+      level,
+      disabledTools: Array.isArray(rp?.['disabledTools'])
+        ? rp['disabledTools'].filter((x): x is string => typeof x === 'string')
+        : DEFAULT_POLICY.disabledTools,
+      allowMemoryWrite: rp?.['allowMemoryWrite'] === true,
+      allowDangerousTools: rp?.['allowDangerousTools'] === true,
+    };
+
     configs.push({
       ...cfg,
-      /**
-       * ★★ 必须显式给 policy —— 端到端实测抓到的崩溃：
-       *    `McpClient.addServer` 直接读 `config.policy.level`，
-       *    缺了就 `TypeError: Cannot read properties of undefined`。
-       *
-       * ⚠️ 我原来在这里写了"策略默认交给 addServer 处理（它内置保守默认）"——
-       *    **那是错的假设**。单测没抓到（假客户端不会崩），真进程一跑就崩。
-       *
-       * 用既有的 `DEFAULT_POLICY`（manual / 不许写记忆 / 不许危险操作），
-       * 而不是在这里另造一份默认值 —— 两份默认值迟早会漂移。
-       */
-      policy: DEFAULT_POLICY,
+      policy,
     } as McpServerConfig);
   }
 
@@ -158,6 +167,23 @@ export function loadMcpConfigFile(path: string): LoadMcpConfigResult | null {
       rejected: [{ index: -1, reason: `JSON 解析失败：${err instanceof Error ? err.message : String(err)}` }],
     };
   }
+}
+
+/**
+ * 原子写回配置。
+ *
+ * ⚠️ 只写 `{ servers: [...] }`，不碰别的字段；写临时文件再 rename，
+ *    避免进程在写到一半时留下半截 JSON。
+ */
+export function saveMcpConfigFile(
+  path: string,
+  configs: readonly McpServerConfig[],
+): void {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ servers: configs }, null, 2)}\n`, 'utf8');
+  renameSync(tmp, path);
 }
 
 export interface WireMcpArgs {

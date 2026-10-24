@@ -18,6 +18,7 @@ import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { DomainId } from '../execution/types.js';
 import { parseAgentTrace, parseExecutionReports } from './parse.js';
+import type { TaskContract } from '../butler/contract.js';
 
 // ═══════════════════════════════════════════════════════════
 // 消息
@@ -49,6 +50,57 @@ export type MessageStatus =
  * ⚠️ 刻意**不**包含"审核状态"这类流程字段 —— 那些属于任务，
  *    不属于单条消息。混在一起会让"一条消息在多个任务里"变得无法表达。
  */
+export interface AuditRange {
+  readonly fromSeq: number;
+  readonly toSeq: number;
+}
+
+/**
+ * 手动复核所需的 turn 快照。
+ *
+ * ★ 只存监督员真正需要的输入：用户目标、契约、硬约束、产出摘要。
+ *   不存整段工具 trace —— 复核的是“交付物是否符合契约”，不是重放执行。
+ */
+export interface ReviewSnapshot {
+  readonly userGoal: string;
+  readonly contract: TaskContract;
+  readonly hardConstraints: readonly string[];
+  readonly outputSummary: string;
+}
+
+export type ReviewRunStatus = 'running' | 'completed' | 'failed' | 'aborted';
+
+export interface ReviewRunReport {
+  readonly criteriaChecks: readonly {
+    readonly criterion: string;
+    readonly met: boolean;
+    readonly note?: string | undefined;
+  }[];
+  readonly findings: readonly {
+    readonly viewpoint: 'contract' | 'domain' | 'global';
+    readonly severity: 'info' | 'warn' | 'block';
+    readonly message: string;
+    readonly evidence: readonly string[];
+  }[];
+  readonly summary: string;
+}
+
+export interface ReviewRun {
+  readonly id: string;
+  readonly sessionId: string;
+  /** 本轮 turn 标识；当前用被复核的 assistant message id。 */
+  readonly turnIds: readonly string[];
+  readonly status: ReviewRunStatus;
+  readonly model: string;
+  readonly promptVersion: string;
+  readonly snapshotHash: string;
+  readonly stages: readonly { readonly name: string; readonly status: 'done' | 'failed' }[];
+  readonly report: ReviewRunReport | null;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  readonly error?: string;
+  readonly createdAt: number;
+}
+
 export interface ChatMessage {
   readonly id: string;
   readonly sessionId: string;
@@ -57,6 +109,13 @@ export interface ChatMessage {
   readonly servant?: DomainId;
   /** 正文（markdown） */
   readonly text: string;
+  /**
+   * 这条回复对应的本轮事件区间（用于刷新后的“本轮依据”）。
+   * 旧消息没有这个字段，界面应回退到“会话依据”。
+   */
+  readonly auditRange?: AuditRange;
+  /** 手动复核所需的输入快照；旧消息没有。 */
+  readonly reviewSnapshot?: ReviewSnapshot;
   /**
    * 思考过程（英文原文）。
    *
@@ -148,7 +207,7 @@ export interface ExecutionReportData {
    *    有了它，仆人窗口才与管家窗口结构一致
    *    （先过程、再最终回复）。
    *
-   * ⚠️ 当前实现是**整轮的 trace**（见 
+   * ⚠️ 当前实现是**整轮的 trace**（见
 eports.ts 的说明），
    *    因为 AgentProgressEvent 里没有仆人标识。
    *    要按仆人拆分，需要给事件加 servant 字段。
@@ -183,7 +242,6 @@ eports.ts 的说明），
 export interface AgentTraceData {
   readonly rounds: readonly {
     readonly round: number;
-    readonly maxRounds: number;
     /** 该轮的思考（可能为空 —— 实测模型按任务难度分配思考量） */
     readonly reasoning: string;
     /** 该轮模型的正文（对用户说的话） */
@@ -199,9 +257,18 @@ export interface AgentTraceData {
       readonly durationMs: number;
     }[];
   }[];
+  /**
+   * 工具循环的真实 token 用量（跨工具轮次累计）。
+   *
+   * ⚠️ 这是**执行阶段**的用量，不含之后监督/反思的调用；
+   *    完整的一轮用量以 verdict.usage 为准。
+   */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+  };
   readonly finished: {
     readonly rounds: number;
-    readonly hitRoundLimit: boolean;
     readonly reason: string;
   } | null;
 }
@@ -282,6 +349,12 @@ export interface Verdict {
   readonly steps: readonly { readonly stepId: string; readonly servant: string; readonly ok: boolean }[];
   readonly durationMs: number;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  /**
+   * 包含本轮在内的**会话累计**用量。
+   *
+   * 旧结论没有这个字段；界面按“没有就不显示累计”处理。
+   */
+  readonly sessionUsage?: { readonly inputTokens: number; readonly outputTokens: number };
   /** 产出物 id（可点开查看） */
   readonly artifactIds: readonly string[];
   readonly createdAt: number;
@@ -323,6 +396,8 @@ export interface AppendMessageInput {
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
   readonly agentTrace?: AgentTraceData;
   readonly servantReports?: readonly ExecutionReportData[];
+  readonly auditRange?: AuditRange;
+  readonly reviewSnapshot?: ReviewSnapshot;
 }
 
 /**
@@ -336,6 +411,7 @@ export class SessionStore {
   private readonly sessions = new Map<string, ChatSession>();
   private readonly messages = new Map<string, ChatMessage[]>();
   private readonly verdicts = new Map<string, Verdict[]>();
+  private readonly reviewRuns = new Map<string, ReviewRun[]>();
   private seq = 0;
 
   constructor(
@@ -416,6 +492,8 @@ export class SessionStore {
        */
       ...(input.agentTrace !== undefined ? { agentTrace: input.agentTrace } : {}),
       ...(input.servantReports !== undefined ? { servantReports: input.servantReports } : {}),
+      ...(input.auditRange !== undefined ? { auditRange: input.auditRange } : {}),
+      ...(input.reviewSnapshot !== undefined ? { reviewSnapshot: input.reviewSnapshot } : {}),
     };
 
     const list = this.messages.get(sessionId) ?? [];
@@ -450,6 +528,8 @@ export class SessionStore {
          */
         ...(msg.agentTrace !== undefined ? { agentTrace: msg.agentTrace } : {}),
         ...(msg.servantReports !== undefined ? { servantReports: msg.servantReports } : {}),
+        ...(msg.auditRange !== undefined ? { auditRange: msg.auditRange } : {}),
+        ...(msg.reviewSnapshot !== undefined ? { reviewSnapshot: msg.reviewSnapshot } : {}),
       },
       createdAt: now,
     });
@@ -535,6 +615,8 @@ export class SessionStore {
         criteriaChecks: input.criteriaChecks,
         steps: input.steps,
         durationMs: input.durationMs,
+        usage: input.usage,
+        ...(input.sessionUsage !== undefined ? { sessionUsage: input.sessionUsage } : {}),
         artifactIds: input.artifactIds,
       },
       createdAt: now,
@@ -545,6 +627,30 @@ export class SessionStore {
 
   verdictsOf(sessionId: string): readonly Verdict[] {
     return this.verdicts.get(sessionId) ?? [];
+  }
+
+  reviewRunsOf(sessionId: string): readonly ReviewRun[] {
+    return this.reviewRuns.get(sessionId) ?? [];
+  }
+
+  /** 记录一次手动复核报告（ReviewRun）。 */
+  appendReviewRun(input: Omit<ReviewRun, 'id' | 'createdAt'>): ReviewRun {
+    const now = this.clock.now();
+    const run: ReviewRun = {
+      ...input,
+      id: `review_${(++this.seq).toString(36)}_${now.toString(36)}`,
+      createdAt: now,
+    };
+    const list = this.reviewRuns.get(run.sessionId) ?? [];
+    list.push(run);
+    this.reviewRuns.set(run.sessionId, list);
+    this.log.append({
+      type: 'review.run',
+      actor: 'supervisor',
+      payload: { sessionId: run.sessionId, run },
+      createdAt: now,
+    });
+    return run;
   }
 
   // ── 快照与重放注入 ──
@@ -570,6 +676,7 @@ export class SessionStore {
     this.sessions.set(session.id, session);
     if (!this.messages.has(session.id)) this.messages.set(session.id, []);
     if (!this.verdicts.has(session.id)) this.verdicts.set(session.id, []);
+    if (!this.reviewRuns.has(session.id)) this.reviewRuns.set(session.id, []);
   }
 
   restoreMessage(msg: ChatMessage): void {
@@ -583,6 +690,12 @@ export class SessionStore {
     if (!list.some((x) => x.id === v.id)) list.push(v);
     this.verdicts.set(v.sessionId, list);
   }
+
+  restoreReviewRun(run: ReviewRun): void {
+    const list = this.reviewRuns.get(run.sessionId) ?? [];
+    if (!list.some((x) => x.id === run.id)) list.push(run);
+    this.reviewRuns.set(run.sessionId, list);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -595,12 +708,14 @@ export const SESSION_STATE_EVENTS: readonly string[] = [
   'session.message',
   'session.reply',
   'session.verdict',
+  'review.run',
 ];
 
 export interface ReplaySessionResult {
   readonly sessions: readonly ChatSession[];
   readonly messages: readonly ChatMessage[];
   readonly verdicts: readonly Verdict[];
+  readonly reviewRuns: readonly ReviewRun[];
   readonly consumedEvents: number;
 }
 
@@ -622,6 +737,7 @@ export function replaySessions(
   const sessions = new Map<string, ChatSession>();
   const messages: ChatMessage[] = [];
   const verdicts: Verdict[] = [];
+  const reviewRuns: ReviewRun[] = [];
   let consumed = 0;
 
   for (const e of events) {
@@ -668,6 +784,28 @@ export function replaySessions(
        */
       const replayedTrace = parseAgentTrace(trace);
       const replayedReports = parseExecutionReports(p['servantReports']);
+      const rawRange = p['auditRange'];
+      const auditRange =
+        typeof rawRange === 'object' &&
+        rawRange !== null &&
+        typeof (rawRange as { fromSeq?: unknown }).fromSeq === 'number' &&
+        typeof (rawRange as { toSeq?: unknown }).toSeq === 'number'
+          ? {
+              fromSeq: (rawRange as { fromSeq: number }).fromSeq,
+              toSeq: (rawRange as { toSeq: number }).toSeq,
+            }
+          : undefined;
+      const rawSnapshot = p['reviewSnapshot'];
+      const reviewSnapshot =
+        typeof rawSnapshot === 'object' &&
+        rawSnapshot !== null &&
+        typeof (rawSnapshot as { userGoal?: unknown }).userGoal === 'string' &&
+        typeof (rawSnapshot as { contract?: unknown }).contract === 'object' &&
+        (rawSnapshot as { contract?: unknown }).contract !== null &&
+        Array.isArray((rawSnapshot as { hardConstraints?: unknown }).hardConstraints) &&
+        typeof (rawSnapshot as { outputSummary?: unknown }).outputSummary === 'string'
+          ? (rawSnapshot as ReviewSnapshot)
+          : undefined;
 
       messages.push({
         id: messageId,
@@ -678,6 +816,8 @@ export function replaySessions(
         createdAt: e.createdAt,
         ...(replayedTrace !== undefined ? { agentTrace: replayedTrace } : {}),
         ...(replayedReports !== undefined ? { servantReports: replayedReports } : {}),
+        ...(auditRange !== undefined ? { auditRange } : {}),
+        ...(reviewSnapshot !== undefined ? { reviewSnapshot } : {}),
       });
       touch(sessions, sessionId, e.createdAt);
       continue;
@@ -715,12 +855,47 @@ export function replaySessions(
           ? (p['steps'] as { stepId: string; servant: DomainId; ok: boolean }[])
           : [],
         durationMs: typeof p['durationMs'] === 'number' ? p['durationMs'] : 0,
-        usage: { inputTokens: 0, outputTokens: 0 },
+        usage: {
+          inputTokens:
+            typeof p['usage'] === 'object' && p['usage'] !== null &&
+            typeof (p['usage'] as Record<string, unknown>)['inputTokens'] === 'number'
+              ? ((p['usage'] as Record<string, unknown>)['inputTokens'] as number)
+              : 0,
+          outputTokens:
+            typeof p['usage'] === 'object' && p['usage'] !== null &&
+            typeof (p['usage'] as Record<string, unknown>)['outputTokens'] === 'number'
+              ? ((p['usage'] as Record<string, unknown>)['outputTokens'] as number)
+              : 0,
+        },
+        ...(typeof p['sessionUsage'] === 'object' && p['sessionUsage'] !== null &&
+        typeof (p['sessionUsage'] as Record<string, unknown>)['inputTokens'] === 'number' &&
+        typeof (p['sessionUsage'] as Record<string, unknown>)['outputTokens'] === 'number'
+          ? {
+              sessionUsage: {
+                inputTokens: (p['sessionUsage'] as Record<string, unknown>)['inputTokens'] as number,
+                outputTokens: (p['sessionUsage'] as Record<string, unknown>)['outputTokens'] as number,
+              },
+            }
+          : {}),
         artifactIds: Array.isArray(p['artifactIds']) ? (p['artifactIds'] as string[]) : [],
         createdAt: e.createdAt,
       });
       const s = sessions.get(sessionId);
       if (s) sessions.set(sessionId, { ...s, turnCount: s.turnCount + 1, updatedAt: e.createdAt });
+      continue;
+    }
+
+    if (e.type === 'review.run') {
+      const rawRun = p['run'];
+      if (
+        typeof rawRun === 'object' &&
+        rawRun !== null &&
+        typeof (rawRun as { id?: unknown }).id === 'string' &&
+        typeof (rawRun as { sessionId?: unknown }).sessionId === 'string'
+      ) {
+        reviewRuns.push(rawRun as ReviewRun);
+        touch(sessions, sessionId, e.createdAt);
+      }
       continue;
     }
   }
@@ -729,6 +904,7 @@ export function replaySessions(
     sessions: [...sessions.values()],
     messages,
     verdicts,
+    reviewRuns,
     consumedEvents: consumed,
   };
 }

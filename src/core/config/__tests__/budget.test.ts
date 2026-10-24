@@ -5,7 +5,7 @@
  *   · 只有两档（简洁 / 标准），且每档都完整
  *   · 标准档 = 照抄 DSH；简洁档 = 标准档的一半（摘要目标按 ~4% 单独推算）
  *   · `maxOutputTokens` **按档位区分**（标准 256,000 / 简洁 128,000，D-28）
- *   · 工具轮次与历史单条消息上限 **两档都不设**（D-30）
+ *   · 历史单条消息不设上限（D-30）；工具轮次已从字段层彻底删除
  *
  * ⚠️ 以及一条容易漏的**安全性**：档位从持久化数据来，
  *    未知值必须**退回标准档**而不是抛错 —— 旧/损坏数据不该让会话打不开。
@@ -28,7 +28,7 @@ import {
 } from '../budget.js';
 import type { BudgetTier } from '../budget.js';
 
-/** 真的随档位变的字段（`maxRounds` / `maxHistoryChars` 已移到 SHARED，不在此列） */
+/** 真的随档位变的字段（`maxHistoryChars` 已移到 SHARED，不在此列） */
 const TIERED_FIELDS = [
   'historyTokenBudget',
   'toolOutputPruneChars',
@@ -109,18 +109,12 @@ describe('预算档位 · 标准档 = 照抄 DSH', () => {
   });
 });
 
-describe('预算档位 · D-30：三处不设上限', () => {
-  it('★ 工具循环轮次不设上限（两档都是 null）', () => {
-    expect(SHARED_BUDGET.maxRounds).toBeNull();
-  });
-
+describe('预算档位 · D-30：历史单条消息不设上限', () => {
   it('★ 历史里单条消息不设上限（两档都是 null）', () => {
     expect(SHARED_BUDGET.maxHistoryChars).toBeNull();
   });
 
-  it('「不设上限」不能退化成 0 或 undefined（那会让循环一次都不跑）', () => {
-    expect(SHARED_BUDGET.maxRounds).not.toBe(0);
-    expect(SHARED_BUDGET.maxRounds).not.toBeUndefined();
+  it('「不设上限」不能退化成 0 或 undefined', () => {
     expect(SHARED_BUDGET.maxHistoryChars).not.toBe(0);
     expect(SHARED_BUDGET.maxHistoryChars).not.toBeUndefined();
   });

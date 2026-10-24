@@ -149,18 +149,41 @@ export const BACKOFF_BASE_MS = 1000;
 /** 最大尝试次数（含首次）。 */
 export const MAX_ATTEMPTS = 3;
 
+/** 单个任务超过配置时限。超时不再重试，避免后台无限占用。 */
+export class TaskTimeoutError extends Error {
+  constructor(readonly kind: ScheduledTaskKind, readonly timeoutMs: number) {
+    super(`定时任务「${TASK_LABEL[kind]}」超过 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒未完成`);
+    this.name = 'TaskTimeoutError';
+  }
+}
+
 export class Scheduler {
   private readonly tasks = new Map<ScheduledTaskKind, TaskEntry>();
   private readonly runs: ScheduledRun[] = [];
+  private readonly taskTimeoutMs: number;
   private quota: QuotaConfig;
   private seq = 0;
+  /**
+   * 单飞锁：覆盖自动 tick 与手动 runNow。
+   *
+   * 定时器 60 秒一跳；长任务若不被锁住会被再次启动。这里不接受并发，
+   * 后来的调用直接返回空结果（调用方负责如实显示“正在运行”）。
+   */
+  private active = false;
 
   constructor(
     private readonly log: EventLog,
     private readonly clock: ClockPort,
     quota: QuotaConfig = defaultQuota(),
+    opts: { readonly taskTimeoutMs?: number } = {},
   ) {
     this.quota = quota;
+    this.taskTimeoutMs = opts.taskTimeoutMs ?? limitsConfig.scheduleTaskTimeoutMs;
+  }
+
+  /** 当前是否有 tick / 手动任务正在执行。 */
+  isRunning(): boolean {
+    return this.active;
   }
 
   /** 注册一个任务。schedule 不填则用方案默认值。 */
@@ -263,19 +286,25 @@ export class Scheduler {
    *   而不是把三天欠下的都补上（方案明确要求）。
    */
   async tick(now?: number): Promise<readonly ScheduledRun[]> {
-    const t = now ?? this.clock.now();
-    const out: ScheduledRun[] = [];
+    if (this.active) return [];
+    this.active = true;
+    try {
+      const t = now ?? this.clock.now();
+      const out: ScheduledRun[] = [];
 
-    for (const kind of this.dueTasks(t)) {
-      const due = lastDueAt(this.tasks.get(kind)?.schedule ?? DEFAULT_SCHEDULES[kind], t) ?? t;
-      const run = await this.runTask(kind, { scheduledAt: due, manual: false });
-      out.push(run);
-      // 无论成败都更新 lastRunAt —— 否则失败任务会每次 tick 都重试到天荒地老
-      const task = this.tasks.get(kind);
-      if (task) task.lastRunAt = t;
+      for (const kind of this.dueTasks(t)) {
+        const due = lastDueAt(this.tasks.get(kind)?.schedule ?? DEFAULT_SCHEDULES[kind], t) ?? t;
+        const run = await this.runTask(kind, { scheduledAt: due, manual: false });
+        out.push(run);
+        // 无论成败都更新 lastRunAt —— 否则失败任务会每次 tick 都重试到天荒地老
+        const task = this.tasks.get(kind);
+        if (task) task.lastRunAt = t;
+      }
+
+      return out;
+    } finally {
+      this.active = false;
     }
-
-    return out;
   }
 
   /**
@@ -285,12 +314,39 @@ export class Scheduler {
    *   演示不依赖等待，这一点方案写得很明确。
    */
   async runNow(kind: ScheduledTaskKind, now?: number): Promise<ScheduledRun | null> {
-    if (!this.tasks.has(kind)) return null;
-    const t = now ?? this.clock.now();
-    const run = await this.runTask(kind, { scheduledAt: t, manual: true });
-    const task = this.tasks.get(kind);
-    if (task && run.outcome === 'succeeded') task.lastRunAt = t;
-    return run;
+    if (!this.tasks.has(kind) || this.active) return null;
+    this.active = true;
+    try {
+      const t = now ?? this.clock.now();
+      const run = await this.runTask(kind, { scheduledAt: t, manual: true });
+      const task = this.tasks.get(kind);
+      if (task && run.outcome === 'succeeded') task.lastRunAt = t;
+      return run;
+    } finally {
+      this.active = false;
+    }
+  }
+
+  /**
+   * 单次任务执行加超时。
+   *
+   * ⚠️ `Promise.race` 只能让调度器不再等待，**无法强制中止**底层模型/IO；
+   *    但超时后不再重试，避免同一任务在后台叠三份。
+   */
+  private async withTimeout(
+    kind: ScheduledTaskKind,
+    handler: TaskHandler,
+    ctx: { readonly kind: ScheduledTaskKind; readonly scheduledAt: number; readonly manual: boolean },
+  ): Promise<{ readonly summary: string }> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new TaskTimeoutError(kind, this.taskTimeoutMs)), this.taskTimeoutMs);
+    });
+    try {
+      return await Promise.race([handler(ctx), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   private async runTask(
@@ -330,7 +386,7 @@ export class Scheduler {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const started = this.clock.now();
       try {
-        const r = await task.handler({
+        const r = await this.withTimeout(kind, task.handler, {
           kind,
           scheduledAt: opts.scheduledAt,
           manual: opts.manual,
@@ -356,6 +412,26 @@ export class Scheduler {
       } catch (err) {
         lastNote = err instanceof Error ? err.message : String(err);
         const ended = this.clock.now();
+
+        // 超时是安全停止，不再重试：底层操作可能仍在收尾，重试会叠加。
+        if (err instanceof TaskTimeoutError) {
+          this.log.append({
+            type: 'schedule.triggered',
+            actor: 'scheduler',
+            payload: {
+              kind,
+              outcome: 'failed',
+              manual: opts.manual,
+              attempt,
+              scheduledAt: opts.scheduledAt,
+              error: lastNote,
+              timedOut: true,
+              timeoutMs: err.timeoutMs,
+            },
+            createdAt: ended,
+          });
+          return this.record(kind, started, ended, 'failed', attempt, lastNote, opts.manual);
+        }
 
         this.log.append({
           type: 'schedule.triggered',

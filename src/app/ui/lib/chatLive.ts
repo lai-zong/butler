@@ -17,6 +17,7 @@ export function emptyAssistant(): LiveAssistant {
     narrationTranslated: '',
     stages: [],
     rounds: [],
+    usage: null,
     finished: null,
     contract: null,
     assumption: null,
@@ -35,23 +36,11 @@ export function emptyAssistant(): LiveAssistant {
 function ensureRound(
   rounds: readonly LiveRound[],
   round: number,
-  maxRounds: number,
 ): { readonly rounds: LiveRound[]; readonly index: number } {
   const index = rounds.findIndex((r) => r.round === round);
-  if (index >= 0) {
-    const next = [...rounds];
-    const current = next[index];
-    if (current !== undefined && (maxRounds > 0 || current.maxRounds === 0)) {
-      next[index] = {
-        ...current,
-        maxRounds: maxRounds > 0 ? maxRounds : current.maxRounds,
-      };
-    }
-    return { rounds: next, index: index < 0 ? 0 : index };
-  }
+  if (index >= 0) return { rounds: [...rounds], index };
   const created: LiveRound = {
     round,
-    maxRounds: maxRounds > 0 ? maxRounds : 0,
     reasoning: '',
     text: '',
     tools: [],
@@ -65,7 +54,7 @@ function ensureTool(
   callId: string,
   name: string,
 ): { readonly rounds: LiveRound[]; readonly index: number; readonly toolIndex: number } {
-  const r = ensureRound(rounds, round, 0);
+  const r = ensureRound(rounds, round);
   const next = [...r.rounds];
   const current = next[r.index];
   if (current === undefined) {
@@ -100,7 +89,7 @@ function patchRound(
   round: number,
   patch: Partial<LiveRound>,
 ): LiveRound[] {
-  const r = ensureRound(rounds, round, 0);
+  const r = ensureRound(rounds, round);
   const next = [...r.rounds];
   const current = next[r.index];
   if (current === undefined) return next;
@@ -117,6 +106,18 @@ export function applyEvent(a: LiveAssistant, e: SseEvent): LiveAssistant {
       return { ...a, stages: [...a.stages, label].slice(-6) };
     }
 
+    case 'usage': {
+      return {
+        ...a,
+        usage: {
+          turnInputTokens: e.totalInputTokens,
+          turnOutputTokens: e.totalOutputTokens,
+          sessionInputTokens: e.sessionInputTokens,
+          sessionOutputTokens: e.sessionOutputTokens,
+        },
+      };
+    }
+
     case 'narration': {
       return {
         ...a,
@@ -131,7 +132,7 @@ export function applyEvent(a: LiveAssistant, e: SseEvent): LiveAssistant {
     case 'agent': {
       switch (e.kind) {
         case 'round': {
-          const { rounds } = ensureRound(a.rounds, e.round, e.maxRounds);
+          const { rounds } = ensureRound(a.rounds, e.round);
           return { ...a, rounds, status: 'streaming' };
         }
         case 'reasoning': {
@@ -193,7 +194,6 @@ export function applyEvent(a: LiveAssistant, e: SseEvent): LiveAssistant {
             ...a,
             finished: {
               rounds: e.rounds,
-              hitRoundLimit: e.hitRoundLimit,
               reason: e.reason,
             },
           };

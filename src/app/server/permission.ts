@@ -28,7 +28,7 @@
  *   属于独立的一步，不在这里草率实现。
  */
 
-import type { ActionTier, PermissionPolicy } from '@/core/tools/types.js';
+import type { ActionTier, PermissionMode, PermissionPolicy } from '@/core/tools/types.js';
 
 export interface WebPolicyOptions {
   /**
@@ -41,14 +41,18 @@ export interface WebPolicyOptions {
    *   且已理解写操作不会被逐一确认）。
    */
   readonly allowWrite?: boolean;
+  /** C5 三档模式；不填时保持旧的 allowWrite 行为。 */
+  readonly mode?: PermissionMode;
 }
 
 export class WebPermissionPolicy implements PermissionPolicy {
   private readonly remembered = new Set<string>();
+  mode: PermissionMode | undefined;
   private readonly allowWrite: boolean;
 
   constructor(opts?: WebPolicyOptions) {
     this.allowWrite = opts?.allowWrite ?? false;
+    this.mode = opts?.mode;
   }
 
   isRemembered(toolName: string): boolean {
@@ -61,8 +65,15 @@ export class WebPermissionPolicy implements PermissionPolicy {
    * ⚠️ `dangerous` **永远不放行** —— 那是方案 § 11 第三层防护的硬底线
    *    （"危险操作默认禁用"），不该由这个策略决定。
    */
+  setMode(mode: PermissionMode | undefined): void {
+    this.mode = mode;
+  }
+
   isTierEnabled(tier: ActionTier): boolean {
     if (tier === 'dangerous') return false;
+    if (this.mode === 'view') return tier === 'readOnly';
+    if (this.mode === 'workspace') return tier === 'readOnly' || tier === 'normal';
+    if (this.mode === 'full') return tier === 'readOnly' || tier === 'normal' || tier === 'highRisk';
     if (tier === 'readOnly') return true;
     return this.allowWrite;
   }

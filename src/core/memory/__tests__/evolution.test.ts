@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { EventLog } from '../../events/log.js';
 import { FixedClock, SeededRandom } from '../../ports/clock.js';
 import { EvolutionEngine } from '../evolution.js';
+import { recordEffect } from '../principles.js';
 import { DEFAULT_PARAMS } from '../fitness.js';
 import { MemoryStore } from '../store.js';
 
@@ -323,6 +324,7 @@ describe('★ 人工干预 · 用户可治理演化', () => {
     });
     expect(engine.forceArchive('hard2')).toBe(false);
     expect(engine.forceRevive('hard2')).toBe(false);
+    expect(engine.adjustWeight('hard2', 0.2)).toBe(false);
     expect(store.get('hard2')?.lifecycle).toBe('active');
   });
 
@@ -373,5 +375,43 @@ describe('演化日志 · 可观测性', () => {
     expect(e?.at).toBe(clock.now());
     expect(e?.memoryIds).toContain('trace');
     expect(e?.userId).toBe(USER);
+  });
+});
+
+describe('反馈统计可重放', () => {
+  it('successes / misuses / conflicts 重启后从 store 与事件恢复', () => {
+    const { log, store, clock, engine } = setup();
+    const id = seedPref(store, 'replay');
+
+    engine.recordHit(id);
+    engine.recordOutcome(id, true, '用户未纠正');
+    recordEffect({
+      log,
+      store,
+      clock,
+      taskId: 't-replay',
+      principleId: id,
+      effective: true,
+    });
+    engine.recordOutcome(id, false, '用户纠正');
+    engine.recordConflict(id);
+
+    const before = engine.statsOf(id);
+    expect(before.successes).toBe(1);
+    expect(before.misuses).toBe(1);
+    expect(before.conflicts).toBe(1);
+
+    const restarted = new EvolutionEngine({
+      log,
+      store,
+      clock,
+      random: new SeededRandom(1234),
+      userId: USER,
+    });
+    const after = restarted.statsOf(id);
+    expect(after.successes).toBe(1);
+    expect(after.misuses).toBe(1);
+    expect(after.conflicts).toBe(1);
+    expect(after.hits).toBe(before.hits);
   });
 });

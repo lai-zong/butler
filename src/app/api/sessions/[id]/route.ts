@@ -37,6 +37,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<NextRes
 
   const messages = chat.messagesOf(id);
   const verdicts = chat.verdictsOf(id);
+  const reviews = chat.reviewRunsOf(id);
   const quizzes = readQuizzes(rt.bootstrapped.log, id);
 
   return NextResponse.json({
@@ -44,6 +45,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<NextRes
     session: toSessionDto(session, messages, verdicts),
     messages: messages.map(toMessageDto),
     verdicts: verdicts.map(toVerdictDto),
+    reviews,
     quizzes,
   });
 }

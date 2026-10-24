@@ -8,9 +8,13 @@
  * `toToolSpecs` 的生产调用**各 0 处** —— 客户端写了 19.9 KB，
  * 但运行时从不连接任何 server，外部工具**根本不可用**。
  */
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
-import { loadMcpConfigFile, parseMcpConfig, wireMcpServers } from '../wiring.js';
+import { loadMcpConfigFile, parseMcpConfig, saveMcpConfigFile, wireMcpServers } from '../wiring.js';
 import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
 import type { McpClient } from '../client.js';
@@ -199,6 +203,34 @@ describe('★★ 配置解析（用户手写，报错要指向条目）', () => 
 
   it('文件不存在 → null（没配就是没配，不是错误）', () => {
     expect(loadMcpConfigFile('不存在的路径.mcp.json')).toBeNull();
+  });
+
+  it('写回后的配置能被重新加载（供管理界面持久化）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'butler-mcp-'));
+    const file = join(dir, 'mcp.json');
+    saveMcpConfigFile(file, [cfg('alpha')]);
+    const loaded = loadMcpConfigFile(file);
+    expect(loaded?.rejected).toEqual([]);
+    expect(loaded?.configs[0]?.id).toBe('alpha');
+    expect(loaded?.configs[0]?.enabled).toBe(true);
+  });
+
+  it('服务器策略随配置写回并可恢复', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'butler-mcp-policy-'));
+    const file = join(dir, 'mcp.json');
+    const withPolicy: McpServerConfig = {
+      ...cfg('alpha'),
+      policy: {
+        level: 'readOnly',
+        disabledTools: ['delete_note'],
+        allowMemoryWrite: false,
+        allowDangerousTools: false,
+      },
+    };
+    saveMcpConfigFile(file, [withPolicy]);
+    const loaded = loadMcpConfigFile(file);
+    expect(loaded?.configs[0]?.policy.level).toBe('readOnly');
+    expect(loaded?.configs[0]?.policy.disabledTools).toEqual(['delete_note']);
   });
 
   it('根节点不是对象 / 缺 servers → 给出明确原因', () => {

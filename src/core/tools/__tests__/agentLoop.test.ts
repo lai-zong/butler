@@ -17,13 +17,12 @@ import { msg, type ModelCall, type ModelMessage, type ModelResponse, type ModelP
 import { fileTools } from '../builtin/file.js';
 import { ToolFramework } from '../framework.js';
 import {
-  DEFAULT_MAX_ROUNDS,
   MAX_TOOL_RESULTS_IN_HISTORY,
   TOOL_RESULT_CHAR_LIMIT,
-  defaultMaxRounds,
   defaultTrustFor,
   runAgentLoop,
   trimHistory,
+  type AgentProgressEvent,
 } from '../agentLoop.js';
 import type { ActionTier, Authorization, PermissionPolicy } from '../types.js';
 
@@ -113,7 +112,7 @@ function setup(turns: readonly Turn[], answer: Authorization = 'allow') {
   return { log, clock, fs, policy, tools, model };
 }
 
-const run = (s: ReturnType<typeof setup>, maxRounds?: number) =>
+const run = (s: ReturnType<typeof setup>) =>
   runAgentLoop(
     {
       model: s.model,
@@ -121,7 +120,6 @@ const run = (s: ReturnType<typeof setup>, maxRounds?: number) =>
       log: s.log,
       clock: s.clock,
       taskId: 't1',
-      ...(maxRounds !== undefined ? { maxRounds } : {}),
     },
     [msg.system('你是生活仆人'), msg.user('看一下 a.txt 里写了什么')],
   );
@@ -138,7 +136,43 @@ describe('① 循环基本行为', () => {
     expect(r.finalText).toBe('不需要工具，答案是 42');
     expect(r.traces).toHaveLength(0);
     expect(r.rounds).toBe(1);
-    expect(r.hitRoundLimit).toBe(false);
+  });
+
+  it('每轮推送本轮累计用量', async () => {
+    const s = setup([
+      { toolCalls: [{ name: 'read_file', args: { path: 'a.txt' } }] },
+      { text: '读完了' },
+    ]);
+    s.fs.seedFile('a.txt', '你好');
+    const usageEvents: Extract<AgentProgressEvent, { kind: 'usage' }>[] = [];
+
+    await runAgentLoop(
+      {
+        model: s.model,
+        tools: s.tools,
+        log: s.log,
+        clock: s.clock,
+        taskId: 't-usage',
+        onProgress: (e) => {
+          if (e.kind === 'usage') usageEvents.push(e);
+        },
+      },
+      [msg.user('读一下 a.txt')],
+    );
+
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]).toMatchObject({
+      round: 1,
+      inputTokens: 100,
+      outputTokens: 50,
+      totalInputTokens: 100,
+      totalOutputTokens: 50,
+    });
+    expect(usageEvents[1]).toMatchObject({
+      round: 2,
+      totalInputTokens: 200,
+      totalOutputTokens: 100,
+    });
   });
 
   it('★ 调工具 → 拿到结果 → 给出结论', async () => {
@@ -443,37 +477,27 @@ describe('③ ★ 权限闸门在循环里依然生效', () => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// ④ ★ 有界性
+// ④ ★ 无轮次上限与上下文保护
 // ═══════════════════════════════════════════════════════════
 
-describe('④ ★ 循环有界（防止烧光 token）', () => {
-  it('★ 达到轮次上限时中止并留痕', async () => {
-    // 模型永远在调工具，不给答案
-    const forever: Turn[] = Array.from({ length: 30 }, () => ({
-      toolCalls: [{ name: 'read_file', args: { path: 'a.txt' } }],
-    }));
-    const s = setup(forever);
+describe('④ ★ 无轮次上限，但仍受真实终止条件约束', () => {
+  it('连续 25 次工具调用后仍能继续，最终由模型主动结束', async () => {
+    const turns: Turn[] = [
+      ...Array.from({ length: 25 }, () => ({
+        toolCalls: [{ name: 'read_file', args: { path: 'a.txt' } }],
+      })),
+      { text: '25 次之后我自己结束' },
+    ];
+    const s = setup(turns);
     s.fs.seedFile('a.txt', 'x');
 
-    const r = await run(s, 3);
+    const r = await run(s);
 
-    expect(r.hitRoundLimit).toBe(true);
-    expect(r.rounds).toBe(3);
-    // ★ 关键：没有无限循环下去
-    expect(s.model.seen).toHaveLength(3);
-    // 中止原因落事件
-    const ev = s.log.byType('supervisor.observe');
-    expect(ev.some((e) => (e.payload as { reason?: string }).reason === 'agent_round_limit')).toBe(true);
-  });
-
-  it('★ 默认不设轮次上限（v8 · 方案 §14 / D-30）', () => {
-    /**
-     * ⚠️ 由 8 改为 Infinity。
-     *   理由：任务没干完就被轮次掐断，是**功能失败**，不是省钱。DSH 也没有硬上限。
-     *   保护改由三条真实约束承担：上下文预算 / 日成本熔断 / 循环终止条件。
-     */
-    expect(DEFAULT_MAX_ROUNDS).toBe(Number.POSITIVE_INFINITY);
-    expect(defaultMaxRounds()).toBe(Number.POSITIVE_INFINITY);
+    // 超过旧的 20 轮上限仍然继续，最后以“无工具调用”结束
+    expect(r.rounds).toBe(26);
+    expect(r.traces).toHaveLength(25);
+    expect(r.finalText).toBe('25 次之后我自己结束');
+    expect(s.model.seen).toHaveLength(26);
   });
 
   it('★ 历史里的工具结果被裁剪（控制上下文增长）', () => {
@@ -726,5 +750,60 @@ describe('与其他模型实现协作', () => {
     const r = await runAgentLoop({ model: mock, tools, log, clock, taskId: 't' }, [msg.user('x')]);
     expect(r.finalText).toBe('无工具答案');
     expect(r.traces).toHaveLength(0);
+  });
+});
+
+describe('用户停止', () => {
+  it('已取消的信号不会调用模型', async () => {
+    const s = setup([{ text: '不应该执行到这里' }]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      runAgentLoop(
+        {
+          model: s.model,
+          tools: s.tools,
+          log: s.log,
+          clock: s.clock,
+          taskId: 't-abort',
+          signal: controller.signal,
+        },
+        [msg.user('做一件很长的事')],
+      ),
+    ).rejects.toThrow('用户已停止本轮任务');
+
+    expect(s.model.seen).toHaveLength(0);
+  });
+
+  it('执行到一半取消后，不再开始下一轮', async () => {
+    const s = setup([
+      { toolCalls: [{ name: 'read_file', args: { path: 'a.txt' } }] },
+      { toolCalls: [{ name: 'read_file', args: { path: 'a.txt' } }] },
+      { text: '不应该到这里' },
+    ]);
+    s.fs.seedFile('a.txt', 'x');
+    const controller = new AbortController();
+
+    await expect(
+      runAgentLoop(
+        {
+          model: s.model,
+          tools: s.tools,
+          log: s.log,
+          clock: s.clock,
+          taskId: 't-abort-mid',
+          signal: controller.signal,
+          onProgress: (e) => {
+            // 第一次工具开始执行时，模拟用户点“停止”
+            if (e.kind === 'toolStarted') controller.abort();
+          },
+        },
+        [msg.user('做一件很长的事')],
+      ),
+    ).rejects.toThrow('用户已停止本轮任务');
+
+    // 第一轮模型调用已发生；第二轮在开始前被拦下
+    expect(s.model.seen).toHaveLength(1);
   });
 });

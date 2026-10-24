@@ -8,6 +8,12 @@
 
 export type ViewId = 'chat' | 'memory' | 'audit' | 'growth' | 'settings';
 
+/** 主界面只保留对话与设置；治理视图移入控制台。 */
+export type MainView = 'chat' | 'settings';
+
+/** 控制台内的三个治理分区。 */
+export type ConsoleSection = 'memory' | 'audit' | 'growth';
+
 /** 跳到记忆页时可携带的意图。 */
 export interface MemoryTarget {
   readonly pending?: boolean;
@@ -177,7 +183,6 @@ export interface ToolCallTrace {
 
 export interface AgentTraceRound {
   readonly round: number;
-  readonly maxRounds: number;
   readonly reasoning: string;
   readonly text: string;
   readonly toolCalls: readonly ToolCallTrace[];
@@ -185,9 +190,10 @@ export interface AgentTraceRound {
 
 export interface AgentTrace {
   readonly rounds: readonly AgentTraceRound[];
+  /** 工具循环执行阶段累计用量（不含监督/反思）。 */
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
   readonly finished: {
     readonly rounds: number;
-    readonly hitRoundLimit: boolean;
     readonly reason: string;
   } | null;
 }
@@ -236,6 +242,8 @@ export interface MessageDto {
   readonly reasoningTranslated: string | null;
   readonly status: MessageStatus;
   readonly createdAt: number;
+  /** 刷新后本轮“依据”的事件范围；旧消息没有。 */
+  readonly auditRange?: { readonly fromSeq: number; readonly toSeq: number };
   readonly memoryRefs: readonly MemoryRef[];
   readonly agentTrace: AgentTrace | null;
   readonly servantReports: readonly ExecutionReport[] | null;
@@ -269,6 +277,7 @@ export interface VerdictDto {
   readonly steps: readonly { readonly stepId: string; readonly servant: string; readonly ok: boolean }[];
   readonly durationMs: number;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  readonly sessionUsage?: { readonly inputTokens: number; readonly outputTokens: number };
   readonly artifactIds: readonly string[];
   readonly createdAt: number;
 }
@@ -302,11 +311,36 @@ export interface QuizItem {
   readonly gradable?: boolean;
 }
 
+export interface ReviewRunDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly turnIds: readonly string[];
+  readonly status: 'running' | 'completed' | 'failed' | 'aborted';
+  readonly model: string;
+  readonly promptVersion: string;
+  readonly snapshotHash: string;
+  readonly stages: readonly { readonly name: string; readonly status: 'done' | 'failed' }[];
+  readonly report: {
+    readonly criteriaChecks: readonly { readonly criterion: string; readonly met: boolean; readonly note?: string }[];
+    readonly findings: readonly {
+      readonly viewpoint: 'contract' | 'domain' | 'global';
+      readonly severity: 'info' | 'warn' | 'block';
+      readonly message: string;
+      readonly evidence: readonly string[];
+    }[];
+    readonly summary: string;
+  } | null;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  readonly error?: string;
+  readonly createdAt: number;
+}
+
 export interface SessionDetailResponse {
   readonly ok: boolean;
   readonly session: SessionSummary;
   readonly messages: readonly MessageDto[];
   readonly verdicts: readonly VerdictDto[];
+  readonly reviews?: readonly ReviewRunDto[];
   readonly quizzes: readonly QuizItem[];
 }
 
@@ -489,6 +523,370 @@ export interface Diagnostics {
   readonly hasModel: boolean;
 }
 
+export interface ActivityDetailResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly consent: {
+    readonly granted: boolean;
+    readonly enabled: boolean;
+    readonly grantedAt: number | null;
+    readonly retentionDays: number;
+  };
+  readonly raw: readonly {
+    readonly id: string;
+    readonly app: string;
+    readonly category: string;
+    readonly categoryLabel: string;
+    readonly startedAt: number;
+    readonly endedAt: number;
+    readonly durationMs: number;
+    readonly hadInput: boolean;
+    readonly source: 'sample' | 'session' | 'demo';
+  }[];
+  readonly aggregates: readonly {
+    readonly id: string;
+    readonly userId: string;
+    readonly bucket: string;
+    readonly category: string;
+    readonly minutes: number;
+    readonly topApps: readonly string[];
+  }[];
+  readonly patterns: readonly {
+    readonly id: string;
+    readonly userId: string;
+    readonly kind: 'routine' | 'preference' | 'availability';
+    readonly pattern: string;
+    readonly confidence: number;
+    readonly evidence: readonly string[];
+    readonly observedDays: number;
+    readonly appliesTo: 'weekday' | 'weekend' | 'all';
+    readonly createdAt: number;
+  }[];
+}
+
+// ═══════════════════════════════════════════════════════════
+// 画像快照 / 成长对比（GET /api/profiles）
+// ═══════════════════════════════════════════════════════════
+
+export interface ProfileSummary {
+  readonly id: string;
+  readonly capturedAt: number;
+  readonly sessionCount: number;
+  readonly facts: number;
+  readonly preferences: number;
+  readonly principles: number;
+  readonly temporalPatterns: number;
+  readonly summary: string;
+  readonly totalMemories: number;
+}
+
+export interface ProfilesResponse {
+  readonly ok: boolean;
+  readonly profiles: readonly ProfileSummary[];
+  /** 旧版本只有计数、无法重建的快照事件数 */
+  readonly skipped: number;
+}
+
+export interface ProfilePrinciple {
+  readonly content: string;
+  readonly confidence: number;
+  readonly applied: number;
+  readonly succeeded: number;
+}
+
+export interface ProfileSnapshotView {
+  readonly id: string;
+  readonly userId: string;
+  readonly capturedAt: number;
+  readonly sessionCount: number;
+  readonly facts: number;
+  readonly preferences: number;
+  readonly principles: number;
+  readonly perDomain: Readonly<Record<string, { readonly memories: number; readonly principles: number }>>;
+  readonly temporalPatterns: number;
+  readonly principleList: readonly ProfilePrinciple[];
+  readonly summary: string;
+}
+
+export interface ProfileDeltaView {
+  readonly from: ProfileSnapshotView;
+  readonly to: ProfileSnapshotView;
+  readonly facts: number;
+  readonly preferences: number;
+  readonly principles: number;
+  readonly temporalPatterns: number;
+  readonly totalMemories: number;
+  readonly newPrinciples: readonly string[];
+  readonly appliedPrinciples: readonly string[];
+  readonly headline: string;
+}
+
+export interface ProfileDiffResponse {
+  readonly ok: boolean;
+  readonly delta: ProfileDeltaView;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 工具分级（GET /api/tools）
+// ═══════════════════════════════════════════════════════════
+
+export type ToolTier = 'readOnly' | 'normal' | 'highRisk' | 'dangerous';
+
+export interface ToolTierView {
+  readonly name: string;
+  readonly description: string;
+  readonly tier: ToolTier;
+  readonly rung: 1 | 2 | 3 | 4 | null;
+  readonly touchesCredentials: boolean;
+  readonly actionApp: string | null;
+  readonly source: 'native' | 'mcp';
+}
+
+export interface ToolsResponse {
+  readonly ok: boolean;
+  readonly mode: 'view' | 'workspace' | 'full' | null;
+  readonly enabledTiers: Readonly<Record<ToolTier, boolean>>;
+  readonly tools: readonly ToolTierView[];
+}
+
+// ═══════════════════════════════════════════════════════════
+// 操作记忆（GET /api/operations）
+// ═══════════════════════════════════════════════════════════
+
+export type OperationKindView = 'method' | 'preference' | 'environment';
+
+export interface OperationEffectivenessView {
+  readonly attempts: number;
+  readonly succeeded: number;
+  readonly successRate: number;
+  readonly lastUsedAt: number;
+  readonly lastFailure: string | null;
+  readonly avgDurationMs: number;
+  readonly consecutiveFailures: number;
+}
+
+export interface OperationMemoryView {
+  readonly id: string;
+  readonly kind: OperationKindView;
+  readonly kindLabel: string;
+  readonly taskLabel: string;
+  readonly taskSignature: string;
+  readonly app: string | null;
+  readonly content: string;
+  readonly path: string | null;
+  readonly pathLabel: string | null;
+  readonly confidence: number;
+  readonly effectiveness: OperationEffectivenessView | null;
+  readonly summary: string;
+  readonly evidenceCount: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface OperationsResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly counts: Readonly<Record<OperationKindView, number>>;
+  readonly apps: readonly string[];
+  readonly operations: readonly OperationMemoryView[];
+}
+
+// ═══════════════════════════════════════════════════════════
+// 产出物版本（GET /api/artifacts）
+// ═══════════════════════════════════════════════════════════
+
+export type ArtifactKindView = 'text' | 'list' | 'plan' | 'file' | 'code';
+export type ArtifactStatusView = 'draft' | 'active' | 'superseded' | 'discarded';
+
+export interface ArtifactSummaryView {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: ArtifactKindView;
+  readonly status: ArtifactStatusView;
+  readonly currentVersion: number;
+  readonly producedByStep: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly supersededBy?: string;
+  readonly supersededByRollback?: string;
+  readonly revisionCount: number;
+  readonly size: number;
+}
+
+export interface ArtifactsResponse {
+  readonly ok: boolean;
+  readonly artifacts: readonly ArtifactSummaryView[];
+}
+
+export interface ArtifactRevisionView {
+  readonly artifactId: string;
+  readonly version: number;
+  readonly content: string;
+  readonly items?: readonly string[];
+  readonly author: 'servant' | 'butler' | 'user';
+  readonly authorId?: string;
+  readonly reason: string;
+  readonly producedBy: readonly string[];
+  readonly createdAt: number;
+}
+
+export interface RevisionDiffView {
+  readonly artifactId: string;
+  readonly fromVersion: number;
+  readonly toVersion: number;
+  readonly addedLines: readonly string[];
+  readonly removedLines: readonly string[];
+  readonly unchangedCount: number;
+}
+
+export interface ArtifactDetailView {
+  readonly ok: boolean;
+  readonly artifact: {
+    readonly id: string;
+    readonly label: string;
+    readonly kind: ArtifactKindView;
+    readonly status: ArtifactStatusView;
+    readonly currentVersion: number;
+    readonly producedByStep: string;
+    readonly createdAt: number;
+    readonly updatedAt: number;
+    readonly supersededBy?: string;
+    readonly supersededByRollback?: string;
+  };
+  readonly revisions: readonly ArtifactRevisionView[];
+  readonly currentVersion: number;
+  readonly diff: RevisionDiffView | null;
+}
+
+export interface McpToolView {
+  readonly name: string;
+  readonly qualifiedName: string;
+  readonly description: string;
+  readonly tier: string;
+  readonly disabled: boolean;
+}export interface McpServerView {
+  readonly id: string;
+  readonly name: string;
+  readonly transport: string;
+  readonly enabled: boolean;
+  readonly state: 'disconnected' | 'connecting' | 'connected' | 'failed' | 'disabled';
+  readonly lastError: string | null;
+  readonly command: string | null;
+  readonly url: string | null;
+  readonly envKeys: readonly string[];
+  readonly policy: {
+    readonly level: 'manual' | 'readOnly' | 'normal';
+    readonly disabledTools: readonly string[];
+    readonly allowMemoryWrite: boolean;
+    readonly allowDangerousTools: boolean;
+  };
+  readonly notices: number;
+  readonly tools: readonly McpToolView[];
+}
+
+export interface McpResponse {
+  readonly ok: boolean;
+  readonly configPath: string;
+  readonly rejected: readonly { readonly index: number; readonly reason: string }[];
+  readonly availableTransports: readonly string[];
+  readonly servers: readonly McpServerView[];
+  readonly registeredTools: number;
+}
+
+export interface CheckpointDto {
+  readonly id: string;
+  readonly seq: number;
+  readonly kind: string;
+  readonly label: string;
+  readonly detail: string;
+  readonly createdAt: number;
+  readonly invalidatedBy: string | null;
+  readonly artifactRefs: readonly {
+    readonly artifactId: string;
+    readonly version: number;
+    readonly label: string;
+  }[];
+  readonly memoryCount: number;
+  readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  readonly completedSteps: number;
+  readonly pendingSteps: number;
+  readonly failedSteps: number;
+}
+
+export interface CheckpointPreviewDto {
+  readonly toSeq: number;
+  readonly discardedEvents: number;
+  readonly artifactImpact: readonly {
+    readonly artifactId: string;
+    readonly label: string;
+    readonly action: 'keep' | 'supersede';
+  }[];
+  readonly memoryImpact: readonly {
+    readonly memoryId: string;
+    readonly action: 'keep' | 'review';
+  }[];
+  readonly keepSteps: readonly string[];
+  readonly redoSteps: readonly string[];
+  readonly executable: boolean;
+  readonly blockedReason: string | null;
+}
+
+export interface CheckpointsResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly total: number;
+  readonly valid: number;
+  readonly checkpoints: readonly CheckpointDto[];
+}
+
+export interface CheckpointPreviewResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly checkpoint: CheckpointDto;
+  readonly preview: CheckpointPreviewDto;
+}
+
+export interface CheckpointRollbackResponse {
+  readonly ok: boolean;
+  readonly fromSeq: number;
+  readonly toSeq: number;
+  readonly discardedEvents: number;
+  readonly superseded: readonly string[];
+  readonly memoriesToReview: readonly string[];
+  readonly reviewedMemories: number;
+  readonly rolledBackAt: number;
+}
+
+export interface SchedulesResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly running: boolean;
+  readonly tasks: readonly {
+    readonly kind: string;
+    readonly label: string;
+    readonly schedule: string;
+    readonly nextRunAt: number;
+    readonly lastRunAt: number;
+    readonly lastOutcome: 'succeeded' | 'failed' | 'skipped' | 'retrying' | null;
+    readonly lastSummary: string | null;
+    readonly lastError: string | null;
+    readonly totalRuns: number;
+    readonly failedRuns: number;
+    readonly due: boolean;
+    readonly costsTokens: boolean;
+  }[];
+  readonly recent: readonly {
+    readonly seq: number;
+    readonly at: number;
+    readonly kind: string | null;
+    readonly label: string;
+    readonly outcome: 'succeeded' | 'failed' | 'skipped' | 'retrying' | null;
+    readonly manual: boolean;
+    readonly attempt: number | null;
+    readonly summary: string | null;
+  }[];
+}
+
 export interface Overview {
   readonly ok: boolean;
   readonly now: number;
@@ -574,7 +972,7 @@ export type SseEvent =
       readonly firstChunkMs: number | null;
       readonly done: boolean;
     }
-  | { readonly type: 'agent'; readonly kind: 'round'; readonly round: number; readonly maxRounds: number }
+  | { readonly type: 'agent'; readonly kind: 'round'; readonly round: number }
   | {
       readonly type: 'agent';
       readonly kind: 'reasoning' | 'text';
@@ -612,8 +1010,17 @@ export type SseEvent =
       readonly type: 'agent';
       readonly kind: 'finished';
       readonly rounds: number;
-      readonly hitRoundLimit: boolean;
       readonly reason: string;
+    }
+  | {
+      readonly type: 'usage';
+      readonly round: number;
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalInputTokens: number;
+      readonly totalOutputTokens: number;
+      readonly sessionInputTokens: number;
+      readonly sessionOutputTokens: number;
     }
   | {
       readonly type: 'approval';
@@ -659,13 +1066,21 @@ export interface LiveTool {
 
 export interface LiveRound {
   round: number;
-  maxRounds: number;
   reasoning: string;
   text: string;
   tools: LiveTool[];
 }
 
 export type LiveStatus = 'waiting' | 'streaming' | 'done' | 'error' | 'aborted';
+
+export interface LiveUsage {
+  /** 本轮任务累计（跨工具轮次） */
+  readonly turnInputTokens: number;
+  readonly turnOutputTokens: number;
+  /** 本会话累计（已完成轮次 + 本轮实时） */
+  readonly sessionInputTokens: number;
+  readonly sessionOutputTokens: number;
+}
 
 export interface LiveAssistant {
   text: string;
@@ -674,7 +1089,8 @@ export interface LiveAssistant {
   narrationTranslated: string;
   stages: readonly string[];
   rounds: LiveRound[];
-  finished: { rounds: number; hitRoundLimit: boolean; reason: string } | null;
+  usage: LiveUsage | null;
+  finished: { rounds: number; reason: string } | null;
   contract: ContractView | null;
   assumption: AssumptionView | null;
   injectedConstraints: readonly InjectedConstraintView[];

@@ -11,6 +11,7 @@ import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
 import type { DomainId } from '../../execution/types.js';
 import { MemoryStore, type MemoryActor } from '../store.js';
+import { replayMemory } from '../replay.js';
 
 // ── 夹具 ──
 
@@ -512,5 +513,27 @@ describe('visibleTo · 召回层的输入集合', () => {
     store.grant({ actor: user, memoryId: id, to: 'health', taskId: 't1', purpose: 'x', ttlMs: 60_000 });
 
     expect(store.visibleTo(life).map((e) => e.content)).toContain('心理咨询');
+  });
+});
+
+describe('检查点回退 · 记忆待复核', () => {
+  it('markForReview 把普通记忆切成 candidate，并可通过事件重放恢复', () => {
+    const { store, log } = setup();
+    const id = seed(store, 'domain', '回退后才依赖的偏好', 'life');
+
+    expect(store.markForReview(id)).toBe(true);
+    expect(store.get(id)?.lifecycle).toBe('candidate');
+
+    const replayed = replayMemory(log.all());
+    expect(replayed.entries.find((e) => e.id === id)?.lifecycle).toBe('candidate');
+    expect(replayed.anomalies).toEqual([]);
+  });
+
+  it('全局硬约束不能被回退降级为候选', () => {
+    const { store } = setup();
+    const id = seed(store, 'global_constraint', '花生过敏');
+
+    expect(store.markForReview(id)).toBe(false);
+    expect(store.get(id)?.lifecycle).toBe('active');
   });
 });

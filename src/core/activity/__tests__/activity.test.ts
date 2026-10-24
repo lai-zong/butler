@@ -803,3 +803,32 @@ describe('⑨ 确定性', () => {
     expect(clock.now()).toBe(T0);
   });
 });
+
+describe('⑩ 回放：重启后明细不丢', () => {
+  it('恢复原始记录、聚合，并保留单条删除结果', () => {
+    const { observer, log, clock } = setup(granted);
+    const a = observer.observe({ app: 'Excel', startedAt: T0, endedAt: T0 + HOUR, hadInput: true });
+    const b = observer.observe({ app: 'Word', startedAt: T0 + HOUR, endedAt: T0 + 2 * HOUR, hadInput: true });
+    observer.aggregate(T0 + 2 * HOUR);
+    observer.deleteRecord(a.record?.id ?? '');
+
+    const replayed = new ActivityObserver(log, clock, USER, granted);
+    replayed.replayFromLog(T0 + 2 * HOUR);
+    const records = replayed.rawRecords(T0 + 2 * HOUR);
+    expect(records.map((r) => r.app)).toEqual(['Word']);
+    expect(records[0]?.id).toBe(b.record?.id);
+    expect(replayed.allAggregates().length).toBeGreaterThan(0);
+  });
+
+  it('清空事件能让回放后的原始与聚合都为空', () => {
+    const { observer, log, clock } = setup(granted);
+    observer.observe({ app: 'Excel', startedAt: T0, endedAt: T0 + HOUR, hadInput: true });
+    observer.aggregate(T0 + HOUR);
+    observer.deleteAll(T0 + 2 * HOUR);
+
+    const replayed = new ActivityObserver(log, clock, USER, granted);
+    replayed.replayFromLog(T0 + 2 * HOUR);
+    expect(replayed.rawRecords(T0 + 2 * HOUR)).toHaveLength(0);
+    expect(replayed.allAggregates()).toHaveLength(0);
+  });
+});

@@ -28,6 +28,7 @@
 import type { ClockPort } from '../ports/clock.js';
 import { msg, type ModelMessage, type ModelPort } from '../ports/model.js';
 import type { ModelStreamPort } from '../ports/stream.js';
+import { throwIfAborted } from '../runtime/abort.js';
 import type { EventLog } from '../events/log.js';
 import type { ToolFramework } from '../tools/framework.js';
 import { runAgentLoop, type AgentProgressEvent } from '../tools/agentLoop.js';
@@ -92,7 +93,8 @@ export interface ButlerRunArgs {
   readonly onAgentProgress?: (e: AgentProgressEvent) => void;
   /** 工具框架。不给时走单次结构化输出（纯推理场景） */
   readonly tools?: ToolFramework;
-  readonly maxRounds?: number;
+  /** 用户停止信号（一路传到 agentLoop）。 */
+  readonly signal?: AbortSignal;
   readonly now: number;
 }
 
@@ -140,6 +142,7 @@ export function buildButlerUserMessage(args: {
 }
 
 export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
+  throwIfAborted(args.signal);
   const baseMessages: ModelMessage[] = [
     msg.system(BUTLER_SYSTEM),
     ...(args.history ?? []),
@@ -270,6 +273,7 @@ async function runSingleShot(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
 ): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
+  throwIfAborted(args.signal);
   const result = await args.model.completeStructured({
     purpose: 'execution',
     schema: executionReportSchema,
@@ -279,6 +283,7 @@ async function runSingleShot(
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages,
   });
+  throwIfAborted(args.signal);
   return { raw: result.value, usage: result.usage, attempts: result.attempts };
 }
 
@@ -313,9 +318,9 @@ async function runWithTools(
        *   权限由 `ToolFramework` 的分级闸门统一管 —— 那比按领域白名单更严格。
        */
       toolFilter: (t) => t.name === 'submit_report' || t.tier !== 'dangerous',
-      ...(args.maxRounds !== undefined ? { maxRounds: args.maxRounds } : {}),
       terminalTool: 'submit_report',
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
+      ...(args.signal !== undefined ? { signal: args.signal } : {}),
       ...(args.onAgentProgress !== undefined ? { onProgress: args.onAgentProgress } : {}),
     },
     messages,
@@ -328,18 +333,14 @@ async function runWithTools(
   if (submitted === undefined) {
     /**
      * ⚠️ 循环结束但没提交汇报 —— 不编造一个"成功"。
-     *    如实返回 failed + 把模型的最后文本作为 reply，让上层看得见发生了什么。
+     *    如实返回 blocked + 把模型的最后文本作为 reply，让上层看得见发生了什么。
      */
     return {
       raw: {
         reply: loop.finalText.slice(0, BUTLER_REPLY_LIMIT),
-        status: loop.hitRoundLimit ? 'failed' : 'blocked',
+        status: 'blocked',
         artifacts: [],
-        uncertainties: [
-          loop.hitRoundLimit
-            ? '达到工具调用轮次上限，未能完成汇报'
-            : '未能产出结构化汇报',
-        ],
+        uncertainties: ['未能产出结构化汇报'],
         findings: [],
       },
       usage: loop.usage,

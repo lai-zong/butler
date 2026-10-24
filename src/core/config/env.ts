@@ -6,7 +6,7 @@
  * ★★ 为什么要有这个文件（这是一个真实问题的修复）：
  *
  *   之前 `.env.example` 声明了 17 个变量，而**代码只读了 2 个**。
- *   其余 15 个（`FITNESS_EMA_ALPHA`、`MAX_ROUNDS_PER_SESSION`、
+ *   其余 15 个（`FITNESS_EMA_ALPHA`、`MEMORY_DORMANT_DAYS`、
  *   `TOOL_TIMEOUT_MS` …）改了**没有任何作用** —— 真实值硬编码在代码里。
  *
  *   ⚠️ 一个「看起来完整但不起作用」的模板，比没有模板更糟：
@@ -221,26 +221,6 @@ export const memoryConfig = {
 // ═══════════════════════════════════════════════════════════
 
 export const limitsConfig = {
-  /**
-   * 单会话最大推理轮次。
-   *
-   * ★ v8 · 2026-10-18：默认**不设上限**（方案 §14 / D-30）。
-   *
-   *   理由：任务没干完就被轮次掐断，是**功能失败**，不是省钱。
-   *   DSH 也没有硬上限。上限该来自真实约束（成本熔断 / 上下文预算），不来自拍脑袋。
-   *
-   * ⚠️ 不设上限 ≠ 没有保护，实际有三道：
-   *   ① 上下文预算（`planHistory` 装不下才摘要）
-   *   ② 日成本熔断（`dailyBudgetCny`）
-   *   ③ 循环终止条件（模型提交报告 / 某轮无工具调用）
-   *
-   * ⚠️ 仍保留环境变量覆盖：调试或压测时可用 `MAX_ROUNDS_PER_SESSION=5` 人为收紧。
-   */
-  get maxRoundsPerSession(): number {
-    // ⚠️ 下限 1：0 会让工具循环一次都不跑
-    return num('MAX_ROUNDS_PER_SESSION', Number.POSITIVE_INFINITY, { min: 1 });
-  },
-
   /** 全局日额度上限（元） */
   get dailyBudgetCny(): number {
     return num('DAILY_BUDGET_CNY', 20, { min: 0 });
@@ -255,6 +235,16 @@ export const limitsConfig = {
   /** 定时任务每日耗 token 的次数上限 */
   get dailyTokenTaskLimit(): number {
     return num('DAILY_TOKEN_TASK_LIMIT', 10, { min: 0 });
+  },
+
+  /**
+   * 单个定时任务的超时（毫秒）。
+   *
+   * ★ 默认 120s：高于单次模型调用默认的 90s（MODEL_TIMEOUT_MS），
+   *   给本地聚合/写事件留出余量；超时后不再重试，避免后台无限占用。
+   */
+  get scheduleTaskTimeoutMs(): number {
+    return num('SCHEDULE_TASK_TIMEOUT_MS', 120_000, { min: 1000 });
   },
 } as const;
 
@@ -366,15 +356,17 @@ export const KNOWN_KEYS: readonly string[] = [
   'MEMORY_DORMANT_DAYS',
   'MEMORY_ARCHIVE_FITNESS_THRESHOLD',
   'EXPLORATORY_RECALL_RATIO',
-  'MAX_ROUNDS_PER_SESSION',
   'DAILY_BUDGET_CNY',
   'TOOL_TIMEOUT_MS',
   'DAILY_TOKEN_TASK_LIMIT',
+  'SCHEDULE_TASK_TIMEOUT_MS',
   'BEHAVIOR_OBSERVATION_ENABLED',
   'ACTIVITY_RAW_RETENTION_DAYS',
   'LOCAL_FIRST',
   'EXPORT_INCLUDE_CREDENTIALS',
   'BUTLER_DATA_DIR',
+  'BUTLER_MODEL_DIR',
+  'BUTLER_PERMISSION_MODE',
   'BUTLER_USER_ID',
 ];
 

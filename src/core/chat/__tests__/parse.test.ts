@@ -109,7 +109,6 @@ describe('工具循环过程的解析', () => {
       rounds: [
         {
           round: 1,
-          maxRounds: 20,
           reasoning: '先列目录',
           text: '',
           toolCalls: [
@@ -125,11 +124,30 @@ describe('工具循环过程的解析', () => {
           ],
         },
       ],
-      finished: { rounds: 1, hitRoundLimit: false, reason: 'noToolCalls' },
+      finished: { rounds: 1, reason: 'noToolCalls' },
     });
     expect(t?.rounds).toHaveLength(1);
     expect(t?.rounds[0]?.toolCalls[0]?.durationMs).toBe(12);
     expect(t?.finished?.reason).toBe('noToolCalls');
+  });
+
+  it('旧 trace 的 maxRounds / hitRoundLimit 被忽略（旧会话仍能打开）', () => {
+    const t = parseAgentTrace({
+      rounds: [{ round: 1, maxRounds: 20, reasoning: '', text: '', toolCalls: [] }],
+      finished: { rounds: 1, hitRoundLimit: true, reason: 'roundLimit' },
+    });
+    expect(t?.rounds).toHaveLength(1);
+    expect(t?.rounds[0]).not.toHaveProperty('maxRounds');
+    expect(t?.finished).toEqual({ rounds: 1, reason: 'roundLimit' });
+  });
+
+  it('usage 被保留（刷新后过程条仍能显示用量）', () => {
+    const t = parseAgentTrace({
+      rounds: [{ round: 1, reasoning: '', text: '', toolCalls: [] }],
+      usage: { inputTokens: 3812, outputTokens: 340 },
+      finished: { rounds: 1, reason: 'noToolCalls' },
+    });
+    expect(t?.usage).toEqual({ inputTokens: 3812, outputTokens: 340 });
   });
 
   it('形状不符 → undefined（界面上没有过程，比有半截过程好）', () => {

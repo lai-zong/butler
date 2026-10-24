@@ -3,7 +3,7 @@
 /**
  * 快速切换（⌘K / Ctrl+K）
  *
- * ★ 不是“炫技”：这个界面有五个空间，键盘切换比来回点侧栏快得多。
+ * ★ 不是“炫技”：这个界面有两个界面（主界面 / 控制台），键盘切换比来回点侧栏快得多。
  *   同时把两个高频动作（新建对话、导出数据）放进来。
  */
 
@@ -77,31 +77,13 @@ export function CommandPalette({
         run: () => onNavigate('chat'),
       },
       {
-        id: 'go-memory',
+        id: 'go-console',
         group: '前往',
-        label: '记忆治理',
-        hint: '审核候选 / 调权 / 遗忘',
-        keywords: 'memory 记忆 治理 审核',
-        icon: 'memory',
+        label: '控制台',
+        hint: '记忆 / 审计 / 演化 · 本地治理终端',
+        keywords: 'console 控制台 终端 治理',
+        icon: 'console',
         run: () => onNavigate('memory'),
-      },
-      {
-        id: 'go-audit',
-        group: '前往',
-        label: '审计',
-        hint: '召回、注入与事件流',
-        keywords: 'audit 审计 依据 事件',
-        icon: 'audit',
-        run: () => onNavigate('audit'),
-      },
-      {
-        id: 'go-growth',
-        group: '前往',
-        label: '演化',
-        hint: '生命周期与行为画像',
-        keywords: 'growth 演化 成长 画像',
-        icon: 'growth',
-        run: () => onNavigate('growth'),
       },
       {
         id: 'go-settings',
@@ -111,6 +93,33 @@ export function CommandPalette({
         keywords: 'settings 设置 配置 隐私',
         icon: 'settings',
         run: () => onNavigate('settings'),
+      },
+      {
+        id: 'console-memory',
+        group: '控制台',
+        label: '记忆',
+        hint: '候选审核 / 调权 / 遗忘',
+        keywords: 'memory 记忆 治理 审核',
+        icon: 'memory',
+        run: () => onNavigate('memory'),
+      },
+      {
+        id: 'console-audit',
+        group: '控制台',
+        label: '审计',
+        hint: '召回、注入与原始事件流',
+        keywords: 'audit 审计 依据 事件',
+        icon: 'audit',
+        run: () => onNavigate('audit'),
+      },
+      {
+        id: 'console-growth',
+        group: '控制台',
+        label: '演化',
+        hint: '生命周期与行为画像',
+        keywords: 'growth 演化 成长 画像',
+        icon: 'growth',
+        run: () => onNavigate('growth'),
       },
       {
         id: 'act-new-chat',

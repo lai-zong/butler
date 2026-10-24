@@ -33,6 +33,17 @@ export const RECALL_WEIGHTS = {
   confidence: 0.2,
 } as const;
 
+/**
+ * 语义扩展的保守门槛。
+ *
+ * 来自 `scripts/eval-semantic.ts` 的离线评测（24 条相关 + 9 条无关）：
+ *   · 0.45：相关 23/24 达到，无关 0/9 —— 但会漏掉“火锅→减脂”（0.408）
+ *   · 0.40：相关 23/24 达到，无关 1/9 —— 保住“火锅→减脂”，多一条误报
+ * 当前选 0.40，并保留字面召回；语义只做**补充候选**，最终还要过综合分阈值。
+ * 这只是小样本，不能宣称普适；纯 embedding 仍有 top1 错误，后续需要 LLM 精排。
+ */
+export const SEMANTIC_RELEVANCE_THRESHOLD = 0.4;
+
 export interface ScoredMemory {
   readonly memory: MemoryEntry;
   readonly score: number;
@@ -66,6 +77,11 @@ export interface RecallArgs {
   readonly params?: EvolutionParams;
   /** 偏向某个仆人的领域记忆（路由结果）*/
   readonly favoredDomain?: DomainId;
+  /**
+   * 语义相似度（memoryId → cosine）。
+   * 由调用方在适配器层算好后传入；核心层不加载模型。
+   */
+  readonly semantic?: ReadonlyMap<string, number>;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -99,8 +115,20 @@ export function scoreMemory(
   memory: MemoryEntry,
   query: string,
   favoredDomain?: DomainId,
+  semantic?: ReadonlyMap<string, number>,
 ): Omit<ScoredMemory, 'exploratory' | 'why'> {
   let relevance = relevanceOf(memory, query);
+
+  // 语义只补字面漏掉的候选；低于门槛的相似度不参与（避免无关记忆被放进来）。
+  const semanticScore = semantic?.get(memory.id);
+  if (
+    memory.memClass !== 'global_constraint' &&
+    semanticScore !== undefined &&
+    semanticScore >= SEMANTIC_RELEVANCE_THRESHOLD &&
+    semanticScore > relevance
+  ) {
+    relevance = semanticScore;
+  }
 
   // 路由已确定主责仆人时，该仆人的领域记忆获得相关性加成 ——
   // 但**不加成硬约束**（它已经是 1.0，且不该被领域偏好挤掉）
@@ -144,7 +172,11 @@ export function recall(args: RecallArgs): RecallResult {
 
   // ── ② 打分并按分数降序（同分时按 id 保证确定性）──
   const scored = eligible
-    .map((m) => ({ ...scoreMemory(m, args.query, args.favoredDomain), exploratory: false, why: '' }))
+    .map((m) => ({
+      ...scoreMemory(m, args.query, args.favoredDomain, args.semantic),
+      exploratory: false,
+      why: '',
+    }))
     .filter((s) => s.relevance > 0)
     .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id));
 

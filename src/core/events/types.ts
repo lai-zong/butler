@@ -198,6 +198,8 @@ export type EventType =
   | 'session.message'
   | 'session.reply'
   | 'session.verdict'
+  // ── 手动复核（v10 后端）──
+  | 'review.run'
   // ── 题目与批改（v8 新增）──
   //
   // ★★ `quiz.created` 存的是**正确答案**，它必须与产出物分离：
@@ -343,6 +345,7 @@ export const EVENT_FAMILIES = {
     'session.message',
     'session.reply',
     'session.verdict',
+    'review.run',
     'quiz.created',
     'quiz.graded',
   ],

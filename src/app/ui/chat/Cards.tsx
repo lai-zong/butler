@@ -224,7 +224,13 @@ export function VerdictCard({
               <Icon name="clock" size={13} /> {formatDuration(verdict.durationMs)}
             </span>
             <span className="mono">
-              {formatTokens(verdict.usage.inputTokens)} in · {formatTokens(verdict.usage.outputTokens)} out
+              本轮 {formatTokens(verdict.usage.inputTokens)} in · {formatTokens(verdict.usage.outputTokens)} out
+              {verdict.sessionUsage !== undefined && (
+                <>
+                  {' · '}会话 {formatTokens(verdict.sessionUsage.inputTokens)} in ·{' '}
+                  {formatTokens(verdict.sessionUsage.outputTokens)} out
+                </>
+              )}
             </span>
             {verdict.artifactIds.length > 0 && <span>{verdict.artifactIds.length} 个产出物</span>}
             {onOpenAudit !== undefined && (

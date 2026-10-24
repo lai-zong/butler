@@ -74,6 +74,7 @@ export class EvolutionEngine {
     this.random = opts.random;
     this.userId = opts.userId;
     this.params = opts.params ?? DEFAULT_PARAMS;
+    this.replayFeedback();
   }
 
   // ── 只读视图 ──
@@ -253,6 +254,8 @@ export class EvolutionEngine {
   adjustWeight(memoryId: string, delta: number, reason = '用户手动调整'): boolean {
     const entry = this.store.get(memoryId);
     if (!entry) return false;
+    // 硬约束不参与演化干预；与 forceRevive/forceArchive 保持同一道门。
+    if (entry.memClass === 'global_constraint') return false;
 
     const now = this.clock.now();
     const next = Math.min(this.params.maxFitness, Math.max(0, entry.fitness + delta));
@@ -414,13 +417,37 @@ export class EvolutionEngine {
     });
   }
 
+  /**
+   * 从事件流恢复“无法由 store 字段直接读到”的反馈：
+   *   · intervention.correct → misuses 次数
+   *   · fitness.updated(reason=conflict) → conflicts 次数
+   *
+   * 成功次数不在这里累加：`store.effectiveness.succeeded` 已经是持久化真相，
+   * `acc()` 首次创建时直接取它；否则会和 recordEffect 的事件重复计数。
+   */
+  private replayFeedback(): void {
+    for (const e of this.log.all()) {
+      const p = (e.payload ?? {}) as Record<string, unknown>;
+      const id = typeof p['memoryId'] === 'string' ? p['memoryId'] : '';
+      if (id.length === 0 || this.store.get(id) === undefined) continue;
+
+      if (e.type === 'intervention.correct') {
+        this.acc(id).misuses += 1;
+      } else if (e.type === 'fitness.updated' && p['reason'] === 'conflict') {
+        const count = typeof p['conflicts'] === 'number' ? p['conflicts'] : 1;
+        this.acc(id).conflicts = Math.max(this.acc(id).conflicts, count);
+      }
+    }
+  }
+
   private acc(memoryId: string): StatsAccumulator {
     let a = this.stats.get(memoryId);
     if (!a) {
       const entry = this.store.get(memoryId);
       a = {
         hits: entry?.hitCount ?? 0,
-        successes: 0,
+        // 成功次数持久化在 effectiveness；不能重置成 0。
+        successes: entry?.effectiveness?.succeeded ?? 0,
         misuses: 0,
         conflicts: 0,
         lastHitAt: entry?.lastHitAt ?? null,

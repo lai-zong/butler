@@ -42,15 +42,18 @@ import type {
   TurnAudit,
   MemoryTarget,
 } from '../lib/types.js';
+import { CheckpointsPanel } from './CheckpointsPanel';
 
 interface AuditViewProps {
   readonly range: { readonly fromSeq: number; readonly toSeq: number } | null;
   readonly onClearRange: () => void;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
+  /** 首次审核数据取完（成功或失败）时调用一次，用于控制台的真实进度。 */
+  readonly onFirstReady?: () => void;
 }
 
-type Tab = 'evidence' | 'events';
+type Tab = 'evidence' | 'events' | 'checkpoints';
 
 const FAMILIES: readonly { readonly value: string; readonly label: string }[] = [
   { value: 'all', label: '全部' },
@@ -81,11 +84,15 @@ export function AuditView({
   onClearRange,
   onOpenMemory,
   notify,
+  onFirstReady,
 }: AuditViewProps): JSX.Element {
   const [tab, setTab] = useState<Tab>('evidence');
   const [audit, setAudit] = useState<AuditResponse | null>(null);
   const [auditLoading, setAuditLoading] = useState(true);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const firstReadyRef = useRef(false);
+  const onFirstReadyRef = useRef(onFirstReady);
+  onFirstReadyRef.current = onFirstReady;
 
   const [events, setEvents] = useState<readonly EventItem[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -112,6 +119,10 @@ export function AuditView({
       setAuditError(errorMessage(err));
     } finally {
       setAuditLoading(false);
+      if (!firstReadyRef.current) {
+        firstReadyRef.current = true;
+        onFirstReadyRef.current?.();
+      }
     }
   }, [range]);
 
@@ -193,25 +204,31 @@ export function AuditView({
   return (
     <div className="page audit-page">
       <PageHeader
-        eyebrow="AUDIT / EVIDENCE"
+        eyebrow={tab === 'checkpoints' ? 'AUDIT / CHECKPOINTS' : 'AUDIT / EVIDENCE'}
         title="审计"
-        description="它凭什么这么说：召回、注入、拦截与授权，全部可追到原始事件。"
+        description={
+          tab === 'checkpoints'
+            ? '从存档点回看：它改了什么、哪些产出物会受影响。当前只读。'
+            : '它凭什么这么说：召回、注入、拦截与授权，全部可追到原始事件。'
+        }
         actions={
-          <>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => void copyJson()}>
-              <Icon name="copy" size={14} /> 复制 JSON
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => {
-                void loadAudit();
-                if (tab === 'events') void loadEvents('replace');
-              }}
-            >
-              <Icon name="refresh" size={14} className={auditLoading ? 'spin' : ''} /> 刷新
-            </button>
-          </>
+          tab === 'checkpoints' ? undefined : (
+            <>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => void copyJson()}>
+                <Icon name="copy" size={14} /> 复制 JSON
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  void loadAudit();
+                  if (tab === 'events') void loadEvents('replace');
+                }}
+              >
+                <Icon name="refresh" size={14} className={auditLoading ? 'spin' : ''} /> 刷新
+              </button>
+            </>
+          )
         }
       />
 
@@ -232,24 +249,26 @@ export function AuditView({
         </div>
       )}
 
-      <div className="stat-grid stat-grid--4">
-        <StatCard label="召回记忆" value={recalls} icon="memory" note={a?.recalls.length ? `${a.recalls.length} 次召回` : '本轮暂无召回'} />
-        <StatCard label="约束注入" value={injections} icon="lock" note="每一条都能看到理由" />
-        <StatCard
-          label="硬约束拦截"
-          value={hardChecks}
-          icon="shield"
-          tone={hardChecks > 0 ? 'danger' : 'default'}
-          note={hardChecks > 0 ? '确定性判定，不经模型' : '本轮没有拦截'}
-        />
-        <StatCard
-          label="越权写入"
-          value={rejectedWrites}
-          icon="lock"
-          tone={rejectedWrites > 0 ? 'warn' : 'default'}
-          note={`授权事件 ${grants} 条`}
-        />
-      </div>
+      {tab !== 'checkpoints' && (
+        <div className="stat-grid stat-grid--4">
+          <StatCard label="召回记忆" value={recalls} icon="memory" note={a?.recalls.length ? `${a.recalls.length} 次召回` : '本轮暂无召回'} />
+          <StatCard label="约束注入" value={injections} icon="lock" note="每一条都能看到理由" />
+          <StatCard
+            label="硬约束拦截"
+            value={hardChecks}
+            icon="shield"
+            tone={hardChecks > 0 ? 'danger' : 'default'}
+            note={hardChecks > 0 ? '确定性判定，不经模型' : '本轮没有拦截'}
+          />
+          <StatCard
+            label="越权写入"
+            value={rejectedWrites}
+            icon="lock"
+            tone={rejectedWrites > 0 ? 'warn' : 'default'}
+            note={`授权事件 ${grants} 条`}
+          />
+        </div>
+      )}
 
       <div className="seg-tabs" role="tablist" aria-label="审计视图">
         <button
@@ -272,7 +291,18 @@ export function AuditView({
           事件流
           {eventTotal > 0 && <span className="seg-count">{formatNumber(eventTotal)}</span>}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'checkpoints'}
+          className={tab === 'checkpoints' ? 'is-active' : ''}
+          onClick={() => setTab('checkpoints')}
+        >
+          检查点
+        </button>
       </div>
+
+      {tab === 'checkpoints' && <CheckpointsPanel notify={notify} />}
 
       {tab === 'evidence' && (
         <div className="audit-panel">

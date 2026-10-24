@@ -30,11 +30,11 @@
  */
 
 import { DEFAULT_TOOL_RESULT_CHAR_LIMIT } from '../config/budget.js';
-import { limitsConfig } from '../config/env.js';
 import type { EventLog } from '../events/log.js';
 import { msg, type ModelMessage, type ModelPort, type ModelToolSpec } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { ModelStreamPort } from '../ports/stream.js';
+import { throwIfAborted } from '../runtime/abort.js';
 import type { ToolFramework } from './framework.js';
 import type { ToolSpec } from './types.js';
 import { issuesToMessage, validateArgs } from './validate.js';
@@ -48,26 +48,15 @@ import {
   type TrustLevel,
 } from '../security/injection.js';
 
-/** 默认最大轮次。超过就该判断"这个任务不适合用工具解决"。 */
 /**
- * 默认最大推理轮次。
+ * 工具循环不设轮次上限（方案 §14 / D-30）。
  *
- * ★ v8 · 2026-10-18：默认**不设上限**（`Infinity`）—— 方案 §14 / D-30。
- *   可用 `MAX_ROUNDS_PER_SESSION` 环境变量人为收紧（调试/压测用）。
+ * 退出只由两个真实条件决定：
+ *   ① 模型某轮不再调用工具（noToolCalls）
+ *   ② 终止工具成功执行（terminalTool）
  *
- * ⚠️ getter 而非常量：环境变量在模块加载后才载入。
+ * 用户可以随时通过 `signal` 取消；这不是“轮次耗尽”，不写失败汇报。
  */
-export function defaultMaxRounds(): number {
-  return limitsConfig.maxRoundsPerSession;
-}
-
-/**
- * @deprecated 用 `defaultMaxRounds()`。
- *
- * ★ v8 · 2026-10-18：由 8 改为 `Infinity`，与"不设上限"的决策一致。
- *   ⚠️ 保留符号只是因为既有测试引用了它；**生产代码用 `defaultMaxRounds()`**。
- */
-export const DEFAULT_MAX_ROUNDS = Number.POSITIVE_INFINITY;
 
 /** 历史里保留的最大工具结果条数。 */
 export const MAX_TOOL_RESULTS_IN_HISTORY = 12;
@@ -88,7 +77,7 @@ export const MAX_TOOL_RESULTS_IN_HISTORY = 12;
  */
 export type AgentProgressEvent =
   /** 新一轮开始（模型开始思考） */
-  | { readonly kind: 'roundStarted'; readonly round: number; readonly maxRounds: number }
+  | { readonly kind: 'roundStarted'; readonly round: number }
   /** 思考分片（可能为空 —— 实测模型按任务难度分配思考量） */
   | { readonly kind: 'reasoning'; readonly round: number; readonly delta: string; readonly accumulated: string }
   /** 正文分片（模型对用户说的话） */
@@ -120,12 +109,25 @@ export type AgentProgressEvent =
       readonly output: string;
       readonly durationMs: number;
     }
+  /**
+   * 本轮的 token 用量。
+   *
+   * `inputTokens` / `outputTokens` 是这一轮模型请求的用量；
+   * `totalInputTokens` / `totalOutputTokens` 是本轮任务内累计（跨工具轮次）。
+   */
+  | {
+      readonly kind: 'usage';
+      readonly round: number;
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalInputTokens: number;
+      readonly totalOutputTokens: number;
+    }
   /** 循环结束 */
   | {
       readonly kind: 'finished';
       readonly rounds: number;
-      readonly hitRoundLimit: boolean;
-      readonly reason: 'noToolCalls' | 'terminalTool' | 'roundLimit';
+      readonly reason: 'noToolCalls' | 'terminalTool';
     };
 
 /** 一轮的产出（流式与非流式共用同一形状 —— 让主循环不必分叉）。 */
@@ -154,7 +156,7 @@ async function runRoundStreaming(args: {
   readonly messages: readonly ModelMessage[];
   readonly toolSpecs: readonly ModelToolSpec[];
   readonly round: number;
-  readonly maxRounds: number;
+  readonly signal?: AbortSignal;
   readonly onProgress?: (e: AgentProgressEvent) => void;
 }): Promise<RoundOutcome> {
   const emit = (e: AgentProgressEvent): void => {
@@ -165,7 +167,7 @@ async function runRoundStreaming(args: {
     }
   };
 
-  emit({ kind: 'roundStarted', round: args.round, maxRounds: args.maxRounds });
+  emit({ kind: 'roundStarted', round: args.round });
 
   let text = '';
   let reasoning = '';
@@ -179,6 +181,7 @@ async function runRoundStreaming(args: {
     messages: args.messages,
     ...(args.toolSpecs.length > 0 ? { tools: args.toolSpecs } : {}),
     temperature: 0.2,
+    ...(args.signal !== undefined ? { signal: args.signal } : {}),
   })) {
     switch (chunk.kind) {
       case 'reasoning':
@@ -311,7 +314,6 @@ export interface AgentLoopOptions {
    */
   readonly asker?: ApprovalAsker;
   readonly toolFilter?: (t: ToolSpec) => boolean;
-  readonly maxRounds?: number;
   /**
    * 终止工具名。该工具**成功执行**后循环立即结束。
    *
@@ -341,6 +343,13 @@ export interface AgentLoopOptions {
    *    而单元测试用 MockModel 走非流式路径更稳定。
    */
   readonly streamPort?: ModelStreamPort;
+  /**
+   * 用户停止信号。
+   *
+   * ⚠️ 只在轮次/工具边界检查，并传给模型流；
+   *    已经开始的同步工具执行无法被强行打断，但不会再开始下一轮。
+   */
+  readonly signal?: AbortSignal;
   /**
    * 循环进度回调 —— 「思考 → 工具 → 再思考」画面的来源。
    *
@@ -384,8 +393,6 @@ export interface AgentLoopResult {
   readonly finalText: string;
   readonly traces: readonly ToolCallTrace[];
   readonly rounds: number;
-  /** 是否因为达到轮次上限而中止 */
-  readonly hitRoundLimit: boolean;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   /** 最终的消息序列（便于继续对话或审计） */
   readonly messages: readonly ModelMessage[];
@@ -395,7 +402,7 @@ export async function runAgentLoop(
   opts: AgentLoopOptions,
   initialMessages: readonly ModelMessage[],
 ): Promise<AgentLoopResult> {
-  const maxRounds = opts.maxRounds ?? defaultMaxRounds();
+  throwIfAborted(opts.signal);
   const toolSpecs: readonly ModelToolSpec[] = opts.tools.toModelSpecs(opts.toolFilter);
 
   const messages: ModelMessage[] = [...initialMessages];
@@ -412,7 +419,8 @@ export async function runAgentLoop(
     }
   };
 
-  while (round < maxRounds) {
+  while (true) {
+    throwIfAborted(opts.signal);
     round += 1;
 
     /**
@@ -441,7 +449,7 @@ export async function runAgentLoop(
         messages,
         toolSpecs,
         round,
-        maxRounds,
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       });
       res = {
@@ -465,8 +473,21 @@ export async function runAgentLoop(
       res = { text: r.text, toolCalls: r.toolCalls, usage: r.usage };
     }
 
+    // 模型返回后、开始处理工具前再确认一次：流式适配器收到 abort 后会正常收尾，
+    // 这里不能把已取消轮次的工具继续执行下去。
+    throwIfAborted(opts.signal);
+
     inputTokens += res.usage.inputTokens;
     outputTokens += res.usage.outputTokens;
+
+    emitProgress({
+      kind: 'usage',
+      round,
+      inputTokens: res.usage.inputTokens,
+      outputTokens: res.usage.outputTokens,
+      totalInputTokens: inputTokens,
+      totalOutputTokens: outputTokens,
+    });
 
     // 模型不再调用工具 → 这就是最终答案
     if (res.toolCalls.length === 0) {
@@ -474,14 +495,12 @@ export async function runAgentLoop(
       emitProgress({
         kind: 'finished',
         rounds: round,
-        hitRoundLimit: false,
         reason: 'noToolCalls',
       });
       return {
         finalText: res.text,
         traces,
         rounds: round,
-        hitRoundLimit: false,
         usage: { inputTokens, outputTokens },
         messages,
       };
@@ -504,6 +523,7 @@ export async function runAgentLoop(
     // 逐个执行（顺序执行：避免并发写同一文件导致的竞态，
     // 也让审计顺序与用户看到的顺序一致）
     for (const tc of res.toolCalls) {
+      throwIfAborted(opts.signal);
       const started = opts.clock.now();
       const spec = opts.tools.get(tc.name);
 
@@ -644,12 +664,11 @@ export async function runAgentLoop(
       // ★ 终止工具成功执行 → 立即结束，不再多跑一轮。
       //   注意只有成功才算：失败时继续循环，让模型有机会修正后重新提交。
       if (opts.terminalTool !== undefined && tc.name === opts.terminalTool && ok) {
-        emitProgress({ kind: 'finished', rounds: round, hitRoundLimit: false, reason: 'terminalTool' });
+        emitProgress({ kind: 'finished', rounds: round, reason: 'terminalTool' });
         return {
           finalText: res.text,
           traces,
           rounds: round,
-          hitRoundLimit: false,
           usage: { inputTokens, outputTokens },
           messages,
         };
@@ -659,31 +678,6 @@ export async function runAgentLoop(
     // 上下文裁剪：保留最近的若干条工具结果，更早的替换成占位
     trimHistory(messages);
   }
-
-  emitProgress({ kind: 'finished', rounds: round, hitRoundLimit: true, reason: 'roundLimit' });
-
-  opts.log.append({
-    type: 'supervisor.observe',
-    actor: 'supervisor',
-    payload: {
-      taskId: opts.taskId,
-      reason: 'agent_round_limit',
-      rounds: round,
-      note: `达到轮次上限（${maxRounds}），可能陷入循环或被任务本身不适合用工具解决`,
-    },
-    createdAt: opts.clock.now(),
-  });
-
-  return {
-    finalText:
-      `（已达工具调用轮次上限 ${maxRounds}，中止。最后一次输出：）` +
-      (traces.length > 0 ? `\n已执行 ${traces.length} 次工具调用。` : ''),
-    traces,
-    rounds: round,
-    hitRoundLimit: true,
-    usage: { inputTokens, outputTokens },
-    messages,
-  };
 }
 
 /**

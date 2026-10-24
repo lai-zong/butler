@@ -658,3 +658,49 @@ describe('⑧ 确定性', () => {
     expect(r?.startedAt).toBe(clock.now());
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ⑨ D-44：单飞 + 单任务超时
+// ═══════════════════════════════════════════════════════════
+
+describe('⑨ D-44 单飞与超时', () => {
+  it('tick 运行期间 runNow 不再启动第二份', async () => {
+    const log = new EventLog('s_sch_lock');
+    const clock = new FixedClock(MON_9AM);
+    const scheduler = new Scheduler(log, clock, DEFAULT_QUOTA, { taskTimeoutMs: 1000 });
+
+    let release!: (v: { summary: string }) => void;
+    const gate = new Promise<{ summary: string }>((resolve) => { release = resolve; });
+    const fn = vi.fn(async () => gate);
+    scheduler.register({ kind: 'dailyReflection', handler: fn });
+
+    const tickPromise = scheduler.tick(MON_9AM);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(scheduler.isRunning()).toBe(true);
+
+    const manual = await scheduler.runNow('dailyReflection', MON_9AM);
+    expect(manual).toBeNull();
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    release({ summary: 'ok' });
+    const runs = await tickPromise;
+    expect(runs[0]?.outcome).toBe('succeeded');
+    expect(scheduler.isRunning()).toBe(false);
+  });
+
+  it('单任务超时 → 记失败，不再重试', async () => {
+    const log = new EventLog('s_sch_timeout');
+    const clock = new FixedClock(MON_9AM);
+    const scheduler = new Scheduler(log, clock, DEFAULT_QUOTA, { taskTimeoutMs: 30 });
+    const fn = vi.fn(() => new Promise<{ summary: string }>(() => {}));
+    scheduler.register({ kind: 'dailyReflection', handler: fn });
+
+    const runs = await scheduler.tick(MON_9AM);
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(runs[0]?.outcome).toBe('failed');
+    expect(runs[0]?.note).toContain('超过');
+    expect(scheduler.isRunning()).toBe(false);
+  });
+});

@@ -50,6 +50,7 @@ export interface ReplayMemoryResult {
 /** 与记忆状态相关的事件类型（其余事件重放时直接跳过）。 */
 export const MEMORY_STATE_EVENTS: readonly string[] = [
   'memory.created',
+  'memory.candidate',
   'memory.approved',
   'memory.rejected',
   'memory.revised',
@@ -146,6 +147,7 @@ export function replayMemory(events: readonly SessionEvent[]): ReplayMemoryResul
         break;
       }
 
+      case 'memory.candidate':
       case 'memory.approved':
       case 'memory.rejected':
       case 'memory.archived':

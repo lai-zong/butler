@@ -12,6 +12,7 @@ import type { ReactNode } from 'react';
 
 export type IconName =
   | 'chat'
+  | 'console'
   | 'memory'
   | 'audit'
   | 'growth'
@@ -41,6 +42,7 @@ export type IconName =
   | 'eyeOff'
   | 'command'
   | 'menu'
+  | 'panelLeft'
   | 'filter'
   | 'database'
   | 'quote'
@@ -60,6 +62,20 @@ const ICONS: Record<IconName, ReactNode> = {
     <>
       <path d="M4 6.8A2.8 2.8 0 0 1 6.8 4h10.4A2.8 2.8 0 0 1 20 6.8v6.4a2.8 2.8 0 0 1-2.8 2.8H9.4L4 20v-4.6a2.8 2.8 0 0 1 0-1.2Z" />
       <path d="M8.5 9.5h7M8.5 12.8h4.5" />
+    </>
+  ),
+  console: (
+    <>
+      <rect x="3.2" y="4.5" width="17.6" height="15" rx="2.4" />
+      <path d="M3.2 8h17.6" />
+      <path d="m7.2 11.2 2.7 2.8-2.7 2.8M12.8 16.8h4" />
+    </>
+  ),
+  panelLeft: (
+    <>
+      <rect x="3.2" y="4.5" width="17.6" height="15" rx="2.4" />
+      <path d="M9 4.8v14.4" />
+      <path d="m14.5 9-3 3 3 3" />
     </>
   ),
   memory: (
