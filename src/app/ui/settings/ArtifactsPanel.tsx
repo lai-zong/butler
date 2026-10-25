@@ -306,6 +306,27 @@ export function ArtifactsPanel(): JSX.Element {
                               >
                                 {showContent ? '收起内容' : '查看版本内容'}
                               </button>
+                              <a
+                                className="text-btn"
+                                href={`/api/artifacts/${encodeURIComponent(a.id)}/download?format=csv`}
+                                download
+                              >
+                                下载 CSV
+                              </a>
+                              <a
+                                className="text-btn"
+                                href={`/api/artifacts/${encodeURIComponent(a.id)}/download?format=pdf`}
+                                download
+                              >
+                                下载 PDF
+                              </a>
+                              <a
+                                className="text-btn"
+                                href={`/api/artifacts/${encodeURIComponent(a.id)}/download?format=ics`}
+                                download
+                              >
+                                下载 ICS
+                              </a>
                             </div>
 
                             {showContent && selected !== null && (
@@ -334,7 +355,7 @@ export function ArtifactsPanel(): JSX.Element {
 
           <p className="artifacts-note">
             只读：版本内容不可变；回退走检查点，不在这里直接改内容。被取代的旧版本保留，可随时对比；
-            默认只看 diff，完整内容按需展开。
+            默认只看 diff，完整内容按需展开；当前版本可下载 CSV。
           </p>
         </>
       )}

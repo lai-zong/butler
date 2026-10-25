@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
 import { toMessageDto, toSessionDto, toVerdictDto } from '@/app/server/uiData.js';
+import { toSessionCancellations } from '@/app/server/cancellations.js';
 import { readQuizzes } from '@/core/quiz/read.js';
 
 export const dynamic = 'force-dynamic';
@@ -47,5 +48,6 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<NextRes
     verdicts: verdicts.map(toVerdictDto),
     reviews,
     quizzes,
+    cancellations: toSessionCancellations(rt.bootstrapped.log, id),
   });
 }

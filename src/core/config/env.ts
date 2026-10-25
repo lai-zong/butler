@@ -188,6 +188,38 @@ export const routingConfig = {
   },
 } as const;
 
+/**
+ * 记忆检索参数。
+ *
+ * ★ 语义阈值默认 0.35：30 条跨场景 + 5 条负例的复测结果
+ *   （0.40 命中 27/30，0.35 命中 29/30，负例误召回都 1/5）。
+ *   允许用环境变量覆盖，但**不是**“调低就一定更好”。
+ */
+export const retrievalConfig = {
+  get semanticThreshold(): number {
+    return num('MEMORY_SEMANTIC_THRESHOLD', 0.35, { min: 0, max: 1 });
+  },
+  /**
+   * 语义 top-k 补充通道的候选数（默认 3，0 关闭）。
+   *
+   * ⚠️ 与阈值分开：阈值决定“单靠语义就能进”的门槛；
+   *    top-k 只负责把少量低分但可能相关的候选送进精排。
+   */
+  get semanticTopK(): number {
+    // dev 集对比：topK=3 在 limit=8 下仍漏“火锅→减脂”；topK=5 才补进来，
+    // 由精排过滤后负例没有增加（见 scripts/eval-recall.ts 的 dev/test 结果）。
+    return Math.max(0, Math.floor(num('MEMORY_SEMANTIC_TOPK', 5, { min: 0, max: 10 })));
+  },
+  /** top-k 补充通道的语义下限；默认 0.30。 */
+  get semanticFloor(): number {
+    return num('MEMORY_SEMANTIC_FLOOR', 0.3, { min: 0, max: 1 });
+  },
+  /** 精排过滤阈值；低于它的软记忆会被丢弃，硬约束不受影响。 */
+  get rerankMinRelevance(): number {
+    return num('MEMORY_RERANK_MIN_RELEVANCE', 0.5, { min: 0, max: 1 });
+  },
+} as const;
+
 // ═══════════════════════════════════════════════════════════
 // 记忆演化（方案 § 8.4）
 // ═══════════════════════════════════════════════════════════
@@ -217,6 +249,29 @@ export const memoryConfig = {
 } as const;
 
 // ═══════════════════════════════════════════════════════════
+// 记忆冲突检测（v10.5）
+// ═══════════════════════════════════════════════════════════
+
+export const conflictDetectionConfig = {
+  /**
+   * off    = 不检测（默认；不额外调用模型）
+   * review = 只发现“可能冲突”，标记为待审；不自动裁决
+   */
+  get mode(): 'off' | 'review' {
+    const s = raw('CONFLICT_DETECTION_MODE');
+    if (s === undefined) return 'off';
+    if (s === 'off' || s === 'review') return s;
+    problems.push({
+      key: 'CONFLICT_DETECTION_MODE',
+      raw: s,
+      why: '只能是 off / review',
+      usedInstead: 'off',
+    });
+    return 'off';
+  },
+} as const;
+
+// ═══════════════════════════════════════════════════════════
 // 成本与安全熔断
 // ═══════════════════════════════════════════════════════════
 
@@ -237,6 +292,16 @@ export const limitsConfig = {
     return num('DAILY_TOKEN_TASK_LIMIT', 10, { min: 0 });
   },
 
+  /** 操作范围熔断：统计窗口（毫秒） */
+  get toolFuseWindowMs(): number {
+    return num('TOOL_FUSE_WINDOW_MS', 60_000, { min: 1_000 });
+  },
+
+  /** 操作范围熔断：窗口内允许的非只读调用次数 */
+  get toolFuseMaxWrites(): number {
+    return num('TOOL_FUSE_MAX_WRITES', 30, { min: 1 });
+  },
+
   /**
    * 单个定时任务的超时（毫秒）。
    *
@@ -245,6 +310,23 @@ export const limitsConfig = {
    */
   get scheduleTaskTimeoutMs(): number {
     return num('SCHEDULE_TASK_TIMEOUT_MS', 120_000, { min: 1000 });
+  },
+} as const;
+
+// ═══════════════════════════════════════════════════════════
+// 监督员触发模式（v10 · D-35 / D-48）
+// ═══════════════════════════════════════════════════════════
+
+export const supervisionConfig = {
+  /**
+   * `manual`（默认）：主回合不自动调用监督员，由用户在轮次条按需发起；
+   * `auto`：保留旧的每轮自动复核行为（测试/回退用）。
+   *
+   * ⚠️ 只影响“是否自动调用”；固定 `SUPERVISOR_SYSTEM` 与只读边界不变。
+   */
+  get mode(): 'auto' | 'manual' {
+    const raw = (process.env['SUPERVISOR_MODE'] ?? 'manual').trim().toLowerCase();
+    return raw === 'auto' ? 'auto' : 'manual';
   },
 } as const;
 
@@ -343,21 +425,36 @@ export function loadEnvFile(dir: string = process.cwd()): {
 
 /** 本模块认识的全部环境变量名（供 doctor 与模板一致性检查用）。 */
 export const KNOWN_KEYS: readonly string[] = [
+  'MODEL_PROVIDER',
   'DEEPSEEK_API_KEY',
   'DEEPSEEK_BASE_URL',
   'DEEPSEEK_MODEL',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'OLLAMA_API_KEY',
+  'OLLAMA_BASE_URL',
+  'OLLAMA_MODEL',
   'MODEL_TIMEOUT_MS',
   'NARRATION_MODEL',
   'VISION_API_KEY',
   'VISION_BASE_URL',
   'VISION_MODEL',
   'ROUTING_CONFIDENCE_THRESHOLD',
+  'MEMORY_SEMANTIC_THRESHOLD',
+  'MEMORY_SEMANTIC_TOPK',
+  'MEMORY_SEMANTIC_FLOOR',
+  'MEMORY_RERANK_MIN_RELEVANCE',
   'FITNESS_EMA_ALPHA',
   'MEMORY_DORMANT_DAYS',
   'MEMORY_ARCHIVE_FITNESS_THRESHOLD',
   'EXPLORATORY_RECALL_RATIO',
+  'CONFLICT_DETECTION_MODE',
   'DAILY_BUDGET_CNY',
   'TOOL_TIMEOUT_MS',
+  'TOOL_FUSE_WINDOW_MS',
+  'TOOL_FUSE_MAX_WRITES',
+  'SUPERVISOR_MODE',
   'DAILY_TOKEN_TASK_LIMIT',
   'SCHEDULE_TASK_TIMEOUT_MS',
   'BEHAVIOR_OBSERVATION_ENABLED',
@@ -396,6 +493,6 @@ export const RESERVED_KEYS: readonly string[] = [
   'BEHAVIOR_OBSERVATION_ENABLED',
   /** 云端同步 —— 当前恒为本地，代码里没有上传路径 */
   'LOCAL_FIRST',
-  /** 导出含凭证 —— 导出功能尚未实现 */
+  /** 导出含凭证 —— 变量保留；当前导出路径明确不含凭证值，不读取此开关 */
   'EXPORT_INCLUDE_CREDENTIALS',
 ];

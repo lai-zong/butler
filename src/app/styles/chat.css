@@ -643,6 +643,23 @@
   min-width: 0;
 }
 
+.voice-btn.is-listening {
+  border-color: #d9a58f;
+  background: var(--danger-soft);
+  color: var(--danger);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+.voice-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(164, 65, 47, 0.14); }
+  50% { box-shadow: 0 0 0 5px rgba(164, 65, 47, 0.04); }
+}
+
 .composer-hint {
   overflow: hidden;
   color: var(--ink-3);
@@ -3071,3 +3088,28 @@
 .review-finding{font-size:10.5px;margin:3px 0;color:var(--ink-2)}
 .review-finding.is-block{color:var(--danger)}
 .review-finding.is-warn{color:var(--warn)}
+
+/* C8 取消回执 */
+.cancel-card{
+  margin:0 0 18px 44px;
+  max-width:680px;
+  padding:14px 15px;
+  border:1px solid #e7c9a9;
+  border-radius:var(--radius);
+  background:linear-gradient(180deg,#fdf8f0,#fbf5eb);
+  box-shadow:var(--shadow-sm);
+}
+.cancel-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.cancel-title{display:flex;align-items:center;gap:7px;min-width:0}
+.cancel-title strong{font-size:13px;color:#6e4522;white-space:nowrap}
+.cancel-title>span:last-child{color:#9b7248;font-size:10px;white-space:nowrap}
+.cancel-time{color:#a07d57;font-size:9px;white-space:nowrap}
+.cancel-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:10px}
+.cancel-grid>div{padding:7px 8px;border:1px solid #ead6bf;border-radius:7px;background:rgba(255,253,249,.72);min-width:0}
+.cancel-label{display:block;color:#9b7248;font-size:8px;font-weight:400;letter-spacing:.06em}
+.cancel-grid strong{display:block;margin-top:1px;color:#5f3c1e;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cancel-grid small{display:block;color:#9b7248;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cancel-note{margin-top:9px;color:#76522f;font-size:10.5px;line-height:1.6}
+.cancel-actions{display:flex;gap:7px;margin-top:10px;padding-top:9px;border-top:1px solid #ead6bf}
+.btn-ghost-warn{border-color:#d8b994;background:transparent;color:#7b4c1b}
+.cancel-actions .btn{font-size:10.5px;padding:6px 9px}

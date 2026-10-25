@@ -22,7 +22,7 @@
  *   也不做"猜着转"的类型断言（猜错会让反思基于错材料）。
  */
 
-import { DOMAIN_IDS, type DomainId } from '../domain/types.js';
+import { DOMAIN_IDS, domainName, type DomainId } from '../domain/types.js';
 import type { ExecutionArtifact, ExecutionReport } from '../execution/types.js';
 import type { SessionStore } from '../chat/types.js';
 import type { ClockPort } from '../ports/clock.js';
@@ -132,6 +132,70 @@ function toExecutionReport(m: ReportMaterial): ExecutionReport {
   };
 }
 
+/**
+ * 结构化周总结（确定性兜底）。
+ *
+ * ★ 为什么需要它：
+ *   反思提示词允许模型产出 summary，但不保证每次都会产出。
+ *   “长期状态”是方案 A11 的能力，不能完全依赖模型这次的心情。
+ *
+ * ★ 为什么只写统计、不写报告正文：
+ *   报告可能来自健康/生活等敏感材料；把正文拼进 global_shared 会
+ *   把领域内容泄露到全局层。这里只使用领域、状态、时间规律和任务 id。
+ *
+ * ★ 为什么置信度 0.65：
+ *   它是结构化汇总，不是用户原话；低于 observed 的 0.7 门槛，
+ *   会进入待审核，不会因为“系统自己跑的”就自动生效。
+ */
+export function buildWeeklySummaryCandidate(args: {
+  readonly materials: readonly ReportMaterial[];
+  readonly temporalPatterns: readonly string[];
+  readonly now: number;
+}): MemoryCandidate | null {
+  const taskIds = new Set(args.materials.map((m) => m.taskId));
+  if (taskIds.size < 2) return null;
+
+  const byDomain = new Map<DomainId, number>();
+  let done = 0;
+  let failed = 0;
+  let blocked = 0;
+  for (const m of args.materials) {
+    byDomain.set(m.domain, (byDomain.get(m.domain) ?? 0) + 1);
+    if (m.status === 'done') done += 1;
+    else if (m.status === 'failed') failed += 1;
+    else blocked += 1;
+  }
+
+  const domains = [...byDomain.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([domain, count]) => `${domainName(domain)} ${count} 次`)
+    .join('、');
+  const patternText =
+    args.temporalPatterns.length > 0
+      ? `时间规律上：${args.temporalPatterns.slice(0, 3).join('；')}。`
+      : '这段时间还没有稳定的时间规律可供总结。';
+
+  const content =
+    `这一周你主要在${domains}产生了 ${args.materials.length} 次执行记录：` +
+    `完成 ${done} 次，失败 ${failed} 次，受阻 ${blocked} 次。` +
+    `${patternText}` +
+    '这是一段阶段性状态汇总，不是对单次任务的结论；后续复盘会继续修正。';
+
+  return {
+    id: `cand_weekly_summary_${args.now}`,
+    kind: 'summary',
+    content,
+    confidence: 0.65,
+    evidence: ['weekly_reflection', '聚合', ...[...taskIds].slice(0, 6)],
+    scope: { memClass: 'global_shared' },
+    rationale:
+      '由本周执行记录的结构化统计生成（不含报告正文）；因为不是用户原话，仍需审核。',
+    layer: 'butler',
+    by: 'butler',
+    createdAt: args.now,
+  };
+}
+
 export interface ReflectScheduledArgs {
   readonly scope: 'daily' | 'weekly';
   readonly model: ModelPort;
@@ -153,6 +217,8 @@ export interface ReflectScheduledArgs {
 export interface ReflectScheduledResult {
   readonly candidateCount: number;
   readonly summary: string;
+  /** 本轮定时反思消耗的模型 token（没有调用模型时为 0） */
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
 }
 
 /**
@@ -167,7 +233,11 @@ export async function reflectScheduled(args: ReflectScheduledArgs): Promise<Refl
   const materials = collectRecentReports({ chat: args.chat, now, since });
 
   if (materials.length === 0) {
-    return { candidateCount: 0, summary: `最近${args.scope === 'daily' ? '一天' : '七天'}没有执行记录，跳过反思` };
+    return {
+      candidateCount: 0,
+      summary: `最近${args.scope === 'daily' ? '一天' : '七天'}没有执行记录，跳过反思`,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    };
   }
 
   const userGoal =
@@ -176,6 +246,8 @@ export async function reflectScheduled(args: ReflectScheduledArgs): Promise<Refl
 
   const candidates: MemoryCandidate[] = [];
   const parts: string[] = [];
+  let usedInput = 0;
+  let usedOutput = 0;
 
   if (args.scope === 'daily') {
     // 按领域分组 —— 每组只喂自己的材料（作用域隔离）
@@ -207,6 +279,8 @@ export async function reflectScheduled(args: ReflectScheduledArgs): Promise<Refl
         },
       });
       candidates.push(...r.candidates);
+      usedInput += r.usage.inputTokens;
+      usedOutput += r.usage.outputTokens;
       parts.push(`${domain} 领域 ${r.candidates.length} 条`);
     }
   } else {
@@ -241,7 +315,26 @@ export async function reflectScheduled(args: ReflectScheduledArgs): Promise<Refl
       },
     });
     candidates.push(...r.candidates);
+    usedInput += r.usage.inputTokens;
+    usedOutput += r.usage.outputTokens;
     parts.push(`跨领域 ${r.candidates.length} 条`);
+
+    /**
+     * 模型可能这一轮没有产出 summary；每周至少尝试给出一个
+     * 结构化的阶段总结，避免“长期状态”完全靠模型随机产生。
+     * 它仍会走准入：置信度 0.65，低于 observed 门槛，进入待审核。
+     */
+    if (!candidates.some((c) => c.kind === 'summary')) {
+      const fallback = buildWeeklySummaryCandidate({
+        materials,
+        temporalPatterns: args.temporalPatterns ?? [],
+        now,
+      });
+      if (fallback !== null) {
+        candidates.push(fallback);
+        parts.push('结构化周总结 1 条（待审核）');
+      }
+    }
   }
 
   /**
@@ -249,15 +342,17 @@ export async function reflectScheduled(args: ReflectScheduledArgs): Promise<Refl
    * 它已经处理了去重、自主采纳与"待审核"分流。
    * ⚠️ 定时反思产出的候选**同样要过审核**，不能因为"是系统自己跑的"就自动生效。
    */
-  const sunk = sinkAndAdmit({
+  const sunk = await sinkAndAdmit({
     log: args.log,
     store: args.store,
     clock: args.clock,
     candidates,
+    model: args.model,
   });
 
   return {
     candidateCount: sunk.created,
+    usage: { inputTokens: usedInput, outputTokens: usedOutput },
     summary:
       `材料 ${materials.length} 条（${parts.join('，')}）；` +
       `入库 ${sunk.created} 条（自主采纳 ${sunk.admittedAutonomously}，待审核 ${sunk.pendingReview}，` +

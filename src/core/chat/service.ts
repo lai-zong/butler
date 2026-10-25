@@ -35,6 +35,7 @@ import { runNarration, type NarrationResult, type NarrationState } from '../stre
 import type { ModelStreamPort } from '../ports/stream.js';
 import type { AgentProgressEvent } from '../tools/agentLoop.js';
 import { DEFAULT_PARAMS } from '../memory/fitness.js';
+import { retrievalConfig } from '../config/env.js';
 import type { EvolutionEngine } from '../memory/evolution.js';
 import type { SemanticIndex } from '../memory/semantic.js';
 import { rerankRecall } from '../memory/rerank.js';
@@ -47,7 +48,7 @@ import {
   type VerdictIssue,
 } from './types.js';
 import { buildHistoryMessages, buildDomainHistoryMessages } from './history.js';
-import { planHistory, summarizeOlder } from './compaction.js';
+import { planHistory, summarizeOlder, pressureOf, historyBudgetForPressure, olderAfterCoverage } from './compaction.js';
 import { createTraceCollector } from './trace.js';
 import { toExecutionReportData } from './reports.js';
 import { artifactToText } from '../execution/render.js';
@@ -84,6 +85,8 @@ export interface RunTurnArgs {
    *   没有它时退回策略默认实现（Web 版直接拒绝）—— 与改造前一致。
    */
   readonly asker?: ApprovalAsker;
+  /** 监督员触发模式；不传时 runSession 默认 auto（测试兼容） */
+  readonly supervisionMode?: 'auto' | 'manual';
   /** 记忆归属的用户 */
   readonly userId: string;
   readonly random: RandomPort;
@@ -112,6 +115,8 @@ export interface RunTurnArgs {
    * 不给则跳过叙述（测试与纯推理场景不需要它）。
    */
   readonly streamModel?: ModelStreamPort;
+  /** 英文思考增量翻译；不给则只显示英文原文。 */
+  readonly translatorPort?: import('../stream/translate.js').TranslationPort;
   /** 叙述状态更新回调（供 SSE 推送逐字内容） */
   readonly onNarration?: (s: NarrationState) => void;
   /**
@@ -169,6 +174,10 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   throwIfAborted(args.signal);
   const { sessionId, userText, chat } = args;
 
+  // 每轮开始清掉已过期授权，保证审计里有 grant.expired 记录；
+  // 真正生效仍由 canRead 的 expiresAt + taskId 双重校验兜底。
+  args.store.expireGrants();
+
   // ── ① 记下用户发言（落事件，供回退与重放）──
   const auditFrom = args.log.nextSeq();
   const userMsg = chat.appendMessage(sessionId, { role: 'user', text: userText });
@@ -208,11 +217,55 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
    *    失败时摘要为空，`buildHistoryMessages` 会**如实标注"较早内容未压缩"**，
    *    而不是假装完整（假装完整会让模型自信地用错前提）。
    */
+  /**
+   * 历史预算不是永远固定 160K：
+   * 上一次模型调用报告的真实 inputTokens 命中压力线时，
+   * 按 retainRatio 收缩历史保留量，给当前轮留出硬安全余量。
+   */
+  const priorVerdict = args.chat.verdictsOf(sessionId).at(-1);
+  const lastInputTokens = priorVerdict?.usage.inputTokens;
+  const pressure = pressureOf({
+    ...(lastInputTokens !== undefined ? { lastInputTokens } : {}),
+  });
+  const historyBudget = historyBudgetForPressure(lastInputTokens);
+
   let olderSummary: string | undefined;
   {
-    const plan = planHistory(priorMessages, { excludeLast: true });
-    if (plan.older.length > 0 && args.model !== undefined && args.model !== null) {
-      const compacted = await summarizeOlder({ model: args.model, older: plan.older });
+    const plan = planHistory(priorMessages, { excludeLast: true, budgetTokens: historyBudget });
+    const priorCompactions = args.log.byType('context.compacted');
+    const priorPayload =
+      priorCompactions.length > 0 &&
+      typeof priorCompactions[priorCompactions.length - 1]?.payload === 'object' &&
+      priorCompactions[priorCompactions.length - 1]?.payload !== null
+        ? (priorCompactions[priorCompactions.length - 1]!.payload as Record<string, unknown>)
+        : {};
+    const priorSummary =
+      typeof priorPayload['summaryText'] === 'string' ? priorPayload['summaryText'] : undefined;
+    const priorThrough =
+      typeof priorPayload['throughMessageId'] === 'string'
+        ? priorPayload['throughMessageId']
+        : undefined;
+
+    /**
+     * ★ 增量压缩：
+     *   上次摘要覆盖到哪条消息，由事件里的 throughMessageId 记录。
+     *   本次只把「它之后的新 older」喂给模型，并把上一版摘要一起带上；
+     *   不会每轮重新总结整段历史，也不会把已摘要内容重复塞进去。
+     */
+    const newOlder =
+      priorSummary !== undefined
+        ? olderAfterCoverage(plan.older, priorMessages, priorThrough)
+        : plan.older;
+
+    if (priorSummary !== undefined && newOlder.length === 0) {
+      // 没有新增的 older：直接复用上次摘要，不重复调模型。
+      olderSummary = priorSummary;
+    } else if (newOlder.length > 0 && args.model !== undefined && args.model !== null) {
+      const compacted = await summarizeOlder({
+        model: args.model,
+        older: newOlder,
+        ...(priorSummary !== undefined ? { previousSummary: priorSummary } : {}),
+      });
       if (compacted.summary !== undefined) {
         olderSummary = compacted.summary;
       }
@@ -225,6 +278,20 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           beforeTokens: compacted.beforeTokens,
           afterTokens: compacted.afterTokens,
           ok: compacted.summary !== undefined,
+          ...(compacted.summary !== undefined
+            ? {
+                summaryText: compacted.summary,
+                throughMessageId: plan.older.at(-1)?.id,
+                incremental: priorSummary !== undefined,
+              }
+            : {}),
+          pressure: {
+            ratio: pressure.ratio,
+            atPressure: pressure.atPressure,
+            budget: pressure.budget,
+            used: pressure.used,
+          },
+          historyBudget,
           ...(compacted.failure !== undefined ? { failure: compacted.failure } : {}),
         },
         createdAt: args.clock.now(),
@@ -234,6 +301,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   const history = buildHistoryMessages(priorMessages, {
     excludeLast: true,
+    budgetTokens: historyBudget,
     ...(olderSummary !== undefined ? { olderSummary } : {}),
   });
   const domainHistory = buildDomainHistoryMessages(priorMessages);
@@ -262,7 +330,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   let extractedFactCount = 0;
   try {
     const existingFacts = args.store
-      .visibleTo({ kind: 'butler', userId: args.userId })
+      .visibleTo({ kind: 'butler', userId: args.userId, taskId: args.sessionId })
       .filter((m) => m.kind === 'fact')
       .map((m) => m.content);
 
@@ -277,11 +345,12 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     });
 
     if (ex.candidates.length > 0) {
-      const r = sinkAndAdmit({
+      const r = await sinkAndAdmit({
         log: args.log,
         store: args.store,
         clock: args.clock,
         candidates: ex.candidates,
+        model: args.model,
       });
       extractedFactCount = r.admittedAutonomously;
     }
@@ -305,7 +374,11 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   // ⚠️ 可见集合**必须先经 `visibleTo` 过滤**再交给 recall ——
   //    不能"先全拿再筛"：那等于把不该看的（其他仆人的领域记忆、
   //    无授权的敏感域）也读进了内存，分权就成了摆设。
-  const candidates = args.store.visibleTo({ kind: 'butler', userId: args.userId });
+  const candidates = args.store.visibleTo({
+    kind: 'butler',
+    userId: args.userId,
+    taskId: args.sessionId,
+  });
   // 语义向量在适配器层计算；模型不可用时静默回退字面召回，不阻断对话。
   let semanticScores: ReadonlyMap<string, number> | undefined;
   if (args.semantic !== undefined && candidates.length > 0) {
@@ -315,7 +388,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
       semanticScores = undefined;
     }
   }
-  const recallResult = recall({
+  const recallBase = {
     query: userText,
     candidates,
     limit: RECALL_LIMIT,
@@ -325,18 +398,39 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     //    当前用默认值 —— 演化引擎自适应后需要把当前参数取回来传这里。
     params: DEFAULT_PARAMS,
     ...(semanticScores !== undefined ? { semantic: semanticScores } : {}),
+  } as const;
+
+  /**
+   * ★ 两条通道：
+   *   ① 字面 / 硬约束 / 过语义阈值的候选（原有路径）；
+   *   ② 语义 top-k 补充（只补少量低于阈值、但足以送精排的候选）。
+   *
+   * ⚠️ top-k 不是“降低阈值”：它只在精排成功时生效；
+   *    精排失败会回退到①，避免把未验证的低分候选直接注入上下文。
+   */
+  const recallResult = recall({
+    ...recallBase,
+    semanticTopK: retrievalConfig.semanticTopK,
+    semanticFloor: retrievalConfig.semanticFloor,
   });
   let recalled = recallResult.selected;
 
-  // 语义召回的第二阶段：只对已选候选做精排，模型失败则保持原顺序。
+  // 语义召回的第二阶段：对候选做精排，并允许按相关性过滤。
   // 没有语义分时不额外调用模型 —— 字面召回路径不增加成本。
   if (semanticScores !== undefined && semanticScores.size > 0 && recalled.length > 1) {
     const reranked = await rerankRecall({
       model: args.model,
       query: userText,
       candidates: recalled,
+      filter: true,
+      minRelevance: retrievalConfig.rerankMinRelevance,
     });
-    recalled = reranked.items;
+    if (reranked.used) {
+      recalled = reranked.items;
+    } else {
+      // 精排失败：回到“只过阈值的语义路径”，不把 top-k 补充项硬塞进去。
+      recalled = recall(recallBase).selected;
+    }
   }
 
   // 召回即命中：记录 fitness 与唤醒（休眠/归档记忆被再次命中会回升）。
@@ -374,8 +468,9 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           clock: args.clock,
           taskId: sessionId,
           userGoal: userText,
-          context: narrationContext(args.store, recalled, args.userId),
+          context: narrationContext(args.store, recalled, args.userId, args.sessionId),
           onUpdate: (s) => args.onNarration?.(s),
+          ...(args.translatorPort !== undefined ? { translatorPort: args.translatorPort } : {}),
           ...(args.signal !== undefined ? { signal: args.signal } : {}),
         }).catch(() => null)
       : Promise.resolve(null);
@@ -402,6 +497,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
     // ★ 本轮询问通道（C6）：需要确认的动作会真的停下来问
     ...(args.asker !== undefined ? { asker: args.asker } : {}),
+    ...(args.supervisionMode !== undefined ? { supervisionMode: args.supervisionMode } : {}),
     recalled,
     log: args.log,
     store: args.store,
@@ -642,7 +738,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
     if (attachmentCandidates.length > 0) {
       const now = args.clock.now();
-      const sunk = sinkAndAdmit({
+      const sunk = await sinkAndAdmit({
         log: args.log,
         store: args.store,
         clock: args.clock,
@@ -713,11 +809,12 @@ function narrationContext(
   store: MemoryStore,
   recalled: readonly ScoredMemory[],
   userId: string,
+  taskId: string,
 ): readonly string[] {
   const out: string[] = [];
 
   // ① 硬约束无条件进（与召回层的处理一致）
-  for (const m of store.visibleTo({ kind: 'butler', userId })) {
+  for (const m of store.visibleTo({ kind: 'butler', userId, taskId })) {
     if (m.memClass === 'global_constraint' && m.lifecycle === 'active') {
       out.push(m.content);
     }
@@ -842,18 +939,24 @@ export function buildVerdict(args: {
   };
 
   const outcome = blocking.length > 0 ? 'rejected' : 'accepted';
+  const reviewed = args.session.supervision.reviewed === true;
 
   const summary =
-    outcome === 'accepted'
-      ? advisory.length > 0
-        ? `已完成，但有 ${advisory.length} 处需要你留意`
-        : '已完成'
-      : `未通过审查：${blocking[0]?.statement ?? '存在不可协商的冲突'}`;
+    outcome === 'rejected'
+      ? `未通过审查：${blocking[0]?.statement ?? '存在不可协商的冲突'}`
+      : !reviewed
+        ? advisory.length > 0
+          ? `已完成（未自动审查），有 ${advisory.length} 处需要你留意`
+          : '已完成（未自动审查；可在轮次条按需发起）'
+        : advisory.length > 0
+          ? `已完成，但有 ${advisory.length} 处需要你留意`
+          : '已完成';
 
   return args.chat.addVerdict(args.sessionId, {
     forMessageId: args.forMessageId,
     outcome,
     summary,
+    reviewed,
     issues,
     /**
      * ★★ v8（批次D）：把监督员的**判据逐条核对**带进结论。

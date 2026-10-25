@@ -142,6 +142,24 @@ export interface MemoryListResponse {
   readonly stats: MemoryStats;
 }
 
+export interface MemoryConflictView {
+  readonly memoryId: string;
+  readonly otherMemoryId: string;
+  readonly reason: string;
+  readonly detector: string;
+  readonly createdAt: number;
+  readonly other: {
+    readonly content: string;
+    readonly memClass: string;
+    readonly kind: string;
+  };
+}
+
+export interface MemoryConflictsResponse {
+  readonly ok: boolean;
+  readonly conflicts: readonly MemoryConflictView[];
+}
+
 export interface MemoryDetailResponse {
   readonly ok: boolean;
   readonly item: MemoryItem;
@@ -272,6 +290,7 @@ export interface VerdictDto {
   readonly forMessageId: string;
   readonly outcome: 'accepted' | 'rejected';
   readonly summary: string;
+  readonly reviewed?: boolean;
   readonly issues: readonly VerdictIssue[];
   readonly criteriaChecks: readonly CriteriaCheck[];
   readonly steps: readonly { readonly stepId: string; readonly servant: string; readonly ok: boolean }[];
@@ -335,6 +354,17 @@ export interface ReviewRunDto {
   readonly createdAt: number;
 }
 
+export interface SessionCancellationDto {
+  readonly id: string;
+  readonly reason: string;
+  readonly phase: string;
+  readonly fromSeq: number;
+  readonly toSeq: number;
+  readonly toolCalls: number;
+  readonly toolResults: number;
+  readonly createdAt: number;
+}
+
 export interface SessionDetailResponse {
   readonly ok: boolean;
   readonly session: SessionSummary;
@@ -342,6 +372,7 @@ export interface SessionDetailResponse {
   readonly verdicts: readonly VerdictDto[];
   readonly reviews?: readonly ReviewRunDto[];
   readonly quizzes: readonly QuizItem[];
+  readonly cancellations?: readonly SessionCancellationDto[];
 }
 
 export interface SessionsResponse {
@@ -774,6 +805,7 @@ export interface McpToolView {
   readonly command: string | null;
   readonly url: string | null;
   readonly envKeys: readonly string[];
+  readonly vaultEnvKeys?: readonly string[];
   readonly policy: {
     readonly level: 'manual' | 'readOnly' | 'normal';
     readonly disabledTools: readonly string[];
@@ -874,6 +906,7 @@ export interface SchedulesResponse {
     readonly failedRuns: number;
     readonly due: boolean;
     readonly costsTokens: boolean;
+    readonly lastUsage?: { readonly inputTokens: number; readonly outputTokens: number } | null;
   }[];
   readonly recent: readonly {
     readonly seq: number;
@@ -884,6 +917,7 @@ export interface SchedulesResponse {
     readonly manual: boolean;
     readonly attempt: number | null;
     readonly summary: string | null;
+    readonly usage?: { readonly inputTokens: number; readonly outputTokens: number } | null;
   }[];
 }
 
@@ -1114,4 +1148,54 @@ export interface ToastMessage {
   readonly id: number;
   readonly text: string;
   readonly tone: 'default' | 'success' | 'warning' | 'danger';
+}
+
+export interface CredentialMetaDto {
+  readonly id: string;
+  readonly name: string;
+  readonly createdAt: number;
+}
+
+export interface CredentialsResponse {
+  readonly credentials: readonly CredentialMetaDto[];
+}
+
+export interface DocumentSummaryDto {
+  readonly id: string;
+  readonly name: string;
+  readonly mime: string;
+  readonly size: number;
+  readonly createdAt: number;
+  readonly chunkCount: number;
+}
+
+export interface DocumentChunkDto {
+  readonly id: string;
+  readonly index: number;
+  readonly text: string;
+}
+
+export interface DocumentDetailDto extends DocumentSummaryDto {
+  readonly sha256: string;
+  readonly chunks: readonly DocumentChunkDto[];
+}
+
+export interface DocumentHitDto {
+  readonly documentId: string;
+  readonly name: string;
+  readonly chunkIndex: number;
+  readonly text: string;
+  readonly score: number;
+}
+
+export interface DocumentsResponse {
+  readonly ok: boolean;
+  readonly documents?: readonly DocumentSummaryDto[];
+  readonly hits?: readonly DocumentHitDto[];
+  readonly query?: string;
+}
+
+export interface DocumentDetailResponse {
+  readonly ok: boolean;
+  readonly document: DocumentDetailDto;
 }

@@ -32,10 +32,14 @@ import { JsonlEventStore, loadEvents } from '@/adapters/storage/jsonlEvents.js';
 import { SeededRandom } from '@/core/ports/clock.js';
 import { SystemClock } from '@/adapters/clock/system.js';
 import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/runtime/bootstrap.js';
-import { DeepSeekModel, deepSeekConfigFromEnv } from '@/adapters/model/deepseek.js';
-import { modelConfig } from '@/core/config/env.js';
+import { DeepSeekModel } from '@/adapters/model/deepseek.js';
+import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
+import { buildProviderConfig, loadSelection } from './server/modelProvider.js';
+import { limitsConfig, modelConfig } from '@/core/config/env.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
+import { documentSearchTool } from '@/core/tools/builtin/documents.js';
+import { getDocumentStore } from './server/documents.js';
 import { execTool } from '@/core/tools/builtin/exec.js';
 import { NodeFileSystem } from '@/adapters/fs/node.js';
 import { NodeExec } from '@/adapters/exec/node.js';
@@ -44,21 +48,27 @@ import { isDesktopPlatform } from '@/core/desktop/port.js';
 import { desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
 import { isPermissionMode, loadPermissionMode, savePermissionMode } from './server/permissionStore.js';
+import { getCredentialVault } from './server/credentials.js';
 import { ActivityObserver, DEFAULT_CONSENT } from '@/core/activity/observe.js';
 import { EvolutionEngine } from '@/core/memory/evolution.js';
+import { mergeAll } from '@/core/memory/merge.js';
 import { SemanticIndex } from '@/core/memory/semantic.js';
 import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
 import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
 import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
+import { httpTransportFactory } from '@/adapters/mcp/http.js';
+import { sseTransportFactory } from '@/adapters/mcp/sse.js';
 import type { ActivitySourcePort } from '@/core/activity/observe.js';
 import { desktopActivitySource } from '@/core/activity/desktopSource.js';
 import { createActivityRuntime, startActivityLoop, stopActivityLoop } from '@/core/activity/runtime.js';
 import type { ActivityRuntime } from '@/core/activity/runtime.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
+import { deepSeekTranslationPort } from '@/adapters/model/translation.js';
 import type { ModelPort } from '@/core/ports/model.js';
 import type { ModelStreamPort } from '@/core/ports/stream.js';
+import type { TranslationPort } from '@/core/stream/translate.js';
 
 // ═══════════════════════════════════════════════════════════
 // 配置
@@ -101,6 +111,8 @@ export interface ButlerRuntime {
   readonly model: ModelPort | null;
   /** 流式模型（推理流用） */
   readonly streamModel: ModelStreamPort | null;
+  /** 英文思考增量翻译；没有模型时为 null */
+  readonly translator: TranslationPort | null;
   /**
    * 工具框架。
    *
@@ -215,10 +227,31 @@ async function initRuntime(): Promise<ButlerRuntime> {
   // ── 模型（没有 API Key 时为 null，界面据此提示"未配置模型"）──
   let model: ModelPort | null = null;
   let streamModel: ModelStreamPort | null = null;
+  let translator: TranslationPort | null = null;
   try {
-    const cfg = deepSeekConfigFromEnv();
+    /**
+     * ★ provider 解析顺序：环境变量 MODEL_PROVIDER > 本机 model-settings.json
+     *   > 默认 deepseek。Key 只从环境变量/凭证库取，不写回日志或事件。
+     *
+     * ⚠️ OpenAI 兼容与 Ollama 当前只承诺**非流式主模型**：
+     *    `streamModel` 只在 DeepSeek 下创建；其它 provider 的叙述流会自然缺席，
+     *    UI/设置页必须如实说明，不能假装“流式也可用”。
+     */
+    const loaded = await loadSelection(dir);
+    const provider = loaded.selection.provider;
+    const built = await buildProviderConfig({
+      provider,
+      selection: loaded.selection,
+    });
+    const cfg = built.config;
     if (cfg.apiKey.length > 0) {
-      model = new DeepSeekModel(cfg);
+      model =
+        provider === 'deepseek'
+          ? new DeepSeekModel(cfg)
+          : new OpenAICompatibleModel(
+              cfg,
+              provider === 'ollama' ? 'ollama' : 'openai-compatible',
+            );
 
       /**
        * ★ 叙述用的流式模型**独立配置**，不复用 `cfg.model`。
@@ -236,7 +269,10 @@ async function initRuntime(): Promise<ButlerRuntime> {
        *   界面上只是"什么都不显示"，看起来像功能没做。
        *   所以选模型**以官方文档的能力表为准**。
        */
-      streamModel = new DeepSeekStream({ ...cfg, model: modelConfig.narrationModel });
+      if (provider === 'deepseek') {
+        streamModel = new DeepSeekStream({ ...cfg, model: modelConfig.narrationModel });
+      }
+      translator = deepSeekTranslationPort(model);
     }
   } catch {
     // 没有配置模型不是致命错误 —— 记忆治理界面不需要模型也能用
@@ -268,6 +304,10 @@ async function initRuntime(): Promise<ButlerRuntime> {
     log: bootstrapped.log,
     clock,
     policy: permissionPolicy,
+    fuse: {
+      windowMs: limitsConfig.toolFuseWindowMs,
+      maxWrites: limitsConfig.toolFuseMaxWrites,
+    },
   });
 
   const fsPort = new NodeFileSystem({
@@ -294,6 +334,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
   });
   tools.registerAll(fileTools(fsPort));
   tools.register(execTool(new NodeExec({ cwdRoot: WORKSPACE_ROOT }), WORKSPACE_ROOT));
+  tools.register(documentSearchTool(getDocumentStore()));
 
   /**
    * ★ 桌面控制（方案 §9）—— **按真实能力注册，失败即降级**。
@@ -364,6 +405,14 @@ async function initRuntime(): Promise<ButlerRuntime> {
   // ★ 传输必须无条件注册：没有配置文件时，用户之后从设置页添加第一个 server
   //   也要能连接；不能在“有配置”分支里才注册。
   bootstrapped.mcp.registerTransport(stdioTransportFactory());
+  bootstrapped.mcp.registerTransport(httpTransportFactory());
+  bootstrapped.mcp.registerTransport(sseTransportFactory());
+  try {
+    const vault = await getCredentialVault();
+    bootstrapped.mcp.setCredentialResolver((ref) => vault.resolve(ref));
+  } catch {
+    // 凭证库不可用不影响无 envFromVault 的 server
+  }
   const mcpConfig = loadMcpConfigFile(mcpConfigPath);
   if (mcpConfig !== null) {
     if (mcpConfig.rejected.length > 0) {
@@ -376,7 +425,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
       mcp: bootstrapped.mcp,
       tools,
       configs: mcpConfig.configs,
-      transports: [stdioTransportFactory()],
+      transports: [stdioTransportFactory(), httpTransportFactory(), sseTransportFactory()],
       onError: (id, err) => {
         console.warn(`[mcp] ${id} 出错：`, err instanceof Error ? err.message : String(err));
       },
@@ -452,6 +501,17 @@ async function initRuntime(): Promise<ButlerRuntime> {
     source: lazySource,
     sessionCount: () => bootstrapped.chat.listSessions().length,
     evolve: () => evolution.runPass(),
+    merge: () => {
+      const outcomes = mergeAll({
+        log: bootstrapped.log,
+        store: bootstrapped.memory,
+        clock,
+      });
+      return {
+        merged: outcomes.length,
+        absorbed: outcomes.reduce((n, o) => n + (o.absorbedIds?.length ?? 0), 0),
+      };
+    },
     /**
      * ★★ 定时反思接线（A10 的"周期总结"）。
      *
@@ -494,6 +554,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     random,
     model,
     streamModel,
+    translator,
     tools,
     startedAt: clock.now(),
     restoreSummary: renderRestoreSummary(bootstrapped),

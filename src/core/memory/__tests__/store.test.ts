@@ -231,13 +231,15 @@ describe('M3 · 敏感域隔离与授权', () => {
     });
     expect(g.ok).toBe(true);
 
-    const r = store.read(health, id);
+    const r = store.read({ ...health, taskId: 't_diet' }, id);
     expect(r.ok).toBe(true);
 
     // ★ "谁在什么时候读了什么" 全程留痕
     expect(log.byType('grant.requested').length).toBeGreaterThanOrEqual(1);
     expect(log.byType('grant.approved').length).toBeGreaterThanOrEqual(1);
     expect(log.byType('grant.used').length).toBeGreaterThanOrEqual(1);
+    // 审计只记“读过”，不把敏感正文再写进事件流
+    expect(log.byType('grant.used')[0]?.payload).not.toHaveProperty('content');
   });
 
   it('★ 授权到期后自动失效（不做长期免授权）', () => {
@@ -252,10 +254,10 @@ describe('M3 · 敏感域隔离与授权', () => {
       purpose: '本次任务',
       ttlMs: 1000,
     });
-    expect(store.read(health, id).ok).toBe(true);
+    expect(store.read({ ...health, taskId: 't1' }, id).ok).toBe(true);
 
     clock.advance(1001);
-    const after = store.read(health, id);
+    const after = store.read({ ...health, taskId: 't1' }, id);
     expect(after.ok).toBe(false);
     if (!after.ok) expect(after.reason).toBe('sensitive_no_grant');
   });
@@ -282,7 +284,9 @@ describe('M3 · 敏感域隔离与授权', () => {
       ttlMs: 60_000,
     });
 
-    expect(store.read(health, id).ok).toBe(true);
+    expect(store.read({ ...health, taskId: 't1' }, id).ok).toBe(true);
+    // ⚠️ v10.4：授权只对 taskId 匹配的任务有效，不能泄漏给别的任务
+    expect(store.read({ ...health, taskId: 't2' }, id).ok).toBe(false);
   });
 
   it('未授权时任何人都读不到（除用户本人）', () => {
@@ -294,6 +298,56 @@ describe('M3 · 敏感域隔离与授权', () => {
     //    真正要守的是"**未授权就谁都读不到**"，这条在上面两个用例里覆盖。
     expect(store.read(butler, id).ok).toBe(false);
     expect(store.read(user, id).ok).toBe(true);
+  });
+
+  it('授权必须带 task / purpose，且 TTL 有上限', () => {
+    const { store } = setup();
+    const id = seed(store, 'sensitive', '心理咨询');
+
+    expect(store.grant({
+      actor: user,
+      memoryId: id,
+      to: 'health',
+      taskId: '',
+      purpose: 'x',
+      ttlMs: 60_000,
+    }).ok).toBe(false);
+
+    expect(store.grant({
+      actor: user,
+      memoryId: id,
+      to: 'health',
+      taskId: 't1',
+      purpose: '',
+      ttlMs: 60_000,
+    }).ok).toBe(false);
+
+    expect(store.grant({
+      actor: user,
+      memoryId: id,
+      to: 'health',
+      taskId: 't1',
+      purpose: 'x',
+      ttlMs: 24 * 60 * 60 * 1000 + 1,
+    }).ok).toBe(false);
+  });
+
+  it('任务结束时 revokeGrantsForTask 立即失效', () => {
+    const { store, log } = setup();
+    const id = seed(store, 'sensitive', '心理咨询');
+    store.grant({
+      actor: user,
+      memoryId: id,
+      to: 'health',
+      taskId: 't_end',
+      purpose: '本次任务',
+      ttlMs: 60_000,
+    });
+
+    expect(store.read({ ...health, taskId: 't_end' }, id).ok).toBe(true);
+    expect(store.revokeGrantsForTask('t_end')).toBe(1);
+    expect(store.read({ ...health, taskId: 't_end' }, id).ok).toBe(false);
+    expect(log.byType('grant.expired').some((e) => (e.payload as Record<string, unknown>)['reason'] === 'task_ended')).toBe(true);
   });
 
   it('非敏感域不允许授权（避免把授权当作绕过隔离的手段）', () => {
@@ -512,7 +566,7 @@ describe('visibleTo · 召回层的输入集合', () => {
 
     store.grant({ actor: user, memoryId: id, to: 'health', taskId: 't1', purpose: 'x', ttlMs: 60_000 });
 
-    expect(store.visibleTo(life).map((e) => e.content)).toContain('心理咨询');
+    expect(store.visibleTo({ ...life, taskId: 't1' }).map((e) => e.content)).toContain('心理咨询');
   });
 });
 

@@ -139,6 +139,49 @@ describe('sinkCandidates · 落库', () => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// 凭证白名单
+// ═══════════════════════════════════════════════════════════
+
+describe('sinkCandidates · 凭证白名单', () => {
+  it('含凭证的候选不落库，并留下不含原文的拒绝审计', () => {
+    const { log, store, clock } = setup();
+    const secret = 'sk-1234567890abcdefghij';
+    const r = sinkCandidates(
+      { log, store, clock },
+      [cand({ content: `用户的 API key 是 ${secret}` })],
+    );
+
+    expect(r.created).toHaveLength(0);
+    expect(store.size()).toBe(0);
+    expect(r.skipped).toHaveLength(1);
+    expect(r.skipped[0]?.reason).toContain('凭证');
+
+    const event = log.all().find((e) => e.type === 'memory.writeAttempted');
+    expect(event).toBeDefined();
+    expect(event?.payload).toMatchObject({
+      rejected: true,
+      reason: 'credential_content',
+      kind: 'preference',
+    });
+    // 审计事件本身不能把密钥再写一遍
+    expect(JSON.stringify(event)).not.toContain(secret);
+  });
+
+  it('凭证藏在证据链里也会被拒', () => {
+    const { log, store, clock } = setup();
+    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const r = sinkCandidates(
+      { log, store, clock },
+      [cand({ evidence: [`用户贴过 ${secret}`] })],
+    );
+
+    expect(r.created).toHaveLength(0);
+    expect(store.size()).toBe(0);
+    expect(r.skipped[0]?.reason).toContain('凭证');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
 // ★ 去重
 // ═══════════════════════════════════════════════════════════
 

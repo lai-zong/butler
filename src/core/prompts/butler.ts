@@ -19,6 +19,8 @@ export const PROMPT_VERSIONS = {
   contractTask: 'butler.task.contract@1',
   /** v7：管家自己干（替代已删除的 servantTask） */
   butlerExecuteTask: 'butler.task.execute@1',
+  /** 监督员系统提示：项目级固定、不可由设置/环境覆盖 */
+  supervisorSystem: 'supervisor.system@1',
   supervisorTask: 'butler.task.supervise@1',
   /**
    * 领域层反思任务。
@@ -61,6 +63,38 @@ export const PROMPT_VERSIONS = {
  *   ② 领域**不是身份**，只是内部工作分类（用于反思作用域 / 选专业纪律 / 记忆标签）
  *   ③ 硬约束由校验层**机械**拦截，不靠你判断
  */
+/**
+ * 监督员系统提示（项目级固定常量）
+ *
+ * 设计依据：方案 §19.2 / D-36
+ *
+ * ⚠️ 这个常量**不允许**由设置页、控制台或环境变量覆盖。
+ *    监督员的立场必须稳定：它是只读核对者，不是第二个执行者。
+ *    与 `BUTLER_SYSTEM` 分开，避免“用执行者的立场审查执行结果”。
+ */
+export const SUPERVISOR_SYSTEM = `你是这个系统的「监督员」。你不是执行者，也不对用户直接交付。
+
+## 你的唯一职责
+
+拿用户给定的**任务契约**，逐条核对 butler 的产出。你只做三件事：
+1. 判断契约的每一条判据是否被满足；
+2. 从「契约 / 领域 / 全局」三个视角找问题；
+3. 把发现与证据写清楚，交给用户决定。
+
+## 必须遵守
+
+- **只读**：不调用工具、不执行命令、不修改文件、不写记忆。
+- **契约是唯一标准**：不要发明新标准，不要用“我觉得更好”替代判据。
+- **逐条核对**：契约有几条判据，就必须核对几条；漏核按未满足处理。
+- **证据**：每条发现尽量引用契约原文或产出原文；找不到证据就写“未评估”，不要编。
+- **只告知，不打回**：你不终止任务，不要求重做；用户决定是否采纳。
+- **不评价 butler 的人格/模型**：只评价产出与契约的关系。
+- **中断轮**：明确标注“未完成”，无法判断的判据写“未评估”，不能伪装成通过。
+
+## 输出
+
+严格按给定 schema 输出：摘要、逐条判据、三视角 findings。`;
+
 export const BUTLER_SYSTEM = `你是这个系统的「管家」。用户只对你说话，你唯一对用户负责。
 
 ## 你的角色
@@ -305,6 +339,18 @@ export function supervisionTask(args: {
   /** 产出摘要（管家自己干出来的东西） */
   readonly outputSummary: string;
   readonly hardConstraints: readonly string[];
+  /**
+   * 监督员可见的全局记忆快照。
+   *
+   * ⚠️ 只包含 global_constraint / global_shared / 原则；
+   *    sensitive 与领域记忆不进入，避免越权读取。
+   */
+  readonly memorySnapshot?: readonly {
+    readonly id: string;
+    readonly memClass: string;
+    readonly kind: string;
+    readonly content: string;
+  }[];
   /** 按 domains 选好的领域纪律 */
   readonly disciplines: readonly { readonly domain: string; readonly rules: readonly string[] }[];
 }): string {
@@ -312,6 +358,13 @@ export function supervisionTask(args: {
     args.hardConstraints.length === 0
       ? '（无）'
       : args.hardConstraints.map((c) => `- ${c}`).join('\n');
+
+  const memoryBlock =
+    args.memorySnapshot === undefined || args.memorySnapshot.length === 0
+      ? '（无）'
+      : args.memorySnapshot
+          .map((m) => `- [${m.memClass}/${m.kind}] ${m.content}`)
+          .join('\n');
 
   const disciplineBlock =
     args.disciplines.length === 0
@@ -336,6 +389,10 @@ ${args.outputSummary}
 ## 全局硬约束（违反即不合格）
 
 ${constBlock}
+
+## 全局记忆快照（只读；不含敏感域/领域记忆）
+
+${memoryBlock}
 
 ## 专业纪律（领域视角的核对标准）
 

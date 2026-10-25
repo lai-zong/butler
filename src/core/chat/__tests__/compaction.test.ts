@@ -16,12 +16,15 @@ import {
   COMPACTION_THRESHOLD_RATIO,
   CONTEXT_WINDOW_TOKENS,
   HISTORY_TOKEN_BUDGET,
+  HISTORY_RETAIN_RATIO,
   buildSummaryPrompt,
   estimateTokens,
+  historyBudgetForPressure,
   normalizeSummary,
   planHistory,
   pressureOf,
   pruneToolOutput,
+  olderAfterCoverage,
   summarizeOlder,
 } from '../compaction.js';
 // ★ `pruneToolOutput` 现在**必须显式传阈值**（旧常量已删除，它生产无调用方）。
@@ -124,6 +127,14 @@ describe('③ pressureOf · 用真实 usage，不靠估算', () => {
     expect(p.atPressure).toBe(false);
     expect(p.budget).toBeGreaterThan(700_000);
     expect(CONTEXT_WINDOW_TOKENS).toBe(1_000_000);
+  });
+
+  it('★ 命中压力后历史保留预算按 retainRatio 收缩', () => {
+    expect(historyBudgetForPressure(50_000)).toBe(HISTORY_TOKEN_BUDGET);
+    const budget = 1_000_000 * COMPACTION_THRESHOLD_RATIO - COMPACTION_HEADROOM_TOKENS;
+    const tight = historyBudgetForPressure(budget);
+    expect(tight).toBeLessThan(HISTORY_TOKEN_BUDGET);
+    expect(tight).toBe(Math.max(16_000, Math.floor(budget * HISTORY_RETAIN_RATIO)));
   });
 });
 
@@ -348,5 +359,19 @@ describe('⑦ summarizeOlder · 失败绝不让对话失败', () => {
     expect(seen).toContain('已有摘要');
     expect(seen).toContain('用户叫示例用户');
     expect(seen).toContain('第一问');
+  });
+
+  it('增量摘要只选上次覆盖边界之后的 older', () => {
+    const all = [
+      mkMsg('m1', 'user', '一'),
+      mkMsg('m2', 'butler', '二'),
+      mkMsg('m3', 'user', '三'),
+      mkMsg('m4', 'butler', '四'),
+      mkMsg('m5', 'user', '五'),
+    ];
+    expect(olderAfterCoverage([all[0]!, all[1]!, all[2]!], all, 'm2').map((m) => m.id)).toEqual(['m3']);
+    expect(olderAfterCoverage([all[0]!, all[1]!], all, 'm2')).toEqual([]);
+    // 边界不存在（回退/旧事件）时宁可重摘，不静默跳过
+    expect(olderAfterCoverage([all[0]!], all, 'missing').map((m) => m.id)).toEqual(['m1']);
   });
 });

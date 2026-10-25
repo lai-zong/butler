@@ -27,8 +27,11 @@ import { ActivityDetail } from './ActivityDetail';
 import { McpPanel } from './McpPanel';
 import { ToolsPanel } from './ToolsPanel';
 import { OperationsPanel } from './OperationsPanel';
+import { DocumentsPanel } from './DocumentsPanel';
 import { ArtifactsPanel } from './ArtifactsPanel';
-import { errorMessage, fetchJson } from '../lib/api.js';
+import { CredentialsPanel } from './CredentialsPanel';
+import { ModelProviderPanel } from './ModelProviderPanel';
+import { errorMessage, fetchJson, postJson } from '../lib/api.js';
 import {
   formatDateTime,
   formatNumber,
@@ -113,6 +116,12 @@ export function SettingsView({
   const [consentChecked, setConsentChecked] = useState(false);
   const [revokeOpen, setRevokeOpen] = useState(false);
 
+  const [demoProfile, setDemoProfile] = useState<'office-dev' | 'student'>('office-dev');
+  const [demoDays, setDemoDays] = useState(30);
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
+  const [activityNonce, setActivityNonce] = useState(0);
+
   const [exporting, setExporting] = useState(false);
   const [pendingImport, setPendingImport] = useState<{ name: string; size: number; text: string } | null>(null);
   const [importing, setImporting] = useState(false);
@@ -180,6 +189,35 @@ export function SettingsView({
 
   async function changeRetention(days: number): Promise<void> {
     await updateObservation({ retentionDays: days }, `原始记录${days === 0 ? '不再保留' : `保留 ${days} 天`}`);
+  }
+
+  async function importDemoData(): Promise<void> {
+    if (demoBusy) return;
+    if (consent === null || !consent.granted || !consent.enabled) {
+      setDemoError('需要先同意并开启行为观察，才能导入演示数据。');
+      return;
+    }
+    if (!Number.isInteger(demoDays) || demoDays < 1 || demoDays > 90) {
+      setDemoError('天数必须是 1–90 的整数。');
+      return;
+    }
+    setDemoBusy(true);
+    setDemoError(null);
+    try {
+      const res = await postJson<{
+        readonly generated: number;
+        readonly recorded: number;
+        readonly disclaimer: string;
+      }>('/api/activity/demo', { profile: demoProfile, days: demoDays });
+      notify(`已导入 ${res.recorded}/${res.generated} 条演示记录；聚合与规律走真实代码。`, 'success');
+      setActivityNonce((n) => n + 1);
+      await loadObservation();
+      onRefreshOverview();
+    } catch (err) {
+      setDemoError(errorMessage(err));
+    } finally {
+      setDemoBusy(false);
+    }
   }
 
   async function exportData(): Promise<void> {
@@ -286,6 +324,8 @@ export function SettingsView({
       />
 
       <div className="settings-stack">
+        <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
+
         {/* ── 运行 ── */}
         <section className="panel settings-panel">
           <SectionHeading
@@ -446,8 +486,14 @@ export function SettingsView({
         {/* ── C5 三档权限 ── */}
         <PermissionsPanel notify={notify} />
 
+        {/* ── 凭证保险库 ── */}
+        <CredentialsPanel notify={notify} />
+
         {/* ── 工具分级矩阵 ── */}
         <ToolsPanel />
+
+        {/* ── 文档库 ── */}
+        <DocumentsPanel notify={notify} />
 
         {/* ── 操作记忆（只读） ── */}
         <OperationsPanel />
@@ -496,6 +542,59 @@ export function SettingsView({
                   label="行为观察开关"
                   onChange={(next) => void toggleObservation(next)}
                 />
+              </div>
+
+              <div className="demo-card">
+                <div className="demo-head">
+                  <div>
+                    <strong>导入演示数据</strong>
+                    <p>用真实聚合、规律与画像代码展示“积累一个月”的效果。</p>
+                  </div>
+                  <span className="privacy-pill">模拟</span>
+                </div>
+                <div className="demo-controls">
+                  <div className="demo-seg" role="group" aria-label="演示画像">
+                    <button
+                      type="button"
+                      className={demoProfile === 'office-dev' ? 'is-on' : ''}
+                      onClick={() => setDemoProfile('office-dev')}
+                      disabled={demoBusy}
+                    >
+                      办公开发型
+                    </button>
+                    <button
+                      type="button"
+                      className={demoProfile === 'student' ? 'is-on' : ''}
+                      onClick={() => setDemoProfile('student')}
+                      disabled={demoBusy}
+                    >
+                      学习沟通型
+                    </button>
+                  </div>
+                  <label className="demo-days">
+                    <span>天数</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={90}
+                      value={demoDays}
+                      disabled={demoBusy}
+                      onChange={(e) => setDemoDays(Number(e.target.value))}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={demoBusy || consent === null || !consent.granted || !consent.enabled}
+                    onClick={() => void importDemoData()}
+                  >
+                    {demoBusy ? '导入中…' : '导入演示数据'}
+                  </button>
+                </div>
+                {demoError !== null && <p className="demo-error">{demoError}</p>}
+                <p className="demo-note">
+                  <strong>这是模拟数据。</strong>只生成带 <code>source=demo</code> 标记的原始记录；聚合、规律与画像仍走真实代码。可在下方逐条删除。
+                </p>
               </div>
 
               <ul className="privacy-list">
@@ -556,7 +655,7 @@ export function SettingsView({
             </>
           )}
 
-          <ActivityDetail notify={notify} />
+          <ActivityDetail key={activityNonce} notify={notify} />
         </section>
 
         {/* ── 数据 ── */}

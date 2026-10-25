@@ -54,6 +54,8 @@ export type IconName =
   | 'play'
   | 'file'
   | 'calendar'
+  | 'mic'
+  | 'volume'
   | 'xCircle'
   | 'more';
 
@@ -107,6 +109,18 @@ const ICONS: Record<IconName, ReactNode> = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  mic: (
+    <>
+      <rect x="9" y="3.5" width="6" height="11" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" />
+    </>
+  ),
+  volume: (
+    <>
+      <path d="M4 9.5v5h3.5L13 19V5L7.5 9.5H4Z" />
+      <path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11" />
+    </>
+  ),
   search: (
     <>
       <circle cx="10.8" cy="10.8" r="6.3" />

@@ -394,6 +394,8 @@ export interface AgentLoopResult {
   readonly traces: readonly ToolCallTrace[];
   readonly rounds: number;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
+  /** 本次执行是否用过“结果不得进入长期记忆”的工具（如 MCP 默认策略） */
+  readonly memoryWriteBlocked: boolean;
   /** 最终的消息序列（便于继续对话或审计） */
   readonly messages: readonly ModelMessage[];
 }
@@ -410,6 +412,7 @@ export async function runAgentLoop(
   let inputTokens = 0;
   let outputTokens = 0;
   let round = 0;
+  let memoryWriteBlocked = false;
 
   const emitProgress = (e: AgentProgressEvent): void => {
     try {
@@ -502,6 +505,7 @@ export async function runAgentLoop(
         traces,
         rounds: round,
         usage: { inputTokens, outputTokens },
+        memoryWriteBlocked,
         messages,
       };
     }
@@ -601,6 +605,7 @@ export async function runAgentLoop(
         });
         output = r.output;
         ok = r.ok;
+        if (ok && spec.memoryWriteAllowed === false) memoryWriteBlocked = true;
       } catch (err) {
         // 被闸门拒绝（用户拒绝 / 级别未开启）会走到这里
         output = err instanceof Error ? err.message : String(err);
@@ -670,6 +675,7 @@ export async function runAgentLoop(
           traces,
           rounds: round,
           usage: { inputTokens, outputTokens },
+          memoryWriteBlocked,
           messages,
         };
       }

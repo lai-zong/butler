@@ -168,8 +168,9 @@ async function main(): Promise<void> {
   hr('④ 候选必须过审（入库后是 candidate，不是 active）');
   {
     const { log, clock, store } = setup();
+    const model = makeModel();
     const r = await parseAttachment({
-      model: makeModel(),
+      model,
       log,
       clock,
       attachmentId: 'a4',
@@ -182,10 +183,11 @@ async function main(): Promise<void> {
       check('解析成功（前置）', false);
     } else {
       const now = clock.now();
-      const sunk = sinkAndAdmit({
+      const sunk = await sinkAndAdmit({
         log,
         store,
         clock,
+        model,
         candidates: r.candidates.map((c, i) => ({
           id: `cand_17_${i}`,
           kind: c.kind,

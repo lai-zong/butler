@@ -105,9 +105,14 @@ export async function extractFacts(args: {
 }): Promise<ExtractFactsResult> {
   const empty = { inputTokens: 0, outputTokens: 0 };
 
-  // 太短的发言不可能含事实（"好" / "继续" / "嗯"）
+  /**
+   * ⚠️ 不能再用“长度 < 8”直接跳过：
+   *   中文短句「我对芒果过敏。」只有 7 个字符，却是一条硬约束事实。
+   *   这类误杀比多一次模型调用贵得多。只跳过空串/单字符，
+   *   让提示词去判断“好 / 嗯 / 继续”这类无事实发言。
+   */
   const text = args.userText.trim();
-  if (text.length < 8) {
+  if (text.length < 2) {
     return { facts: [], candidates: [], usage: empty, skippedReason: '发言过短' };
   }
 
@@ -253,7 +258,7 @@ const EXTRACT_SYSTEM = `你是一个"事实提取器"。你的唯一任务是从
 
 ## 什么算事实（要提取）
 
-- 身份：姓名、称呼、职业、家庭成员、居住地
+- 身份：姓名、称呼、职业、居住地，以及家庭成员/伴侣的姓名、年龄、关系
 - 约束：过敏、忌口、慢性病、宗教禁忌、硬性限制
 - 偏好：长期稳定的喜好与厌恶（不是这一顿想吃什么）
 - 背景：长期状况（如"我在减脂期""我最近在备赛"）

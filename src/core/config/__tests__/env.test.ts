@@ -24,6 +24,7 @@ import {
   memoryConfig,
   modelConfig,
   privacyConfig,
+  retrievalConfig,
   routingConfig,
   storageConfig,
   visionConfig,
@@ -60,6 +61,7 @@ describe('★ 默认值与原硬编码值一致（这次改动不改变任何现
     expect(memoryConfig.dormantAfterMs).toBe(60 * 24 * 60 * 60 * 1000);
     expect(memoryConfig.archiveBelowFitness).toBe(0.25);
     expect(memoryConfig.exploratoryRatio).toBe(0.1);
+    expect(retrievalConfig.semanticThreshold).toBe(0.35);
     expect(limitsConfig.toolTimeoutMs).toBe(15_000);
     expect(limitsConfig.dailyTokenTaskLimit).toBe(10);
     expect(privacyConfig.behaviorObservationEnabled).toBe(false);
@@ -83,6 +85,9 @@ describe('★ 默认值与原硬编码值一致（这次改动不改变任何现
 
     process.env['ROUTING_CONFIDENCE_THRESHOLD'] = '0.8';
     expect(routingConfig.confidenceThreshold).toBe(0.8);
+
+    process.env['MEMORY_SEMANTIC_THRESHOLD'] = '0.3';
+    expect(retrievalConfig.semanticThreshold).toBe(0.3);
 
     process.env['BEHAVIOR_OBSERVATION_ENABLED'] = 'true';
     expect(privacyConfig.behaviorObservationEnabled).toBe(true);

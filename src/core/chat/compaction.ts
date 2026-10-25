@@ -235,6 +235,28 @@ export function pressureOf(args: PressureArgs): Pressure {
   };
 }
 
+/**
+ * 真实压力命中时，历史保留预算按 retainRatio 收缩。
+ *
+ * 正常（未命中压力）仍用标准档 160,000；命中时只保留
+ * “压力预算 × 0.16”，给当前轮留出硬安全余量。
+ *
+ * ⚠️ 不把预算降成 0：全丢历史会让指代彻底失效；最低保留 16K。
+ */
+export const HISTORY_RETAIN_RATIO = 0.16;
+export const MIN_PRESSURE_HISTORY_BUDGET = 16_000;
+
+export function historyBudgetForPressure(lastInputTokens?: number): number {
+  const pressure = pressureOf({
+    ...(lastInputTokens !== undefined ? { lastInputTokens } : {}),
+  });
+  if (!pressure.atPressure) return HISTORY_TOKEN_BUDGET;
+  return Math.max(
+    MIN_PRESSURE_HISTORY_BUDGET,
+    Math.floor(pressure.budget * HISTORY_RETAIN_RATIO),
+  );
+}
+
 // ═══════════════════════════════════════════════════════════
 // ② 分层选择（预算内尽量多留）
 // ═══════════════════════════════════════════════════════════
@@ -249,6 +271,28 @@ export interface HistoryPlan {
   readonly olderTokens: number;
   /** 是否发生了分层（`older` 非空） */
   readonly layered: boolean;
+}
+
+/**
+ * 选出「上次摘要边界之后」的新 older 消息。
+ *
+ * ★ 增量摘要的关键：上次摘要覆盖到 throughMessageId，
+ *   本次只把边界之后的新消息交给模型，避免重复总结。
+ * ★ 边界找不到（回退/删除/旧事件）时返回全部 older —— 宁可多花一次，
+ *   也不要误以为已经覆盖。
+ */
+export function olderAfterCoverage(
+  older: readonly ChatMessage[],
+  messages: readonly ChatMessage[],
+  throughMessageId: string | undefined,
+): readonly ChatMessage[] {
+  if (throughMessageId === undefined) return older;
+  const boundary = messages.findIndex((m) => m.id === throughMessageId);
+  if (boundary < 0) return older;
+  return older.filter((m) => {
+    const idx = messages.findIndex((x) => x.id === m.id);
+    return idx > boundary;
+  });
 }
 
 /**

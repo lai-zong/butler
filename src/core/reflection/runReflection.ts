@@ -30,6 +30,8 @@ import type { DomainId } from '../domain/types.js';
 import { buildDomainReflectionInput, reflectButler, reflectDomain } from './reflect.js';
 import type { MemoryCandidate } from './reflect.js';
 import { sinkCandidates } from '../memory/sink.js';
+import { detectConflicts } from '../memory/conflict.js';
+import { conflictDetectionConfig } from '../config/env.js';
 import {
   admitAutonomously,
   decideAdmission,
@@ -73,6 +75,10 @@ export interface ReflectTurnResult {
   /** 需要用户确认的 */
   readonly pendingReview: number;
   readonly skippedDuplicates: number;
+  /** 因含凭证被拒绝写入的候选数（不展示原文） */
+  readonly skippedCredentials: number;
+  /** 自动检测出的冲突关系数（只标记待审，不裁决） */
+  readonly conflictsDetected: number;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   /** 反思是否失败（失败不阻断对话，但要如实告知） */
   readonly failed: boolean;
@@ -99,12 +105,33 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
     if (dbg) console.error(`  [reflect] ${s}`);
   };
 
+  // ── ⓪ 外部工具 taint ──
+  //
+  // MCP 服务器默认 allowMemoryWrite=false；一旦本轮用过这类工具，
+  // 其产出就不能作为反思/记忆候选的来源。这里采用**保守但可证明**的做法：
+  // 整份报告不进入反思，而不是猜“这句话是不是来自外部工具”。
+  const reflectReports = args.session.reports.filter((r) => r.memoryWriteBlocked !== true);
+  const blockedReports = args.session.reports.length - reflectReports.length;
+  if (blockedReports > 0) {
+    args.log.append({
+      type: 'memory.writeAttempted',
+      actor: 'butler',
+      payload: {
+        rejected: true,
+        reason: 'mcp_memory_write_blocked',
+        blockedReports,
+        taskId: args.session.reports[0]?.taskId ?? '',
+      },
+      createdAt: args.clock.now(),
+    });
+  }
+
   // ── ① 反馈信号 ──
   //
   // ⚠️ 用户打回 = 所有产出都判为"未奏效"；通过 = 都判为"奏效"。
   //    这是粗糙的，但比"没有反馈"好得多 ——
   //    方案 § 8.4 的效果验证入口就在这个字段上。
-  const feedback = args.session.reports.flatMap((r) =>
+  const feedback = reflectReports.flatMap((r) =>
     r.artifacts.length > 0
       ? r.artifacts.map((_artifact, i) => ({
           // ⚠️ `ExecutionArtifact` 没有 id（它是仆人产出的原始形状，
@@ -149,7 +176,7 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
   let failureReason: string | undefined;
 
   for (const domain of domains) {
-    const ownReports = args.session.reports;
+    const ownReports = reflectReports;
     /**
      * ⚠️ 领域记忆的可见性由 store.canRead 决定，这里**不能**
      *    自己按 memClass 过滤 —— 权限判定只有一处实现，
@@ -203,13 +230,13 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
 
   const butlerCandidates: MemoryCandidate[] = [];
   try {
-    trace(`管家层反思（${args.session.reports.length} 份产出，${existingPrinciples.length} 条既有原则）`);
+    trace(`管家层反思（${reflectReports.length} 份产出，${existingPrinciples.length} 条既有原则）`);
     const br = await reflectButler({
       model: args.model,
       log: args.log,
       clock: args.clock,
       input: {
-        reports: args.session.reports.map((r) => ({
+        reports: reflectReports.map((r) => ({
           // ⚠️ 下游参数的字段名仍是 servant（遗留），此处传领域值
           domain: r.domain ?? '',
           summary: summarizeReport(r),
@@ -241,14 +268,15 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
   trace(`候选合计 ${allCandidates.length} 条（领域层 ${domainCandidates.length} / 管家层 ${butlerCandidates.length}）`);
 
   // ── ④⑤ 入库 + 分级自主准入 ──
-  const outcome = sinkAndAdmit({
+  const outcome = await sinkAndAdmit({
     log: args.log,
     store: args.store,
     clock: args.clock,
     candidates: allCandidates,
+    model: args.model,
   });
   trace(
-    `入库 ${outcome.created} 候选 · 自主生效 ${outcome.admittedAutonomously} · 待审核 ${outcome.pendingReview} · 重复跳过 ${outcome.skippedDuplicates}`,
+    `入库 ${outcome.created} 候选 · 自主生效 ${outcome.admittedAutonomously} · 待审核 ${outcome.pendingReview} · 冲突 ${outcome.conflictsDetected} · 重复跳过 ${outcome.skippedDuplicates} · 凭证拒绝 ${outcome.skippedCredentials}`,
   );
 
   return {
@@ -257,6 +285,8 @@ export async function reflectTurn(args: ReflectTurnArgs): Promise<ReflectTurnRes
     admittedAutonomously: outcome.admittedAutonomously,
     pendingReview: outcome.pendingReview,
     skippedDuplicates: outcome.skippedDuplicates,
+    skippedCredentials: outcome.skippedCredentials,
+    conflictsDetected: outcome.conflictsDetected,
     usage: { inputTokens, outputTokens },
     failed,
     ...(failureReason !== undefined ? { failureReason } : {}),
@@ -272,6 +302,9 @@ export interface SinkAndAdmitResult {
   readonly admittedAutonomously: number;
   readonly pendingReview: number;
   readonly skippedDuplicates: number;
+  readonly skippedCredentials: number;
+  /** 自动检测出的候选×既有记忆冲突条数（只标记待审，不裁决） */
+  readonly conflictsDetected: number;
   /** 自主生效的记忆 id（供界面展示"它刚刚记住了什么"） */
   readonly admittedIds: readonly string[];
 }
@@ -295,18 +328,22 @@ export interface SinkAndAdmitResult {
  *   ⚠️ 为什么原则最严：原则会**指导后续所有决策**，
  *      一条错原则的影响面远大于一条错事实。这个区分是刻意的。
  */
-export function sinkAndAdmit(args: {
+export async function sinkAndAdmit(args: {
   readonly log: EventLog;
   readonly store: MemoryStore;
   readonly clock: ClockPort;
   readonly candidates: readonly MemoryCandidate[];
-}): SinkAndAdmitResult {
+  /** 冲突判断需要模型；关闭检测时可不传 */
+  readonly model?: ModelPort;
+}): Promise<SinkAndAdmitResult> {
   if (args.candidates.length === 0) {
     return {
       created: 0,
       admittedAutonomously: 0,
       pendingReview: 0,
       skippedDuplicates: 0,
+      skippedCredentials: 0,
+      conflictsDetected: 0,
       admittedIds: [],
     };
   }
@@ -320,6 +357,19 @@ export function sinkAndAdmit(args: {
   );
 
   /**
+   * 冲突检测只针对**已经落库的候选**，且只在其本来会自主生效时才花成本。
+   * 关闭时 detectConflicts 直接返回空，不触碰模型。
+   */
+  const detection = await detectConflicts({
+    mode: conflictDetectionConfig.mode,
+    store: args.store,
+    candidates: sinkResult.paired.map((p) => p.candidate),
+    log: args.log,
+    clock: args.clock,
+    ...(args.model !== undefined ? { model: args.model } : {}),
+  });
+
+  /**
    * ⚠️ 撤销率反馈：某类来源历史上被用户撤销得多，说明这类推断不可靠 ——
    *    把它喂回决策，让系统自己收紧。这是「元学习」的一环。
    */
@@ -327,6 +377,7 @@ export function sinkAndAdmit(args: {
 
   let admittedAutonomously = 0;
   let pendingReview = 0;
+  let conflictsDetected = 0;
   const admittedIds: string[] = [];
 
   /**
@@ -339,9 +390,28 @@ export function sinkAndAdmit(args: {
    */
   for (const { entry, candidate } of sinkResult.paired) {
     const source = inferSource(candidate);
+    const conflicts = detection.byCandidate.get(candidate.id) ?? [];
+    if (conflicts.length > 0) {
+      conflictsDetected += conflicts.length;
+      for (const conflict of conflicts) {
+        args.log.append({
+          type: 'conflict.detected',
+          actor: 'system',
+          payload: {
+            candidateId: candidate.id,
+            memoryId: entry.id,
+            memoryIds: [conflict.memoryId],
+            reason: conflict.reason,
+            detector: conflict.detector,
+          },
+          createdAt: args.clock.now(),
+        });
+      }
+    }
     const decision = decideAdmission({
       candidate,
       source,
+      ...(conflicts.length > 0 ? { conflictsWith: conflicts.map((c) => c.memoryId) } : {}),
       revocationRate: rates[source],
     });
 
@@ -371,7 +441,9 @@ export function sinkAndAdmit(args: {
     created: sinkResult.created.length,
     admittedAutonomously,
     pendingReview,
-    skippedDuplicates: sinkResult.skipped.length,
+    skippedDuplicates: sinkResult.skipped.filter((s) => !s.reason.includes('凭证')).length,
+    skippedCredentials: sinkResult.skipped.filter((s) => s.reason.includes('凭证')).length,
+    conflictsDetected,
     admittedIds,
   };
 }
@@ -438,6 +510,9 @@ export function renderReflectSummary(r: ReflectTurnResult): string {
   }
   if (r.pendingReview > 0) {
     lines.push(`${r.pendingReview} 条待你确认`);
+  }
+  if (r.conflictsDetected > 0) {
+    lines.push(`${r.conflictsDetected} 条可能冲突待裁决`);
   }
   return lines.join(' · ');
 }

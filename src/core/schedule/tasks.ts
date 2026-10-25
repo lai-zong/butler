@@ -51,7 +51,11 @@ export interface TaskContext {
      *   `derivePatterns` 会写 `pattern.derived` 事件，两处各算一次会重复落事件。
      */
     readonly temporalPatterns?: readonly string[];
-  }) => Promise<{ readonly candidateCount: number; readonly summary: string }>;
+  }) => Promise<{
+  readonly candidateCount: number;
+  readonly summary: string;
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+}>;
   /** 待提醒事项的检查（主动服务）*/
   readonly checkReminders?: () => Promise<readonly { readonly title: string; readonly dueAt: number }[]>;
   /**
@@ -61,6 +65,12 @@ export interface TaskContext {
    *   没有注入时任务照常跑，只是不迁移生命周期。
    */
   readonly evolve?: () => EvolutionPassResult;
+  /**
+   * 周级相似合并（由上层注入 `mergeAll`）。
+   *
+   * 不接时周复盘照常跑，只在摘要里注明未做；不假装合并过。
+   */
+  readonly merge?: () => { readonly merged: number; readonly absorbed: number };
 }
 
 /** 最近一次规律提取的结果（供界面与主动服务复用）。*/
@@ -129,12 +139,15 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
     });
     return {
       summary: `每日反思完成，产出 ${r.candidateCount} 条候选。${r.summary}${evolutionText}`,
+      ...(r.usage !== undefined ? { usage: r.usage } : {}),
     };
   };
 
   // ── 管家周复盘 ──
   const weeklyReview: TaskHandler = async () => {
     const parts: string[] = [];
+    let usedInput = 0;
+    let usedOutput = 0;
 
     /**
      * ★ 顺序调整（v8）：**先算时间规律，再反思**。
@@ -173,9 +186,27 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
         scope: 'weekly',
         ...(renderedPatterns.length > 0 ? { temporalPatterns: renderedPatterns } : {}),
       });
+      usedInput += r.usage?.inputTokens ?? 0;
+      usedOutput += r.usage?.outputTokens ?? 0;
       parts.push(`跨领域复盘产出 ${r.candidateCount} 条候选`);
     } else {
       parts.push('未接入反思引擎');
+    }
+
+    // ②b 相似合并：只合并 active、同池、相似度足够的条目；不删数据。
+    if (ctx.merge) {
+      try {
+        const m = ctx.merge();
+        parts.push(
+          m.merged > 0
+            ? `相似合并 ${m.merged} 组（吸收 ${m.absorbed} 条，保留原数据）`
+            : '本轮没有达到合并阈值的记忆',
+        );
+      } catch (err) {
+        parts.push(`相似合并失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      parts.push('未接入相似合并');
     }
 
     // ③ 生成画像快照（方案 § 3.3 的"最强演示件"由这里自动产出）
@@ -196,7 +227,12 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
       parts.push(d.headline);
     }
 
-    return { summary: parts.join('；') };
+    return {
+      summary: parts.join('；'),
+      ...(usedInput > 0 || usedOutput > 0
+        ? { usage: { inputTokens: usedInput, outputTokens: usedOutput } }
+        : {}),
+    };
   };
 
   // ── 主动服务检查 ──

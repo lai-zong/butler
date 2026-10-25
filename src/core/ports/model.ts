@@ -186,6 +186,7 @@ export type ModelPurpose =
   | 'memoryExtraction' // 记忆提取
   | 'attachmentParse' // 附件解析（图片/文本 → 结构化键值；E1）
   | 'compaction' // 上下文摘要压缩（把更老的历史压成摘要）
+  | 'conflict' // 记忆冲突判断（只做 review，不裁决）
   | 'translation'; // 英文思考增量翻译
 
 export interface ModelUsage {

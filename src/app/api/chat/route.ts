@@ -23,6 +23,7 @@
 import type { NextRequest } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
+import { supervisionConfig } from '@/core/config/env.js';
 import { runTurn } from '@/core/chat/service.js';
 import { denyAllPending, SseApprovals } from '@/core/tools/approval.js';
 import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
@@ -172,6 +173,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         0,
       );
 
+      // 取消事件需要知道“取消在哪一步”；只记阶段名，不记正文/参数。
+      let lastStage = 'starting';
+
       rt.activeTurns += 1;
       try {
         const result = await runTurn({
@@ -179,8 +183,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           userText: text,
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(images.length > 0 ? { images } : {}),
-    // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"
-    ...(approvals !== undefined ? { asker: approvals } : {}),
+          // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"
+          ...(approvals !== undefined ? { asker: approvals } : {}),
+          // ★ 监督员触发：默认 manual（用户按需），可用 SUPERVISOR_MODE=auto 回退
+          supervisionMode: supervisionConfig.mode,
           userId: session.userId,
           model: rt.model!,
           random: rt.random,
@@ -193,7 +199,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           // ★ 装配好的工具框架 —— 不给则仆人不调工具
           tools: rt.tools,
           signal: abort.signal,
-          onProgress: (e: ProgressEvent) => send({ type: 'progress', event: e }),
+          onProgress: (e: ProgressEvent) => {
+            lastStage = e.kind === 'stage' ? e.stage : e.kind;
+            send({ type: 'progress', event: e });
+          },
 
           /**
            * ★ 流式叙述 —— 与仆人执行**并发**跑。
@@ -207,6 +216,7 @@ export async function POST(req: NextRequest): Promise<Response> {
            *    ⚠️ 接错模型的后果很隐蔽：**推理流永远是空的，且不报错**。
            */
           ...(rt.streamModel !== null ? { streamModel: rt.streamModel } : {}),
+          ...(rt.translator !== null ? { translatorPort: rt.translator } : {}),
           onNarration: (s) =>
             send({
               type: 'narration',
@@ -400,7 +410,31 @@ export async function POST(req: NextRequest): Promise<Response> {
         });
       } catch (err) {
         // 用户主动停止不是错误：界面已经标记“已断开接收”，不要再补一条报错。
-        if (!abort.signal.aborted) {
+        if (abort.signal.aborted) {
+          /**
+           * ★ C8：取消也要可回放。
+           *
+           * 只记“取消在哪一步 + 已经发生过多少次工具调用/结果”，
+           * 不记工具参数、结果正文或模型输出 —— 那会把取消事件变成新的泄露点。
+           */
+          const recent = rt.bootstrapped.log.range(fromSeq, rt.bootstrapped.log.length);
+          rt.bootstrapped.log.append({
+            type: 'session.cancelled',
+            actor: 'user',
+            payload: {
+              sessionId: session.id,
+              reason: 'user_cancelled',
+              phase: lastStage,
+              fromSeq,
+              toSeq: rt.bootstrapped.log.length,
+              toolCalls: recent.filter((e) => e.type === 'tool.call').length,
+              toolResults: recent.filter((e) => e.type === 'tool.result').length,
+            },
+            createdAt: rt.clock.now(),
+          });
+          // 取消也意味着任务结束：该任务的敏感授权立即失效
+          rt.bootstrapped.memory.revokeGrantsForTask(session.id);
+        } else {
           send({
             type: 'error',
             message: err instanceof Error ? err.message : String(err),

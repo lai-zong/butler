@@ -41,6 +41,8 @@ export default [
         TextDecoder: 'readonly',
         fetch: 'readonly',
         Response: 'readonly',
+        FormData: 'readonly',
+        Blob: 'readonly',
       },
     },
   },

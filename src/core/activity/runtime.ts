@@ -54,10 +54,13 @@ export interface ActivityRuntimeArgs {
   readonly reflect?: (args: { readonly scope: 'daily' | 'weekly' }) => Promise<{
     readonly candidateCount: number;
     readonly summary: string;
+    readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
   }>;
   readonly checkReminders?: () => Promise<readonly { readonly title: string; readonly dueAt: number }[]>;
   /** 日级演化（每日反思任务调用；不接也能跑） */
   readonly evolve?: () => EvolutionPassResult;
+  /** 周级相似合并（由上层注入 mergeAll；不接也能跑） */
+  readonly merge?: () => { readonly merged: number; readonly absorbed: number };
 }
 
 export interface ActivityRuntime {
@@ -89,6 +92,7 @@ export function createActivityRuntime(args: ActivityRuntimeArgs): ActivityRuntim
     ...(args.reflect !== undefined ? { reflect: args.reflect } : {}),
     ...(args.checkReminders !== undefined ? { checkReminders: args.checkReminders } : {}),
     ...(args.evolve !== undefined ? { evolve: args.evolve } : {}),
+    ...(args.merge !== undefined ? { merge: args.merge } : {}),
   });
 
   // ★ 注册全部任务（改造前这里一次都没被调用过）

@@ -24,6 +24,7 @@ import {
   type ToolResult,
   type ToolSpec,
 } from './types.js';
+import { ToolFuse, type ToolFuseOptions } from './fuse.js';
 
 /** 各分级需要什么授权（未记住时）。 */
 const TIER_REQUIREMENT: Record<ActionTier, 'auto' | 'ask' | 'disabled'> = {
@@ -37,6 +38,8 @@ export interface ToolFrameworkOptions {
   readonly log: EventLog;
   readonly clock: ClockPort;
   readonly policy: PermissionPolicy;
+  /** 操作范围熔断；不传用默认 60s / 30 次 */
+  readonly fuse?: Partial<ToolFuseOptions>;
   /** 审计回调（界面展示"本次会话做了哪些操作"用） */
   readonly onAudit?: (audit: ToolAudit) => void;
 }
@@ -47,6 +50,7 @@ export class ToolFramework {
   private readonly clock: ClockPort;
   private readonly policy: PermissionPolicy;
   private readonly onAudit: ((a: ToolAudit) => void) | undefined;
+  private readonly fuse: ToolFuse;
 
   /** 全量审计记录。事件日志是真相源，这里是便于查询的视图。 */
   private readonly audits: ToolAudit[] = [];
@@ -56,6 +60,7 @@ export class ToolFramework {
     this.clock = opts.clock;
     this.policy = opts.policy;
     this.onAudit = opts.onAudit;
+    this.fuse = new ToolFuse(opts.fuse);
   }
 
   // ── 注册 ──
@@ -155,7 +160,9 @@ export class ToolFramework {
     }
 
     // ① 分级是否已被用户开启
-    const requirement = TIER_REQUIREMENT[spec.tier];
+    //    凭证类工具**无论分级都必须逐次确认**：不能因为之前“记住本次会话”
+    //    就永久放行密码/密钥读取。
+    const requirement = spec.touchesCredentials ? 'ask' : TIER_REQUIREMENT[spec.tier];
     /**
      * C5 三档模式：显式配置时，未开启的档位直接拒绝。
      * 未配置 mode 时保持旧行为（normal/highRisk 仍走 ask）。
@@ -197,7 +204,7 @@ export class ToolFramework {
 
     // ② 授权
     let authorization: Authorization;
-    if (this.policy.isRemembered(spec.name)) {
+    if (!spec.touchesCredentials && this.policy.isRemembered(spec.name)) {
       authorization = 'allow';
     } else if (requirement === 'auto') {
       authorization = 'allow';
@@ -234,6 +241,30 @@ export class ToolFramework {
     //
     //   位置放在授权通过之后：被拒绝的调用走 action.blocked，
     //   不需要重复记一条"调用"——它根本没有发生。
+    //
+    // ★ 范围熔断：只统计**会改变状态**的非只读调用；只读枚举不消耗额度。
+    //   授权被拒的调用也不消耗额度（只有真正要执行的才 record）。
+    const executingAt = this.clock.now();
+    const sideEffecting = spec.tier !== 'readOnly';
+    if (sideEffecting && !this.fuse.allows(executingAt)) {
+      const blockedAudit = this.finishAudit({
+        toolName: spec.name,
+        tier: spec.tier,
+        taskId: args.taskId,
+        argsSummary: redactArgs(args.args),
+        authorization: 'blocked',
+        outcome: 'denied',
+        started,
+        outputSummary: '单位时间内副作用操作超过阈值，已熔断',
+      });
+      this.emitBlocked(spec, args.taskId, blockedAudit, 'fuse_blocked', 'fuse');
+      throw new ToolError(
+        `操作范围熔断：单位时间内非只读操作超过 ${this.fuse.count(executingAt)} 次上限，已停止本次调用。`,
+        'fuse_blocked',
+      );
+    }
+    if (sideEffecting) this.fuse.record(executingAt);
+
     this.log.append({
       type: 'tool.call',
       actor: 'butler',
@@ -251,6 +282,16 @@ export class ToolFramework {
       },
       createdAt: this.clock.now(),
     });
+
+    // 凭证类工具每次使用都留痕；只记工具与任务，不记参数/返回内容。
+    if (spec.touchesCredentials) {
+      this.log.append({
+        type: 'credential.used',
+        actor: 'butler',
+        payload: { toolName: spec.name, taskId: args.taskId },
+        createdAt: this.clock.now(),
+      });
+    }
 
     const ctx: ToolContext = {
       clock: this.clock,
@@ -290,6 +331,61 @@ export class ToolFramework {
         isError: true,
         durationMs: this.clock.now() - started,
       };
+    }
+
+    // ③b 执行后验证：动作成功不等于结果正确
+    if (result.ok && spec.verify !== undefined) {
+      let verified: { readonly ok: boolean; readonly note?: string };
+      try {
+        verified = await spec.verify(args.args, result, ctx);
+      } catch (err) {
+        verified = {
+          ok: false,
+          note: `校验过程异常：${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!verified.ok) {
+        let rollbackNote = '';
+        if (result.rollback !== undefined) {
+          try {
+            await result.rollback();
+            rollbackNote = '；已撤销本次副作用';
+          } catch (err) {
+            rollbackNote = `；补偿失败：${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
+        const message = `执行后校验失败：${verified.note ?? '目标状态不符合预期'}${rollbackNote}`;
+        this.finishAudit({
+          toolName: spec.name,
+          tier: spec.tier,
+          taskId: args.taskId,
+          argsSummary: redactArgs(args.args),
+          authorization,
+          outcome: 'error',
+          started,
+          outputSummary: redactText(message).slice(0, 200),
+        });
+        this.log.append({
+          type: 'tool.result',
+          actor: 'butler',
+          payload: {
+            toolName: spec.name,
+            tier: spec.tier,
+            isError: true,
+            verified: false,
+            rolledBack: result.rollback !== undefined && !rollbackNote.includes('补偿失败'),
+            error: redactText(message),
+            taskId: args.taskId,
+          },
+          createdAt: this.clock.now(),
+        });
+        return {
+          ok: false,
+          output: message,
+          isError: true,
+          durationMs: this.clock.now() - started,
+        };
+      }
     }
 
     // ④ 结果脱敏 —— 接触凭证的工具，结果绝不原样回传
@@ -440,7 +536,13 @@ export class ToolFramework {
     });
   }
 
-  private emitBlocked(spec: ToolSpec, taskId: string, audit: ToolAudit): void {
+  private emitBlocked(
+    spec: ToolSpec,
+    taskId: string,
+    audit: ToolAudit,
+    reason: 'tier_disabled' | 'fuse_blocked' = 'tier_disabled',
+    stage: 'classification' | 'fuse' = 'classification',
+  ): void {
     this.log.append({
       type: 'action.blocked',
       actor: 'butler',
@@ -448,8 +550,8 @@ export class ToolFramework {
         toolName: spec.name,
         tier: spec.tier,
         taskId,
-        reason: 'tier_disabled',
-        stage: 'classification',
+        reason,
+        stage,
       },
       createdAt: this.clock.now(),
     });

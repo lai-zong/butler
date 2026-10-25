@@ -122,6 +122,8 @@ export interface ScheduledRun {
   readonly manual: boolean;
   /** 本次执行的产出摘要 */
   readonly summary?: string;
+  /** 本次执行的模型 token 用量（纯本地任务为缺省） */
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -132,7 +134,10 @@ export type TaskHandler = (ctx: {
   readonly kind: ScheduledTaskKind;
   readonly scheduledAt: number;
   readonly manual: boolean;
-}) => Promise<{ readonly summary: string }>;
+}) => Promise<{
+  readonly summary: string;
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+}>;
 
 interface TaskEntry {
   readonly kind: ScheduledTaskKind;
@@ -337,7 +342,10 @@ export class Scheduler {
     kind: ScheduledTaskKind,
     handler: TaskHandler,
     ctx: { readonly kind: ScheduledTaskKind; readonly scheduledAt: number; readonly manual: boolean },
-  ): Promise<{ readonly summary: string }> {
+  ): Promise<{
+    readonly summary: string;
+    readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+  }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new TaskTimeoutError(kind, this.taskTimeoutMs)), this.taskTimeoutMs);
@@ -403,12 +411,13 @@ export class Scheduler {
             attempt,
             scheduledAt: opts.scheduledAt,
             summary: r.summary,
+            ...(r.usage !== undefined ? { usage: r.usage } : {}),
             trigger: opts.manual ? 'manual' : 'timer',
           },
           createdAt: started,
         });
 
-        return this.record(kind, started, ended, 'succeeded', attempt, undefined, opts.manual, r.summary);
+        return this.record(kind, started, ended, 'succeeded', attempt, undefined, opts.manual, r.summary, r.usage);
       } catch (err) {
         lastNote = err instanceof Error ? err.message : String(err);
         const ended = this.clock.now();
@@ -474,6 +483,7 @@ export class Scheduler {
     note?: string,
     manual = false,
     summary?: string,
+    usage?: { readonly inputTokens: number; readonly outputTokens: number },
   ): ScheduledRun {
     const run: ScheduledRun = {
       id: `run_${++this.seq}_${startedAt.toString(36)}`,
@@ -485,6 +495,7 @@ export class Scheduler {
       manual,
       ...(note !== undefined ? { note } : {}),
       ...(summary !== undefined ? { summary } : {}),
+      ...(usage !== undefined ? { usage } : {}),
     };
     this.runs.push(run);
     return run;

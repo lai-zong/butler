@@ -78,6 +78,7 @@ export const EVENT_LABEL: Record<string, string> = {
   'supervisor.omissionDetected': '检出遗漏',
   'supervisor.principleViolated': '原则被违背',
   'conflict.detected': '检出冲突',
+  'conflict.judgeFailed': '冲突判断失败',
   'conflict.resolved': '冲突已裁决',
   'constraint.hardBlocked': '硬约束拦截',
   // 记忆生命周期
@@ -132,6 +133,7 @@ export const EVENT_LABEL: Record<string, string> = {
   'session.rollback': '回退会话',
   'schedule.triggered': '定时任务触发',
   'session.forked': '新建会话',
+  'session.cancelled': '用户取消',
   'session.ended': '会话结束',
   // MCP
   'mcp.serverAdded': '添加 MCP 服务',
@@ -399,6 +401,7 @@ export interface VerdictDto {
   readonly forMessageId: string;
   readonly outcome: Verdict['outcome'];
   readonly summary: string;
+  readonly reviewed?: boolean;
   readonly issues: Verdict['issues'];
   readonly criteriaChecks: Verdict['criteriaChecks'];
   readonly steps: Verdict['steps'];
@@ -435,6 +438,7 @@ export function toVerdictDto(v: Verdict): VerdictDto {
     forMessageId: v.forMessageId,
     outcome: v.outcome,
     summary: v.summary,
+    ...(v.reviewed !== undefined ? { reviewed: v.reviewed } : {}),
     issues: v.issues,
     criteriaChecks: v.criteriaChecks,
     steps: v.steps,
@@ -588,6 +592,17 @@ export function eventSummary(type: string, payload: unknown): string {
       const outcome = str(p, 'outcome');
       const summary = str(p, 'summary');
       return [outcome, clip(summary, 90)].filter((x) => x.length > 0).join(' · ');
+    }
+    case 'session.cancelled': {
+      const phase = str(p, 'phase') || '未知阶段';
+      const calls = num(p, 'toolCalls') ?? 0;
+      const results = num(p, 'toolResults') ?? 0;
+      const from = num(p, 'fromSeq') ?? 0;
+      const to = num(p, 'toSeq') ?? 0;
+      return clip(
+        `用户在「${phase}」停止 · 工具 ${calls} 次/${results} 个结果 · seq ${from}–${to}`,
+        100,
+      );
     }
     case 'supervisor.omissionDetected':
     case 'supervisor.principleViolated':

@@ -70,6 +70,13 @@ export interface McpServerConfig {
    *    需要密钥时应走系统的凭证存储，而不是写进服务器配置里。
    */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * 环境变量名 → 凭证保险库中的名称/id。
+   *
+   * ★ 值只保存引用，不保存明文；连接时由 McpClient 在进程内解析，
+   *   明文不会进入配置导出、模型上下文或事件流。
+   */
+  readonly envFromVault?: Readonly<Record<string, string>>;
   readonly cwd?: string;
 
   // ── 远程专用 ──
@@ -353,6 +360,18 @@ const CREDENTIAL_VALUE = /(sk-|gh[pousr]_|AKIA|xox[baprs]-)[A-Za-z0-9_-]{6,}|---
  *
  *   所以这里直接拒绝明文凭证，引导用户走凭证存储。
  */
+function isLoopbackHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return (
+      u.protocol === 'http:' &&
+      (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]' || u.hostname === '::1')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function validateConfig(cfg: Omit<McpServerConfig, 'policy'>): readonly ConfigProblem[] {
   const problems: ConfigProblem[] = [];
 
@@ -369,11 +388,11 @@ export function validateConfig(cfg: Omit<McpServerConfig, 'policy'>): readonly C
       problems.push({ field: 'url', message: `${cfg.transport} 传输必须指定 URL` });
     } else if (!/^https?:\/\//i.test(cfg.url)) {
       problems.push({ field: 'url', message: 'URL 必须以 http:// 或 https:// 开头' });
-    } else if (cfg.url.startsWith('http://')) {
-      // 远程明文传输会把内容与可能的凭证暴露在链路上
+    } else if (cfg.url.startsWith('http://') && !isLoopbackHttpUrl(cfg.url)) {
+      // 本机回环 http 不经过网络链路；远程明文仍然拒绝
       problems.push({
         field: 'url',
-        message: '远程传输请使用 https —— http 会在链路上暴露请求内容',
+        message: '远程传输请使用 https；只有 127.0.0.1 / localhost 的本机 http 可用',
       });
     }
   }
@@ -386,6 +405,14 @@ export function validateConfig(cfg: Omit<McpServerConfig, 'policy'>): readonly C
         message:
           `疑似凭证（键名或值匹配到密钥特征）。**不要把凭证明文写进服务器配置** —— ` +
           '该配置会被导出，而导出文件会经过网盘/聊天工具/U 盘。请改用凭证存储。',
+      });
+    }
+  }
+  for (const [k, v] of Object.entries(cfg.envFromVault ?? {})) {
+    if (k.trim().length === 0 || v.trim().length === 0) {
+      problems.push({
+        field: `envFromVault.${k}`,
+        message: 'envFromVault 的变量名和凭证引用都不能为空',
       });
     }
   }

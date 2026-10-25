@@ -89,6 +89,12 @@ export interface ExecutionReport {
   readonly findings: readonly Finding[];
   /** 需要管家裁决的问题（旧语义：仆人上报）*/
   readonly needsButlerDecision?: string;
+  /**
+   * 本次执行的产出是否受“外部工具不得写记忆”限制。
+   *
+   * 为 true 时，反思层不得把这份报告作为记忆候选来源（MCP 默认策略）。
+   */
+  readonly memoryWriteBlocked?: boolean;
 }
 
 /**

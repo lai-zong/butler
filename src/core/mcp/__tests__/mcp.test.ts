@@ -360,6 +360,19 @@ describe('⑤ ★ 配置校验', () => {
     expect(problems.some((p) => p.message.includes('https'))).toBe(true);
   });
 
+  it('本机回环 http 可用（不经过外部链路）', () => {
+    expect(
+      validateConfig({
+        id: 'x', name: 'x', transport: 'http', url: 'http://127.0.0.1:8787/mcp', enabled: true,
+      }),
+    ).toHaveLength(0);
+    expect(
+      validateConfig({
+        id: 'x', name: 'x', transport: 'http', url: 'http://localhost:8787/mcp', enabled: true,
+      }),
+    ).toHaveLength(0);
+  });
+
   it('https 通过', () => {
     expect(
       validateConfig({
@@ -402,6 +415,67 @@ describe('⑤ ★ 配置校验', () => {
 
   it('普通环境变量不误伤', () => {
     expect(validateConfig(cfg({ env: { DEBUG: '1', LOG_LEVEL: 'info' } }))).toHaveLength(0);
+  });
+
+  it('envFromVault 只允许引用，不允许空引用', () => {
+    expect(validateConfig(cfg({ envFromVault: { TOKEN: 'cred_1' } }))).toHaveLength(0);
+    expect(
+      validateConfig(cfg({ envFromVault: { TOKEN: '' } })).some((p) => p.field.startsWith('envFromVault')),
+    ).toBe(true);
+  });
+});
+
+describe('⑦ 凭证注入', () => {
+  it('envFromVault 在打开传输前解析，且配置本身不含明文', async () => {
+    const log = new EventLog('s_mcp_vault');
+    const clock = new FixedClock(T0);
+    const client = new McpClient(log, clock);
+    const fake = new FakeTransport(OK_RULES);
+    let opened: McpServerConfig | undefined;
+    client.registerTransport({
+      transport: 'stdio',
+      open: async (config) => {
+        opened = config;
+        return fake;
+      },
+    });
+    client.setCredentialResolver(async (ref) => (ref === 'cred_1' ? 'resolved-secret' : null));
+    const added = client.addServer({
+      id: 'srv-vault',
+      name: 'vault-server',
+      transport: 'stdio',
+      command: 'node',
+      envFromVault: { TOKEN: 'cred_1' },
+      enabled: true,
+      policy: DEFAULT_POLICY,
+    });
+    expect(added.ok).toBe(true);
+    expect((await client.connect('srv-vault')).ok).toBe(true);
+    expect(opened?.env?.['TOKEN']).toBe('resolved-secret');
+    expect(JSON.stringify(client.getServer('srv-vault')?.config)).not.toContain('resolved-secret');
+  });
+
+  it('凭证不存在时连接失败，不把空值当成功', async () => {
+    const log = new EventLog('s_mcp_vault2');
+    const clock = new FixedClock(T0);
+    const client = new McpClient(log, clock);
+    client.registerTransport({
+      transport: 'stdio',
+      open: async () => new FakeTransport(OK_RULES),
+    });
+    client.setCredentialResolver(async () => null);
+    client.addServer({
+      id: 'srv-vault2',
+      name: 'vault-server',
+      transport: 'stdio',
+      command: 'node',
+      envFromVault: { TOKEN: 'missing' },
+      enabled: true,
+      policy: DEFAULT_POLICY,
+    });
+    const r = await client.connect('srv-vault2');
+    expect(r.ok).toBe(false);
+    expect(r.reason).toContain('凭证');
   });
 });
 
@@ -531,6 +605,20 @@ describe('⑧ ★ MCP 工具走同一个安全闸门', () => {
     expect(specs).toHaveLength(1);
     expect(specs.map((s) => s.name)).not.toContain(`${MCP_TOOL_PREFIX}srv1__delete_file`);
     expect(specs.map((s) => s.name)).toContain(`${MCP_TOOL_PREFIX}srv1__get_weather`);
+  });
+
+  it('★ MCP 工具默认禁止进长期记忆，显式开启后才放行', async () => {
+    const { client } = await connected('normal');
+    const spec = client.toToolSpecs().find((s) => s.name.includes('get_weather'));
+    expect(spec?.memoryWriteAllowed).toBe(false);
+
+    client.setPolicy('srv1', {
+      ...DEFAULT_POLICY,
+      level: 'normal',
+      allowMemoryWrite: true,
+    });
+    const allowed = client.toToolSpecs().find((s) => s.name.includes('get_weather'));
+    expect(allowed?.memoryWriteAllowed).toBe(true);
   });
 
   it('★ 显式开启后才导出危险工具', async () => {

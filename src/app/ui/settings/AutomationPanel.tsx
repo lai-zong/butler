@@ -207,6 +207,9 @@ export function AutomationPanel(): JSX.Element {
                     <span className="auto-recent-result">
                       {r.outcome !== null ? OUTCOME_LABEL[r.outcome] : '记录'}
                       {r.manual ? ' · 手动' : ''}
+                      {r.usage !== undefined && r.usage !== null
+                        ? ` · ${formatNumber(r.usage.inputTokens + r.usage.outputTokens)} tokens`
+                        : ''}
                     </span>
                   </li>
                 ))}

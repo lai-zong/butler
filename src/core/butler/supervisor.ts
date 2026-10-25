@@ -31,7 +31,7 @@
 
 import type { EventLog } from '../events/log.js';
 import { msg, type ModelPort } from '../ports/model.js';
-import { BUTLER_SYSTEM, PROMPT_VERSIONS, supervisionTask } from '../prompts/butler.js';
+import { PROMPT_VERSIONS, SUPERVISOR_SYSTEM, supervisionTask } from '../prompts/butler.js';
 import { supervisionSchema, type SupervisionOutput } from '../prompts/schemas.js';
 import { renderContractForReview, type TaskContract } from './contract.js';
 import { DOMAIN_DISCIPLINE, domainName } from '../domain/types.js';
@@ -58,6 +58,8 @@ export interface NormalizedSupervisionOutput {
   readonly criteriaChecks: SupervisionOutput['criteriaChecks'];
   readonly findings: readonly SupervisionFinding[];
   readonly summary: string;
+  /** 是否真正调用过监督员；手动模式/调用失败时为 false */
+  readonly reviewed?: boolean;
 }
 
 export interface SupervisionResult {
@@ -108,6 +110,18 @@ export async function supervise(args: {
   readonly contract: TaskContract;
   readonly reports: readonly ExecutionReport[];
   readonly hardConstraints: readonly string[];
+  /**
+   * 全局记忆快照（只读）。
+   *
+   * 由编排层从 store 过滤 global_constraint / global_shared / principle；
+   * sensitive 与领域记忆不进入，避免监督员越权读取。
+   */
+  readonly memorySnapshot?: readonly {
+    readonly id: string;
+    readonly memClass: string;
+    readonly kind: string;
+    readonly content: string;
+  }[];
   readonly now: number;
   /**
    * 手动复核用：turn 已持久化产出摘要时直接复用，
@@ -129,13 +143,14 @@ export async function supervise(args: {
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
     messages: [
-      msg.system(BUTLER_SYSTEM),
+      msg.system(SUPERVISOR_SYSTEM),
       msg.user(
         supervisionTask({
           userGoal: args.userGoal,
           contractText: renderContractForReview(args.contract),
           outputSummary,
           hardConstraints: args.hardConstraints,
+          ...(args.memorySnapshot !== undefined ? { memorySnapshot: args.memorySnapshot } : {}),
           disciplines: disciplinesFor(args.contract),
         }),
       ),
@@ -241,7 +256,7 @@ export async function supervise(args: {
       },
       summary: output.summary,
       usage: result.usage,
-      promptVersion: PROMPT_VERSIONS.supervisorTask,
+      promptVersion: `${PROMPT_VERSIONS.supervisorSystem}+${PROMPT_VERSIONS.supervisorTask}`,
     },
     createdAt: args.now,
   });
@@ -264,8 +279,8 @@ export async function supervise(args: {
 
   return {
     // ⚠️ 返回**补齐后**的 output —— 调用方拿到的判据核对永远是完整的
-    output: { ...output, criteriaChecks },
+    output: { ...output, criteriaChecks, reviewed: true },
     usage: result.usage,
-    promptVersion: PROMPT_VERSIONS.supervisorTask,
+    promptVersion: `${PROMPT_VERSIONS.supervisorSystem}+${PROMPT_VERSIONS.supervisorTask}`,
   };
 }

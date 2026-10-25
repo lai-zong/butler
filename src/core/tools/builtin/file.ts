@@ -182,12 +182,36 @@ export function writeFileTool(fs: FileSystemPort): ToolSpec {
         };
       }
       const started = ctx.clock.now();
+      const path = a.path;
+      const content = a.content;
+      const existed = await fs.exists(path).catch(() => false);
+      let previous = '';
+      if (existed) {
+        try {
+          previous = await fs.readText(path);
+        } catch (err) {
+          // 已存在但读不出原内容 → 覆盖后无法补偿，拒绝盲写
+          return {
+            ok: false,
+            output: `无法读取原文件，拒绝覆盖（无法回滚）：${fsMessage(err)}`,
+            isError: true,
+            durationMs: ctx.clock.now() - started,
+          };
+        }
+      }
       try {
-        const bytes = await fs.writeText(a.path, a.content);
+        const bytes = await fs.writeText(path, content);
         return {
           ok: true,
-          output: `已写入 ${fs.resolve(a.path)}（${bytes} 字节）`,
-          data: { path: fs.resolve(a.path), bytes },
+          output: `已写入 ${fs.resolve(path)}（${bytes} 字节）`,
+          data: { path: fs.resolve(path), bytes, existedBefore: existed },
+          rollback: async () => {
+            if (existed) {
+              await fs.writeText(path, previous);
+            } else {
+              await fs.remove(path);
+            }
+          },
           durationMs: ctx.clock.now() - started,
         };
       } catch (err) {
@@ -197,6 +221,20 @@ export function writeFileTool(fs: FileSystemPort): ToolSpec {
           isError: true,
           durationMs: ctx.clock.now() - started,
         };
+      }
+    },
+    async verify(args: unknown) {
+      const a = args as { path?: string; content?: string };
+      if (typeof a?.path !== 'string' || typeof a?.content !== 'string') {
+        return { ok: false, note: '参数不完整，无法校验' };
+      }
+      try {
+        const after = await fs.readText(a.path);
+        return after === a.content
+          ? { ok: true }
+          : { ok: false, note: `文件内容与预期不一致（实际 ${after.length} 字符）` };
+      } catch (err) {
+        return { ok: false, note: `写入后无法读取文件：${fsMessage(err)}` };
       }
     },
   };
@@ -223,15 +261,35 @@ export function makeDirTool(fs: FileSystemPort): ToolSpec {
         return { ok: false, output: '参数错误：path 必须是字符串', isError: true, durationMs: 0 };
       }
       const started = ctx.clock.now();
+      const path = a.path;
+      const existed = await fs.exists(path).catch(() => false);
       try {
-        await fs.mkdir(a.path);
+        await fs.mkdir(path);
         return {
           ok: true,
-          output: `已创建目录 ${fs.resolve(a.path)}`,
+          output: `已创建目录 ${fs.resolve(path)}`,
+          data: { path: fs.resolve(path), existedBefore: existed },
+          ...(existed
+            ? {}
+            : {
+                rollback: async () => {
+                  await fs.remove(path);
+                },
+              }),
           durationMs: ctx.clock.now() - started,
         };
       } catch (err) {
         return { ok: false, output: fsMessage(err), isError: true, durationMs: ctx.clock.now() - started };
+      }
+    },
+    async verify(args: unknown) {
+      const a = args as { path?: string };
+      if (typeof a?.path !== 'string') return { ok: false, note: '参数不完整' };
+      try {
+        const st = await fs.stat(a.path);
+        return st.isDirectory ? { ok: true } : { ok: false, note: '目标存在但不是目录' };
+      } catch (err) {
+        return { ok: false, note: `目录创建后不存在：${fsMessage(err)}` };
       }
     },
   };
@@ -345,6 +403,17 @@ export function removeTool(fs: FileSystemPort): ToolSpec {
         };
       } catch (err) {
         return { ok: false, output: fsMessage(err), isError: true, durationMs: ctx.clock.now() - started };
+      }
+    },
+    async verify(args: unknown) {
+      const a = args as { path?: string };
+      if (typeof a?.path !== 'string') return { ok: false, note: '参数不完整' };
+      try {
+        return (await fs.exists(a.path))
+          ? { ok: false, note: '删除后路径仍然存在' }
+          : { ok: true };
+      } catch (err) {
+        return { ok: false, note: `删除后无法确认状态：${fsMessage(err)}` };
       }
     },
   };

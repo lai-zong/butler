@@ -106,11 +106,22 @@ export class McpClient {
   private readonly servers = new Map<string, McpServerRuntime>();
   private readonly factories = new Map<McpTransport, McpTransportFactory>();
   private seq = 0;
+  private credentialResolver: ((ref: string) => Promise<string | null>) | null = null;
 
   constructor(
     private readonly log: EventLog,
     private readonly clock: ClockPort,
   ) {}
+
+  /**
+   * 注入凭证解析器。
+   *
+   * ★ 只给 `envFromVault` 用；解析出的明文只进入子进程环境，
+   *   不写日志、不放进 rt.config、不返回给模型。
+   */
+  setCredentialResolver(fn: (ref: string) => Promise<string | null>): void {
+    this.credentialResolver = fn;
+  }
 
   /** 注册一种传输的实现。 */
   registerTransport(f: McpTransportFactory): void {
@@ -243,7 +254,23 @@ export class McpClient {
 
     rt.state = 'connecting';
     try {
-      rt.port = await factory.open(rt.config);
+      let openConfig = rt.config;
+      const refs = rt.config.envFromVault;
+      if (refs !== undefined && Object.keys(refs).length > 0) {
+        if (this.credentialResolver === null) {
+          throw new Error('该 server 需要凭证，但运行时没有配置凭证解析器');
+        }
+        const env: Record<string, string> = { ...(rt.config.env ?? {}) };
+        for (const [key, ref] of Object.entries(refs)) {
+          const value = await this.credentialResolver(ref);
+          if (value === null) {
+            throw new Error(`凭证「${ref}」不存在；请先在凭证保险库中保存`);
+          }
+          env[key] = value;
+        }
+        openConfig = { ...rt.config, env };
+      }
+      rt.port = await factory.open(openConfig);
 
       // ① initialize
       const initRes = await rt.port.request(
@@ -491,6 +518,9 @@ export class McpClient {
       parameters: tool.inputSchema,
       // ★ 分级 = 本系统推断（inferTier）再叠加服务器策略
       tier: effectiveTier,
+      // 外部工具结果默认不得进入长期记忆；用户显式开启该 server 的
+      // allowMemoryWrite 后才放行（由反思层根据报告上的 taint 标记过滤）。
+      memoryWriteAllowed: policy.allowMemoryWrite,
 
       summarize: (a: unknown) => {
         const s = safeJson(a);

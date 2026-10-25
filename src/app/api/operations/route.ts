@@ -1,12 +1,18 @@
 /**
- * 操作记忆 —— 只读数据源（方案 § 6.3）
+ * 操作记忆（方案 § 6.3）
  *
- * GET /api/operations
+ * GET  /api/operations
  *   → { ok, now, counts, apps, operations: [...] }
+ * POST /api/operations
+ *   { kind:'preference'|'environment', content, taskLabel, evidence? }
+ *   → 显式新增一条偏好/环境记忆
  *
- * ★ 为什么只读：
- *   操作记忆的写入发生在工具真实执行之后（成功/失败/耗时），
- *   由核心层按证据记录。界面手动改成功率会让"记忆"变成可编造的展示。
+ * ★ GET 只读：
+ *   方法记忆的写入发生在工具真实执行之后（成功/失败/耗时），
+ *   由核心层按证据记录；界面不能手动改成功率。
+ *
+ * ★ POST 只新增“用户明确说出的偏好/环境事实”，不修改历史成功率；
+ *   这是用户输入，不是模型推测。凭证内容一律拒绝。
  *
  * ★ 为什么默认不返回 evidence 原文：
  *   evidence 是指向事件/任务的引用，可能含路径或任务文本；
@@ -19,6 +25,7 @@ import { NextResponse } from 'next/server';
 import { getRuntime } from '@/app/runtime';
 import type { OperationKind } from '@/core/memory/operation.js';
 import { PATH_LABEL, successRate, summarizeOperation } from '@/core/memory/operations.js';
+import { containsCredential } from '@/core/tools/redact.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -97,5 +104,92 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     counts,
     apps,
     operations,
+  });
+}
+
+interface OperationBody {
+  readonly kind?: unknown;
+  readonly content?: unknown;
+  readonly taskLabel?: unknown;
+  readonly evidence?: unknown;
+}
+
+const MAX_CONTENT = 2_000;
+const MAX_TASK_LABEL = 200;
+const MAX_EVIDENCE = 1_000;
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
+  let body: OperationBody;
+  try {
+    body = (await req.json()) as OperationBody;
+  } catch {
+    return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 });
+  }
+
+  const kind = body.kind;
+  if (kind !== 'preference' && kind !== 'environment') {
+    return NextResponse.json(
+      { error: "kind 只能是 'preference' 或 'environment'" },
+      { status: 400 },
+    );
+  }
+
+  const content = typeof body.content === 'string' ? body.content.trim() : '';
+  const taskLabel = typeof body.taskLabel === 'string' ? body.taskLabel.trim() : '';
+  const evidence = typeof body.evidence === 'string' ? body.evidence.trim() : undefined;
+
+  if (content.length === 0 || content.length > MAX_CONTENT) {
+    return NextResponse.json(
+      { error: `content 必须是 1–${MAX_CONTENT} 字符` },
+      { status: 400 },
+    );
+  }
+  if (taskLabel.length === 0 || taskLabel.length > MAX_TASK_LABEL) {
+    return NextResponse.json(
+      { error: `taskLabel 必须是 1–${MAX_TASK_LABEL} 字符` },
+      { status: 400 },
+    );
+  }
+  if (evidence !== undefined && evidence.length > MAX_EVIDENCE) {
+    return NextResponse.json(
+      { error: `evidence 最多 ${MAX_EVIDENCE} 字符` },
+      { status: 400 },
+    );
+  }
+
+  const fields = [content, taskLabel, ...(evidence !== undefined ? [evidence] : [])];
+  if (fields.some((s) => containsCredential(s))) {
+    return NextResponse.json(
+      { error: '内容包含凭证，拒绝写入操作记忆' },
+      { status: 400 },
+    );
+  }
+
+  const rt = await getRuntime();
+  const store = rt.bootstrapped.operations;
+  const created = kind === 'preference'
+    ? store.recordPreference({
+        content,
+        taskLabel,
+        ...(evidence !== undefined ? { evidence } : {}),
+      })
+    : store.recordEnvironment({
+        content,
+        taskLabel,
+        ...(evidence !== undefined ? { evidence } : {}),
+      });
+
+  await rt.bootstrapped.log.flushPersistence();
+
+  return NextResponse.json({
+    ok: true,
+    operation: {
+      id: created.id,
+      kind: created.kind,
+      content: created.content,
+      taskLabel: created.taskLabel,
+      evidenceCount: created.evidence.length,
+      createdAt: created.createdAt,
+    },
   });
 }

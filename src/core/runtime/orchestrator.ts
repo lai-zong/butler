@@ -10,7 +10,7 @@
 import { writeContract } from '../butler/contract.js';
 import { runButler } from '../butler/execute.js';
 import { verifyHardConstraints, type HardConstraintReport } from '../butler/hardConstraints.js';
-import { supervise, type NormalizedSupervisionOutput } from '../butler/supervisor.js';
+import { supervise, type NormalizedSupervisionOutput, type SupervisionResult } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { domainName } from '../domain/types.js';
 import type { ToolFramework } from '../tools/framework.js';
@@ -55,6 +55,13 @@ export interface RunSessionArgs {
    *   没有它时退回策略默认实现（Web 版直接拒绝）—— 与改造前一致。
    */
   readonly asker?: ApprovalAsker;
+  /**
+   * 监督员触发模式。
+   *
+   * ⚠️ 不传时保持 `auto`（测试/历史调用不变）；
+   *    Web 运行时由 `SUPERVISOR_MODE` 显式传入，默认 `manual`。
+   */
+  readonly supervisionMode?: 'auto' | 'manual';
   readonly recalled: readonly ScoredMemory[];
   /**
    * 工具框架。给出时仆人走工具循环（能读写文件、跑命令）；
@@ -482,6 +489,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       usage: { inputTokens: 0, outputTokens: 0 },
       attempts: 0,
       promptVersions: [],
+      memoryWriteBlocked: false,
     };
   }
 
@@ -521,17 +529,97 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   });
 
   // ── ⑦ 管家监督（v7 · D-7 三视角：契约 / 领域 / 全局）──
-  stage('supervise', '监督与审查');
-  const sup = await supervise({
-    model: args.model,
-    log,
-    userGoal: args.userGoal,
-    // ★ 契约是核对的唯一标准 —— 没有它，监督员只能凭感觉评价
-    contract,
-    reports,
-    hardConstraints: hardConstraintMemories.map((x) => x.memory.content),
-    now: args.clock.now(),
-  });
+  let sup: SupervisionResult;
+  if (args.supervisionMode === 'manual') {
+    // D-35：主回合不自动调用监督员；用户从轮次条手动发起。
+    // 这里给出一份“未审查”的诚实结果，不能伪装成通过。
+    sup = {
+      output: {
+        criteriaChecks: [],
+        findings: [],
+        summary: '未自动审查（可在轮次条按需发起）',
+        reviewed: false,
+      },
+      usage: { inputTokens: 0, outputTokens: 0 },
+      promptVersion: 'manual.unreviewed',
+    };
+  } else {
+    stage('supervise', '监督与审查');
+    try {
+      /**
+       * 监督员的“全局记忆快照”只包含全局层：
+       *   - global_constraint / global_shared（含原则）
+       *   - 排除 sensitive 与 domain，避免审查越权读取；
+       * 这不是“所有记忆”，但足以核对全局视角，且不泄漏领域/敏感内容。
+       */
+      const memorySnapshot = (args.store?.all() ?? [])
+        .filter(
+          (e) =>
+            e.lifecycle === 'active' &&
+            (e.memClass === 'global_constraint' || e.memClass === 'global_shared'),
+        )
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 24)
+        .map((e) => ({
+          id: e.id,
+          memClass: e.memClass,
+          kind: e.kind,
+          content: e.content.slice(0, 240),
+        }));
+
+      sup = await supervise({
+        model: args.model,
+        log,
+        userGoal: args.userGoal,
+        // ★ 契约是核对的唯一标准 —— 没有它，监督员只能凭感觉评价
+        contract,
+        reports,
+        hardConstraints: hardConstraintMemories.map((x) => x.memory.content),
+        memorySnapshot,
+        now: args.clock.now(),
+      });
+    } catch (err) {
+      // 取消必须原样向上抛，不能伪装成“审查失败”
+      if (args.signal?.aborted === true || isAbortError(err)) throw err;
+
+      /**
+       * ★ D-39：审查失败只影响审查窗口，不拖垮主对话。
+       *   给出一份“未评估”的诚实结果，而不是让用户拿不到回答。
+       */
+      const reason = err instanceof Error ? err.message : String(err);
+      log.append({
+        type: 'supervisor.observe',
+        actor: 'supervisor',
+        payload: {
+          failed: true,
+          reason,
+          criteriaTotal: contract.criteria.length,
+        },
+        createdAt: args.clock.now(),
+      });
+      sup = {
+        output: {
+          criteriaChecks: contract.criteria.map((criterion) => ({
+            criterion,
+            met: false,
+            note: '监督员调用失败，未评估',
+          })),
+          findings: [
+            {
+              viewpoint: 'global',
+              severity: 'warn',
+              message: `监督员调用失败，审查未完成：${reason}`,
+              evidence: [],
+            },
+          ],
+          summary: '监督员调用失败，审查未完成；主回答仍已交付。',
+          reviewed: false,
+        },
+        usage: { inputTokens: 0, outputTokens: 0 },
+        promptVersion: 'supervisor.unavailable',
+      };
+    }
+  }
   throwIfAborted(args.signal);
   inputTokens += sup.usage.inputTokens;
   outputTokens += sup.usage.outputTokens;
@@ -620,6 +708,10 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       });
     }
   }
+
+  // 任务级授权在任务结束时立即失效；TTL 只是兜底。
+  // 约定：调用方以 sessionId 作为任务 id（Web 侧一个会话即一个任务上下文）。
+  args.store?.revokeGrantsForTask(args.sessionId);
 
   log.append({
     type: 'session.ended',

@@ -34,6 +34,7 @@ interface Body {
   readonly url?: unknown;
   readonly enabled?: unknown;
   readonly policy?: unknown;
+  readonly envFromVault?: unknown;
 }
 
 function syncTools(rt: Awaited<ReturnType<typeof getRuntime>>): void {
@@ -69,6 +70,7 @@ function view(
       command: s.config.command ?? null,
       url: s.config.url ?? null,
       envKeys: Object.keys(s.config.env ?? {}),
+    vaultEnvKeys: Object.keys(s.config.envFromVault ?? {}),
       policy: s.config.policy,
       notices: s.notices.length,
       tools: s.tools.map((t) => ({
@@ -120,6 +122,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const args = Array.isArray(body.args)
         ? body.args.map((a) => String(a)).filter((a) => a.length > 0)
         : undefined;
+      const envFromVault =
+        typeof body.envFromVault === 'object' && body.envFromVault !== null
+          ? Object.fromEntries(
+              Object.entries(body.envFromVault as Record<string, unknown>)
+                .filter(([, v]) => typeof v === 'string' && v.trim().length > 0)
+                .map(([k, v]) => [k.trim(), String(v).trim()]),
+            )
+          : undefined;
       const config: McpServerConfig = {
         id,
         name,
@@ -130,6 +140,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           ? { command: body.command.trim() }
           : {}),
         ...(args !== undefined && args.length > 0 ? { args } : {}),
+        ...(envFromVault !== undefined && Object.keys(envFromVault).length > 0
+          ? { envFromVault }
+          : {}),
         ...(typeof body.url === 'string' && body.url.trim().length > 0
           ? { url: body.url.trim() }
           : {}),

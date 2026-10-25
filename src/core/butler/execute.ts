@@ -105,6 +105,8 @@ export interface ButlerRunResult {
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   readonly attempts: number;
   readonly promptVersions: readonly string[];
+  /** 是否使用过“结果不得进长期记忆”的工具（MCP 默认策略） */
+  readonly memoryWriteBlocked: boolean;
 }
 
 /**
@@ -154,7 +156,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
     }),
   ];
 
-  const { raw, usage, attempts } = args.tools
+  const { raw, usage, attempts, memoryWriteBlocked } = args.tools
     ? await runWithTools(args, baseMessages)
     : await runSingleShot(args, baseMessages);
 
@@ -202,6 +204,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
     memoryRefs: args.injectedConstraints.map((c) => c.memoryId),
     uncertainties: raw.uncertainties,
     ...(decision !== undefined ? { needsButlerDecision: decision } : {}),
+    ...(memoryWriteBlocked ? { memoryWriteBlocked: true } : {}),
     findings,
   };
 
@@ -261,6 +264,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
     raw,
     usage,
     attempts,
+    memoryWriteBlocked,
     promptVersions: [PROMPT_VERSIONS.butlerSystem, PROMPT_VERSIONS.butlerExecuteTask],
   };
 }
@@ -272,7 +276,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
 async function runSingleShot(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
-): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
+): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number; memoryWriteBlocked: boolean }> {
   throwIfAborted(args.signal);
   const result = await args.model.completeStructured({
     purpose: 'execution',
@@ -284,13 +288,13 @@ async function runSingleShot(
     messages,
   });
   throwIfAborted(args.signal);
-  return { raw: result.value, usage: result.usage, attempts: result.attempts };
+  return { raw: result.value, usage: result.usage, attempts: result.attempts, memoryWriteBlocked: false };
 }
 
 async function runWithTools(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
-): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number }> {
+): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number; memoryWriteBlocked: boolean }> {
   const tools = args.tools;
   if (!tools) throw new Error('runWithTools 需要 tools');
 
@@ -345,6 +349,7 @@ async function runWithTools(
       },
       usage: loop.usage,
       attempts: 1,
+      memoryWriteBlocked: loop.memoryWriteBlocked,
     };
   }
 
@@ -360,10 +365,16 @@ async function runWithTools(
       },
       usage: loop.usage,
       attempts: 1,
+      memoryWriteBlocked: loop.memoryWriteBlocked,
     };
   }
 
-  return { raw: parsed.data, usage: loop.usage, attempts: 1 };
+  return {
+    raw: parsed.data,
+    usage: loop.usage,
+    attempts: 1,
+    memoryWriteBlocked: loop.memoryWriteBlocked,
+  };
 }
 
 

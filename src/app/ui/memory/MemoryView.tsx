@@ -38,6 +38,8 @@ import {
   truncate,
 } from '../lib/format.js';
 import type {
+  MemoryConflictView,
+  MemoryConflictsResponse,
   MemoryDetailResponse,
   MemoryItem,
   MemoryKind,
@@ -47,6 +49,8 @@ import type {
   MemoryRevision,
   MemoryStats,
   Overview,
+  SessionSummary,
+  SessionsResponse,
   ToastMessage,
   ViewId,
 } from '../lib/types.js';
@@ -108,6 +112,7 @@ export function MemoryView({
   onFirstReady,
 }: MemoryViewProps): JSX.Element {
   const [items, setItems] = useState<readonly MemoryItem[]>([]);
+  const [conflicts, setConflicts] = useState<readonly MemoryConflictView[]>([]);
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [total, setTotal] = useState(0);
   const [truncated, setTruncated] = useState(false);
@@ -133,6 +138,21 @@ export function MemoryView({
   const [evolutionBusy, setEvolutionBusy] = useState<string | null>(null);
   const [forgetTarget, setForgetTarget] = useState<MemoryItem | null>(null);
   const [forgetting, setForgetting] = useState(false);
+
+  const [grantOpen, setGrantOpen] = useState(false);
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [grantError, setGrantError] = useState<string | null>(null);
+  const [grantSessions, setGrantSessions] = useState<readonly SessionSummary[]>([]);
+  const [grantTaskId, setGrantTaskId] = useState('');
+  const [grantPurpose, setGrantPurpose] = useState('');
+  const [grantTtlMin, setGrantTtlMin] = useState(30);
+
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [compareQ, setCompareQ] = useState('');
+  const [compareOptions, setCompareOptions] = useState<readonly MemoryItem[]>([]);
+  const [compareOther, setCompareOther] = useState<MemoryItem | null>(null);
 
   const narrow = useMediaQuery('(max-width: 1179px)');
   const now = useNow(30_000);
@@ -163,6 +183,14 @@ export function MemoryView({
       setStats(res.stats);
       setTotal(res.total);
       setTruncated(res.truncated);
+
+      // 冲突关系来自事件流，不是 MemoryEntry 字段；失败不影响列表。
+      try {
+        const c = await fetchJson<MemoryConflictsResponse>('/api/memory/conflicts');
+        if (token === loadToken.current) setConflicts(c.conflicts);
+      } catch {
+        if (token === loadToken.current) setConflicts([]);
+      }
     } catch (err) {
       if (token !== loadToken.current) return;
       setError(errorMessage(err));
@@ -299,6 +327,136 @@ export function MemoryView({
   }
 
   const selectedItem = detail?.item ?? items.find((i) => i.id === selectedId) ?? null;
+  const conflictByMemory = useMemo(
+    () => new Map(conflicts.map((c) => [c.memoryId, c])),
+    [conflicts],
+  );
+  const selectedConflict =
+    selectedItem !== null ? conflictByMemory.get(selectedItem.id) : undefined;
+
+  async function openGrant(): Promise<void> {
+    if (selectedItem === null || selectedItem.memClass !== 'sensitive') return;
+    setGrantOpen(true);
+    setGrantError(null);
+    setGrantPurpose('');
+    setGrantTtlMin(30);
+    setGrantTaskId('');
+    try {
+      const res = await fetchJson<SessionsResponse>('/api/sessions');
+      setGrantSessions(res.sessions);
+      setGrantTaskId(res.sessions[0]?.id ?? '');
+      if (res.sessions.length === 0) {
+        setGrantError('还没有任务会话。先在对话里开始一轮，再回来授权。');
+      }
+    } catch (err) {
+      setGrantError(errorMessage(err));
+    }
+  }
+
+  async function submitGrant(): Promise<void> {
+    if (selectedItem === null || grantBusy) return;
+    const taskId = grantTaskId.trim();
+    const purpose = grantPurpose.trim();
+    if (taskId.length === 0) {
+      setGrantError('请选择一个任务会话');
+      return;
+    }
+    if (purpose.length === 0) {
+      setGrantError('请填写用途；它会写入审计');
+      return;
+    }
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      await postJson('/api/memory/grant', {
+        memoryId: selectedItem.id,
+        taskId,
+        purpose,
+        ttlMs: grantTtlMin * 60_000,
+      });
+      setGrantOpen(false);
+      notify(`已授权 ${grantTtlMin} 分钟；任务结束或取消会自动撤销。`, 'success');
+      await load();
+      await loadDetail(selectedItem.id);
+    } catch (err) {
+      setGrantError(errorMessage(err));
+    } finally {
+      setGrantBusy(false);
+    }
+  }
+
+  async function loadCompareOptions(search: string): Promise<void> {
+    if (selectedItem === null) return;
+    setCompareError(null);
+    try {
+      const sp = new URLSearchParams({ lifecycle: 'active', sort: 'updated' });
+      if (search.trim().length > 0) sp.set('q', search.trim());
+      const res = await fetchJson<MemoryListResponse>(`/api/memory?${sp.toString()}`);
+      setCompareOptions(
+        res.items.filter(
+          (m) =>
+            m.id !== selectedItem.id &&
+            m.memClass !== 'sensitive' &&
+            m.memClass !== 'global_constraint' &&
+            m.lifecycle === 'active',
+        ),
+      );
+    } catch (err) {
+      setCompareError(errorMessage(err));
+    }
+  }
+
+  async function openCompare(): Promise<void> {
+    if (selectedItem === null) return;
+    if (selectedItem.memClass === 'sensitive' || selectedItem.memClass === 'global_constraint') {
+      notify('敏感域 / 全局硬约束不能通过此入口裁决。', 'danger');
+      return;
+    }
+    setCompareOpen(true);
+    setCompareError(null);
+    setCompareQ('');
+    setCompareOther(null);
+    setCompareOptions([]);
+    await loadCompareOptions('');
+  }
+
+  async function submitCompare(keepCurrent: boolean): Promise<void> {
+    if (selectedItem === null || compareOther === null || compareBusy) return;
+    const winnerId = keepCurrent ? selectedItem.id : compareOther.id;
+    const loserId = keepCurrent ? compareOther.id : selectedItem.id;
+    setCompareBusy(true);
+    setCompareError(null);
+    try {
+      await postJson('/api/memory/verdict', { winnerId, loserId });
+      notify('已记录裁决：保留的一方计成功，另一方降权但不删除。', 'success');
+      setCompareOpen(false);
+      setCompareOther(null);
+      await load();
+      await loadDetail(selectedItem.id);
+    } catch (err) {
+      setCompareError(errorMessage(err));
+    } finally {
+      setCompareBusy(false);
+    }
+  }
+  async function resolveConflict(keepCurrent: boolean): Promise<void> {
+    if (selectedItem === null || selectedConflict === undefined || compareBusy) return;
+    const winnerId = keepCurrent ? selectedItem.id : selectedConflict.otherMemoryId;
+    const loserId = keepCurrent ? selectedConflict.otherMemoryId : selectedItem.id;
+    setCompareBusy(true);
+    setCompareError(null);
+    try {
+      await postJson('/api/memory/verdict', { winnerId, loserId });
+      notify('已记录裁决：落败方降权但不删除。', 'success');
+      await load();
+      await loadDetail(selectedItem.id);
+    } catch (err) {
+      setCompareError(errorMessage(err));
+    } finally {
+      setCompareBusy(false);
+    }
+  }
+
   const hasFilters =
     q.trim().length > 0 ||
     lifecycle !== null ||
@@ -331,6 +489,11 @@ export function MemoryView({
       onForget={() => {
         if (selectedItem !== null) setForgetTarget(selectedItem);
       }}
+      onGrant={() => void openGrant()}
+      onCompare={() => void openCompare()}
+      {...(selectedConflict !== undefined ? { conflict: selectedConflict } : {})}
+      conflictBusy={compareBusy}
+      onResolveConflict={(keepCurrent) => void resolveConflict(keepCurrent)}
       now={now}
     />
   );
@@ -573,6 +736,7 @@ export function MemoryView({
                 selected={selectedId === item.id}
                 index={i}
                 reviewing={reviewing === item.id}
+                conflict={conflictByMemory.has(item.id)}
                 onSelect={() => select(item)}
                 onReview={(decision) => void review(item, decision)}
                 now={now}
@@ -621,6 +785,154 @@ export function MemoryView({
           </div>
         )}
       </Modal>
+
+      <Modal
+        open={grantOpen}
+        onClose={() => setGrantOpen(false)}
+        title="授权给当前任务"
+        description="敏感域记忆默认不可读；只对指定任务、指定时间开放。"
+        footer={
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost" onClick={() => setGrantOpen(false)}>
+              取消
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => void submitGrant()} disabled={grantBusy}>
+              {grantBusy ? '授权中…' : `授权 ${grantTtlMin} 分钟`}
+            </button>
+          </div>
+        }
+      >
+        {grantError !== null && <p className="grant-error">{grantError}</p>}
+        {selectedItem !== null && (
+          <div className="grant-current">
+            <span>将要开放</span>
+            <strong>{truncate(selectedItem.content, 80)}</strong>
+          </div>
+        )}
+        <div className="grant-form">
+          <label className="grant-field">
+            <span>任务</span>
+            <select
+              value={grantTaskId}
+              onChange={(e) => setGrantTaskId(e.target.value)}
+              disabled={grantBusy || grantSessions.length === 0}
+              aria-label="选择任务会话"
+            >
+              {grantSessions.length === 0 && <option value="">没有可用会话</option>}
+              {grantSessions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title} · {relativeTime(s.updatedAt, now)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grant-field">
+            <span>用途（写入审计）</span>
+            <textarea
+              value={grantPurpose}
+              onChange={(e) => setGrantPurpose(e.target.value)}
+              maxLength={200}
+              placeholder="例如：晚餐订位需要读取“安静、靠窗”的偏好"
+              disabled={grantBusy}
+            />
+          </label>
+          <label className="grant-field">
+            <span>有效期</span>
+            <select
+              value={grantTtlMin}
+              onChange={(e) => setGrantTtlMin(Number(e.target.value))}
+              disabled={grantBusy}
+            >
+              <option value={30}>30 分钟</option>
+              <option value={120}>2 小时</option>
+              <option value={1440}>24 小时</option>
+            </select>
+          </label>
+        </div>
+        <p className="grant-note">任务结束或取消时自动撤销；授权记录包含 taskId、用途与到期时间，可在审计中查看。</p>
+      </Modal>
+
+      <Modal
+        open={compareOpen}
+        onClose={() => setCompareOpen(false)}
+        title="与另一条记忆比较"
+        description="系统不会自动判定矛盾。你选择两条记忆并决定保留哪一条；落败方只降权，不删除。"
+        footer={
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost" onClick={() => setCompareOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={compareBusy || compareOther === null}
+              onClick={() => void submitCompare(false)}
+            >
+              保留对方
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={compareBusy || compareOther === null}
+              onClick={() => void submitCompare(true)}
+            >
+              {compareBusy ? '记录中…' : '保留当前这条'}
+            </button>
+          </div>
+        }
+      >
+        {compareError !== null && <p className="grant-error">{compareError}</p>}
+        {selectedItem !== null && (
+          <div className="compare-current">
+            <span className="mini-label">当前记忆</span>
+            <p>{selectedItem.content}</p>
+            <div className="compare-meta">
+              <Badge tone={CLASS_TONE[selectedItem.memClass] ?? 'neutral'}>{selectedItem.memClassLabel}</Badge>
+              <span>置信 {formatPercent(selectedItem.confidence)}</span>
+            </div>
+          </div>
+        )}
+        <div className="compare-search">
+          <input
+            value={compareQ}
+            onChange={(e) => setCompareQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void loadCompareOptions(compareQ);
+            }}
+            placeholder="搜索另一条记忆…"
+            aria-label="搜索另一条记忆"
+          />
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void loadCompareOptions(compareQ)}>
+            搜索
+          </button>
+        </div>
+        {compareOther === null ? (
+          <div className="compare-options">
+            {compareOptions.length === 0 ? (
+              <p className="detail-footnote">没有可比较的活跃记忆；换一个关键词试试。</p>
+            ) : (
+              compareOptions.slice(0, 8).map((m) => (
+                <button key={m.id} type="button" className="compare-option" onClick={() => setCompareOther(m)}>
+                  <span>{truncate(m.content, 70)}</span>
+                  <small>{m.memClassLabel} · 置信 {formatPercent(m.confidence)}</small>
+                </button>
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="compare-other">
+            <span className="mini-label">另一条记忆</span>
+            <p>{compareOther.content}</p>
+            <div className="compare-meta">
+              <Badge tone={CLASS_TONE[compareOther.memClass] ?? 'neutral'}>{compareOther.memClassLabel}</Badge>
+              <span>置信 {formatPercent(compareOther.confidence)}</span>
+              <button type="button" className="text-btn" onClick={() => setCompareOther(null)}>
+                换一条
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -634,6 +946,7 @@ function MemoryCard({
   selected,
   index,
   reviewing,
+  conflict,
   onSelect,
   onReview,
   now,
@@ -642,6 +955,7 @@ function MemoryCard({
   readonly selected: boolean;
   readonly index: number;
   readonly reviewing: boolean;
+  readonly conflict: boolean;
   readonly onSelect: () => void;
   readonly onReview: (decision: 'approve' | 'reject') => void;
   readonly now: number;
@@ -661,6 +975,7 @@ function MemoryCard({
         </span>
         <Badge tone={CLASS_TONE[item.memClass] ?? 'neutral'}>{item.memClassLabel}</Badge>
         <Badge tone={LIFECYCLE_TONE[item.lifecycle]}>{item.lifecycleLabel}</Badge>
+        {conflict && <Badge tone="warn">可能冲突</Badge>}
         {item.domainLabel !== null && <span className="mem-domain">{item.domainLabel}</span>}
         <span className="mem-time">{relativeTime(item.updatedAt, now)}</span>
       </div>
@@ -732,6 +1047,11 @@ function MemoryDetail({
   onReview,
   onEvolve,
   onForget,
+  onGrant,
+  onCompare,
+  conflict,
+  conflictBusy,
+  onResolveConflict,
   now,
 }: {
   readonly item: MemoryItem | null;
@@ -742,6 +1062,11 @@ function MemoryDetail({
   readonly onReview: (decision: 'approve' | 'reject') => void;
   readonly onEvolve: (action: 'boost' | 'lower' | 'revive' | 'archive') => void;
   readonly onForget: () => void;
+  readonly onGrant: () => void;
+  readonly onCompare: () => void;
+  readonly conflict?: MemoryConflictView;
+  readonly conflictBusy: boolean;
+  readonly onResolveConflict: (keepCurrent: boolean) => void;
   readonly now: number;
 }): JSX.Element {
   if (item === null) {
@@ -757,6 +1082,7 @@ function MemoryDetail({
   }
 
   const hard = item.memClass === 'global_constraint';
+  const sensitive = item.memClass === 'sensitive';
   const candidate = item.lifecycle === 'candidate';
   const canRevive = item.lifecycle === 'dormant' || item.lifecycle === 'archived';
   const canArchive = item.lifecycle !== 'archived';
@@ -777,6 +1103,48 @@ function MemoryDetail({
 
       <p className="detail-content">{item.content}</p>
       {item.subject !== null && <p className="detail-subject">主体 · {item.subject}</p>}
+
+      {sensitive && (
+        <div className="detail-grant">
+          <div>
+            <strong>敏感域记忆 · 默认不可读</strong>
+            <p>只对指定任务、指定时间开放；任务结束或取消时自动撤销。</p>
+          </div>
+          <button type="button" className="btn btn-primary btn-sm" onClick={onGrant}>
+            <Icon name="lock" size={14} /> 授权给当前任务
+          </button>
+        </div>
+      )}
+
+      {conflict !== undefined && (
+        <div className="detail-conflict">
+          <div className="detail-conflict-head">
+            <span className="badge-warn">可能冲突</span>
+            <small>{conflict.detector === 'model' ? '模型判断 · review' : '显式否定 · review'}</small>
+          </div>
+          <p className="detail-conflict-reason">发现可能冲突：{conflict.reason}</p>
+          <p className="detail-conflict-other">另一条：{truncate(conflict.other.content, 100)}</p>
+          <div className="detail-conflict-actions">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={conflictBusy}
+              onClick={() => onResolveConflict(false)}
+            >
+              保留对方
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={conflictBusy}
+              onClick={() => onResolveConflict(true)}
+            >
+              {conflictBusy ? '记录中…' : '保留当前这条'}
+            </button>
+          </div>
+          <p className="detail-footnote">只标记待审，不自动裁决；落败方降权但不删除。</p>
+        </div>
+      )}
 
       {candidate && (
         <div className="detail-review">
@@ -809,6 +1177,16 @@ function MemoryDetail({
         <div className="detail-section detail-evolve">
           <p className="mini-label">手动干预</p>
           <div className="detail-evolve-actions">
+            {!sensitive && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={evolving}
+                onClick={onCompare}
+              >
+                与另一条比较
+              </button>
+            )}
             <button
               type="button"
               className="btn btn-ghost btn-sm"

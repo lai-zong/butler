@@ -112,6 +112,7 @@ export type EventType =
   | 'supervisor.omissionDetected'
   | 'supervisor.principleViolated'
   | 'conflict.detected'
+  | 'conflict.judgeFailed'
   | 'conflict.resolved'
   /** 关键事件：硬约束命中，管家机械拦截（不是某个执行者的权力） */
   | 'constraint.hardBlocked'
@@ -173,6 +174,8 @@ export type EventType =
   | 'session.rollback'
   | 'schedule.triggered'
   | 'session.forked'
+  /** 用户主动取消：记录取消阶段、已发生的工具调用/结果数，供回放 */
+  | 'session.cancelled'
   | 'session.ended'
 
   // ── 族 10 · MCP 集成（方案第十章）──
@@ -279,6 +282,7 @@ export const EVENT_FAMILIES = {
     'supervisor.omissionDetected',
     'supervisor.principleViolated',
     'conflict.detected',
+    'conflict.judgeFailed',
     'conflict.resolved',
     'constraint.hardBlocked',
   ],
@@ -339,6 +343,7 @@ export const EVENT_FAMILIES = {
     'session.rollback',
     'schedule.triggered',
     'session.forked',
+    'session.cancelled',
     'session.ended',
   ],
   chat: [

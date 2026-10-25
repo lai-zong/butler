@@ -351,4 +351,50 @@ describe('语义扩展 · 保守接入', () => {
     });
     expect(r.selected.map((s) => s.memory.id)).not.toContain('fatloss');
   });
+
+  it('★ top-k 补充可让略低于阈值的候选进入结果（不降低全局阈值）', () => {
+    const candidate = mem({
+      id: 'fatloss',
+      content: '用户正在减脂期，需要控制油脂摄入',
+      fitness: 0.8,
+      confidence: 0.8,
+    });
+    const r = recall({
+      query: '我想吃火锅',
+      candidates: [candidate],
+      limit: 5,
+      now: T0,
+      random: new SeededRandom(1),
+      semantic: new Map([['fatloss', 0.327]]),
+      semanticTopK: 3,
+      semanticFloor: 0.3,
+    });
+    expect(r.selected.map((s) => s.memory.id)).toContain('fatloss');
+    expect(r.supplemented).toContain('fatloss');
+  });
+
+  it('top-k 补充只取语义最靠前的少量候选，不把低分候选全放进来', () => {
+    const candidates = [
+      mem({ id: 'far', content: '用户喜欢旅行', fitness: 0.5, confidence: 0.5 }),
+      mem({ id: 'near', content: '用户正在减脂期', fitness: 0.5, confidence: 0.5 }),
+      mem({ id: 'mid', content: '用户控制饮食', fitness: 0.5, confidence: 0.5 }),
+    ];
+    const r = recall({
+      query: '火锅',
+      candidates,
+      limit: 5,
+      now: T0,
+      random: new SeededRandom(1),
+      semantic: new Map([
+        ['far', 0.31],
+        ['near', 0.39],
+        // 故意低于 0.35：它不能靠“正常语义阈值”进来，只能靠 top-k。
+        ['mid', 0.34],
+      ]),
+      semanticTopK: 1,
+      semanticFloor: 0.3,
+    });
+    expect(r.selected.map((s) => s.memory.id)).toEqual(['near']);
+    expect(r.supplemented).toEqual(['near']);
+  });
 });

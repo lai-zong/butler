@@ -79,6 +79,12 @@ export interface ToolResult {
   readonly isError?: boolean;
   /** 耗时（毫秒） */
   readonly durationMs: number;
+  /**
+   * 工具级补偿：执行后校验失败时由框架调用，尽量撤销本次副作用。
+   *
+   * 不是“会话级检查点回退”，而是最靠近动作的一道补偿；无法补偿的工具不提供。
+   */
+  readonly rollback?: () => Promise<void>;
 }
 
 export interface ToolContext {
@@ -138,6 +144,24 @@ export interface ToolSpec {
    */
   readonly touchesCredentials?: boolean;
   /**
+   * 该工具产出的内容是否允许进入长期记忆。
+   *
+   * MCP 服务器默认 `false`（除非用户为该服务器显式开启 `allowMemoryWrite`）。
+   * 这不是“工具能不能执行”，而是“执行结果能不能被反思写进画像”。
+   */
+  readonly memoryWriteAllowed?: boolean;
+  /**
+   * 执行后校验：不要只看 `execute()` 返回 ok，还要确认目标状态真的变了。
+   *
+   * 返回 `{ok:false}` 时框架会把本次调用标记为失败并写审计，
+   * 让模型知道“动作说成功，但结果不对”。
+   */
+  verify?(
+    args: unknown,
+    result: ToolResult,
+    ctx: ToolContext,
+  ): Promise<{ readonly ok: boolean; readonly note?: string }>;
+  /**
    * 只读预览：在执行前告诉用户"这次会动到什么"。
    * 高风险操作应当实现它 —— 用户看不到预览就没法真正判断。
    */
@@ -155,6 +179,7 @@ export type ToolDenyReason =
   | 'unknown_tool'
   | 'tier_disabled' // 该级别默认禁用且用户未开启
   | 'user_denied'
+  | 'fuse_blocked' // 单位时间副作用动作超阈值
   | 'invalid_args'
   | 'execution_failed';
 

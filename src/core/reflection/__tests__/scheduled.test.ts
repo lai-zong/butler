@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { collectRecentReports, reflectScheduled, windowMsFor } from '../scheduled.js';
+import { buildWeeklySummaryCandidate, collectRecentReports, reflectScheduled, windowMsFor } from '../scheduled.js';
 import { EventLog } from '../../events/log.js';
 import { FixedClock } from '../../ports/clock.js';
 import { MemoryStore } from '../../memory/store.js';
@@ -212,5 +212,63 @@ describe('★★★ reflectScheduled', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain('工作日 9—18 通常较忙');
     expect(seen[0]).toContain('晚上 21 点后偏学习');
+  });
+
+  describe('★★ 结构化周总结兜底', () => {
+    it('多个任务的统计能生成 summary 候选，且不包含报告正文', () => {
+      const c = buildWeeklySummaryCandidate({
+        materials: [
+          { domain: 'work', taskId: 't1', status: 'done', summary: '内部敏感项目正文' },
+          { domain: 'health', taskId: 't2', status: 'failed', summary: '体检报告正文' },
+        ],
+        temporalPatterns: ['晚上 21 点后偏学习'],
+        now: T0,
+      });
+      expect(c).not.toBeNull();
+      expect(c?.kind).toBe('summary');
+      expect(c?.scope.memClass).toBe('global_shared');
+      expect(c?.confidence).toBe(0.65);
+      expect(c?.content).toContain('完成 1 次');
+      expect(c?.content).toContain('失败 1 次');
+      expect(c?.content).toContain('晚上 21 点后偏学习');
+      expect(c?.content).not.toContain('内部敏感项目正文');
+      expect(c?.content).not.toContain('体检报告正文');
+    });
+
+    it('少于两个不同任务时不生成（避免把单次任务包装成长期状态）', () => {
+      const c = buildWeeklySummaryCandidate({
+        materials: [
+          { domain: 'work', taskId: 'same', status: 'done', summary: '同一任务' },
+          { domain: 'work', taskId: 'same', status: 'done', summary: '同一任务' },
+        ],
+        temporalPatterns: [],
+        now: T0,
+      });
+      expect(c).toBeNull();
+    });
+
+    it('weekly 模型没有产出 summary 时，兜底候选会落库为待审 summary', async () => {
+      const { log, clock, store, chat, seed } = setup();
+      seed({ at: T0 - 2000, domain: 'study', reply: '学习任务B', taskId: 't2' });
+      seed({ at: T0 - 1000, domain: 'health', reply: '健康任务A', taskId: 't1' });
+
+      await reflectScheduled({
+        scope: 'weekly',
+        model: fakeModel(),
+        log,
+        clock,
+        store,
+        chat,
+        userId: 'local',
+        temporalPatterns: ['晚上 21 点后偏学习'],
+      });
+
+      const summaries = store.all().filter((e) => e.kind === 'summary');
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]?.lifecycle).toBe('candidate');
+      expect(summaries[0]?.content).toContain('晚上 21 点后偏学习');
+      expect(summaries[0]?.content).not.toContain('学习任务B');
+      expect(summaries[0]?.content).not.toContain('健康任务A');
+    });
   });
 });

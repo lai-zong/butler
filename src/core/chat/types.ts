@@ -326,6 +326,8 @@ export interface Verdict {
   readonly outcome: VerdictOutcome;
   /** 一句话说明（用户看的就是这句） */
   readonly summary: string;
+  /** 本轮是否真正进行过监督审查；手动模式下为 false */
+  readonly reviewed?: boolean;
   readonly issues: readonly VerdictIssue[];
   /**
    * ★★ v8（批次D）：监督员对**契约判据的逐条核对**。

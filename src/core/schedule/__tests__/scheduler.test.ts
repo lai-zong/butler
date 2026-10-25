@@ -124,6 +124,22 @@ describe('① 到期判断', () => {
     expect(scheduler.isDue('dailyReflection', MON_9AM + HOUR)).toBe(false);
   });
 
+  it('记录 handler 返回的 token 用量，并写进事件', async () => {
+    const { scheduler, log } = setup();
+    scheduler.register({
+      kind: 'dailyReflection',
+      handler: async () => ({
+        summary: 'ok',
+        usage: { inputTokens: 120, outputTokens: 30 },
+      }),
+    });
+    const run = await scheduler.runNow('dailyReflection', MON_9AM);
+    expect(run?.usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+    const event = log.byType('schedule.triggered').at(-1);
+    const payload = event?.payload as { usage?: unknown } | undefined;
+    expect(payload?.usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+  });
+
   it('默认频率符合方案（每日 23:00 / 周日 / 每日早晨 / 每小时）', () => {
     expect(DEFAULT_SCHEDULES.dailyReflection.hour).toBe(23);
     expect(DEFAULT_SCHEDULES.weeklyReview.weekday).toBe(0);

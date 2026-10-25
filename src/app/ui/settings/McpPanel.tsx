@@ -8,7 +8,7 @@
  * 不在配置里保存明文凭证（validateConfig 会拒绝）。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Badge, InlineError, SectionHeading, Skeleton } from '../components/Common';
 import { Icon } from '../components/Icon';
@@ -53,6 +53,19 @@ const POLICY_LEVELS: readonly { readonly value: PolicyLevel; readonly title: str
   { value: 'normal', title: '常规自动放行', desc: '常规自动，高风险确认' },
 ];
 
+function remoteUrlAllowed(value: string): boolean {
+  try {
+    const u = new URL(value);
+    if (u.protocol === 'https:') return true;
+    return (
+      u.protocol === 'http:' &&
+      (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]' || u.hostname === '::1')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function McpPanel({ notify }: McpPanelProps): JSX.Element {
   const [data, setData] = useState<McpResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,13 +73,23 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
   const [busy, setBusy] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<McpServerView | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importName, setImportName] = useState('');
+  const [importDocument, setImportDocument] = useState<unknown>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importConfirmed, setImportConfirmed] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const importFileRef = useRef<HTMLInputElement | null>(null);
   const [form, setForm] = useState({
     id: '',
     name: '',
     transport: 'stdio',
     command: '',
     args: '',
+    url: '',
+    vaultEnv: '',
   });
+  const [addError, setAddError] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -127,6 +150,12 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
   };
 
   const add = async (): Promise<void> => {
+    setAddError(null);
+    const remote = form.transport !== 'stdio';
+    if (remote && !remoteUrlAllowed(form.url.trim())) {
+      setAddError('远程 MCP endpoint 必须是 https；本机 127.0.0.1 / localhost 可用 http。');
+      return;
+    }
     setBusy('add');
     setError(null);
     try {
@@ -134,6 +163,18 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
         .split(/\s+/)
         .map((a) => a.trim())
         .filter((a) => a.length > 0);
+      const envFromVault = Object.fromEntries(
+        form.vaultEnv
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0 && !line.startsWith('#'))
+          .map((line) => {
+            const eq = line.indexOf('=');
+            if (eq <= 0) throw new Error(`凭证环境变量格式应为 KEY=凭证名称：${line}`);
+            return [line.slice(0, eq).trim(), line.slice(eq + 1).trim()] as const;
+          })
+          .filter(([k, v]) => k.length > 0 && v.length > 0),
+      );
       const res = await fetch('/api/mcp', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -142,18 +183,20 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
           id: form.id.trim(),
           name: form.name.trim(),
           transport: form.transport,
-          command: form.command.trim(),
-          args,
+          ...(Object.keys(envFromVault).length > 0 ? { envFromVault } : {}),
+          ...(remote
+            ? { url: form.url.trim() }
+            : { command: form.command.trim(), args }),
         }),
       });
       const body = (await res.json().catch(() => ({}))) as { readonly error?: string };
       if (!res.ok) throw new Error(body.error ?? `添加失败（HTTP ${res.status}）`);
       setAddOpen(false);
-      setForm({ id: '', name: '', transport: 'stdio', command: '', args: '' });
+      setForm({ id: '', name: '', transport: 'stdio', command: '', args: '', url: '', vaultEnv: '' });
       notify('MCP 服务器已添加，配置文件已写回', 'success');
       await load();
     } catch (err) {
-      setError(errorMessage(err));
+      setAddError(errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -181,6 +224,56 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
     }
   };
 
+  const importConfig = async (): Promise<void> => {
+    if (importDocument === null || importBusy) return;
+    if (!importConfirmed) {
+      setImportError('请先确认会替换当前 MCP 配置并重建运行时。');
+      return;
+    }
+    setImportBusy(true);
+    setImportError(null);
+    try {
+      const res = await fetch('/api/mcp/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirm: true, document: importDocument }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        readonly error?: string;
+        readonly imported?: number;
+      };
+      if (!res.ok) throw new Error(body.error ?? `导入失败（HTTP ${res.status}）`);
+      notify(`已导入 ${body.imported ?? 0} 个 MCP server；运行时已重建。`, 'success');
+      setImportOpen(false);
+      setImportDocument(null);
+      setImportName('');
+      setImportConfirmed(false);
+      await load();
+    } catch (err) {
+      setImportError(errorMessage(err));
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const readImportFile = async (file: File): Promise<void> => {
+    setImportError(null);
+    setImportConfirmed(false);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as unknown;
+      if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { servers?: unknown }).servers)) {
+        throw new Error('文件不是有效的 MCP 配置导出文档（缺少 servers 数组）');
+      }
+      setImportDocument(parsed);
+      setImportName(file.name);
+    } catch (err) {
+      setImportDocument(null);
+      setImportName('');
+      setImportError(errorMessage(err));
+    }
+  };
+
   const servers = data?.servers ?? [];
 
   return (
@@ -189,9 +282,32 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
         title="MCP 服务"
         description="外部 MCP server 作为工具源接入；添加与启停会写回本机 mcp.json。"
         actions={
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAddOpen(true)}>
-            <Icon name="plus" size={13} /> 添加服务器
-          </button>
+          <div className="mcp-actions">
+            <a className="btn btn-ghost btn-sm" href="/api/mcp/export" download>
+              导出配置
+            </a>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setImportOpen(true);
+                setImportError(null);
+                setImportConfirmed(false);
+              }}
+            >
+              导入配置
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setAddError(null);
+                setAddOpen(true);
+              }}
+            >
+              <Icon name="plus" size={13} /> 添加服务器
+            </button>
+          </div>
         }
       />
 
@@ -237,6 +353,7 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
                       <div className="mcp-server-status">
                         <Badge tone={STATE_TONE[s.state]}>{STATE_LABEL[s.state]}</Badge>
                         {!s.enabled && <Badge tone="neutral">已停用</Badge>}
+                        {s.transport !== 'stdio' && <Badge tone="info">远程</Badge>}
                         <span className="mcp-transport">{s.transport}</span>
                       </div>
                     </header>
@@ -305,6 +422,9 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
                     ) : (
                       <p className="mcp-empty mcp-tools-none">尚未发现工具（需先连接）。</p>
                     )}
+                    {s.transport !== 'stdio' && (
+                      <p className="mcp-remote-foot">远程传输 · 请求离开本机</p>
+                    )}
                   </article>
                 );
               })}
@@ -323,7 +443,7 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
           if (busy !== 'add') setAddOpen(false);
         }}
         title="添加 MCP 服务器"
-        description="第一版支持本地 stdio server。新服务器默认策略为“全部需确认”。"
+        description="支持本地 stdio 与远程 streamable-http。新服务器默认策略为“全部需确认”。"
         footer={
           <div className="modal-actions">
             <button type="button" className="btn btn-ghost" disabled={busy === 'add'} onClick={() => setAddOpen(false)}>
@@ -332,7 +452,11 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy === 'add' || form.id.trim() === '' || form.command.trim() === ''}
+              disabled={
+                busy === 'add' ||
+                form.id.trim() === '' ||
+                (form.transport === 'stdio' ? form.command.trim() === '' : form.url.trim() === '')
+              }
               onClick={() => void add()}
             >
               {busy === 'add' ? '添加中…' : '添加'}
@@ -365,29 +489,133 @@ export function McpPanel({ notify }: McpPanelProps): JSX.Element {
             >
               {(data?.availableTransports ?? ['stdio']).map((t) => (
                 <option key={t} value={t}>
-                  {t}
+                  {t === 'http'
+                    ? 'http · streamable-http'
+                    : t === 'sse'
+                      ? 'sse · HTTP+SSE'
+                      : t}
                 </option>
               ))}
             </select>
           </label>
+          {form.transport === 'stdio' ? (
+            <>
+              <label>
+                <span>命令</span>
+                <input
+                  value={form.command}
+                  onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))}
+                  placeholder="例如 npx"
+                />
+              </label>
+              <label>
+                <span>参数（空格分隔）</span>
+                <input
+                  value={form.args}
+                  onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))}
+                  placeholder="-y @modelcontextprotocol/server-filesystem C:\work"
+                />
+              </label>
+              <p className="mcp-form-note">不要在参数里写 API key；配置会经过凭证明文检查。</p>
+            </>
+          ) : (
+            <>
+              <label>
+                <span>Endpoint URL</span>
+                <input
+                  value={form.url}
+                  onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
+                  placeholder="https://mcp.example.com/mcp"
+                />
+              </label>
+              <p className="mcp-form-note">远程必须 https；本机 127.0.0.1 / localhost 可用 http。</p>
+              <div className="mcp-remote-warning">
+                <span aria-hidden="true">↗</span>
+                <p>
+                  <strong>这会离开本机</strong>
+                  请求会发送到远程 server；不会自动放行工具调用，每次高风险动作仍受策略约束。
+                </p>
+              </div>
+            </>
+          )}
           <label>
-            <span>命令</span>
-            <input
-              value={form.command}
-              onChange={(e) => setForm((f) => ({ ...f, command: e.target.value }))}
-              placeholder="例如 npx"
+            <span>凭证环境变量（每行 KEY=凭证名称）</span>
+            <textarea
+              value={form.vaultEnv}
+              onChange={(e) => setForm((f) => ({ ...f, vaultEnv: e.target.value }))}
+              placeholder="GITHUB_TOKEN=github_token"
+              rows={2}
             />
           </label>
-          <label>
-            <span>参数（空格分隔）</span>
-            <input
-              value={form.args}
-              onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))}
-              placeholder="-y @modelcontextprotocol/server-filesystem C:\work"
-            />
-          </label>
-          <p className="mcp-form-note">不要在参数里写 API key；配置会经过凭证明文检查。</p>
+          <p className="mcp-form-note">
+            只写凭证名称，不写密钥值；连接时从凭证保险库解密注入，不进入配置导出或模型上下文。
+          </p>
+          {addError !== null && <p className="mcp-form-error">{addError}</p>}
         </div>
+      </Modal>
+
+      <Modal
+        open={importOpen}
+        onClose={() => {
+          if (!importBusy) setImportOpen(false);
+        }}
+        title="导入 MCP 配置"
+        description="会替换本机 mcp.json 并重建运行时；不会改动事件流、记忆与对话。"
+        footer={
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost" disabled={importBusy} onClick={() => setImportOpen(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={importBusy || importDocument === null || !importConfirmed}
+              onClick={() => void importConfig()}
+            >
+              {importBusy ? '导入中…' : '确认导入'}
+            </button>
+          </div>
+        }
+      >
+        <input
+          ref={importFileRef}
+          type="file"
+          accept="application/json,.json"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file !== undefined) void readImportFile(file);
+            e.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          className="mcp-import-drop"
+          onClick={() => importFileRef.current?.click()}
+          disabled={importBusy}
+        >
+          <strong>选择导出的 MCP 配置 JSON</strong>
+          <span>或点击这里选择文件</span>
+        </button>
+        {importName.length > 0 && (
+          <div className="mcp-import-file">
+            <span className="mono">{importName}</span>
+            <span>已读取</span>
+          </div>
+        )}
+        <p className="mcp-import-warning">
+          <strong>env 值不会恢复</strong>：导出文件只保存 envKeys。依赖 API key 的 server 需要在导入 JSON 里重新填写 env。
+        </p>
+        <label className="mcp-import-confirm">
+          <input
+            type="checkbox"
+            checked={importConfirmed}
+            disabled={importBusy}
+            onChange={(e) => setImportConfirmed(e.target.checked)}
+          />
+          <span>我了解导入会替换当前 MCP 配置，并重建运行时。</span>
+        </label>
+        {importError !== null && <p className="mcp-import-error">{importError}</p>}
       </Modal>
 
       <Modal

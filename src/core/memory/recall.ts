@@ -19,6 +19,7 @@ import type { DomainId } from '../domain/types.js';
 import { isRelevant } from '../text/keywords.js';
 import { adaptThreshold, DEFAULT_PARAMS, type EvolutionParams } from './fitness.js';
 import type { MemoryEntry, MemoryKind } from './types.js';
+import { retrievalConfig } from '../config/env.js';
 
 // ═══════════════════════════════════════════════════════════
 // 打分权重
@@ -36,13 +37,31 @@ export const RECALL_WEIGHTS = {
 /**
  * 语义扩展的保守门槛。
  *
- * 来自 `scripts/eval-semantic.ts` 的离线评测（24 条相关 + 9 条无关）：
- *   · 0.45：相关 23/24 达到，无关 0/9 —— 但会漏掉“火锅→减脂”（0.408）
- *   · 0.40：相关 23/24 达到，无关 1/9 —— 保住“火锅→减脂”，多一条误报
- * 当前选 0.40，并保留字面召回；语义只做**补充候选**，最终还要过综合分阈值。
- * 这只是小样本，不能宣称普适；纯 embedding 仍有 top1 错误，后续需要 LLM 精排。
+ * ★ 2026-10-25 复测（30 条跨场景查询 + 5 条负例）：
+ *   · 0.40：27/30 命中，负例误召回 1/5
+ *   · 0.35：29/30 命中，负例误召回 1/5
+ *   · 0.30：30/30 命中，但负例误召回 5/5（太多）
+ *
+ * 当前选 **0.35**：比 0.40 多救回 2 条相关记忆，误召回没有增加。
+ * 仍漏“火锅→减脂”（该 query 语义分约 0.327），
+ * 不为了这一条把阈值降到 0.30；那是用噪声换指标。
+ *
+ * 这只是 35 条小样本，不能宣称普适；需要持续扩充评测集。
  */
-export const SEMANTIC_RELEVANCE_THRESHOLD = 0.4;
+export const SEMANTIC_RELEVANCE_THRESHOLD = 0.35;
+
+/**
+ * 语义补充通道的候选下限。
+ *
+ * ★ 与 `SEMANTIC_RELEVANCE_THRESHOLD` 分开：
+ *   0.35 是“单靠语义分就足以直接进入召回”的门槛；
+ *   0.30 是“允许进入 top-k 补充池、再由精排决定去留”的候选下限。
+ *
+ *   分开的原因：把 0.35 直接降到 0.30 会让负例一起进入最终结果
+ *   （实测 0.30 时 5/5 负例误召回）；而 top-k 只补充少量候选，
+ *   后面还有精排过滤，风险面不同。两者不能共用一个数字。
+ */
+export const SEMANTIC_CANDIDATE_FLOOR = 0.30;
 
 export interface ScoredMemory {
   readonly memory: MemoryEntry;
@@ -64,6 +83,13 @@ export interface RecallResult {
   readonly candidateCount: number;
   /** 被阈值挡掉的数量 */
   readonly filteredOut: number;
+  /**
+   * 本次通过语义 top-k 通道补充进来的 memoryId。
+   *
+   * ★ 只做可解释性用途：调用方可以据此说明“这条不是字面命中，
+   *   而是语义补充 + 精排后留下的”。不参与状态。
+   */
+  readonly supplemented?: readonly string[];
 }
 
 export interface RecallArgs {
@@ -82,6 +108,16 @@ export interface RecallArgs {
    * 由调用方在适配器层算好后传入；核心层不加载模型。
    */
   readonly semantic?: ReadonlyMap<string, number>;
+  /** 语义阈值；缺省读 MEMORY_SEMANTIC_THRESHOLD（默认 0.35） */
+  readonly semanticThreshold?: number;
+  /**
+   * 语义 top-k 补充通道的候选数。0 表示关闭（保持旧的“过阈值才补充”行为）。
+   *
+   * ★ 只由调用方显式开启；默认关闭，避免无精排时把低分候选直接放进结果。
+   */
+  readonly semanticTopK?: number;
+  /** top-k 补充通道的相似度下限，默认 0.30。 */
+  readonly semanticFloor?: number;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -116,6 +152,7 @@ export function scoreMemory(
   query: string,
   favoredDomain?: DomainId,
   semantic?: ReadonlyMap<string, number>,
+  semanticThreshold: number = SEMANTIC_RELEVANCE_THRESHOLD,
 ): Omit<ScoredMemory, 'exploratory' | 'why'> {
   let relevance = relevanceOf(memory, query);
 
@@ -124,7 +161,7 @@ export function scoreMemory(
   if (
     memory.memClass !== 'global_constraint' &&
     semanticScore !== undefined &&
-    semanticScore >= SEMANTIC_RELEVANCE_THRESHOLD &&
+    semanticScore >= semanticThreshold &&
     semanticScore > relevance
   ) {
     relevance = semanticScore;
@@ -154,6 +191,9 @@ export function scoreMemory(
 
 export function recall(args: RecallArgs): RecallResult {
   const params = args.params ?? DEFAULT_PARAMS;
+  const semanticThreshold = args.semanticThreshold ?? retrievalConfig.semanticThreshold;
+  const semanticTopK = Math.max(0, Math.floor(args.semanticTopK ?? 0));
+  const semanticFloor = args.semanticFloor ?? SEMANTIC_CANDIDATE_FLOOR;
 
   /**
    * ── ① 只考虑活跃与休眠（候选不参与召回；归档仅在探索时可能被唤醒）──
@@ -170,10 +210,35 @@ export function recall(args: RecallArgs): RecallResult {
     (m) => m.lifecycle === 'active' || m.lifecycle === 'dormant' || m.lifecycle === 'archived',
   );
 
+  /**
+   * ── ①b ★ 语义 top-k 补充通道 ──
+   *
+   * ⚠️ 这不是把阈值降到 0.30。它只挑**语义最靠前的少量候选**，
+   *    低于 0.35 的候选只有进入这个通道后才允许参与打分；
+   *    最终是否留下由精排（调用方）决定。没有精排时不要开启
+   *    （`semanticTopK` 默认 0），否则负例会直接进结果。
+   */
+  const supplemented = new Set<string>();
+  if (semanticTopK > 0 && args.semantic !== undefined) {
+    const ranked = eligible
+      .filter((m) => m.memClass !== 'global_constraint')
+      .map((m) => ({ memory: m, score: args.semantic?.get(m.id) ?? 0 }))
+      .filter((x) => Number.isFinite(x.score) && x.score >= semanticFloor)
+      .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id))
+      .slice(0, semanticTopK);
+    for (const x of ranked) supplemented.add(x.memory.id);
+  }
+
   // ── ② 打分并按分数降序（同分时按 id 保证确定性）──
   const scored = eligible
     .map((m) => ({
-      ...scoreMemory(m, args.query, args.favoredDomain, args.semantic),
+      ...scoreMemory(
+        m,
+        args.query,
+        args.favoredDomain,
+        args.semantic,
+        supplemented.has(m.id) ? semanticFloor : semanticThreshold,
+      ),
       exploratory: false,
       why: '',
     }))
@@ -195,7 +260,11 @@ export function recall(args: RecallArgs): RecallResult {
     fitness: s.fitness,
     confidence: s.confidence,
     exploratory: false,
-    why: explain(s, threshold),
+    why: explain(
+      s,
+      threshold,
+      supplemented.has(s.memory.id) && s.relevance < semanticThreshold,
+    ),
   }));
 
   // ── ⑤ 探索性召回：留 ε 名额给"分数不够但可能是对的"记忆（§ 8.5 防局部最优）──
@@ -239,13 +308,19 @@ export function recall(args: RecallArgs): RecallResult {
     threshold,
     candidateCount: args.candidates.length,
     filteredOut,
+    ...(supplemented.size > 0 ? { supplemented: [...supplemented] } : {}),
   };
 }
 
 /** 解释为什么这条被召回（可解释性 —— 用户能问"你为什么想起这件事"）。 */
-function explain(s: { relevance: number; fitness: number; confidence: number }, threshold: number): string {
+function explain(
+  s: { relevance: number; fitness: number; confidence: number },
+  threshold: number,
+  semanticSupplement = false,
+): string {
   const parts: string[] = [];
   if (s.relevance >= 0.99) parts.push('硬约束，无条件召回');
+  else if (semanticSupplement) parts.push(`语义 top-k 补充（${s.relevance.toFixed(2)}）`);
   else if (s.relevance > 0) parts.push(`与目标相关（${s.relevance.toFixed(2)}）`);
   parts.push(`适应度 ${s.fitness.toFixed(2)}`);
   parts.push(`置信度 ${s.confidence.toFixed(2)}`);

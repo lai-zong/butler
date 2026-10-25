@@ -38,8 +38,13 @@ import type { DomainId } from '../domain/types.js';
 
 /** 谁在操作记忆。管家与仆人的权限不同。 */
 export type MemoryActor =
-  | { readonly kind: 'butler'; readonly userId: string }
+  | { readonly kind: 'butler'; readonly userId: string; readonly taskId?: string }
   | { readonly kind: 'user'; readonly userId: string };
+
+/** 授权 TTL 上限：任务级授权不应变成长期免授权。 */
+export const MAX_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+/** 授权 TTL 下限（测试/极短任务仍可验证）。 */
+export const MIN_GRANT_TTL_MS = 1_000;
 
 /** 读取被拒的原因。 */
 export type ReadDenyReason =
@@ -210,9 +215,12 @@ export class MemoryStore {
     if (entry.memClass === 'sensitive') {
       const grants = entry.grants ?? [];
       const now = this.clock.now();
-      // ★ v7：旧代码比对 `g.grantedTo === actor.servant`（单执行者下无意义），
-      //   改为只看授权是否仍有效 —— 范围由 `taskId` 界定，有效性由 `expiresAt` 保证。
-      const valid = grants.some((g) => g.expiresAt > now);
+      // ★ v7：任务范围由 `taskId` 界定，有效性由 `expiresAt` 保证。
+      //   ⚠️ v10.4：必须同时匹配当前任务的 taskId —— 只检查“有过授权”
+      //   会让任务 A 的敏感授权泄漏给任务 B。
+      const valid = grants.some(
+        (g) => g.expiresAt > now && actor.taskId !== undefined && g.taskId === actor.taskId,
+      );
       if (!valid) return 'sensitive_no_grant';
       return null;
     }
@@ -293,7 +301,11 @@ export class MemoryStore {
       this.log.append({
         type: 'grant.used',
         actor: 'butler',
-        payload: { memoryId: id, memClass: entry.memClass, content: entry.content },
+        payload: {
+          memoryId: id,
+          memClass: entry.memClass,
+          taskId: actor.taskId,
+        },
         createdAt: this.clock.now(),
       });
     }
@@ -626,7 +638,7 @@ export class MemoryStore {
   // ── 敏感域授权 ──
 
   /**
-   * 为某个仆人授予一次跨域读取权限。
+   * 为某个任务授予一次敏感域读取权限。
    *
    * ⚠️ **按任务失效**：必须带 taskId 与 expiresAt，不做长期免授权（方案 § 2.2⑥）。
    */
@@ -637,8 +649,24 @@ export class MemoryStore {
     readonly taskId: string;
     readonly purpose: string;
     readonly ttlMs: number;
-  }): { ok: boolean; reason?: string } {
-    // 只有管家或用户能授权
+  }): { ok: boolean; reason?: string; expiresAt?: number } {
+    // 只有管家或用户能授权（类型已限定；这里保留运行时防线）
+    if (args.actor.kind !== 'user' && args.actor.kind !== 'butler') {
+      return { ok: false, reason: 'actor_not_allowed' };
+    }
+    if (args.taskId.trim().length === 0) {
+      return { ok: false, reason: 'task_required' };
+    }
+    if (args.purpose.trim().length === 0) {
+      return { ok: false, reason: 'purpose_required' };
+    }
+    if (
+      !Number.isFinite(args.ttlMs) ||
+      args.ttlMs < MIN_GRANT_TTL_MS ||
+      args.ttlMs > MAX_GRANT_TTL_MS
+    ) {
+      return { ok: false, reason: 'ttl_out_of_range' };
+    }
 
     const entry = this.entries.get(args.memoryId);
     if (!entry) return { ok: false, reason: 'not_found' };
@@ -648,11 +676,11 @@ export class MemoryStore {
 
     const now = this.clock.now();
     const grant: MemoryGrant = {
-      taskId: args.taskId,
+      taskId: args.taskId.trim(),
       grantedTo: args.to,
       at: now,
       expiresAt: now + args.ttlMs,
-      purpose: args.purpose,
+      purpose: args.purpose.trim(),
     };
 
     this.entries.set(args.memoryId, {
@@ -664,7 +692,13 @@ export class MemoryStore {
     this.log.append({
       type: 'grant.requested',
       actor: args.actor.kind,
-      payload: { memoryId: args.memoryId, to: args.to, taskId: args.taskId, purpose: args.purpose },
+      payload: {
+        memoryId: args.memoryId,
+        to: args.to,
+        toServant: args.to,
+        taskId: grant.taskId,
+        purpose: grant.purpose,
+      },
       createdAt: now,
     });
     this.log.append({
@@ -673,14 +707,50 @@ export class MemoryStore {
       payload: {
         memoryId: args.memoryId,
         to: args.to,
-        taskId: args.taskId,
+        toServant: args.to,
+        taskId: grant.taskId,
         expiryPolicy: 'task-scoped',
         expiresAt: grant.expiresAt,
       },
       createdAt: now,
     });
 
-    return { ok: true };
+    return { ok: true, expiresAt: grant.expiresAt };
+  }
+
+  /**
+   * 任务结束时撤销该任务的授权（不是等 TTL 到期）。
+   *
+   * 这是任务级授权的另一半：只靠 expiresAt 不够，任务提前结束时应立即失效。
+   */
+  revokeGrantsForTask(taskId: string): number {
+    const target = taskId.trim();
+    if (target.length === 0) return 0;
+
+    const now = this.clock.now();
+    let removed = 0;
+    for (const [id, entry] of this.entries) {
+      const grants = entry.grants;
+      if (!grants || grants.length === 0) continue;
+      const alive = grants.filter((g) => g.taskId !== target);
+      if (alive.length === grants.length) continue;
+      const count = grants.length - alive.length;
+      removed += count;
+      this.entries.set(id, { ...entry, grants: alive, updatedAt: now });
+      this.log.append({
+        type: 'grant.expired',
+        actor: 'system',
+        payload: {
+          memoryId: id,
+          reason: 'task_ended',
+          taskId: target,
+          expiredCount: count,
+          remaining: alive.length,
+        },
+        createdAt: now,
+      });
+    }
+    return removed;
   }
 
   /** 清掉已过期的授权（定时任务调用）。 */

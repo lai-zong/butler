@@ -17,6 +17,7 @@
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { MemoryCandidate } from '../reflection/reflect.js';
+import { containsCredential } from '../tools/redact.js';
 import type { MemoryStore } from './store.js';
 import type { MemoryEntry } from './types.js';
 
@@ -68,6 +69,31 @@ export function sinkCandidates(
   const batch: MemoryEntry[] = [];
 
   for (const cand of candidates) {
+    // ⓪ 凭证白名单：含凭证的候选**不进入记忆库**（方案 §11 第二层）
+    //
+    // ⚠️ 事件里绝不写原文，只记"哪个候选、为什么被拒"；
+    //    否则审计日志本身又成了泄露点。
+    if (candidateHasCredential(cand)) {
+      opts.log.append({
+        type: 'memory.writeAttempted',
+        actor: 'butler',
+        payload: {
+          rejected: true,
+          reason: 'credential_content',
+          candidateId: cand.id,
+          kind: cand.kind,
+          memClass: cand.scope.memClass,
+        },
+        createdAt: opts.clock.now(),
+      });
+      skipped.push({
+        candidate: cand,
+        reason: '含凭证，禁止写入记忆',
+        duplicateOf: '',
+      });
+      continue;
+    }
+
     // ① 与既有记忆比对（含候选、活跃、休眠、归档 —— 全生命周期）
     const pool = [...opts.store.all(), ...batch];
     const dup = pool.find((e) => isDuplicate(e, cand));
@@ -207,6 +233,17 @@ function bigrams(s: string): Set<string> {
   }
   for (let i = 0; i + 2 <= s.length; i++) out.add(s.slice(i, i + 2));
   return out;
+}
+
+function candidateHasCredential(cand: MemoryCandidate): boolean {
+  const fields: readonly (string | undefined)[] = [
+    cand.content,
+    cand.rationale,
+    ...cand.evidence,
+    cand.principle?.condition,
+    cand.principle?.action,
+  ];
+  return fields.some((s) => typeof s === 'string' && containsCredential(s));
 }
 
 function ownerUserId(cand: MemoryCandidate): string {

@@ -108,6 +108,9 @@ export function parseMcpConfig(raw: unknown): LoadMcpConfigResult {
       ...(typeof o['env'] === 'object' && o['env'] !== null
         ? { env: o['env'] as Record<string, string> }
         : {}),
+      ...(typeof o['envFromVault'] === 'object' && o['envFromVault'] !== null
+        ? { envFromVault: o['envFromVault'] as Record<string, string> }
+        : {}),
       ...(typeof o['cwd'] === 'string' ? { cwd: o['cwd'] } : {}),
       ...(typeof o['url'] === 'string' ? { url: o['url'] } : {}),
       enabled: o['enabled'] !== false,

@@ -32,6 +32,13 @@ export interface DeepSeekConfig {
   readonly timeoutMs?: number;
   /** 结构化输出的最大重试次数 */
   readonly maxStructuredRetries?: number;
+  /**
+   * 是否发送 DeepSeek 专有的 `thinking` / `reasoning_effort` 字段。
+   *
+   * ⚠️ OpenAI 兼容端点与 Ollama 不认识这些字段，可能直接 400。
+   *    `OpenAICompatibleModel` 会显式关掉；DeepSeek 保持默认 true。
+   */
+  readonly thinkingParam?: boolean;
 }
 
 /**
@@ -123,6 +130,7 @@ export class DeepSeekModel implements ModelPort {
   private readonly model: string;
   private readonly timeoutMs: number;
   private readonly maxStructuredRetries: number;
+  private readonly thinkingParam: boolean;
 
   constructor(cfg: DeepSeekConfig) {
     this.apiKey = cfg.apiKey;
@@ -130,6 +138,7 @@ export class DeepSeekModel implements ModelPort {
     this.model = cfg.model ?? DEFAULT_DEEPSEEK_MODEL;
     this.timeoutMs = cfg.timeoutMs ?? 90_000;
     this.maxStructuredRetries = cfg.maxStructuredRetries ?? 2;
+    this.thinkingParam = cfg.thinkingParam ?? true;
   }
 
   /**
@@ -183,7 +192,7 @@ export class DeepSeekModel implements ModelPort {
     if (call.maxOutputTokens !== undefined) body['max_tokens'] = call.maxOutputTokens;
     const tools = toApiTools(call.tools);
     if (tools) body['tools'] = tools;
-    applyThinking(body, call);
+    if (this.thinkingParam) applyThinking(body, call);
 
     const data = await this.request(body, call.signal);
     const choice = data.choices?.[0];
@@ -273,7 +282,7 @@ export class DeepSeekModel implements ModelPort {
        * 调用方要思考可以显式传 `thinking: 'enabled'`，
        * 但那时应当同时给足 `maxOutputTokens`。
        */
-      applyThinking(body, call, 'disabled');
+      if (this.thinkingParam) applyThinking(body, call, 'disabled');
 
       const data = await this.request(body, call.signal);
       const choice = data.choices?.[0];

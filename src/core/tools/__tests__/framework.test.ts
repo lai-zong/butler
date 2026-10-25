@@ -672,3 +672,137 @@ describe('C5 三档模式 · 工具框架真实拦截', () => {
     expect(await fs.exists('a.txt')).toBe(true);
   });
 });
+
+describe('操作范围熔断 · 框架执行闸门', () => {
+  it('窗口内超过非只读调用上限后，下一次真的被拒绝', async () => {
+    const log = new EventLog('s_fuse');
+    const clock = new FixedClock(T0);
+    const fs = new MemoryFileSystem({ now: T0 });
+    const policy = new TestPolicy('allow');
+    const fw = new ToolFramework({
+      log,
+      clock,
+      policy,
+      fuse: { windowMs: 60_000, maxWrites: 1 },
+    });
+    fw.registerAll(fileTools(fs));
+
+    const first = await fw.execute({
+      toolName: 'write_file',
+      args: { path: 'a.txt', content: 'x' },
+      taskId: 't_fuse',
+    });
+    expect(first.ok).toBe(true);
+
+    await expect(
+      fw.execute({
+        toolName: 'write_file',
+        args: { path: 'b.txt', content: 'y' },
+        taskId: 't_fuse',
+      }),
+    ).rejects.toMatchObject({ reason: 'fuse_blocked' });
+
+    expect(await fs.exists('b.txt')).toBe(false);
+    expect(log.byType('action.blocked').some((e) => (e.payload as Record<string, unknown>)['reason'] === 'fuse_blocked')).toBe(true);
+  });
+
+  it('只读调用不消耗熔断额度', async () => {
+    const log = new EventLog('s_fuse_read');
+    const clock = new FixedClock(T0);
+    const fs = new MemoryFileSystem({ now: T0 });
+    fs.seedFile('a.txt', 'x');
+    const policy = new TestPolicy('allow');
+    const fw = new ToolFramework({
+      log,
+      clock,
+      policy,
+      fuse: { windowMs: 60_000, maxWrites: 1 },
+    });
+    fw.registerAll(fileTools(fs));
+
+    await fw.execute({ toolName: 'read_file', args: { path: 'a.txt' }, taskId: 't_read' });
+    await fw.execute({ toolName: 'read_file', args: { path: 'a.txt' }, taskId: 't_read' });
+    // 只读不计数，所以第一次写仍应放行
+    const r = await fw.execute({
+      toolName: 'write_file',
+      args: { path: 'b.txt', content: 'y' },
+      taskId: 't_read',
+    });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('凭证类工具 · 逐次确认', () => {
+  it('即使策略记住该工具，也必须每次再问，并留下 credential.used', async () => {
+    const log = new EventLog('s_credential_tool');
+    const clock = new FixedClock(T0);
+    const policy = new TestPolicy('allow');
+    const fw = new ToolFramework({ log, clock, policy });
+    fw.register({
+      name: 'read_secret',
+      description: '读取凭证（测试用）',
+      parameters: { type: 'object', properties: {} },
+      tier: 'readOnly',
+      touchesCredentials: true,
+      summarize: () => '读取凭证',
+      execute: async () => ({ ok: true, output: '[已脱敏:凭证]', durationMs: 1 }),
+    });
+    policy.remember('read_secret');
+
+    const result = await fw.execute({
+      toolName: 'read_secret',
+      args: {},
+      taskId: 't_secret',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(policy.asked).toHaveLength(1); // 记住也不能跳过
+    const used = log.byType('credential.used');
+    expect(used).toHaveLength(1);
+    expect(used[0]?.payload).toMatchObject({ toolName: 'read_secret', taskId: 't_secret' });
+  });
+});
+
+describe('执行后验证 · 动作成功但结果不对', () => {
+  it('verify 返回失败时，框架不把调用当成功', async () => {
+    const log = new EventLog('s_verify');
+    const clock = new FixedClock(T0);
+    const policy = new TestPolicy('allow');
+    const fw = new ToolFramework({ log, clock, policy });
+    let rolledBack = false;
+    fw.register({
+      name: 'fake_write',
+      description: '假写入（测试用）',
+      parameters: { type: 'object', properties: {} },
+      tier: 'normal',
+      summarize: () => '假写入',
+      execute: async () => ({
+        ok: true,
+        output: '写了',
+        durationMs: 1,
+        rollback: async () => {
+          rolledBack = true;
+        },
+      }),
+      verify: async () => ({ ok: false, note: '目标文件不存在' }),
+    });
+
+    const result = await fw.execute({
+      toolName: 'fake_write',
+      args: {},
+      taskId: 't_verify',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('执行后校验失败');
+    expect(rolledBack).toBe(true);
+    const results = log.byType('tool.result');
+    expect(results[results.length - 1]?.payload).toMatchObject({
+      toolName: 'fake_write',
+      isError: true,
+      verified: false,
+      rolledBack: true,
+    });
+  });
+});

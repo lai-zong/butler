@@ -5,7 +5,7 @@
  *   · 调度器：到期判断、注册的任务、上次执行时间（启动时已从事件回放）；
  *   · 事件流：最近结果与历史（`schedule.triggered` 是唯一真相源，重启不丢）。
  *
- * 当前**不提供手动触发**：单飞/超时尚未实现，先把"看得见"做出来。
+ * 手动触发在 `/api/schedules/run`；本端点只提供只读视图。
  */
 
 import type { NextRequest } from 'next/server';
@@ -36,6 +36,7 @@ interface TaskView {
   readonly failedRuns: number;
   readonly due: boolean;
   readonly costsTokens: boolean;
+  readonly lastUsage: { readonly inputTokens: number; readonly outputTokens: number } | null;
 }
 
 function scheduleLabel(s: TaskSchedule): string {
@@ -78,6 +79,16 @@ function outcomeOf(e: { readonly payload: unknown }): RunOutcome | 'retrying' | 
   return o === 'succeeded' || o === 'failed' || o === 'skipped' || o === 'retrying' ? o : null;
 }
 
+function usageOf(p: Record<string, unknown>): { readonly inputTokens: number; readonly outputTokens: number } | null {
+  const u = p['usage'];
+  if (typeof u !== 'object' || u === null) return null;
+  const r = u as Record<string, unknown>;
+  const inputTokens = r['inputTokens'];
+  const outputTokens = r['outputTokens'];
+  if (typeof inputTokens !== 'number' || typeof outputTokens !== 'number') return null;
+  return { inputTokens, outputTokens };
+}
+
 export async function GET(_req: NextRequest): Promise<NextResponse> {
   const rt = await getRuntime();
   const now = rt.clock.now();
@@ -111,6 +122,7 @@ export async function GET(_req: NextRequest): Promise<NextResponse> {
       failedRuns: failed,
       due: o.due,
       costsTokens: o.costsTokens,
+      lastUsage: usageOf(lastPayload),
     };
   });
 
@@ -136,6 +148,7 @@ export async function GET(_req: NextRequest): Promise<NextResponse> {
               : typeof p['detail'] === 'string'
                 ? p['detail']
                 : null,
+        usage: usageOf(p),
       };
     });
 

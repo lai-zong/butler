@@ -176,3 +176,38 @@ describe('② ★★ 契约没有领域 → 不做领域层反思（不编造归
     expect(calls).toBe(1);
   });
 });
+
+describe('③ 外部 MCP 产出不得进入记忆', () => {
+  it('memoryWriteBlocked 的报告被排除，并落拒绝审计', async () => {
+    const counter = { n: 0 };
+    const log = new EventLog('s_taint');
+    const clock = new FixedClock(T0);
+    const base = session(contract(['life']));
+    const blocked = {
+      ...base,
+      reports: base.reports.map((r) => ({ ...r, memoryWriteBlocked: true })),
+    };
+
+    const result = await reflectTurn({
+      model: countingModel(counter),
+      log,
+      clock,
+      store: new MemoryStore(log, clock, USER),
+      session: blocked,
+      userGoal: '帮我安排晚饭',
+      userId: USER,
+      accepted: true,
+    });
+
+    expect(result.failed).toBe(false);
+    // 领域 + 管家仍会调用，但输入报告已过滤
+    expect(counter.n).toBe(2);
+    const rejected = log.byType('memory.writeAttempted');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.payload).toMatchObject({
+      rejected: true,
+      reason: 'mcp_memory_write_blocked',
+      blockedReports: 1,
+    });
+  });
+});

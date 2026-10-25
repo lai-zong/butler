@@ -35,9 +35,13 @@ function scored(id: string, content: string, hard = false): ScoredMemory {
 }
 
 function modelReturning(ids: readonly string[]): ModelPort {
+  return modelScored(ids.map((id) => ({ id, relevance: 0.9 })));
+}
+
+function modelScored(items: readonly { readonly id: string; readonly relevance: number }[]): ModelPort {
   return {
     completeStructured: async () => ({
-      value: { items: ids.map((id) => ({ id, relevance: 0.9 })) },
+      value: { items },
       usage: { inputTokens: 1, outputTokens: 1 },
       attempts: 1,
     }),
@@ -88,5 +92,53 @@ describe('语义精排', () => {
       candidates,
     });
     expect(r.items.map((x) => x.memory.id)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('★ 过滤模式：低于阈值的软记忆被丢弃，硬约束始终保留', async () => {
+    const candidates = [
+      scored('hard', '用户对花生过敏', true),
+      scored('high', '用户正在减脂，需要控油'),
+      scored('mid', '用户喜欢清淡口味'),
+      scored('low', '用户喜欢安静的位置'),
+    ];
+    const r = await rerankRecall({
+      model: modelScored([
+        { id: 'low', relevance: 0.1 },
+        { id: 'mid', relevance: 0.45 },
+        { id: 'high', relevance: 0.9 },
+      ]),
+      query: '我想吃火锅',
+      candidates,
+      filter: true,
+      minRelevance: 0.5,
+    });
+
+    expect(r.used).toBe(true);
+    expect(r.items.map((x) => x.memory.id)).toEqual(['hard', 'high']);
+  });
+
+  it('过滤模式下模型漏掉的候选不保留（未评分 = 不进入结果）', async () => {
+    const candidates = [scored('a', 'A'), scored('b', 'B'), scored('c', 'C')];
+    const r = await rerankRecall({
+      model: modelScored([{ id: 'a', relevance: 0.9 }]),
+      query: 'q',
+      candidates,
+      filter: true,
+      minRelevance: 0.5,
+    });
+    expect(r.items.map((x) => x.memory.id)).toEqual(['a']);
+  });
+
+  it('过滤模式下模型没有返回任何有效 id 时回退原顺序，不删光记忆', async () => {
+    const candidates = [scored('a', 'A'), scored('b', 'B')];
+    const r = await rerankRecall({
+      model: modelScored([{ id: 'made-up', relevance: 0.9 }]),
+      query: 'q',
+      candidates,
+      filter: true,
+      minRelevance: 0.5,
+    });
+    expect(r.used).toBe(false);
+    expect(r.items.map((x) => x.memory.id)).toEqual(['a', 'b']);
   });
 });

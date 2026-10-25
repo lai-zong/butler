@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { Badge, InlineError, SectionHeading, Skeleton } from '../components/Common';
 import { Icon } from '../components/Icon';
-import { errorMessage, fetchJson } from '../lib/api.js';
+import { errorMessage, fetchJson, postJson } from '../lib/api.js';
 import {
   formatDuration,
   formatNumber,
@@ -43,6 +43,15 @@ export function OperationsPanel(): JSX.Element {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
+  const [addOpen, setAddOpen] = useState(false);
+  const [addKind, setAddKind] = useState<'preference' | 'environment'>('preference');
+  const [addContent, setAddContent] = useState('');
+  const [addTaskLabel, setAddTaskLabel] = useState('');
+  const [addEvidence, setAddEvidence] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addOk, setAddOk] = useState(false);
+
   const load = useCallback(async (): Promise<void> => {
     setError(null);
     try {
@@ -64,11 +73,41 @@ export function OperationsPanel(): JSX.Element {
     (m) => (kind === 'all' || m.kind === kind) && (app === 'all' || m.app === app),
   );
 
+  async function submitOperation(): Promise<void> {
+    if (addBusy) return;
+    const content = addContent.trim();
+    const taskLabel = addTaskLabel.trim();
+    if (content.length === 0 || taskLabel.length === 0) {
+      setAddError('内容和适用任务都必须填写。');
+      return;
+    }
+    setAddBusy(true);
+    setAddError(null);
+    setAddOk(false);
+    try {
+      await postJson('/api/operations', {
+        kind: addKind,
+        content,
+        taskLabel,
+        ...(addEvidence.trim().length > 0 ? { evidence: addEvidence.trim() } : {}),
+      });
+      setAddContent('');
+      setAddEvidence('');
+      setAddOk(true);
+      setAddOpen(false);
+      await load();
+    } catch (err) {
+      setAddError(errorMessage(err));
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
   return (
     <section className="panel settings-panel ops-panel">
       <SectionHeading
         title="操作记忆"
-        description="方法 / 偏好 / 环境三类；来自真实工具执行，不是模型自述。"
+        description="方法来自真实执行；偏好 / 环境由你明确录入，不是模型自述。"
         actions={
           <div className="ops-actions">
             <Badge tone="accent">{operations.length} 条</Badge>
@@ -152,6 +191,87 @@ export function OperationsPanel(): JSX.Element {
               )}
             </div>
           </div>
+
+          <div className="ops-add">
+            <div>
+              <strong>记录偏好或环境事实</strong>
+              <p>只接受你明确输入；凭证内容会被拒绝；不改历史成功率。</p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                setAddOpen((v) => !v);
+                setAddError(null);
+                setAddOk(false);
+              }}
+            >
+              {addOpen ? '收起' : '记录'}
+            </button>
+          </div>
+
+          {addOpen && (
+            <div className="ops-add-form">
+              <div className="ops-add-tabs">
+                <button
+                  type="button"
+                  className={addKind === 'preference' ? 'is-on' : ''}
+                  onClick={() => setAddKind('preference')}
+                >
+                  偏好
+                </button>
+                <button
+                  type="button"
+                  className={addKind === 'environment' ? 'is-on' : ''}
+                  onClick={() => setAddKind('environment')}
+                >
+                  环境
+                </button>
+              </div>
+              <label className="ops-add-field">
+                <span>内容</span>
+                <textarea
+                  value={addContent}
+                  maxLength={2000}
+                  onChange={(e) => setAddContent(e.target.value)}
+                  placeholder={addKind === 'preference' ? '例如：喜欢简短回复，先给结论' : '例如：Python 安装在 D 盘'}
+                  disabled={addBusy}
+                />
+              </label>
+              <div className="ops-add-row">
+                <label className="ops-add-field">
+                  <span>适用任务</span>
+                  <input
+                    value={addTaskLabel}
+                    maxLength={200}
+                    onChange={(e) => setAddTaskLabel(e.target.value)}
+                    placeholder="写邮件 / 运行脚本"
+                    disabled={addBusy}
+                  />
+                </label>
+                <label className="ops-add-field">
+                  <span>证据（可选）</span>
+                  <input
+                    value={addEvidence}
+                    maxLength={1000}
+                    onChange={(e) => setAddEvidence(e.target.value)}
+                    placeholder="用户原话"
+                    disabled={addBusy}
+                  />
+                </label>
+              </div>
+              {addError !== null && <p className="ops-add-error">{addError}</p>}
+              <div className="ops-add-actions">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAddOpen(false)} disabled={addBusy}>
+                  取消
+                </button>
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => void submitOperation()} disabled={addBusy}>
+                  {addBusy ? '保存中…' : '保存'}
+                </button>
+              </div>
+            </div>
+          )}
+          {addOk && <p className="ops-add-success">已保存。新记录会出现在下面的列表里。</p>}
 
           {visible.length === 0 ? (
             <p className="ops-empty">
@@ -251,7 +371,7 @@ export function OperationsPanel(): JSX.Element {
           )}
 
           <p className="ops-note">
-            只读：成功率来自真实执行记录，界面不提供手改。任务文本可能含路径，默认折叠，展开才看详情；证据只显示条数。
+            方法只读：成功率来自真实执行记录，界面不提供手改。偏好 / 环境只接受你明确录入，含凭证会被拒绝；证据只显示条数。
           </p>
         </>
       )}

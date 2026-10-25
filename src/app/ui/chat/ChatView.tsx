@@ -43,6 +43,7 @@ import type {
   QuizItem,
   SessionCreateResponse,
   SessionDetailResponse,
+  SessionCancellationDto,
   SessionSummary,
   SessionsResponse,
   SseEvent,
@@ -75,6 +76,38 @@ interface ChatViewProps {
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onRefreshOverview: () => void;
   readonly onBootState: (state: ChatBootState) => void;
+}
+
+interface SpeechResultLike {
+  readonly isFinal: boolean;
+  readonly 0: { readonly transcript: string };
+}
+
+interface SpeechEventLike {
+  readonly resultIndex: number;
+  readonly results: ArrayLike<SpeechResultLike>;
+}
+
+interface SpeechRecognitionLike {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((event: SpeechEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: { readonly error?: string }) => void) | null;
+}
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+function speechRecognitionCtor(): SpeechRecognitionCtor | null {
+  const w = window as unknown as {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
 interface Attachment {
@@ -213,6 +246,8 @@ export function ChatView({
   const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<readonly MessageDto[]>([]);
+  const [cancellations, setCancellations] = useState<readonly SessionCancellationDto[]>([]);
+  const [localCancel, setLocalCancel] = useState<SessionCancellationDto | null>(null);
   const [verdicts, setVerdicts] = useState<readonly VerdictDto[]>([]);
   const [quizzes, setQuizzes] = useState<readonly QuizItem[]>([]);
   const [liveTurns, setLiveTurns] = useState<readonly LiveTurn[]>([]);
@@ -227,6 +262,10 @@ export function ChatView({
   const [reviewRunId, setReviewRunId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<readonly ApprovalQueueItem[]>([]);
   const [answering, setAnswering] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [ttsSupported, setTtsSupported] = useState(false);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [tick, setTick] = useState(() => Date.now());
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRange, setReviewRange] = useState<{ readonly start: number; readonly end: number } | null>(null);
@@ -240,6 +279,8 @@ export function ChatView({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const voiceBaseRef = useRef('');
   const reviewAbortRef = useRef<AbortController | null>(null);
   const atBottomRef = useRef(true);
   const forceScrollRef = useRef(true);
@@ -406,6 +447,8 @@ export function ChatView({
     setSessionError(null);
     setLiveTurns([]);
     setMessages([]);
+    setCancellations([]);
+    setLocalCancel(null);
     setVerdicts([]);
     setQuizzes([]);
     setSessionId(id);
@@ -424,6 +467,7 @@ export function ChatView({
       const res = await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(id)}`);
       if (token !== loadSeqRef.current) return { ok: false, error: null };
       setMessages(res.messages);
+      setCancellations(res.cancellations ?? []);
       setVerdicts(res.verdicts);
       setQuizzes(res.quizzes);
       setReviewRuns(res.reviews ?? []);
@@ -438,6 +482,15 @@ export function ChatView({
     }
   }, []);
 
+  const refreshCancellations = useCallback(async (id: string): Promise<void> => {
+    try {
+      const res = await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(id)}`);
+      setCancellations(res.cancellations ?? []);
+    } catch {
+      // 取消回执是旁路：读不到不覆盖主对话状态
+    }
+  }, []);
+
   const createNewChat = useCallback(async (): Promise<void> => {
     abortRef.current?.abort();
     abortRef.current = null;
@@ -448,6 +501,8 @@ export function ChatView({
       setSessions((prev) => [res.session, ...prev]);
       setSessionId(res.session.id);
       setMessages([]);
+      setCancellations([]);
+      setLocalCancel(null);
       setVerdicts([]);
       setQuizzes([]);
       setLiveTurns([]);
@@ -530,6 +585,8 @@ export function ChatView({
         } else {
           setSessionId(null);
           setMessages([]);
+          setCancellations([]);
+          setLocalCancel(null);
           setVerdicts([]);
           setQuizzes([]);
           setSessionError(null);
@@ -555,6 +612,17 @@ export function ChatView({
     if (!active || !focusEnabled) return;
     textareaRef.current?.focus();
   }, [active, focusEnabled]);
+
+  useEffect(() => {
+    setVoiceSupported(speechRecognitionCtor() !== null);
+    setTtsSupported(typeof window !== 'undefined' && 'speechSynthesis' in window);
+    return () => {
+      recognitionRef.current?.abort();
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -593,6 +661,8 @@ export function ChatView({
     const id = await ensureSession();
     if (id === null) return;
 
+    recognitionRef.current?.stop();
+    setListening(false);
     setLiveTurns((prev) => [
       ...prev,
       {
@@ -601,6 +671,7 @@ export function ChatView({
         assistant: emptyAssistant(),
       },
     ]);
+    setLocalCancel(null);
     setStreaming(true);
 
     const controller = new AbortController();
@@ -753,24 +824,116 @@ export function ChatView({
     }
   }
 
+  function toggleVoice(): void {
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    const Ctor = speechRecognitionCtor();
+    if (Ctor === null) {
+      notify('当前浏览器不支持语音输入；可以用文字继续。', 'warning');
+      return;
+    }
+    const recognition = new Ctor();
+    recognition.lang = 'zh-CN';
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    voiceBaseRef.current = input.trim().length > 0 ? `${input.trim()} ` : '';
+    recognition.onresult = (event) => {
+      let finalText = '';
+      let interimText = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const item = event.results[i];
+        if (item === undefined) continue;
+        if (item.isFinal) finalText += item[0].transcript;
+        else interimText += item[0].transcript;
+      }
+      setInput(`${voiceBaseRef.current}${finalText}${interimText}`);
+    };
+    recognition.onend = () => setListening(false);
+    recognition.onerror = (event) => {
+      setListening(false);
+      notify(
+        event.error === 'not-allowed'
+          ? '麦克风权限被拒绝；可以在浏览器设置里允许后重试。'
+          : '语音输入没有成功，请重试或改用文字。',
+        'warning',
+      );
+    };
+    recognitionRef.current = recognition;
+    setListening(true);
+    try {
+      recognition.start();
+    } catch {
+      setListening(false);
+      notify('语音输入启动失败，请重试。', 'warning');
+    }
+  }
+
+  function speak(text: string, id: string): void {
+    if (!('speechSynthesis' in window)) {
+      notify('当前浏览器不支持语音朗读。', 'warning');
+      return;
+    }
+    if (speakingId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.slice(0, 4_000));
+    utterance.lang = 'zh-CN';
+    utterance.rate = 1;
+    utterance.onend = () => setSpeakingId(null);
+    utterance.onerror = () => {
+      setSpeakingId(null);
+      notify('语音朗读失败，请重试。', 'warning');
+    };
+    setSpeakingId(id);
+    window.speechSynthesis.speak(utterance);
+  }
+
   function stop(): void {
+    const id = sessionId;
+    const live = liveTurns[liveTurns.length - 1]?.assistant;
+    const toolCalls =
+      live?.rounds.reduce((n, r) => n + r.tools.length, 0) ?? 0;
+    const toolResults =
+      live?.rounds.reduce(
+        (n, r) => n + r.tools.filter((t) => t.status !== 'pending' && t.status !== 'running').length,
+        0,
+      ) ?? 0;
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
-    notify('已断开接收。后台仍会把这一轮做完。', 'default');
+    setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'aborted' })));
+    setLocalCancel({
+      id: `local_cancel_${Date.now()}`,
+      reason: 'user_cancelled',
+      phase: live?.stages[live.stages.length - 1] ?? '执行阶段',
+      fromSeq: live?.auditRange?.fromSeq ?? 0,
+      toSeq: live?.auditRange?.toSeq ?? 0,
+      toolCalls,
+      toolResults,
+      createdAt: Date.now(),
+    });
+    notify('已停止。后台任务已取消，这次取消会写入审计。', 'default');
+    if (id !== null) {
+      window.setTimeout(() => void refreshCancellations(id), 700);
+    }
   }
 
   async function addFiles(files: readonly File[]): Promise<void> {
     const images = files.filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
-    if (images.length < files.length) notify('只接受 PNG / JPEG / GIF / WebP 图片', 'warning');
-    if (images.length === 0) return;
-    if (attachments.length + images.length > MAX_IMAGES) {
+    const docs = files.filter((f) => !/^image\//.test(f.type));
+
+    if (images.length > 0 && attachments.length + images.length > MAX_IMAGES) {
       notify(`一次最多附 ${MAX_IMAGES} 张图片`, 'warning');
     }
 
     const room = Math.max(0, MAX_IMAGES - attachments.length);
     const accepted = images.slice(0, room);
-
     for (const file of accepted) {
       if (file.size > MAX_IMAGE_BYTES) {
         notify(`「${file.name}」超过 32 MiB，已跳过`, 'warning');
@@ -782,6 +945,33 @@ export function ChatView({
         setAttachments((prev) => (prev.length >= MAX_IMAGES ? prev : [...prev, { name: file.name, url }]));
       } catch {
         notify(`「${file.name}」读取失败`, 'warning');
+      }
+    }
+
+    for (const file of docs) {
+      if (file.size > 20 * 1024 * 1024) {
+        notify(`「${file.name}」超过 20 MiB，已跳过`, 'warning');
+        continue;
+      }
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const res = await fetch('/api/attachments/extract', { method: 'POST', body: form });
+        const body = (await res.json().catch(() => ({}))) as {
+          readonly text?: string;
+          readonly error?: string;
+        };
+        if (!res.ok || typeof body.text !== 'string') {
+          notify(body.error ?? `「${file.name}」解析失败`, 'warning');
+          continue;
+        }
+        const text = body.text.slice(0, 20_000);
+        setInput((prev) =>
+          `${prev}${prev.trim().length > 0 ? '\n\n' : ''}【文档：${file.name}】\n${text}\n`,
+        );
+        notify(`已读取「${file.name}」，内容已放进输入框，可编辑后发送。`, 'success');
+      } catch (err) {
+        notify(`「${file.name}」解析失败：${errorMessage(err)}`, 'warning');
       }
     }
   }
@@ -879,6 +1069,18 @@ export function ChatView({
    * 用 visually-hidden 的 polite 区域，避免把整段回复重复读一遍。
    */
   const lastLive = liveTurns[liveTurns.length - 1]?.assistant;
+  const lastMessage = messages[messages.length - 1];
+  const latestCancellation = cancellations[cancellations.length - 1];
+  const displayCancellation =
+    localCancel ??
+    (latestCancellation !== undefined &&
+    (lastMessage === undefined || lastMessage.createdAt <= latestCancellation.createdAt)
+      ? latestCancellation
+      : null);
+  const retryText =
+    [...messages].reverse().find((m) => m.role === 'user')?.text ??
+    liveTurns[liveTurns.length - 1]?.userText ??
+    '';
   const announcement = streaming
     ? '正在生成回复'
     : lastLive === undefined
@@ -886,7 +1088,7 @@ export function ChatView({
       : lastLive.status === 'error'
         ? '回复失败'
         : lastLive.status === 'aborted'
-          ? '已断开接收，后台仍会完成这一轮'
+          ? '已取消，后台任务已停止'
           : lastLive.status === 'done'
             ? '回复完成'
             : '';
@@ -1023,6 +1225,9 @@ export function ChatView({
                 onOpenMemory={onOpenMemory}
                 notify={notify}
                 now={now}
+                canSpeak={ttsSupported}
+                speaking={speakingId === m.id}
+                onSpeak={() => speak(m.text, m.id)}
               />
             ))}
 
@@ -1039,6 +1244,28 @@ export function ChatView({
                 onCopy={(text) => void copyText(text)}
               />
             ))}
+
+            {displayCancellation !== null && (
+              <CancellationCard
+                cancellation={displayCancellation}
+                retryText={retryText}
+                onOpenAudit={() =>
+                  onOpenAudit(
+                    displayCancellation.fromSeq > 0
+                      ? {
+                          fromSeq: displayCancellation.fromSeq,
+                          toSeq: displayCancellation.toSeq,
+                        }
+                      : null,
+                  )
+                }
+                onRetry={() => {
+                  setInput(retryText);
+                  window.setTimeout(() => textareaRef.current?.focus(), 60);
+                }}
+                now={now}
+              />
+            )}
 
             {quizzes.length > 0 && sessionId !== null && (
               <QuizInvite sessionId={sessionId} quizzes={quizzes} notify={notify} />
@@ -1239,7 +1466,7 @@ export function ChatView({
                 <input
                   ref={fileRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json"
                   multiple
                   hidden
                   onChange={(e) => {
@@ -1251,13 +1478,34 @@ export function ChatView({
                   type="button"
                   className="icon-btn"
                   onClick={() => fileRef.current?.click()}
-                  title="附一张图片（仅本轮可见，不写入记忆）"
-                  aria-label="添加图片"
+                  title="添加图片或文档（图片仅本轮可见；文档会放入输入框）"
+                  aria-label="添加图片或文档"
                 >
                   <Icon name="paperclip" size={18} />
                 </button>
+                <button
+                  type="button"
+                  className={`icon-btn voice-btn ${listening ? 'is-listening' : ''}`}
+                  onClick={toggleVoice}
+                  disabled={!voiceSupported}
+                  title={
+                    voiceSupported
+                      ? listening
+                        ? '停止语音输入'
+                        : '用语音输入（浏览器需要麦克风权限）'
+                      : '当前浏览器不支持语音输入'
+                  }
+                  aria-label={listening ? '停止语音输入' : '语音输入'}
+                  aria-pressed={listening}
+                >
+                  <Icon name="mic" size={17} />
+                </button>
                 <span className="composer-hint">
-                  {attachments.length > 0 ? `${attachments.length} 张 · 仅本轮可见` : '图片仅本轮可见'}
+                  {listening
+                    ? '正在听… 再点麦克风结束'
+                    : attachments.length > 0
+                      ? `${attachments.length} 张 · 仅本轮可见`
+                      : '图片仅本轮可见 · 文档会放入输入框'}
                 </span>
               </div>
 
@@ -1498,6 +1746,78 @@ export function ChatView({
 // 渲染：已保存的消息
 // ═══════════════════════════════════════════════════════════
 
+function CancellationCard({
+  cancellation,
+  retryText,
+  onOpenAudit,
+  onRetry,
+  now,
+}: {
+  readonly cancellation: SessionCancellationDto;
+  readonly retryText: string;
+  readonly onOpenAudit: () => void;
+  readonly onRetry: () => void;
+  readonly now: number;
+}): JSX.Element {
+  const phase =
+    cancellation.phase === 'execute'
+      ? '执行阶段'
+      : cancellation.phase === 'understand'
+        ? '理解目标'
+        : cancellation.phase === 'reflect'
+          ? '整理经验'
+          : cancellation.phase;
+  return (
+    <section className="cancel-card" role="status" aria-label="本轮已取消">
+      <div className="cancel-head">
+        <div className="cancel-title">
+          <Badge tone="warn">已取消</Badge>
+          <strong>本轮已停止</strong>
+          <span>用户取消</span>
+        </div>
+        <span className="cancel-time mono">
+          {formatClock(cancellation.createdAt)} · {relativeTime(cancellation.createdAt, now)}
+        </span>
+      </div>
+      <div className="cancel-grid">
+        <div>
+          <span className="cancel-label">停在</span>
+          <strong>{phase}</strong>
+          <small className="mono">phase={cancellation.phase}</small>
+        </div>
+        <div>
+          <span className="cancel-label">工具调用</span>
+          <strong>{cancellation.toolCalls}</strong>
+          <small>{cancellation.toolResults} 个已返回</small>
+        </div>
+        <div>
+          <span className="cancel-label">事件范围</span>
+          <strong className="mono">
+            {cancellation.fromSeq > 0 ? `${cancellation.fromSeq}–${cancellation.toSeq}` : '—'}
+          </strong>
+          <small>seq</small>
+        </div>
+      </div>
+      <p className="cancel-note">
+        后台任务已停止，本轮产生的敏感授权已撤销；没有生成最终答复。
+      </p>
+      <div className="cancel-actions">
+        <button type="button" className="btn btn-ghost-warn" onClick={onOpenAudit}>
+          查看审计
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={onRetry}
+          disabled={retryText.trim().length === 0}
+        >
+          重新开始
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function QuizInvite({
   sessionId,
   quizzes,
@@ -1607,6 +1927,9 @@ function ServerMessage({
   onOpenMemory,
   notify,
   now,
+  canSpeak,
+  speaking,
+  onSpeak,
 }: {
   readonly message: MessageDto;
   readonly verdict: VerdictDto | undefined;
@@ -1614,6 +1937,9 @@ function ServerMessage({
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly now: number;
+  readonly canSpeak: boolean;
+  readonly speaking: boolean;
+  readonly onSpeak: () => void;
 }): JSX.Element {
   if (message.role === 'user') {
     return (
@@ -1676,6 +2002,11 @@ function ServerMessage({
         <button type="button" className="text-btn" onClick={() => void copyToClipboard(message.text, notify)}>
           <Icon name="copy" size={13} /> 复制
         </button>
+        {canSpeak && (
+          <button type="button" className="text-btn" onClick={onSpeak}>
+            <Icon name="volume" size={13} /> {speaking ? '停止朗读' : '朗读'}
+          </button>
+        )}
         {onOpenAudit !== undefined && (
           <button type="button" className="text-btn" onClick={onOpenAudit}>
             <Icon name="audit" size={13} /> 本轮依据

@@ -705,3 +705,240 @@
     margin-left: 0;
   }
 }
+
+/* ── 敏感域授权 / 手动冲突裁决 ── */
+
+.detail-grant {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.detail-grant strong {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.detail-grant p {
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.detail-grant .btn {
+  flex: none;
+}
+
+.grant-current,
+.compare-current,
+.compare-other {
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  margin-bottom: 10px;
+}
+
+.grant-current > span,
+.compare-current .mini-label,
+.compare-other .mini-label {
+  display: block;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  margin-bottom: 3px;
+}
+
+.grant-current strong {
+  display: block;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.grant-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.grant-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.grant-field > span {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+.grant-field select,
+.grant-field textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: 11.5px var(--font-sans);
+  padding: 7px 8px;
+}
+
+.grant-field textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.grant-note {
+  margin-top: 9px;
+  color: var(--ink-4);
+  font-size: 9.5px;
+  line-height: 1.6;
+}
+
+.grant-error {
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  border: 1px solid #edcfc7;
+  border-radius: var(--radius-xs);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10.5px;
+}
+
+.compare-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-size: 9.5px;
+}
+
+.compare-current p,
+.compare-other p {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.compare-search {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.compare-search input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  padding: 0 8px;
+}
+
+.compare-options {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.compare-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  text-align: left;
+}
+
+.compare-option:hover {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.compare-option span {
+  color: var(--ink-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.compare-option small {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}
+
+/* 自动冲突标记 */
+.badge-warn {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  padding: 1px 6px;
+  font: 9px var(--font-mono);
+  white-space: nowrap;
+}
+
+.detail-conflict {
+  margin: 13px 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+}
+
+.detail-conflict-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.detail-conflict-head small {
+  color: var(--ink-3);
+  font: 9px var(--font-mono);
+}
+
+.detail-conflict-reason {
+  margin-top: 6px;
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.detail-conflict-other {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.detail-conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}

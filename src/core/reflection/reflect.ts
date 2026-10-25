@@ -312,7 +312,7 @@ export interface ButlerReflectionInput {
     readonly succeeded: number;
   }[];
   readonly userGoal: string;
-  /** 时间维度规律（来自行为观察，尚未实现时为空） */
+  /** 时间维度规律（来自行为观察；无数据时为空） */
   readonly temporalPatterns: readonly string[];
 }
 
