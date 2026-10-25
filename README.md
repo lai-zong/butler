@@ -112,7 +112,7 @@ butler-ai/
 └── tsconfig.json
 ```
 
-设计文档见 `docs/design/参赛方案.md`、`docs/web-ui.md`、`docs/STRUCTURE.md`；当前实现状态见 `docs/design/full-audit-2026-10-25.md` 与 `docs/design/quality-closure-2026-10-25.md`。
+设计文档见 `docs/design/参赛方案.md`、`docs/web-ui.md`、`docs/STRUCTURE.md`；当前实现状态只以 `docs/design/参赛方案.md` 的 §19.3 为准。
 
 ---
 ## 快速开始
@@ -166,7 +166,7 @@ pnpm eval:documents:qa      # 文档端到端 QA 30 条（真实模型 + 引用�
 pnpm bench:events 100000    # 事件 JSONL 基准
 ```
 
-2026-10-25 收尾实测与边界见 `docs/design/quality-closure-2026-10-25.md`。
+2026-10-25 收尾实测与边界见 `docs/design/quality-closure-2026-10-25.md`；当前实现状态以方案 §19.3 为准。
 
 ---
 
