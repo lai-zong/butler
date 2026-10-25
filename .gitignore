@@ -39,3 +39,6 @@ next-env.d.ts
 # ── 运行时数据（本机记忆与事件流，绝不入库）──
 /.butler-data/
 *.jsonl
+
+# MCP 配置可能含 env 密钥；默认不入库（模板见 .env.example）
+/mcp.json

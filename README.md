@@ -112,7 +112,7 @@ butler-ai/
 └── tsconfig.json
 ```
 
-设计文档见 `docs/design/参赛方案.md`、`docs/web-ui.md`、`docs/STRUCTURE.md`；当前实现状态见 `docs/design/implementation-audit-2026-10-24.md`。
+设计文档见 `docs/design/参赛方案.md`、`docs/web-ui.md`、`docs/STRUCTURE.md`；当前实现状态见 `docs/design/full-audit-2026-10-25.md` 与 `docs/design/quality-closure-2026-10-25.md`。
 
 ---
 ## 快速开始
@@ -123,7 +123,14 @@ pnpm install
 
 # 配置环境变量
 cp .env.example .env.local
-# 编辑 .env.local，至少填入 DEEPSEEK_API_KEY
+# 编辑 .env.local，至少填入 DEEPSEEK_API_KEY（默认 provider）
+
+# 可选：OpenAI 兼容 / Ollama 本地
+# MODEL_PROVIDER=openai
+# OPENAI_API_KEY=...
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# OPENAI_MODEL=gpt-4o-mini
+# 或 MODEL_PROVIDER=ollama（本地端点默认 http://127.0.0.1:11434/v1）
 
 # 类型检查 + 测试
 pnpm typecheck
@@ -138,6 +145,28 @@ BUTLER_NO_OPEN=1 pnpm dev
 ```
 
 也可以双击 `启动.bat` 或运行 `butler web`：会等页面真正可访问后再打开浏览器，看到同一段启动动画。
+
+### 模型厂商
+
+- `deepseek`：默认；支持流式叙述、工具、结构化输出。
+- `openai`：OpenAI 兼容端点，当前只承诺**非流式主模型**。
+- `ollama`：本地 OpenAI 兼容端点，当前只承诺**非流式主模型**；默认 `qwen3.5:4b`，可用 `OLLAMA_MODEL` 覆盖。
+
+设置页已提供 provider 切换面板：未配置项禁用、先验证后切换、切换前确认并重建运行时。
+后端 `/api/model` 支持状态、真实验证与切换。
+
+### 评测（手工运行）
+
+```bash
+pnpm eval:recall:dev        # 记忆召回 dev（40 正例 + 10 负例）
+pnpm eval:recall:test       # 记忆召回 held-out test（20 + 10）
+pnpm eval:extraction        # 事实抽取 50 条
+pnpm eval:documents         # 文档检索 30 条
+pnpm eval:documents:qa      # 文档端到端 QA 30 条（真实模型 + 引用）
+pnpm bench:events 100000    # 事件 JSONL 基准
+```
+
+2026-10-25 收尾实测与边界见 `docs/design/quality-closure-2026-10-25.md`。
 
 ---
 
