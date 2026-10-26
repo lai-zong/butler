@@ -134,6 +134,28 @@ describe('model profiles', () => {
     }
   });
 
+  it('嵌入类型发现模型时不过滤 embedding', async () => {
+    const server = createServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        data: [{ id: 'text-embedding-3-large' }, { id: 'chat-model' }],
+      }));
+    });
+    await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    try {
+      const models = await discoverModels({
+        presetId: 'openai-embedding',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: 'test-key',
+      });
+      expect(models).toContain('text-embedding-3-large');
+    } finally {
+      await new Promise<void>((ok) => server.close(() => ok()));
+    }
+  });
+
   it('按 profileId/modelId 解析对话模型并拒绝非对话类型', async () => {
     const d = await tempDir();
     const profile = createProfile({

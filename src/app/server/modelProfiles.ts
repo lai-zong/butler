@@ -451,9 +451,9 @@ export async function discoverModels(args: {
   }
   if (!response.ok) throw new Error(`模型列表请求失败（HTTP ${response.status}）`);
   const body = (await response.json()) as unknown;
-  // 明显的非对话模型不展示；用户仍可手动输入模型 ID。
+  // 对话模型过滤明显的非对话端点；嵌入类型必须保留 embedding 模型。
   const nonChat = /(embedding|rerank|whisper|tts|dall-e|moderation|transcribe)/i;
-  return [...new Set(parse(body).filter((id) => id.length > 0 && !nonChat.test(id)))].sort();
+  return [...new Set(parse(body).filter((id) => id.length > 0 && (preset.kind === 'embedding' || !nonChat.test(id))))].sort();
 }
 
 export interface ResolvedModel {
