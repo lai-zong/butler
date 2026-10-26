@@ -85,6 +85,31 @@ describe('model profiles', () => {
     expect(loaded.embedding).toEqual({ kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 });
   });
 
+  it('旧数据把嵌入模型当作当前模型时回退到对话模型', async () => {
+    const d = await tempDir();
+    const profile = createProfile({
+      name: '混合配置',
+      presetId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      models: [
+        { id: 'gpt-4.1-mini', kind: 'chat' },
+        { id: 'text-embedding-3-large', kind: 'embedding', dimension: 3072 },
+      ],
+    });
+    await saveProfileStore(d, {
+      version: 1,
+      profiles: [profile],
+      active: { profileId: profile.id, modelId: 'text-embedding-3-large' },
+      lastChat: { profileId: profile.id, modelId: 'text-embedding-3-large' },
+      lastReview: { profileId: profile.id, modelId: 'text-embedding-3-large' },
+      embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
+    });
+    const loaded = await loadProfileStore(d);
+    expect(loaded.active).toEqual({ profileId: profile.id, modelId: 'gpt-4.1-mini' });
+    expect(loaded.lastChat).toEqual({ profileId: profile.id, modelId: 'gpt-4.1-mini' });
+    expect(loaded.lastReview).toBeNull();
+  });
+
   it('可以修改名称与模型列表，但不会产生默认模型字段', () => {
     const profile = createProfile({
       name: '旧名称',

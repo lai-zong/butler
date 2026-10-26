@@ -66,10 +66,15 @@ export class OpenAIEmbedding implements EmbeddingPort {
       throw new Error('嵌入端点返回的向量数量与输入不一致');
     }
 
-    const out: (readonly number[])[] = [];
+    const out: (readonly number[] | undefined)[] = new Array(texts.length).fill(undefined);
+    const seen = new Set<number>();
     for (let i = 0; i < rows.length; i++) {
       const item = rows[i] as { embedding?: unknown; index?: unknown } | null;
       const index = typeof item?.index === 'number' ? item.index : i;
+      if (!Number.isInteger(index) || index < 0 || index >= texts.length || seen.has(index)) {
+        throw new Error(`嵌入端点返回了非法或重复的向量索引（第 ${i + 1} 条）`);
+      }
+      seen.add(index);
       const vector = item?.embedding;
       if (!Array.isArray(vector) || vector.length === 0) {
         throw new Error(`嵌入端点返回了空向量（第 ${i + 1} 条）`);
@@ -85,7 +90,9 @@ export class OpenAIEmbedding implements EmbeddingPort {
       }
       out[index] = numeric;
     }
-    if (out.some((row) => row === undefined)) throw new Error('嵌入端点返回的向量索引不完整');
-    return out;
+    if (seen.size !== texts.length || out.some((row) => row === undefined)) {
+      throw new Error('嵌入端点返回的向量索引不完整');
+    }
+    return out as readonly (readonly number[])[];
   }
 }

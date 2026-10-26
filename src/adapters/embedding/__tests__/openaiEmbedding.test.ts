@@ -70,6 +70,19 @@ describe('OpenAIEmbedding', () => {
     expect(auth).toBe('Bearer test-key');
   });
 
+  it('拒绝非法或重复的向量索引', async () => {
+    const port = await mockServer(() => ({
+      data: [{ index: 2, embedding: [1, 2, 3] }],
+    }));
+    const adapter = new OpenAIEmbedding({
+      model: 'test-embedding',
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: '',
+      dimensions: 3,
+    });
+    await expect(adapter.embed(['甲'])).rejects.toThrow('非法或重复的向量索引');
+  });
+
   it('维度不一致时拒绝使用向量', async () => {
     const port = await mockServer(() => ({
       data: [{ index: 0, embedding: [1, 2] }],

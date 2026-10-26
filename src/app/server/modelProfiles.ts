@@ -208,6 +208,14 @@ function validateEmbeddingRole(
   };
 }
 
+function firstChatSelection(profiles: readonly ModelProfile[]): ActiveModel | null {
+  for (const profile of profiles) {
+    const model = profile.models.find((m) => m.kind === 'chat');
+    if (model !== undefined) return { profileId: profile.id, modelId: model.id };
+  }
+  return null;
+}
+
 function normalizeEmbedding(raw: unknown): EmbeddingRole {
   if (typeof raw !== 'object' || raw === null) return DEFAULT_EMBEDDING_ROLE;
   const e = raw as Record<string, unknown>;
@@ -253,9 +261,14 @@ export async function loadProfileStore(dataDir: string): Promise<ModelProfileSto
           active = { profileId: a['profileId'], modelId: a['modelId'] };
         }
       }
-      if (active === null || !profiles.some((p) => p.id === active!.profileId && p.models.some((m) => m.id === active!.modelId))) {
-        const first = profiles[0]!;
-        active = { profileId: first.id, modelId: first.models[0]!.id };
+      if (
+        active === null ||
+        !profiles.some((p) =>
+          p.id === active!.profileId &&
+          p.models.some((m) => m.id === active!.modelId && m.kind === 'chat'),
+        )
+      ) {
+        active = firstChatSelection(profiles);
       }
       let lastChat: ActiveModel | null = null;
       if (typeof parsed.lastChat === 'object' && parsed.lastChat !== null) {

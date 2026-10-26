@@ -167,7 +167,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         profile = await updateProfileSecret(profile, body.apiKey);
       }
       const profiles = [...store.profiles, profile];
-      const activate = body.activate !== false;
+      const chatModel = profile.models.find((m) => m.kind === 'chat');
+      const activate = body.activate !== false && chatModel !== undefined;
       if (activate) {
         const preset = presetById(profile.presetId);
         const secret = await resolveProfileSecret(profile);
@@ -175,8 +176,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           return NextResponse.json({ error: '这个预设需要 API Key，填写后才能保存并启用。' }, { status: 400 });
         }
       }
-      const active = activate
-        ? { profileId: profile.id, modelId: profile.models[0]!.id }
+      const active = activate && chatModel !== undefined
+        ? { profileId: profile.id, modelId: chatModel.id }
         : store.active;
       await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, lastReview: store.lastReview, embedding: store.embedding });
       if (activate) await resetRuntime();
@@ -211,10 +212,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
       const profiles = store.profiles.map((p) => (p.id === id ? updated : p));
       let active = store.active;
-      if (active?.profileId === id && !updated.models.some((m) => m.id === active!.modelId)) {
-        active = { profileId: id, modelId: updated.models[0]!.id };
+      if (active?.profileId === id && !updated.models.some((m) => m.id === active!.modelId && m.kind === 'chat')) {
+        const firstChat = profiles
+          .flatMap((p) => p.models.filter((m) => m.kind === 'chat').map((m) => ({ profileId: p.id, modelId: m.id })))[0];
+        active = firstChat ?? null;
       }
-      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, lastReview: store.lastReview, embedding: store.embedding });
+      const hasChat = (choice: { readonly profileId: string; readonly modelId: string } | null): boolean =>
+        choice !== null &&
+        profiles.some((p) => p.id === choice.profileId && p.models.some((m) => m.id === choice.modelId && m.kind === 'chat'));
+      const lastChat = hasChat(store.lastChat) ? store.lastChat : active;
+      const lastReview = hasChat(store.lastReview) ? store.lastReview : null;
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding: store.embedding });
       await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(updated), active });
     } catch (err) {
@@ -233,12 +241,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     await deleteProfileSecret(existing);
     const profiles = store.profiles.filter((p) => p.id !== id);
-    const active = store.active?.profileId === id
-      ? (profiles[0] !== undefined
-          ? { profileId: profiles[0].id, modelId: profiles[0].models[0]!.id }
-          : null)
-      : store.active;
-    await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, lastReview: store.lastReview, embedding: store.embedding });
+    const firstChat = profiles
+      .flatMap((p) => p.models.filter((m) => m.kind === 'chat').map((m) => ({ profileId: p.id, modelId: m.id })))[0] ?? null;
+    const active = store.active?.profileId === id ? firstChat : store.active;
+    const validChat = (choice: { readonly profileId: string; readonly modelId: string } | null): boolean =>
+      choice !== null &&
+      profiles.some((p) => p.id === choice.profileId && p.models.some((m) => m.id === choice.modelId && m.kind === 'chat'));
+    const lastChat = validChat(store.lastChat) ? store.lastChat : active;
+    const lastReview = validChat(store.lastReview) ? store.lastReview : null;
+    const embedding = store.embedding.kind === 'profile' && store.embedding.profileId === id
+      ? DEFAULT_EMBEDDING_ROLE
+      : store.embedding;
+    await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding });
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
   }
@@ -334,9 +348,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (preset?.requiresKey === true && secret.key.length === 0) {
       return NextResponse.json({ error: '这个配置还没有 API Key。' }, { status: 400 });
     }
+    if (sessionId.length === 0) {
+      return NextResponse.json({ error: '缺少 sessionId' }, { status: 400 });
+    }
     const rt = await getRuntime();
-    if (sessionId.length > 0) {
-      rt.bootstrapped.chat.setSessionModel(sessionId, profileId, modelId);
+    const updated = rt.bootstrapped.chat.setSessionModel(sessionId, profileId, modelId);
+    if (updated === undefined) {
+      return NextResponse.json({ error: '找不到这个会话' }, { status: 404 });
     }
     const lastChat = { profileId, modelId };
     await saveProfileStore(DATA_DIR, { ...store, lastChat });
