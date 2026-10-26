@@ -17,10 +17,22 @@ import { loadSelection, specOf } from './modelProvider.js';
 import { presetById, type ModelPreset } from './modelPresets.js';
 
 export type ModelCapabilityKey = 'vision' | 'imageGeneration' | 'audio' | 'tools' | 'reasoning';
+export type ProfileModelKind = 'chat' | 'embedding' | 'rerank';
 
 export interface ProfileModel {
   readonly id: string;
+  readonly kind: ProfileModelKind;
   readonly capabilities: Readonly<Record<ModelCapabilityKey, boolean>>;
+  /** 仅嵌入模型使用；本地 BGE 为 768。 */
+  readonly dimension?: number;
+}
+
+export interface EmbeddingRole {
+  readonly kind: 'builtin' | 'profile';
+  readonly label: string;
+  readonly dimension: number;
+  readonly profileId?: string;
+  readonly modelId?: string;
 }
 
 export type ProfileCredential =
@@ -48,9 +60,17 @@ export interface ModelProfileStore {
   readonly version: 1;
   readonly profiles: readonly ModelProfile[];
   readonly active: ActiveModel | null;
+  /** 系统级嵌入角色；对话不再有默认模型。 */
+  readonly embedding: EmbeddingRole;
 }
 
 export const MODEL_PROFILES_FILE = 'model-profiles.json';
+
+export const DEFAULT_EMBEDDING_ROLE: EmbeddingRole = {
+  kind: 'builtin',
+  label: 'bge-base-zh-v1.5',
+  dimension: 768,
+};
 
 export const EMPTY_CAPABILITIES: Readonly<Record<ModelCapabilityKey, boolean>> = {
   vision: false,
@@ -75,15 +95,17 @@ function cleanModels(models: readonly unknown[]): readonly ProfileModel[] {
   const out: ProfileModel[] = [];
   for (const raw of models) {
     if (typeof raw !== 'object' || raw === null) continue;
-    const item = raw as { id?: unknown; capabilities?: unknown };
+    const item = raw as { id?: unknown; kind?: unknown; capabilities?: unknown; dimension?: unknown };
     const id = typeof item.id === 'string' ? item.id.trim() : '';
     if (id.length === 0 || seen.has(id)) continue;
     seen.add(id);
+    const kind: ProfileModelKind = item.kind === 'embedding' || item.kind === 'rerank' ? item.kind : 'chat';
     const c = typeof item.capabilities === 'object' && item.capabilities !== null
       ? (item.capabilities as Record<string, unknown>)
       : {};
     out.push({
       id,
+      kind,
       capabilities: {
         vision: c['vision'] === true,
         imageGeneration: c['imageGeneration'] === true,
@@ -91,6 +113,9 @@ function cleanModels(models: readonly unknown[]): readonly ProfileModel[] {
         tools: c['tools'] === true,
         reasoning: c['reasoning'] === true,
       },
+      ...(kind === 'embedding' && typeof item.dimension === 'number' && item.dimension > 0
+        ? { dimension: Math.round(item.dimension) }
+        : {}),
     });
   }
   return out;
@@ -141,21 +166,53 @@ async function legacyStore(dataDir: string): Promise<ModelProfileStore> {
     name: spec.label,
     presetId: provider,
     baseUrl,
-    models: [{ id: model, capabilities: defaultCapabilities(spec.id === 'deepseek' ? 'deepseek' : spec.id === 'ollama' ? 'ollama' : 'openai') }],
+    models: [{
+      id: model,
+      kind: 'chat',
+      capabilities: defaultCapabilities(spec.id === 'deepseek' ? 'deepseek' : spec.id === 'ollama' ? 'ollama' : 'openai'),
+    }],
     credential: { kind: 'env', name: spec.keyName },
     createdAt: now,
     updatedAt: now,
   };
-  return { version: 1, profiles: [profile], active: { profileId: profile.id, modelId: model } };
+  return {
+    version: 1,
+    profiles: [profile],
+    active: { profileId: profile.id, modelId: model },
+    embedding: DEFAULT_EMBEDDING_ROLE,
+  };
+}
+
+function normalizeEmbedding(raw: unknown): EmbeddingRole {
+  if (typeof raw !== 'object' || raw === null) return DEFAULT_EMBEDDING_ROLE;
+  const e = raw as Record<string, unknown>;
+  const dimension = typeof e['dimension'] === 'number' && e['dimension'] > 0
+    ? Math.round(e['dimension'])
+    : DEFAULT_EMBEDDING_ROLE.dimension;
+  if (e['kind'] === 'profile') {
+    const profileId = typeof e['profileId'] === 'string' ? e['profileId'] : undefined;
+    const modelId = typeof e['modelId'] === 'string' ? e['modelId'] : undefined;
+    if (profileId !== undefined && modelId !== undefined) {
+      return {
+        kind: 'profile',
+        label: typeof e['label'] === 'string' ? e['label'] : modelId,
+        dimension,
+        profileId,
+        modelId,
+      };
+    }
+  }
+  return { ...DEFAULT_EMBEDDING_ROLE, dimension };
 }
 
 export async function loadProfileStore(dataDir: string): Promise<ModelProfileStore> {
   try {
     const raw = await readFile(join(dataDir, MODEL_PROFILES_FILE), 'utf8');
-    const parsed = JSON.parse(raw) as { profiles?: unknown; active?: unknown };
+    const parsed = JSON.parse(raw) as { profiles?: unknown; active?: unknown; embedding?: unknown };
     const profiles = Array.isArray(parsed.profiles)
       ? parsed.profiles.map(normalizeProfile).filter((p): p is ModelProfile => p !== null)
       : [];
+    const embedding = normalizeEmbedding(parsed.embedding);
     if (profiles.length > 0) {
       const activeRaw = parsed.active;
       let active: ActiveModel | null = null;
@@ -169,7 +226,7 @@ export async function loadProfileStore(dataDir: string): Promise<ModelProfileSto
         const first = profiles[0]!;
         active = { profileId: first.id, modelId: first.models[0]!.id };
       }
-      return { version: 1, profiles, active };
+      return { version: 1, profiles, active, embedding };
     }
   } catch {
     // 没有文件或损坏：尝试旧配置迁移。

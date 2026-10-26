@@ -103,6 +103,7 @@ export async function GET(): Promise<NextResponse> {
       ok: true,
       profiles,
       active,
+      embedding: store.embedding,
       presets: MODEL_PRESETS,
       envLocked: isProviderEnvLocked(),
       runtime: describe,
@@ -171,7 +172,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const active = activate
         ? { profileId: profile.id, modelId: profile.models[0]!.id }
         : store.active;
-      await saveProfileStore(DATA_DIR, { version: 1, profiles, active });
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, embedding: store.embedding });
       if (activate) await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(profile), active });
     } catch (err) {
@@ -207,7 +208,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       if (active?.profileId === id && !updated.models.some((m) => m.id === active!.modelId)) {
         active = { profileId: id, modelId: updated.models[0]!.id };
       }
-      await saveProfileStore(DATA_DIR, { version: 1, profiles, active });
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, embedding: store.embedding });
       await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(updated), active });
     } catch (err) {
@@ -231,7 +232,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           ? { profileId: profiles[0].id, modelId: profiles[0].models[0]!.id }
           : null)
       : store.active;
-    await saveProfileStore(DATA_DIR, { version: 1, profiles, active });
+    await saveProfileStore(DATA_DIR, { version: 1, profiles, active, embedding: store.embedding });
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
   }

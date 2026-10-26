@@ -39,6 +39,7 @@ describe('model profiles', () => {
       version: 1,
       profiles: [profile],
       active: { profileId: profile.id, modelId: 'anthropic/claude-sonnet-4' },
+      embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
     };
     await saveProfileStore(d, store);
 
@@ -54,6 +55,29 @@ describe('model profiles', () => {
     const raw = await readFile(join(d, 'model-profiles.json'), 'utf8');
     expect(raw).not.toContain('sk-');
     expect(raw).not.toContain('apiKey');
+  });
+
+  it('区分对话/嵌入模型并保存嵌入维度', async () => {
+    const d = await tempDir();
+    const profile = createProfile({
+      name: 'OpenAI 双用途',
+      presetId: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      models: [
+        { id: 'gpt-4.1-mini', kind: 'chat', capabilities: { tools: true } },
+        { id: 'text-embedding-3-large', kind: 'embedding', dimension: 3072 },
+      ],
+    });
+    await saveProfileStore(d, {
+      version: 1,
+      profiles: [profile],
+      active: { profileId: profile.id, modelId: 'gpt-4.1-mini' },
+      embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
+    });
+    const loaded = await loadProfileStore(d);
+    expect(loaded.profiles[0]?.models.map((m) => m.kind)).toEqual(['chat', 'embedding']);
+    expect(loaded.profiles[0]?.models[1]?.dimension).toBe(3072);
+    expect(loaded.embedding).toEqual({ kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 });
   });
 
   it('可以修改名称与模型列表，但不会产生默认模型字段', () => {
