@@ -62,6 +62,8 @@ export interface ModelProfileStore {
   readonly active: ActiveModel | null;
   /** 最近一次在对话中选择的模型；新对话继承它。 */
   readonly lastChat: ActiveModel | null;
+  /** 最近一次监督员审查使用的模型；新审查继承它。 */
+  readonly lastReview: ActiveModel | null;
   /** 系统级嵌入角色；对话不再有默认模型。 */
   readonly embedding: EmbeddingRole;
 }
@@ -182,6 +184,7 @@ async function legacyStore(dataDir: string): Promise<ModelProfileStore> {
     profiles: [profile],
     active: { profileId: profile.id, modelId: model },
     lastChat: { profileId: profile.id, modelId: model },
+    lastReview: null,
     embedding: DEFAULT_EMBEDDING_ROLE,
   };
 }
@@ -211,7 +214,13 @@ function normalizeEmbedding(raw: unknown): EmbeddingRole {
 export async function loadProfileStore(dataDir: string): Promise<ModelProfileStore> {
   try {
     const raw = await readFile(join(dataDir, MODEL_PROFILES_FILE), 'utf8');
-    const parsed = JSON.parse(raw) as { profiles?: unknown; active?: unknown; lastChat?: unknown; embedding?: unknown };
+    const parsed = JSON.parse(raw) as {
+      profiles?: unknown;
+      active?: unknown;
+      lastChat?: unknown;
+      lastReview?: unknown;
+      embedding?: unknown;
+    };
     const profiles = Array.isArray(parsed.profiles)
       ? parsed.profiles.map(normalizeProfile).filter((p): p is ModelProfile => p !== null)
       : [];
@@ -239,7 +248,17 @@ export async function loadProfileStore(dataDir: string): Promise<ModelProfileSto
       if (lastChat === null || !profiles.some((p) => p.id === lastChat!.profileId && p.models.some((m) => m.id === lastChat!.modelId && m.kind === 'chat'))) {
         lastChat = active;
       }
-      return { version: 1, profiles, active, lastChat, embedding };
+      let lastReview: ActiveModel | null = null;
+      if (typeof parsed.lastReview === 'object' && parsed.lastReview !== null) {
+        const r = parsed.lastReview as Record<string, unknown>;
+        if (typeof r['profileId'] === 'string' && typeof r['modelId'] === 'string') {
+          lastReview = { profileId: r['profileId'], modelId: r['modelId'] };
+        }
+      }
+      if (lastReview !== null && !profiles.some((p) => p.id === lastReview!.profileId && p.models.some((m) => m.id === lastReview!.modelId && m.kind === 'chat'))) {
+        lastReview = null;
+      }
+      return { version: 1, profiles, active, lastChat, lastReview, embedding };
     }
   } catch {
     // 没有文件或损坏：尝试旧配置迁移。

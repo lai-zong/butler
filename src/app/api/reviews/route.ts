@@ -11,8 +11,15 @@ import { createHash } from 'node:crypto';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-import { getRuntime } from '@/app/runtime';
+import { DATA_DIR, getRuntime } from '@/app/runtime';
 import { supervise } from '@/core/butler/supervisor.js';
+import { DeepSeekModel } from '@/adapters/model/deepseek.js';
+import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
+import {
+  loadProfileStore,
+  resolveProfileModel,
+  saveProfileStore,
+} from '@/app/server/modelProfiles.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,6 +43,8 @@ interface Body {
   readonly sessionId?: unknown;
   readonly messageId?: unknown;
   readonly messageIds?: unknown;
+  readonly modelProfileId?: unknown;
+  readonly modelId?: unknown;
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -59,7 +68,62 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const rt = await getRuntime();
-  if (rt.model === null) {
+  const session = rt.bootstrapped.chat.getSession(sessionId);
+  if (session === undefined) {
+    return NextResponse.json({ error: '找不到这个会话' }, { status: 404 });
+  }
+
+  const profileStore = await loadProfileStore(DATA_DIR);
+  const latestReview = [...rt.bootstrapped.chat.reviewRunsOf(sessionId)]
+    .reverse()
+    .find((run) => run.modelProfileId !== undefined && run.modelId !== undefined);
+  const requestedProfileId = typeof body.modelProfileId === 'string' ? body.modelProfileId : '';
+  const requestedModelId = typeof body.modelId === 'string' ? body.modelId : '';
+  const selection =
+    requestedProfileId.length > 0 && requestedModelId.length > 0
+      ? { profileId: requestedProfileId, modelId: requestedModelId }
+      : latestReview?.modelProfileId !== undefined && latestReview.modelId !== undefined
+        ? { profileId: latestReview.modelProfileId, modelId: latestReview.modelId }
+        : profileStore.lastReview ??
+          (session.modelProfileId !== undefined && session.modelId !== undefined
+            ? { profileId: session.modelProfileId, modelId: session.modelId }
+            : null);
+
+  let reviewModel = rt.model;
+  let reviewProfileId: string | undefined;
+  let reviewModelId: string | undefined;
+  if (selection !== null) {
+    const resolved = await resolveProfileModel(DATA_DIR, selection.profileId, selection.modelId, 'chat');
+    if (resolved === null) {
+      return NextResponse.json(
+        { error: '当前选择的审查模型不可用：配置不存在、模型不存在或缺少 API Key。' },
+        { status: 503 },
+      );
+    }
+    const cfg = {
+      ...resolved.config,
+      apiKey: resolved.config.apiKey.length > 0 ? resolved.config.apiKey : 'local',
+    };
+    reviewModel = resolved.preset.adapter === 'deepseek'
+      ? new DeepSeekModel(cfg)
+      : new OpenAICompatibleModel(
+          cfg,
+          resolved.preset.adapter === 'ollama' ? 'ollama' : 'openai-compatible',
+        );
+    reviewProfileId = resolved.profile.id;
+    reviewModelId = resolved.model.id;
+    if (
+      profileStore.lastReview?.profileId !== resolved.profile.id ||
+      profileStore.lastReview?.modelId !== resolved.model.id
+    ) {
+      await saveProfileStore(DATA_DIR, {
+        ...profileStore,
+        lastReview: { profileId: resolved.profile.id, modelId: resolved.model.id },
+      });
+    }
+  }
+
+  if (reviewModel === null) {
     return NextResponse.json({ error: '还没有配置模型，无法重新复核' }, { status: 503 });
   }
 
@@ -78,7 +142,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .update(JSON.stringify(snapshots))
     .digest('hex')
     .slice(0, 16);
-  const modelName = rt.model.describe().model;
+  const modelName = reviewModel.describe().model;
   const turnIds = messages.map((m) => m!.id);
 
   const turns: { readonly messageId: string; readonly summary: string; readonly criteria: number }[] = [];
@@ -97,7 +161,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     for (let i = 0; i < snapshots.length; i++) {
       const snapshot = snapshots[i]!;
       const result = await supervise({
-        model: rt.model,
+        model: reviewModel,
         log: rt.bootstrapped.log,
         userGoal: snapshot.userGoal,
         contract: snapshot.contract,
@@ -129,6 +193,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       turnIds,
       status: 'completed',
       model: modelName,
+      ...(reviewProfileId !== undefined ? { modelProfileId: reviewProfileId } : {}),
+      ...(reviewModelId !== undefined ? { modelId: reviewModelId } : {}),
       promptVersion,
       snapshotHash,
       stages: [
@@ -154,6 +220,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       turnIds,
       status: aborted ? 'aborted' : 'failed',
       model: modelName,
+      ...(reviewProfileId !== undefined ? { modelProfileId: reviewProfileId } : {}),
+      ...(reviewModelId !== undefined ? { modelId: reviewModelId } : {}),
       promptVersion: 'unknown',
       snapshotHash,
       stages: [

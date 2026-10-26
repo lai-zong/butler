@@ -41,6 +41,7 @@ describe('model profiles', () => {
       profiles: [profile],
       active: { profileId: profile.id, modelId: 'anthropic/claude-sonnet-4' },
       lastChat: { profileId: profile.id, modelId: 'anthropic/claude-sonnet-4' },
+      lastReview: null,
       embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
     };
     await saveProfileStore(d, store);
@@ -75,6 +76,7 @@ describe('model profiles', () => {
       profiles: [profile],
       active: { profileId: profile.id, modelId: 'gpt-4.1-mini' },
       lastChat: { profileId: profile.id, modelId: 'gpt-4.1-mini' },
+      lastReview: null,
       embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
     });
     const loaded = await loadProfileStore(d);
@@ -152,6 +154,7 @@ describe('model profiles', () => {
       profiles: [testProfile],
       active: { profileId: profile.id, modelId: 'deepseek-flash' },
       lastChat: { profileId: profile.id, modelId: 'deepseek-flash' },
+      lastReview: null,
       embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
     });
     const previous = process.env['DEEPSEEK_API_KEY'];

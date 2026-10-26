@@ -92,6 +92,8 @@ export interface ReviewRun {
   readonly turnIds: readonly string[];
   readonly status: ReviewRunStatus;
   readonly model: string;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
   readonly promptVersion: string;
   readonly snapshotHash: string;
   readonly stages: readonly { readonly name: string; readonly status: 'done' | 'failed' }[];
