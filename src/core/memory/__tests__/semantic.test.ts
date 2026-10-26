@@ -51,6 +51,24 @@ describe('SemanticIndex · 向量缓存', () => {
     expect(calls).toEqual(['烧烤']);
   });
 
+  it('重建后强制重新编码记忆向量', async () => {
+    const calls: string[] = [];
+    const fake: EmbeddingPort = {
+      model: 'fake',
+      embed: async (texts) => {
+        calls.push(...texts);
+        return texts.map(() => [1, 0]);
+      },
+    };
+    const index = new SemanticIndex(fake);
+    const candidates = [memory('m1', '喜欢咖啡')];
+    await index.scores('咖啡', candidates);
+    calls.length = 0;
+    index.clear();
+    await index.scores('咖啡', candidates);
+    expect(calls).toEqual(['咖啡', '喜欢咖啡']);
+  });
+
   it('记忆内容/版本变化后重新编码', async () => {
     let calls = 0;
     const fake: EmbeddingPort = {

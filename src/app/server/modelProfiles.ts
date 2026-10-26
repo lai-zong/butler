@@ -189,6 +189,25 @@ async function legacyStore(dataDir: string): Promise<ModelProfileStore> {
   };
 }
 
+function validateEmbeddingRole(
+  role: EmbeddingRole,
+  profiles: readonly ModelProfile[],
+): EmbeddingRole {
+  if (role.kind !== 'profile' || role.profileId === undefined || role.modelId === undefined) {
+    return role;
+  }
+  const profile = profiles.find((p) => p.id === role.profileId);
+  const model = profile?.models.find((m) => m.id === role.modelId && m.kind === 'embedding');
+  if (model === undefined) return DEFAULT_EMBEDDING_ROLE;
+  return {
+    kind: 'profile',
+    label: model.id,
+    dimension: model.dimension ?? role.dimension,
+    profileId: profile!.id,
+    modelId: model.id,
+  };
+}
+
 function normalizeEmbedding(raw: unknown): EmbeddingRole {
   if (typeof raw !== 'object' || raw === null) return DEFAULT_EMBEDDING_ROLE;
   const e = raw as Record<string, unknown>;
@@ -224,7 +243,7 @@ export async function loadProfileStore(dataDir: string): Promise<ModelProfileSto
     const profiles = Array.isArray(parsed.profiles)
       ? parsed.profiles.map(normalizeProfile).filter((p): p is ModelProfile => p !== null)
       : [];
-    const embedding = normalizeEmbedding(parsed.embedding);
+    const embedding = validateEmbeddingRole(normalizeEmbedding(parsed.embedding), profiles);
     if (profiles.length > 0) {
       const activeRaw = parsed.active;
       let active: ActiveModel | null = null;

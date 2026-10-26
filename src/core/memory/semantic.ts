@@ -37,6 +37,11 @@ export class SemanticIndex {
 
   constructor(private readonly embedding: EmbeddingPort) {}
 
+  /** 嵌入模型变化或手动重建时清空内存向量缓存。 */
+  clear(): void {
+    this.cache.clear();
+  }
+
   async scores(
     query: string,
     candidates: readonly MemoryEntry[],
@@ -51,7 +56,7 @@ export class SemanticIndex {
 
     for (const memory of candidates) {
       const text = embeddingTextOf(memory);
-      const key = `${memory.id}|${memory.version}|${memory.updatedAt}|${memory.content.length}`;
+      const key = `${this.embedding.model}|${memory.id}|${memory.version}|${memory.updatedAt}|${memory.content.length}`;
       const hit = this.cache.get(memory.id);
       if (hit !== undefined && hit.key === key) {
         vectors.set(memory.id, hit.vector);

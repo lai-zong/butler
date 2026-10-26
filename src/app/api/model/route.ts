@@ -27,6 +27,7 @@ import {
   discoverModels,
   findModel,
   findProfile,
+  DEFAULT_EMBEDDING_ROLE,
   loadProfileStore,
   resolveProfileSecret,
   saveProfileStore,
@@ -51,6 +52,7 @@ interface Body {
   readonly profileId?: unknown;
   readonly modelId?: unknown;
   readonly activate?: unknown;
+  readonly mode?: unknown;
 }
 
 async function profileView(profile: ModelProfile): Promise<Record<string, unknown>> {
@@ -239,6 +241,52 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, lastReview: store.lastReview, embedding: store.embedding });
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
+  }
+
+  if (action === 'set-embedding') {
+    const rt = await getRuntime();
+    if (rt.activeTurns > 0) {
+      return NextResponse.json(
+        { error: '有对话正在执行，等这一轮结束后再更换嵌入模型。' },
+        { status: 409 },
+      );
+    }
+    if (body.mode === 'builtin') {
+      await saveProfileStore(DATA_DIR, { ...store, embedding: DEFAULT_EMBEDDING_ROLE });
+      await resetRuntime();
+      return NextResponse.json({ ok: true, embedding: DEFAULT_EMBEDDING_ROLE });
+    }
+    const profileId = typeof body.profileId === 'string' ? body.profileId : '';
+    const modelId = typeof body.modelId === 'string' ? body.modelId : '';
+    const profile = findProfile(store, profileId);
+    const model = profile !== undefined ? findModel(profile, modelId) : undefined;
+    if (profile === undefined || model === undefined || model.kind !== 'embedding') {
+      return NextResponse.json({ error: '找不到这个嵌入模型' }, { status: 404 });
+    }
+    if (model.dimension === undefined || model.dimension <= 0) {
+      return NextResponse.json({ error: '这个嵌入模型还没有配置向量维度。' }, { status: 400 });
+    }
+    const preset = presetById(profile.presetId);
+    const secret = await resolveProfileSecret(profile);
+    if (preset?.requiresKey === true && secret.key.length === 0) {
+      return NextResponse.json({ error: '这个配置还没有 API Key。' }, { status: 400 });
+    }
+    const embedding = {
+      kind: 'profile' as const,
+      label: model.id,
+      dimension: model.dimension,
+      profileId,
+      modelId,
+    };
+    await saveProfileStore(DATA_DIR, { ...store, embedding });
+    await resetRuntime();
+    return NextResponse.json({ ok: true, embedding });
+  }
+
+  if (action === 'rebuild-embedding') {
+    const rt = await getRuntime();
+    rt.semantic.clear();
+    return NextResponse.json({ ok: true, rebuilt: true });
   }
 
   if (action === 'switch') {

@@ -35,7 +35,11 @@ import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/ru
 import { DeepSeekModel } from '@/adapters/model/deepseek.js';
 import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
 import { buildProviderConfig, isProviderEnvLocked, loadSelection } from './server/modelProvider.js';
-import { resolveActiveModel } from './server/modelProfiles.js';
+import {
+  loadProfileStore,
+  resolveActiveModel,
+  resolveProfileModel,
+} from './server/modelProfiles.js';
 import { limitsConfig, modelConfig } from '@/core/config/env.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
@@ -55,6 +59,7 @@ import { EvolutionEngine } from '@/core/memory/evolution.js';
 import { mergeAll } from '@/core/memory/merge.js';
 import { SemanticIndex } from '@/core/memory/semantic.js';
 import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
+import { OpenAIEmbedding } from '@/adapters/embedding/openaiEmbedding.js';
 import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
@@ -174,6 +179,41 @@ export async function resetRuntime(): Promise<void> {
   delete g[GLOBAL_KEY];
 }
 
+class UnavailableEmbedding {
+  readonly model = 'unavailable';
+
+  constructor(private readonly reason: string) {}
+
+  async embed(): Promise<readonly (readonly number[])[]> {
+    throw new Error(this.reason);
+  }
+}
+
+async function createSemantic(dir: string, modelRoot: string): Promise<SemanticIndex> {
+  const store = await loadProfileStore(dir);
+  const role = store.embedding;
+  if (role.kind === 'builtin') {
+    return new SemanticIndex(new LocalBgeEmbedding(modelRoot));
+  }
+  if (role.profileId === undefined || role.modelId === undefined) {
+    return new SemanticIndex(new LocalBgeEmbedding(modelRoot));
+  }
+  const resolved = await resolveProfileModel(dir, role.profileId, role.modelId, 'embedding');
+  if (resolved === null) {
+    return new SemanticIndex(
+      new UnavailableEmbedding('当前嵌入模型配置不可用，语义召回回退字面召回。'),
+    );
+  }
+  return new SemanticIndex(
+    new OpenAIEmbedding({
+      model: resolved.model.id,
+      baseUrl: resolved.profile.baseUrl,
+      apiKey: resolved.config.apiKey.length > 0 ? resolved.config.apiKey : 'local',
+      dimensions: resolved.model.dimension ?? role.dimension,
+    }),
+  );
+}
+
 async function initRuntime(): Promise<ButlerRuntime> {
   const dir = DATA_DIR;
   await mkdir(dir, { recursive: true });
@@ -223,7 +263,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
   const configuredModelRoot = process.env['BUTLER_MODEL_DIR']?.trim() ?? '';
   const embeddingModelRoot =
     configuredModelRoot.length > 0 ? configuredModelRoot : join(DATA_DIR, 'models');
-  const semantic = new SemanticIndex(new LocalBgeEmbedding(embeddingModelRoot));
+  const semantic = await createSemantic(dir, embeddingModelRoot);
 
   // ── 模型（没有 API Key 时为 null，界面据此提示"未配置模型"）──
   let model: ModelPort | null = null;
