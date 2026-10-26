@@ -47,6 +47,7 @@ interface Body {
   readonly baseUrl?: unknown;
   readonly models?: unknown;
   readonly apiKey?: unknown;
+  readonly sessionId?: unknown;
   readonly profileId?: unknown;
   readonly modelId?: unknown;
   readonly activate?: unknown;
@@ -62,6 +63,7 @@ async function profileView(profile: ModelProfile): Promise<Record<string, unknow
     models: profile.models,
     hasKey: secret.key.length > 0,
     keySource: secret.source,
+    requiresKey: presetById(profile.presetId)?.requiresKey ?? true,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
   };
@@ -103,6 +105,7 @@ export async function GET(): Promise<NextResponse> {
       ok: true,
       profiles,
       active,
+      lastChat: store.lastChat,
       embedding: store.embedding,
       presets: MODEL_PRESETS,
       envLocked: isProviderEnvLocked(),
@@ -172,7 +175,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const active = activate
         ? { profileId: profile.id, modelId: profile.models[0]!.id }
         : store.active;
-      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, embedding: store.embedding });
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, embedding: store.embedding });
       if (activate) await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(profile), active });
     } catch (err) {
@@ -208,7 +211,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       if (active?.profileId === id && !updated.models.some((m) => m.id === active!.modelId)) {
         active = { profileId: id, modelId: updated.models[0]!.id };
       }
-      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, embedding: store.embedding });
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, embedding: store.embedding });
       await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(updated), active });
     } catch (err) {
@@ -232,7 +235,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           ? { profileId: profiles[0].id, modelId: profiles[0].models[0]!.id }
           : null)
       : store.active;
-    await saveProfileStore(DATA_DIR, { version: 1, profiles, active, embedding: store.embedding });
+    await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, embedding: store.embedding });
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
   }
@@ -266,6 +269,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     await saveProfileStore(DATA_DIR, { ...store, active });
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
+  }
+
+  if (action === 'select-chat') {
+    const profileId = typeof body.profileId === 'string' ? body.profileId : '';
+    const modelId = typeof body.modelId === 'string' ? body.modelId : '';
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+    const profile = findProfile(store, profileId);
+    const model = profile !== undefined ? findModel(profile, modelId) : undefined;
+    if (profile === undefined || model === undefined || model.kind !== 'chat') {
+      return NextResponse.json({ error: '找不到这个对话模型' }, { status: 404 });
+    }
+    const preset = presetById(profile.presetId);
+    const secret = await resolveProfileSecret(profile);
+    if (preset?.requiresKey === true && secret.key.length === 0) {
+      return NextResponse.json({ error: '这个配置还没有 API Key。' }, { status: 400 });
+    }
+    const rt = await getRuntime();
+    if (sessionId.length > 0) {
+      rt.bootstrapped.chat.setSessionModel(sessionId, profileId, modelId);
+    }
+    const lastChat = { profileId, modelId };
+    await saveProfileStore(DATA_DIR, { ...store, lastChat });
+    return NextResponse.json({ ok: true, lastChat });
   }
 
   if (action === 'test') {

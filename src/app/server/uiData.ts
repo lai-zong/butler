@@ -133,6 +133,7 @@ export const EVENT_LABEL: Record<string, string> = {
   'session.rollback': '回退会话',
   'schedule.triggered': '定时任务触发',
   'session.forked': '新建会话',
+  'session.model': '选择模型',
   'session.cancelled': '用户取消',
   'session.ended': '会话结束',
   // MCP
@@ -377,6 +378,8 @@ export interface SessionDto {
   readonly messageCount: number;
   readonly verdictCount: number;
   readonly lastPreview: string;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
 }
 
 export interface MessageDto {
@@ -479,6 +482,8 @@ export function toSessionDto(
     messageCount: messages.length,
     verdictCount: verdicts.length,
     lastPreview: preview,
+    ...(session.modelProfileId !== undefined ? { modelProfileId: session.modelProfileId } : {}),
+    ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
   };
 }
 

@@ -22,11 +22,20 @@
 
 import type { NextRequest } from 'next/server';
 
-import { getRuntime } from '@/app/runtime';
+import { DATA_DIR, getRuntime } from '@/app/runtime';
 import { supervisionConfig } from '@/core/config/env.js';
 import { runTurn } from '@/core/chat/service.js';
 import { denyAllPending, SseApprovals } from '@/core/tools/approval.js';
 import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
+import { DeepSeekModel } from '@/adapters/model/deepseek.js';
+import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
+import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
+import { deepSeekTranslationPort } from '@/adapters/model/translation.js';
+import {
+  loadProfileStore,
+  resolveProfileModel,
+  saveProfileStore,
+} from '@/app/server/modelProfiles.js';
 import type { ProgressEvent } from '@/core/runtime/orchestrator.js';
 
 export const dynamic = 'force-dynamic';
@@ -37,6 +46,8 @@ export const maxDuration = 300;
 interface ChatBody {
   readonly sessionId?: string;
   readonly text?: string;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
   /**
    * 调用方是否**能处理确认请求**（`{ type:'approval' }` 事件 + POST 答复）。
    *
@@ -84,22 +95,77 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ error: '消息内容为空' }, { status: 400 });
   }
 
-  if (rt.model === null) {
+  // 会话：没给就取最近的，还没有就新建
+  const session = body.sessionId !== undefined
+    ? (rt.bootstrapped.chat.getSession(body.sessionId) ?? rt.bootstrapped.chat.createSession())
+    : rt.bootstrapped.chat.latestOrCreate();
+
+  let model = rt.model;
+  let streamModel = rt.streamModel;
+  let translator = rt.translator;
+
+  const profileStore = await loadProfileStore(DATA_DIR);
+  const requestedProfileId =
+    typeof body.modelProfileId === 'string' && body.modelProfileId.length > 0
+      ? body.modelProfileId
+      : session.modelProfileId;
+  const requestedModelId =
+    typeof body.modelId === 'string' && body.modelId.length > 0
+      ? body.modelId
+      : session.modelId;
+  const fallback = profileStore.lastChat;
+  const selection =
+    requestedProfileId !== undefined && requestedModelId !== undefined
+      ? { profileId: requestedProfileId, modelId: requestedModelId }
+      : fallback;
+  if (selection !== null) {
+    const resolved = await resolveProfileModel(DATA_DIR, selection.profileId, selection.modelId, 'chat');
+    if (resolved === null) {
+      return Response.json(
+        { error: '当前选择的对话模型不可用：配置不存在、模型不存在或缺少 API Key。' },
+        { status: 503 },
+      );
+    }
+    const cfg = {
+      ...resolved.config,
+      apiKey: resolved.config.apiKey.length > 0 ? resolved.config.apiKey : 'local',
+    };
+    model =
+      resolved.preset.adapter === 'deepseek'
+        ? new DeepSeekModel(cfg)
+        : new OpenAICompatibleModel(
+            cfg,
+            resolved.preset.adapter === 'ollama' ? 'ollama' : 'openai-compatible',
+          );
+    streamModel = resolved.preset.adapter === 'deepseek'
+      ? new DeepSeekStream({ ...cfg, model: cfg.model ?? selection.modelId })
+      : null;
+    translator = deepSeekTranslationPort(model);
+    if (session.modelProfileId !== resolved.profile.id || session.modelId !== resolved.model.id) {
+      rt.bootstrapped.chat.setSessionModel(session.id, resolved.profile.id, resolved.model.id);
+    }
+    if (profileStore.lastChat?.profileId !== resolved.profile.id || profileStore.lastChat?.modelId !== resolved.model.id) {
+      await saveProfileStore(DATA_DIR, {
+        ...profileStore,
+        lastChat: { profileId: resolved.profile.id, modelId: resolved.model.id },
+      });
+    }
+  }
+
+  if (model === null) {
     return Response.json(
       {
         error:
-          '未配置模型。请在 .env.local 里设置 DEEPSEEK_API_KEY 后重启服务。' +
+          '未配置模型。请先在设置 → 模型接入里添加对话模型。' +
           '（记忆治理相关功能不依赖模型，仍可使用）',
       },
       { status: 503 },
     );
   }
 
-  // 会话：没给就取最近的，还没有就新建
-  const session = body.sessionId !== undefined
-    ? (rt.bootstrapped.chat.getSession(body.sessionId) ?? rt.bootstrapped.chat.createSession())
-    : rt.bootstrapped.chat.latestOrCreate();
-
+  const chatModel = model;
+  const chatStreamModel = streamModel;
+  const chatTranslator = translator;
   const encoder = new TextEncoder();
 
   /**
@@ -188,7 +254,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           // ★ 监督员触发：默认 manual（用户按需），可用 SUPERVISOR_MODE=auto 回退
           supervisionMode: supervisionConfig.mode,
           userId: session.userId,
-          model: rt.model!,
+          model: chatModel,
           random: rt.random,
           log: rt.bootstrapped.log,
           clock: rt.clock,
@@ -215,8 +281,8 @@ export async function POST(req: NextRequest): Promise<Response> {
            *    用便宜快的模型就够，不必占用主模型。
            *    ⚠️ 接错模型的后果很隐蔽：**推理流永远是空的，且不报错**。
            */
-          ...(rt.streamModel !== null ? { streamModel: rt.streamModel } : {}),
-          ...(rt.translator !== null ? { translatorPort: rt.translator } : {}),
+          ...(chatStreamModel !== null ? { streamModel: chatStreamModel } : {}),
+          ...(chatTranslator !== null ? { translatorPort: chatTranslator } : {}),
           onNarration: (s) =>
             send({
               type: 'narration',

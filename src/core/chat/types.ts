@@ -374,6 +374,9 @@ export interface ChatSession {
   readonly updatedAt: number;
   /** 已完成的任务数（用于"第 N 次会话"这类展示） */
   readonly turnCount: number;
+  /** 当前会话选定的模型；未选择时由最近使用模型解析。 */
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
 }
 
 /** 界面一次读到的完整状态。 */
@@ -450,6 +453,27 @@ export class SessionStore {
 
   getSession(id: string): ChatSession | undefined {
     return this.sessions.get(id);
+  }
+
+  /** 记录会话选择的模型；模型选择是会话状态，不改变消息内容。 */
+  setSessionModel(sessionId: string, profileId: string, modelId: string): ChatSession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return undefined;
+    const now = this.clock.now();
+    const next: ChatSession = {
+      ...session,
+      modelProfileId: profileId,
+      modelId,
+      updatedAt: now,
+    };
+    this.sessions.set(sessionId, next);
+    this.log.append({
+      type: 'session.model',
+      actor: 'user',
+      payload: { sessionId, profileId, modelId },
+      createdAt: now,
+    });
+    return next;
   }
 
   /** 取最近一个会话；没有则新建。 */
@@ -707,6 +731,7 @@ export class SessionStore {
 /** 与会话状态相关的事件类型。 */
 export const SESSION_STATE_EVENTS: readonly string[] = [
   'session.forked',
+  'session.model',
   'session.message',
   'session.reply',
   'session.verdict',
@@ -758,6 +783,23 @@ export function replaySessions(
           createdAt: e.createdAt,
           updatedAt: e.createdAt,
           turnCount: 0,
+        });
+      }
+      continue;
+    }
+
+    if (e.type === 'session.model') {
+      if (sessionId === null) continue;
+      const profileId = typeof p['profileId'] === 'string' ? p['profileId'] : null;
+      const modelId = typeof p['modelId'] === 'string' ? p['modelId'] : null;
+      if (profileId === null || modelId === null) continue;
+      const session = sessions.get(sessionId);
+      if (session !== undefined) {
+        sessions.set(sessionId, {
+          ...session,
+          modelProfileId: profileId,
+          modelId,
+          updatedAt: e.createdAt,
         });
       }
       continue;

@@ -60,6 +60,8 @@ export interface ModelProfileStore {
   readonly version: 1;
   readonly profiles: readonly ModelProfile[];
   readonly active: ActiveModel | null;
+  /** 最近一次在对话中选择的模型；新对话继承它。 */
+  readonly lastChat: ActiveModel | null;
   /** 系统级嵌入角色；对话不再有默认模型。 */
   readonly embedding: EmbeddingRole;
 }
@@ -179,6 +181,7 @@ async function legacyStore(dataDir: string): Promise<ModelProfileStore> {
     version: 1,
     profiles: [profile],
     active: { profileId: profile.id, modelId: model },
+    lastChat: { profileId: profile.id, modelId: model },
     embedding: DEFAULT_EMBEDDING_ROLE,
   };
 }
@@ -208,7 +211,7 @@ function normalizeEmbedding(raw: unknown): EmbeddingRole {
 export async function loadProfileStore(dataDir: string): Promise<ModelProfileStore> {
   try {
     const raw = await readFile(join(dataDir, MODEL_PROFILES_FILE), 'utf8');
-    const parsed = JSON.parse(raw) as { profiles?: unknown; active?: unknown; embedding?: unknown };
+    const parsed = JSON.parse(raw) as { profiles?: unknown; active?: unknown; lastChat?: unknown; embedding?: unknown };
     const profiles = Array.isArray(parsed.profiles)
       ? parsed.profiles.map(normalizeProfile).filter((p): p is ModelProfile => p !== null)
       : [];
@@ -226,7 +229,17 @@ export async function loadProfileStore(dataDir: string): Promise<ModelProfileSto
         const first = profiles[0]!;
         active = { profileId: first.id, modelId: first.models[0]!.id };
       }
-      return { version: 1, profiles, active, embedding };
+      let lastChat: ActiveModel | null = null;
+      if (typeof parsed.lastChat === 'object' && parsed.lastChat !== null) {
+        const l = parsed.lastChat as Record<string, unknown>;
+        if (typeof l['profileId'] === 'string' && typeof l['modelId'] === 'string') {
+          lastChat = { profileId: l['profileId'], modelId: l['modelId'] };
+        }
+      }
+      if (lastChat === null || !profiles.some((p) => p.id === lastChat!.profileId && p.models.some((m) => m.id === lastChat!.modelId && m.kind === 'chat'))) {
+        lastChat = active;
+      }
+      return { version: 1, profiles, active, lastChat, embedding };
     }
   } catch {
     // 没有文件或损坏：尝试旧配置迁移。
@@ -412,14 +425,17 @@ export interface ResolvedModel {
   readonly config: DeepSeekConfig;
 }
 
-export async function resolveActiveModel(dataDir: string): Promise<ResolvedModel | null> {
+export async function resolveProfileModel(
+  dataDir: string,
+  profileId: string,
+  modelId: string,
+  expectedKind: ProfileModelKind = 'chat',
+): Promise<ResolvedModel | null> {
   const store = await loadProfileStore(dataDir);
-  const active = store.active;
-  if (active === null) return null;
-  const profile = findProfile(store, active.profileId);
+  const profile = findProfile(store, profileId);
   if (profile === undefined) return null;
-  const model = findModel(profile, active.modelId);
-  if (model === undefined) return null;
+  const model = findModel(profile, modelId);
+  if (model === undefined || model.kind !== expectedKind) return null;
   const preset = presetById(profile.presetId);
   if (preset === undefined) return null;
   const secret = await resolveProfileSecret(profile);
@@ -437,6 +453,13 @@ export async function resolveActiveModel(dataDir: string): Promise<ResolvedModel
       thinkingParam: preset.adapter === 'deepseek',
     },
   };
+}
+
+export async function resolveActiveModel(dataDir: string): Promise<ResolvedModel | null> {
+  const store = await loadProfileStore(dataDir);
+  const active = store.active;
+  if (active === null) return null;
+  return resolveProfileModel(dataDir, active.profileId, active.modelId, 'chat');
 }
 
 export type { ModelPreset };

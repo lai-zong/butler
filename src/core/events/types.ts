@@ -174,6 +174,8 @@ export type EventType =
   | 'session.rollback'
   | 'schedule.triggered'
   | 'session.forked'
+  /** 会话选择的模型；随事件重放，保证刷新后仍能恢复 */
+  | 'session.model'
   /** 用户主动取消：记录取消阶段、已发生的工具调用/结果数，供回放 */
   | 'session.cancelled'
   | 'session.ended'
@@ -343,6 +345,7 @@ export const EVENT_FAMILIES = {
     'session.rollback',
     'schedule.triggered',
     'session.forked',
+    'session.model',
     'session.cancelled',
     'session.ended',
   ],

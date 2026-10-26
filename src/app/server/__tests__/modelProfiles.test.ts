@@ -9,6 +9,7 @@ import {
   createProfile,
   discoverModels,
   loadProfileStore,
+  resolveProfileModel,
   saveProfileStore,
   updateProfile,
   type ModelProfileStore,
@@ -39,6 +40,7 @@ describe('model profiles', () => {
       version: 1,
       profiles: [profile],
       active: { profileId: profile.id, modelId: 'anthropic/claude-sonnet-4' },
+      lastChat: { profileId: profile.id, modelId: 'anthropic/claude-sonnet-4' },
       embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
     };
     await saveProfileStore(d, store);
@@ -72,6 +74,7 @@ describe('model profiles', () => {
       version: 1,
       profiles: [profile],
       active: { profileId: profile.id, modelId: 'gpt-4.1-mini' },
+      lastChat: { profileId: profile.id, modelId: 'gpt-4.1-mini' },
       embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
     });
     const loaded = await loadProfileStore(d);
@@ -126,6 +129,41 @@ describe('model profiles', () => {
       expect(authorization).toBe('Bearer test-key');
     } finally {
       await new Promise<void>((ok) => server.close(() => ok()));
+    }
+  });
+
+  it('按 profileId/modelId 解析对话模型并拒绝非对话类型', async () => {
+    const d = await tempDir();
+    const profile = createProfile({
+      name: 'DeepSeek 测试',
+      presetId: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      models: [
+        { id: 'deepseek-flash', kind: 'chat' },
+        { id: 'embed-test', kind: 'embedding', dimension: 768 },
+      ],
+    });
+    const testProfile = {
+      ...profile,
+      credential: { kind: 'env' as const, name: 'DEEPSEEK_API_KEY' },
+    };
+    await saveProfileStore(d, {
+      version: 1,
+      profiles: [testProfile],
+      active: { profileId: profile.id, modelId: 'deepseek-flash' },
+      lastChat: { profileId: profile.id, modelId: 'deepseek-flash' },
+      embedding: { kind: 'builtin', label: 'bge-base-zh-v1.5', dimension: 768 },
+    });
+    const previous = process.env['DEEPSEEK_API_KEY'];
+    process.env['DEEPSEEK_API_KEY'] = 'test-key';
+    try {
+      const resolved = await resolveProfileModel(d, profile.id, 'deepseek-flash', 'chat');
+      expect(resolved?.config.model).toBe('deepseek-flash');
+      expect(resolved?.config.apiKey).toBe('test-key');
+      expect(await resolveProfileModel(d, profile.id, 'embed-test', 'chat')).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env['DEEPSEEK_API_KEY'];
+      else process.env['DEEPSEEK_API_KEY'] = previous;
     }
   });
 });
