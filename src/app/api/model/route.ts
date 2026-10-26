@@ -1,104 +1,111 @@
 /**
- * 模型厂商状态、验证与切换。
+ * 模型接入：用户配置、模型发现、当前模型切换。
  *
- * GET  /api/model          当前模型 + 各 provider 是否配置（不返回 Key）
- * POST /api/model          { action:'validate'|'switch', provider, model? }
+ * GET  /api/model：配置与当前状态（不返回 Key）
+ * POST /api/model：
+ *   - discover { presetId, baseUrl, profileId?, apiKey? }
+ *   - create-profile { name, presetId, baseUrl, models, apiKey?, activate? }
+ *   - update-profile { id, name, presetId, baseUrl, models, apiKey? }
+ *   - delete-profile { id }
+ *   - switch { profileId, modelId }
+ *   - test { profileId, modelId }
  *
- * 纪律：
- *   · 只允许切到“已配置 Key/端点且验证通过”的 provider；
- *   · MODEL_PROVIDER 环境变量存在时锁定，UI 不能覆盖；
- *   · 不返回、不记录任何 Key 明文；
- *   · OpenAI 兼容/Ollama 当前只承诺非流式；流式能力在响应里如实标注。
+ * ★ 不保存/不返回 Key 明文；Key 只写本机凭证库。
+ * ★ 流式与非流式由适配器自行处理，不做保存前验证。
  */
-
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import { DATA_DIR, getRuntime, resetRuntime } from '@/app/runtime';
-import {
-  buildProviderConfig,
-  createProviderModel,
-  isModelProviderId,
-  listProviderStatuses,
-  loadSelection,
-  saveSelection,
-  type ModelProviderId,
-} from '@/app/server/modelProvider.js';
+import { DeepSeekModel } from '@/adapters/model/deepseek.js';
+import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
 import { msg } from '@/core/ports/model.js';
+import { isProviderEnvLocked } from '@/app/server/modelProvider.js';
+import {
+  createProfile,
+  deleteProfileSecret,
+  discoverModels,
+  findModel,
+  findProfile,
+  loadProfileStore,
+  resolveProfileSecret,
+  saveProfileStore,
+  updateProfile,
+  updateProfileSecret,
+  type ModelProfile,
+} from '@/app/server/modelProfiles.js';
+import { MODEL_PRESETS, presetById } from '@/app/server/modelPresets.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 interface Body {
   readonly action?: unknown;
-  readonly provider?: unknown;
-  readonly model?: unknown;
+  readonly id?: unknown;
+  readonly name?: unknown;
+  readonly presetId?: unknown;
+  readonly baseUrl?: unknown;
+  readonly models?: unknown;
+  readonly apiKey?: unknown;
+  readonly profileId?: unknown;
+  readonly modelId?: unknown;
+  readonly activate?: unknown;
 }
 
-function providerOf(body: Body): ModelProviderId | null {
-  return isModelProviderId(body.provider) ? body.provider : null;
-}
-
-async function validateProvider(args: {
-  readonly provider: ModelProviderId;
-  readonly model?: string;
-}): Promise<{
-  readonly ok: true;
-  readonly provider: ModelProviderId;
-  readonly model: string;
-  readonly latencyMs: number;
-  readonly text: string;
-}> {
-  const built = await buildProviderConfig({
-    provider: args.provider,
-    ...(args.model !== undefined ? { selection: { provider: args.provider, model: args.model } } : {}),
-  });
-  const model = createProviderModel(args.provider, built.config);
-  const started = Date.now();
-  const res = await model.complete({
-    purpose: 'routing',
-    messages: [msg.user('只回复 OK 两个字母，不要解释。')],
-    // 256 是给“会先思考再回答”的本地模型留的余量；32 会被思考吃光。
-    maxOutputTokens: 256,
-    temperature: 0,
-    thinking: 'disabled',
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (res.text.trim().length === 0) {
-    throw new Error(`模型返回空文本（finish_reason=${res.finishReason}）`);
-  }
+async function profileView(profile: ModelProfile): Promise<Record<string, unknown>> {
+  const secret = await resolveProfileSecret(profile);
   return {
-    ok: true,
-    provider: args.provider,
-    model: res.model,
-    latencyMs: Date.now() - started,
-    text: res.text.slice(0, 80),
+    id: profile.id,
+    name: profile.name,
+    presetId: profile.presetId,
+    baseUrl: profile.baseUrl,
+    models: profile.models,
+    hasKey: secret.key.length > 0,
+    keySource: secret.source,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
   };
+}
+
+async function activeView(store: Awaited<ReturnType<typeof loadProfileStore>>): Promise<Record<string, unknown> | null> {
+  if (store.active === null) return null;
+  const profile = findProfile(store, store.active.profileId);
+  if (profile === undefined) return null;
+  const model = findModel(profile, store.active.modelId);
+  if (model === undefined) return null;
+  return {
+    profileId: profile.id,
+    profileName: profile.name,
+    modelId: model.id,
+    presetId: profile.presetId,
+    baseUrl: profile.baseUrl,
+    capabilities: model.capabilities,
+  };
+}
+
+function nameTaken(profiles: readonly ModelProfile[], name: string, exceptId?: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return profiles.some((p) => p.id !== exceptId && p.name.trim().toLowerCase() === normalized);
+}
+
+function modelsOf(body: Body): readonly unknown[] {
+  return Array.isArray(body.models) ? body.models : [];
 }
 
 export async function GET(): Promise<NextResponse> {
   const rt = await getRuntime();
-  const loaded = await loadSelection(DATA_DIR);
-  const providers = await listProviderStatuses();
+  const store = await loadProfileStore(DATA_DIR);
+  const profiles = await Promise.all(store.profiles.map(profileView));
+  const active = await activeView(store);
   const describe = rt.model?.describe() ?? null;
   return NextResponse.json(
     {
       ok: true,
-      current: {
-        provider: loaded.selection.provider,
-        model: describe?.model ?? null,
-        providerLabel:
-          describe?.provider === 'deepseek'
-            ? 'deepseek'
-            : loaded.selection.provider === 'ollama'
-              ? 'ollama'
-              : loaded.selection.provider,
-        capabilities: describe?.capabilities ?? null,
-        streaming: loaded.selection.provider === 'deepseek',
-      },
-      selection: loaded.selection,
-      envLocked: loaded.envLocked,
-      providers,
+      profiles,
+      active,
+      presets: MODEL_PRESETS,
+      envLocked: isProviderEnvLocked(),
+      runtime: describe,
     },
     { headers: { 'Cache-Control': 'no-store' } },
   );
@@ -113,17 +120,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const action = typeof body.action === 'string' ? body.action : '';
-  const provider = providerOf(body);
-  if (provider === null) {
-    return NextResponse.json({ error: 'provider 只能是 deepseek / openai / ollama' }, { status: 400 });
-  }
-  const model = typeof body.model === 'string' && body.model.trim().length > 0
-    ? body.model.trim()
-    : undefined;
+  const store = await loadProfileStore(DATA_DIR);
 
-  if (action === 'validate') {
+  if (action === 'discover') {
+    const presetId = typeof body.presetId === 'string' ? body.presetId : '';
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : '';
+    if (presetById(presetId) === undefined) {
+      return NextResponse.json({ error: '未知的模型预设' }, { status: 400 });
+    }
     try {
-      return NextResponse.json(await validateProvider({ provider, ...(model !== undefined ? { model } : {}) }));
+      const models = await discoverModels({
+        presetId,
+        baseUrl,
+        ...(typeof body.profileId === 'string' ? { profileId: body.profileId } : {}),
+        ...(typeof body.apiKey === 'string' && body.apiKey.trim().length > 0
+          ? { apiKey: body.apiKey.trim() }
+          : {}),
+        dataDir: DATA_DIR,
+      });
+      return NextResponse.json({ ok: true, models });
     } catch (err) {
       return NextResponse.json(
         { error: err instanceof Error ? err.message : String(err) },
@@ -132,9 +147,97 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  if (action === 'create-profile') {
+    try {
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      const presetId = typeof body.presetId === 'string' ? body.presetId : '';
+      const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : '';
+      if (nameTaken(store.profiles, name)) {
+        return NextResponse.json({ error: '配置名称已存在' }, { status: 409 });
+      }
+      let profile = createProfile({ name, presetId, baseUrl, models: modelsOf(body) });
+      if (typeof body.apiKey === 'string' && body.apiKey.trim().length > 0) {
+        profile = await updateProfileSecret(profile, body.apiKey);
+      }
+      const profiles = [...store.profiles, profile];
+      const activate = body.activate !== false;
+      if (activate) {
+        const preset = presetById(profile.presetId);
+        const secret = await resolveProfileSecret(profile);
+        if (preset?.requiresKey === true && secret.key.length === 0) {
+          return NextResponse.json({ error: '这个预设需要 API Key，填写后才能保存并启用。' }, { status: 400 });
+        }
+      }
+      const active = activate
+        ? { profileId: profile.id, modelId: profile.models[0]!.id }
+        : store.active;
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active });
+      if (activate) await resetRuntime();
+      return NextResponse.json({ ok: true, profile: await profileView(profile), active });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        { status: 400 },
+      );
+    }
+  }
+
+  if (action === 'update-profile') {
+    const id = typeof body.id === 'string' ? body.id : '';
+    const existing = findProfile(store, id);
+    if (existing === undefined) {
+      return NextResponse.json({ error: '找不到这个模型配置' }, { status: 404 });
+    }
+    try {
+      const nextName = typeof body.name === 'string' ? body.name.trim() : existing.name;
+      if (nameTaken(store.profiles, nextName, id)) {
+        return NextResponse.json({ error: '配置名称已存在' }, { status: 409 });
+      }
+      let updated = updateProfile(existing, {
+        name: nextName,
+        baseUrl: body.baseUrl,
+        presetId: body.presetId,
+        models: body.models,
+      });
+      if (typeof body.apiKey === 'string' && body.apiKey.trim().length > 0) {
+        updated = await updateProfileSecret(updated, body.apiKey);
+      }
+      const profiles = store.profiles.map((p) => (p.id === id ? updated : p));
+      let active = store.active;
+      if (active?.profileId === id && !updated.models.some((m) => m.id === active!.modelId)) {
+        active = { profileId: id, modelId: updated.models[0]!.id };
+      }
+      await saveProfileStore(DATA_DIR, { version: 1, profiles, active });
+      await resetRuntime();
+      return NextResponse.json({ ok: true, profile: await profileView(updated), active });
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        { status: 400 },
+      );
+    }
+  }
+
+  if (action === 'delete-profile') {
+    const id = typeof body.id === 'string' ? body.id : '';
+    const existing = findProfile(store, id);
+    if (existing === undefined) {
+      return NextResponse.json({ error: '找不到这个模型配置' }, { status: 404 });
+    }
+    await deleteProfileSecret(existing);
+    const profiles = store.profiles.filter((p) => p.id !== id);
+    const active = store.active?.profileId === id
+      ? (profiles[0] !== undefined
+          ? { profileId: profiles[0].id, modelId: profiles[0].models[0]!.id }
+          : null)
+      : store.active;
+    await saveProfileStore(DATA_DIR, { version: 1, profiles, active });
+    await resetRuntime();
+    return NextResponse.json({ ok: true, active });
+  }
+
   if (action === 'switch') {
-    const loaded = await loadSelection(DATA_DIR);
-    if (loaded.envLocked) {
+    if (isProviderEnvLocked()) {
       return NextResponse.json(
         { error: 'MODEL_PROVIDER 已由环境变量锁定；请先删除该环境变量再切换。' },
         { status: 409 },
@@ -147,37 +250,71 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         { status: 409 },
       );
     }
+    const profileId = typeof body.profileId === 'string' ? body.profileId : '';
+    const modelId = typeof body.modelId === 'string' ? body.modelId : '';
+    const profile = findProfile(store, profileId);
+    if (profile === undefined || findModel(profile, modelId) === undefined) {
+      return NextResponse.json({ error: '找不到这个模型' }, { status: 404 });
+    }
+    const preset = presetById(profile.presetId);
+    const secret = await resolveProfileSecret(profile);
+    if (preset?.requiresKey === true && secret.key.length === 0) {
+      return NextResponse.json({ error: '这个配置还没有 API Key，不能设为当前模型。' }, { status: 400 });
+    }
+    const active = { profileId, modelId };
+    await saveProfileStore(DATA_DIR, { ...store, active });
+    await resetRuntime();
+    return NextResponse.json({ ok: true, active });
+  }
 
-    let checked: Awaited<ReturnType<typeof validateProvider>>;
+  if (action === 'test') {
+    const profileId = typeof body.profileId === 'string' ? body.profileId : '';
+    const modelId = typeof body.modelId === 'string' ? body.modelId : '';
+    const profile = findProfile(store, profileId);
+    const model = profile !== undefined ? findModel(profile, modelId) : undefined;
+    if (profile === undefined || model === undefined) {
+      return NextResponse.json({ error: '找不到这个模型' }, { status: 404 });
+    }
+    const secret = await resolveProfileSecret(profile);
+    const preset = presetById(profile.presetId);
+    if (preset === undefined) return NextResponse.json({ error: '未知的模型预设' }, { status: 400 });
+    if (preset.requiresKey && secret.key.length === 0) {
+      return NextResponse.json({ error: '还没有配置 API Key' }, { status: 400 });
+    }
     try {
-      checked = await validateProvider({ provider, ...(model !== undefined ? { model } : {}) });
+      const cfg = {
+        apiKey: secret.key.length > 0 ? secret.key : 'local',
+        baseUrl: profile.baseUrl,
+        model: model.id,
+        timeoutMs: Number(process.env['MODEL_TIMEOUT_MS'] ?? 90_000),
+        maxStructuredRetries: 1,
+        thinkingParam: preset.adapter === 'deepseek',
+      };
+      const client =
+        preset.adapter === 'deepseek'
+          ? new DeepSeekModel(cfg)
+          : new OpenAICompatibleModel(cfg, preset.adapter === 'ollama' ? 'ollama' : 'openai-compatible');
+      const started = Date.now();
+      const res = await client.complete({
+        purpose: 'routing',
+        messages: [msg.user('只回复 OK 两个字母，不要解释。')],
+        maxOutputTokens: 256,
+        temperature: 0,
+        thinking: 'disabled',
+        signal: AbortSignal.timeout(120_000),
+      });
+      return NextResponse.json({
+        ok: true,
+        latencyMs: Date.now() - started,
+        model: res.model,
+        text: res.text.slice(0, 80),
+      });
     } catch (err) {
       return NextResponse.json(
-        { error: `验证失败：${err instanceof Error ? err.message : String(err)}` },
+        { error: err instanceof Error ? err.message : String(err) },
         { status: 502 },
       );
     }
-
-    await saveSelection(DATA_DIR, {
-      provider,
-      ...(model !== undefined ? { model } : {}),
-    });
-    await resetRuntime();
-    const next = await getRuntime();
-    return NextResponse.json({
-      ok: true,
-      switched: {
-        provider,
-        model: checked.model,
-        latencyMs: checked.latencyMs,
-        streaming: provider === 'deepseek',
-      },
-      current: {
-        provider,
-        model: next.model?.describe().model ?? null,
-        capabilities: next.model?.describe().capabilities ?? null,
-      },
-    });
   }
 
   return NextResponse.json({ error: `未知 action：${action}` }, { status: 400 });

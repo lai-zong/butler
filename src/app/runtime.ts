@@ -34,7 +34,8 @@ import { SystemClock } from '@/adapters/clock/system.js';
 import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/runtime/bootstrap.js';
 import { DeepSeekModel } from '@/adapters/model/deepseek.js';
 import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
-import { buildProviderConfig, loadSelection } from './server/modelProvider.js';
+import { buildProviderConfig, isProviderEnvLocked, loadSelection } from './server/modelProvider.js';
+import { resolveActiveModel } from './server/modelProfiles.js';
 import { limitsConfig, modelConfig } from '@/core/config/env.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
@@ -237,42 +238,49 @@ async function initRuntime(): Promise<ButlerRuntime> {
      *    `streamModel` 只在 DeepSeek 下创建；其它 provider 的叙述流会自然缺席，
      *    UI/设置页必须如实说明，不能假装“流式也可用”。
      */
-    const loaded = await loadSelection(dir);
-    const provider = loaded.selection.provider;
-    const built = await buildProviderConfig({
-      provider,
-      selection: loaded.selection,
-    });
-    const cfg = built.config;
-    if (cfg.apiKey.length > 0) {
-      model =
-        provider === 'deepseek'
-          ? new DeepSeekModel(cfg)
-          : new OpenAICompatibleModel(
-              cfg,
-              provider === 'ollama' ? 'ollama' : 'openai-compatible',
-            );
+    const active = isProviderEnvLocked() ? null : await resolveActiveModel(dir);
+    if (active !== null) {
+      const cfg = {
+        ...active.config,
+        apiKey: active.config.apiKey.length > 0 ? active.config.apiKey : 'local',
+      };
+      if (active.config.apiKey.length > 0 || !active.preset.requiresKey) {
+        model =
+          active.preset.adapter === 'deepseek'
+            ? new DeepSeekModel(cfg)
+            : new OpenAICompatibleModel(
+                cfg,
+                active.preset.adapter === 'ollama' ? 'ollama' : 'openai-compatible',
+              );
 
-      /**
-       * ★ 叙述用的流式模型**独立配置**，不复用 `cfg.model`。
-       *
-       * ★ 官方（Models & Pricing 文档）只有两个模型，两个都支持思考：
-       *     `deepseek-flash`    便宜约 4—5 倍、支持读图、快 —— 默认用它
-       *     `deepseek-v4-pro`   更贵、**不支持读图**
-       *
-       *   ⚠️ 这里原先列了一条 `deepseek-chat`「完全不产 reasoning_content」
-       *      的"实测结论"，**已删除** —— 该模型已不在官方清单，
-       *      且当时那条观测很可能是 API 把它静默路由到 flash 造成的假象。
-       *      模型已下线，无法复核，不能留着当依据。
-       *
-       *   接错模型的后果很隐蔽：**推理流永远是空的，而且不报错** ——
-       *   界面上只是"什么都不显示"，看起来像功能没做。
-       *   所以选模型**以官方文档的能力表为准**。
-       */
-      if (provider === 'deepseek') {
-        streamModel = new DeepSeekStream({ ...cfg, model: modelConfig.narrationModel });
+        // DeepSeek 有独立叙述流；其它适配器自动走非流式回退。
+        if (active.preset.adapter === 'deepseek') {
+          streamModel = new DeepSeekStream({ ...cfg, model: cfg.model ?? modelConfig.narrationModel });
+        }
+        translator = deepSeekTranslationPort(model);
       }
-      translator = deepSeekTranslationPort(model);
+    } else {
+      const loaded = await loadSelection(dir);
+      const provider = loaded.selection.provider;
+      const built = await buildProviderConfig({
+        provider,
+        selection: loaded.selection,
+      });
+      const cfg = built.config;
+      if (cfg.apiKey.length > 0) {
+        model =
+          provider === 'deepseek'
+            ? new DeepSeekModel(cfg)
+            : new OpenAICompatibleModel(
+                cfg,
+                provider === 'ollama' ? 'ollama' : 'openai-compatible',
+              );
+
+        if (provider === 'deepseek') {
+          streamModel = new DeepSeekStream({ ...cfg, model: modelConfig.narrationModel });
+        }
+        translator = deepSeekTranslationPort(model);
+      }
     }
   } catch {
     // 没有配置模型不是致命错误 —— 记忆治理界面不需要模型也能用
