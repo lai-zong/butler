@@ -30,8 +30,15 @@ export async function GET(): Promise<NextResponse> {
 export async function POST(): Promise<NextResponse> {
   const rt = await getRuntime();
   const chat = rt.bootstrapped.chat;
-  const session = chat.createSession();
-  await rt.bootstrapped.log.flushPersistence().catch(() => undefined);
+
+  // 新对话只保留一个未发送草稿；已有空会话时直接复用，
+  // 避免每次点击“新对话”都新建一个空会话并计入历史。
+  const draft = chat.listSessions().find((s) => chat.messagesOf(s.id).length === 0);
+  const session = draft ?? chat.createSession();
+
+  if (draft === undefined) {
+    await rt.bootstrapped.log.flushPersistence().catch(() => undefined);
+  }
 
   return NextResponse.json({
     ok: true,
