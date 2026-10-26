@@ -112,15 +112,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         );
     reviewProfileId = resolved.profile.id;
     reviewModelId = resolved.model.id;
-    if (
-      profileStore.lastReview?.profileId !== resolved.profile.id ||
-      profileStore.lastReview?.modelId !== resolved.model.id
-    ) {
-      await saveProfileStore(DATA_DIR, {
-        ...profileStore,
-        lastReview: { profileId: resolved.profile.id, modelId: resolved.model.id },
-      });
-    }
   }
 
   if (reviewModel === null) {
@@ -137,6 +128,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
   const snapshots = messages.map((m) => m!.reviewSnapshot!);
+
+  if (
+    reviewProfileId !== undefined &&
+    reviewModelId !== undefined &&
+    (profileStore.lastReview?.profileId !== reviewProfileId ||
+      profileStore.lastReview?.modelId !== reviewModelId)
+  ) {
+    await saveProfileStore(DATA_DIR, {
+      ...profileStore,
+      lastReview: { profileId: reviewProfileId, modelId: reviewModelId },
+    });
+  }
 
   const snapshotHash = createHash('sha256')
     .update(JSON.stringify(snapshots))
