@@ -134,6 +134,17 @@ describe('model profiles', () => {
     }
   });
 
+  it('重排接口未接入时拒绝创建重排配置', () => {
+    expect(() =>
+      createProfile({
+        name: '重排测试',
+        presetId: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        models: [{ id: 'rerank-test', kind: 'rerank' }],
+      }),
+    ).toThrow('重排模型接口尚未接入');
+  });
+
   it('嵌入类型发现模型时不过滤 embedding', async () => {
     const server = createServer((_req, res) => {
       res.setHeader('content-type', 'application/json');
