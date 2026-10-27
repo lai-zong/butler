@@ -40,6 +40,36 @@ import type {
   ViewId,
 } from '../lib/types.js';
 
+interface GovernanceCounts {
+  readonly diaries: number;
+  readonly diaryFailed: number;
+  readonly trial: number;
+  readonly legacyPending: number;
+  readonly active: number;
+  readonly dormant: number;
+  readonly archived: number;
+  readonly promoted: number;
+  readonly trialArchived: number;
+  readonly conflicts: number;
+  readonly resolved: number;
+  readonly tombstones: number;
+}
+
+interface GovernanceEventView {
+  readonly seq: number;
+  readonly at: number;
+  readonly type: string;
+  readonly label: string;
+  readonly familyLabel: string;
+  readonly summary: string;
+}
+
+interface GovernanceResponse {
+  readonly ok: boolean;
+  readonly counts?: GovernanceCounts;
+  readonly recent?: readonly GovernanceEventView[];
+}
+
 interface GrowthViewProps {
   readonly overview: Overview | null;
   readonly onNavigate: (view: ViewId) => void;
@@ -78,6 +108,26 @@ export function GrowthView({
   }, [overview, onFirstReady]);
 
   // ── 成长对比：快照列表 + 两份快照的 diff ──
+  const [governance, setGovernance] = useState<GovernanceResponse | null>(null);
+  const [governanceError, setGovernanceError] = useState<string | null>(null);
+  const [governanceNonce, setGovernanceNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setGovernanceError(null);
+    void (async () => {
+      try {
+        const res = await fetchJson<GovernanceResponse>('/api/memory/governance');
+        if (!cancelled) setGovernance(res);
+      } catch (err) {
+        if (!cancelled) setGovernanceError(errorMessage(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [governanceNonce]);
+
   const [profiles, setProfiles] = useState<readonly ProfileSummary[]>([]);
   const [profileSkipped, setProfileSkipped] = useState(0);
   const [profilesLoading, setProfilesLoading] = useState(true);
@@ -331,6 +381,56 @@ export function GrowthView({
         onReload={() => setProfilesNonce((n) => n + 1)}
         onRefreshDiff={() => setDiffNonce((n) => n + 1)}
       />
+
+      <section className="panel growth-governance panel--wide">
+        <SectionHeading
+          title="自主治理"
+          description="日记、试行、自动转正、冲突裁决与归档，全部来自真实事件。"
+          actions={
+            <button
+              type="button"
+              className="text-btn"
+              onClick={() => {
+                setGovernanceNonce((n) => n + 1);
+                onRefreshOverview();
+              }}
+            >
+              刷新
+              <Icon name="refresh" size={13} />
+            </button>
+          }
+        />
+        {governanceError !== null && <InlineError message={governanceError} />}
+        {governance?.counts !== undefined && (
+          <>
+            <div className="governance-stats">
+              <div><strong className="mono">{governance.counts.diaries}</strong><span>日记</span></div>
+              <div><strong className="mono">{governance.counts.trial}</strong><span>试行记忆</span></div>
+              <div><strong className="mono">{governance.counts.promoted}</strong><span>自动转正</span></div>
+              <div><strong className="mono">{governance.counts.resolved}</strong><span>冲突裁决</span></div>
+              <div><strong className="mono">{governance.counts.trialArchived}</strong><span>试行归档</span></div>
+              <div><strong className="mono">{governance.counts.tombstones}</strong><span>硬约束墓碑</span></div>
+            </div>
+            {governance.counts.legacyPending > 0 && (
+              <p className="governance-warning">
+                还有 {governance.counts.legacyPending} 条旧待审记忆尚未迁移；它们不参与召回。
+              </p>
+            )}
+            <ul className="governance-recent">
+              {(governance.recent ?? []).slice(0, 6).map((e) => (
+                <li key={`${e.seq}_${e.type}`}>
+                  <span className="mono">{e.label}</span>
+                  <span className="governance-summary">{e.summary || e.familyLabel}</span>
+                  <span className="governance-time">{relativeTime(e.at, overview.now)}</span>
+                </li>
+              ))}
+              {(governance.recent ?? []).length === 0 && (
+                <li className="governance-empty">还没有自动治理记录。</li>
+              )}
+            </ul>
+          </>
+        )}
+      </section>
 
       <div className="growth-grid">
         <section className="panel growth-lifecycle">

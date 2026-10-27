@@ -195,6 +195,13 @@ export function MemoryGraphPanel({
     offsetY: number;
   } | null>(null);
   const dragMovedRef = useRef(false);
+  const panRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    baseX: number;
+    baseY: number;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -220,6 +227,24 @@ export function MemoryGraphPanel({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (ev: WheelEvent): void => {
+      ev.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const mx = ((ev.clientX - rect.left) / rect.width) * W;
+      const my = ((ev.clientY - rect.top) / rect.height) * H;
+      const oldK = view.k;
+      const nextK = Math.max(0.5, Math.min(2.8, oldK * (ev.deltaY < 0 ? 1.12 : 0.9)));
+      const wx = (mx - view.x) / oldK;
+      const wy = (my - view.y) / oldK;
+      setView({ k: nextK, x: mx - wx * nextK, y: my - wy * nextK });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [view, loading, nodes.length]);
 
   useEffect(() => {
     const move = (ev: PointerEvent): void => {
@@ -316,6 +341,32 @@ export function MemoryGraphPanel({
             viewBox={`0 0 ${W} ${H}`}
             role="img"
             aria-label="记忆关系图"
+            onPointerDown={(ev) => {
+              if (ev.target !== ev.currentTarget) return;
+              ev.currentTarget.setPointerCapture(ev.pointerId);
+              panRef.current = {
+                pointerId: ev.pointerId,
+                startX: ev.clientX,
+                startY: ev.clientY,
+                baseX: view.x,
+                baseY: view.y,
+              };
+            }}
+            onPointerMove={(ev) => {
+              const pan = panRef.current;
+              if (!pan || pan.pointerId !== ev.pointerId) return;
+              setView({
+                ...view,
+                x: pan.baseX + (ev.clientX - pan.startX),
+                y: pan.baseY + (ev.clientY - pan.startY),
+              });
+            }}
+            onPointerUp={() => {
+              panRef.current = null;
+            }}
+            onPointerCancel={() => {
+              panRef.current = null;
+            }}
           >
             <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
               {visibleEdges.map((e) => {

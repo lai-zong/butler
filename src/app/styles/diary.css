@@ -14,7 +14,7 @@
 .diary-card {
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--panel);
+  background: var(--surface);
   padding: 15px 16px;
 }
 

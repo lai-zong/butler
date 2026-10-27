@@ -10,8 +10,8 @@
   border: 1px solid var(--line);
   border-radius: 10px;
   background:
-    radial-gradient(ellipse at 48% 42%, rgba(60, 125, 170, .12), transparent 56%),
-    #040d1b;
+    radial-gradient(ellipse at 48% 42%, rgba(60, 125, 170, .14), transparent 56%),
+    var(--surface-2);
 }
 
 .memory-graph-meta {
@@ -58,7 +58,7 @@
 }
 
 .memory-graph-label {
-  fill: #dcebf8;
+  fill: var(--ink);
   font: 9px "Segoe UI", "Microsoft YaHei", sans-serif;
   pointer-events: none;
   user-select: none;
@@ -76,7 +76,7 @@
   padding: 9px 10px;
   border: 1px solid #1b3852;
   border-radius: 6px;
-  background: rgba(5, 16, 31, .86);
+  background: var(--surface);
   color: var(--ink-3);
   font-size: 9px;
   pointer-events: none;
