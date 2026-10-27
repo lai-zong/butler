@@ -19,7 +19,13 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 300;
 
-const KINDS: readonly ScheduledTaskKind[] = ['dailyReflection', 'weeklyReview', 'proactiveCheck', 'activityAggregate'];
+const KINDS: readonly ScheduledTaskKind[] = [
+  'dailyDiary',
+  'dailyReflection',
+  'weeklyReview',
+  'proactiveCheck',
+  'activityAggregate',
+];
 
 interface Body {
   readonly kind?: unknown;

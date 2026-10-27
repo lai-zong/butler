@@ -181,6 +181,6 @@ export async function GET(): Promise<NextResponse> {
     total: { nodes: nodes.length, edges: edges.length },
     note:
       '内容相似边是确定性文本相似度预览；正式语义边应使用 embedding。' +
-      '同轮召回边需要召回批次标识，当前事件模型暂未提供。',
+      '同轮召回边只对带 batchId 的新召回事件生效。',
   });
 }

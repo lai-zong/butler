@@ -120,13 +120,13 @@ describe('真实运行时 · 本地端点', () => {
     expect(missing.status).toBe(404);
   }, 15_000);
 
-  it('真实 store 下裁决缺失记忆返回 404', async () => {
+  it('真实 store 下手动裁决已停用，返回 410', async () => {
     const r = await verdict.POST(
       jsonReq('http://localhost/api/memory/verdict', {
         winnerId: 'missing-a',
         loserId: 'missing-b',
       }),
     );
-    expect(r.status).toBe(404);
+    expect(r.status).toBe(410);
   }, 15_000);
 });

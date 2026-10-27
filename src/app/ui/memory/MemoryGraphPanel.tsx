@@ -396,6 +396,7 @@ export function MemoryGraphPanel({
                 if (!p) return null;
                 const isFocus = focus === n.id;
                 const isNeighbor = neighbors.has(n.id);
+                const archived = n.lifecycle === 'archived';
                 const r = isFocus ? 16 : n.degree >= 3 ? 13.5 : n.degree === 0 ? 8.5 : 10.5;
                 return (
                   <g
@@ -429,8 +430,10 @@ export function MemoryGraphPanel({
                     <circle
                       r={r}
                       fill={KIND_COLOR[n.kind] ?? '#8097b0'}
+                      fillOpacity={archived ? 0.42 : 1}
                       stroke={isFocus ? '#eef8ff' : '#020812'}
                       strokeWidth={isFocus ? 2.4 : 2}
+                      strokeDasharray={n.lifecycle === 'candidate' ? '2 3' : undefined}
                     />
                     {(isFocus || n.degree >= 3) && (
                       <>
@@ -469,6 +472,7 @@ export function MemoryGraphPanel({
               <b style={{ background: EDGE_COLOR.sharedEvidence }} /> 共享证据
               <b style={{ background: EDGE_COLOR.merge }} /> 合并
             </div>
+            <span>归档节点更暗 · 试行节点虚线圈</span>
           </div>
         )}
 
