@@ -218,6 +218,10 @@ export const retrievalConfig = {
   get rerankMinRelevance(): number {
     return num('MEMORY_RERANK_MIN_RELEVANCE', 0.5, { min: 0, max: 1 });
   },
+  /** 本地 embedding 重排阈值；dev 集 0.42 时命中 90%、负例误召回 10%。 */
+  get localRerankMinRelevance(): number {
+    return num('MEMORY_LOCAL_RERANK_MIN', 0.42, { min: 0, max: 1 });
+  },
 } as const;
 
 // ═══════════════════════════════════════════════════════════

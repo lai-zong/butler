@@ -29,8 +29,8 @@ import { SemanticIndex } from '../src/core/memory/semantic.js';
 import { FixedClock, SeededRandom } from '../src/core/ports/clock.js';
 import { RECALL_NEGATIVES, RECALL_POSITIVES, RECALL_SEEDS, type RecallCase, type RecallSplit } from './eval-recall-data.js';
 
-type Mode = 'literal' | 'semantic' | 'topk' | 'topk-rerank';
-const ALL_MODES: readonly Mode[] = ['literal', 'semantic', 'topk', 'topk-rerank'];
+type Mode = 'literal' | 'semantic' | 'topk' | 'topk-rerank' | 'local-rerank';
+const ALL_MODES: readonly Mode[] = ['literal', 'semantic', 'topk', 'topk-rerank', 'local-rerank'];
 const ROOT = process.cwd();
 const NOW = 1_760_000_000_000;
 
@@ -49,6 +49,7 @@ const threshold = Number(arg('semantic-threshold', String(retrievalConfig.semant
 const topK = Number(arg('topk', String(retrievalConfig.semanticTopK)));
 const floor = Number(arg('floor', String(retrievalConfig.semanticFloor)));
 const rerankMin = Number(arg('rerank-min', String(retrievalConfig.rerankMinRelevance)));
+const localRerankMin = Number(arg('local-rerank-min', '0.42'));
 const verbose = process.argv.includes('--verbose');
 const jsonOut = process.argv.includes('--json');
 
@@ -227,6 +228,38 @@ async function runMode(
         semanticTopK: topK,
         semanticFloor: floor,
       }).selected;
+    } else if (mode === 'local-rerank') {
+      if (index === null) throw new Error('local-rerank 需要 embedding 模型');
+      const base = recall({
+        query: c.text,
+        candidates: store.all(),
+        limit,
+        now: NOW,
+        random: new SeededRandom(1),
+        semantic,
+        semanticThreshold: threshold,
+        semanticTopK: topK,
+        semanticFloor: floor,
+      });
+      if (semantic !== undefined && semantic.size > 0 && base.selected.length > 1) {
+        const rr = await rerankRecall({
+          scorer: {
+            name: 'local-embedding',
+            score: async (query, candidates) =>
+              index.scores(
+                query,
+                candidates.map((x) => x.memory),
+              ),
+          },
+          query: c.text,
+          candidates: base.selected,
+          filter: true,
+          minRelevance: localRerankMin,
+        });
+        selected = rr.used ? rr.items : base.selected;
+      } else {
+        selected = base.selected;
+      }
     } else {
       if (rerankModel === null) throw new Error('topk-rerank 模式需要真实模型');
       const base = recall({

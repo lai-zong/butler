@@ -448,9 +448,12 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
         : { scorer: reranker as RerankScorer }),
       query: userText,
       candidates: recalled,
-      // 本地 embedding 只排序、不丢记忆；过滤阈值只适用于专门的重排模型。
-      filter: rerankModel !== undefined,
-      minRelevance: retrievalConfig.rerankMinRelevance,
+      // 本地 embedding 重排使用 dev 集校准过的 0.42；专门 rerank 模型用其阈值。
+      filter: true,
+      minRelevance:
+        rerankModel !== undefined
+          ? retrievalConfig.rerankMinRelevance
+          : retrievalConfig.localRerankMinRelevance,
     });
     if (reranked.used) {
       recalled = reranked.items;
