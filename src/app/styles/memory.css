@@ -942,3 +942,23 @@
   gap: 6px;
   margin-top: 8px;
 }
+
+.hard-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(190, 92, 78, .35);
+  border-radius: 6px;
+  background: rgba(190, 92, 78, .06);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.hard-confirm input {
+  margin-top: 2px;
+  accent-color: var(--danger);
+}

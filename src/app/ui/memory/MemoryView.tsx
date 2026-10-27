@@ -7,7 +7,7 @@
  *   ① 它记住了什么（列表 + 搜索）
  *   ② 凭什么记（证据链 + 置信度）
  *   ③ 这条还该不该留（适应度 + 生命周期 + 手动遗忘）
- *   ④ 待审的候选在哪里（审核闭环）
+ *   ④ 哪些是试行记忆（系统自主验证，不需要用户审核）
  *
  * ★ 布局是主从式：左边是记忆，右边是它的“档案”。
  *   移动端把档案变成抽屉，避免两栏挤成一条缝。
@@ -87,7 +87,7 @@ const CLASS_TONE: Record<string, 'danger' | 'info' | 'neutral' | 'outline' | 'ac
 };
 
 const SORT_OPTIONS: readonly { readonly value: SortKey; readonly label: string }[] = [
-  { value: 'priority', label: '待审优先' },
+  { value: 'priority', label: '试行优先' },
   { value: 'updated', label: '最近更新' },
   { value: 'fitness', label: '适应度' },
   { value: 'confidence', label: '置信度' },
@@ -136,10 +136,9 @@ export function MemoryView({
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const [diaryOpen, setDiaryOpen] = useState(false);
-  const [reviewing, setReviewing] = useState<string | null>(null);
-  const [evolutionBusy, setEvolutionBusy] = useState<string | null>(null);
   const [forgetTarget, setForgetTarget] = useState<MemoryItem | null>(null);
   const [forgetting, setForgetting] = useState(false);
+  const [hardConfirm, setHardConfirm] = useState(false);
 
   const [grantOpen, setGrantOpen] = useState(false);
   const [grantBusy, setGrantBusy] = useState(false);
@@ -149,12 +148,6 @@ export function MemoryView({
   const [grantPurpose, setGrantPurpose] = useState('');
   const [grantTtlMin, setGrantTtlMin] = useState(30);
 
-  const [compareOpen, setCompareOpen] = useState(false);
-  const [compareBusy, setCompareBusy] = useState(false);
-  const [compareError, setCompareError] = useState<string | null>(null);
-  const [compareQ, setCompareQ] = useState('');
-  const [compareOptions, setCompareOptions] = useState<readonly MemoryItem[]>([]);
-  const [compareOther, setCompareOther] = useState<MemoryItem | null>(null);
 
   const narrow = useMediaQuery('(max-width: 1179px)');
   const now = useNow(30_000);
@@ -227,7 +220,7 @@ export function MemoryView({
     [notify],
   );
 
-  // 从别处带来的意图：待审 / 单条详情 / 某条筛选
+  // 从别处带来的意图：试行 / 单条详情 / 某条筛选
   useEffect(() => {
     if (preset.nonce === 0 || lastPreset.current === preset.nonce) return;
     lastPreset.current = preset.nonce;
@@ -261,59 +254,25 @@ export function MemoryView({
     if (narrow) setSheetOpen(true);
   }
 
-  async function review(item: MemoryItem, decision: 'approve' | 'reject'): Promise<void> {
-    setReviewing(item.id);
-    try {
-      await postJson('/api/memory/review', {
-        id: item.id,
-        decision,
-        reason: decision === 'approve' ? '用户批准' : '用户拒绝',
-      });
-      notify(
-        decision === 'approve' ? '已批准，这条记忆开始参与召回' : '已拒绝，记录保留但不再参与召回',
-        decision === 'approve' ? 'success' : 'default',
-      );
-      await load();
-      if (selectedId === item.id) void loadDetail(item.id);
-      onRefreshOverview();
-    } catch (err) {
-      notify(errorMessage(err), 'danger');
-    } finally {
-      setReviewing(null);
-    }
-  }
-
-  async function evolve(item: MemoryItem, action: 'boost' | 'lower' | 'revive' | 'archive'): Promise<void> {
-    setEvolutionBusy(`${action}:${item.id}`);
-    try {
-      await postJson('/api/memory/evolution', { id: item.id, action });
-      const label =
-        action === 'boost'
-          ? '已提升权重'
-          : action === 'lower'
-            ? '已降低权重'
-            : action === 'revive'
-              ? '已唤醒'
-              : '已归档';
-      notify(label, 'success');
-      await load();
-      if (selectedId === item.id) void loadDetail(item.id);
-      onRefreshOverview();
-    } catch (err) {
-      notify(errorMessage(err), 'danger');
-    } finally {
-      setEvolutionBusy(null);
-    }
-  }
-
   async function forget(): Promise<void> {
     const target = forgetTarget;
     if (target === null || forgetting) return;
+    const isHard = target.memClass === 'global_constraint';
+    if (isHard && !hardConfirm) return;
     setForgetting(true);
     try {
-      await postJson('/api/memory/forget', { id: target.id });
-      notify('已删除，并从相关审计事件里抹除了原文。', 'success');
+      await postJson('/api/memory/forget', {
+        id: target.id,
+        ...(isHard ? { hardConstraintConfirmation: 'confirmed' } : {}),
+      });
+      notify(
+        isHard
+          ? '硬约束已删除，并留下不可还原的墓碑。'
+          : '已删除，并从相关审计事件里抹除了原文。',
+        'success',
+      );
       setForgetTarget(null);
+      setHardConfirm(false);
       if (selectedId === target.id) {
         setSelectedId(null);
         setDetail(null);
@@ -387,78 +346,6 @@ export function MemoryView({
     }
   }
 
-  async function loadCompareOptions(search: string): Promise<void> {
-    if (selectedItem === null) return;
-    setCompareError(null);
-    try {
-      const sp = new URLSearchParams({ lifecycle: 'active', sort: 'updated' });
-      if (search.trim().length > 0) sp.set('q', search.trim());
-      const res = await fetchJson<MemoryListResponse>(`/api/memory?${sp.toString()}`);
-      setCompareOptions(
-        res.items.filter(
-          (m) =>
-            m.id !== selectedItem.id &&
-            m.memClass !== 'sensitive' &&
-            m.memClass !== 'global_constraint' &&
-            m.lifecycle === 'active',
-        ),
-      );
-    } catch (err) {
-      setCompareError(errorMessage(err));
-    }
-  }
-
-  async function openCompare(): Promise<void> {
-    if (selectedItem === null) return;
-    if (selectedItem.memClass === 'sensitive' || selectedItem.memClass === 'global_constraint') {
-      notify('敏感域 / 全局硬约束不能通过此入口裁决。', 'danger');
-      return;
-    }
-    setCompareOpen(true);
-    setCompareError(null);
-    setCompareQ('');
-    setCompareOther(null);
-    setCompareOptions([]);
-    await loadCompareOptions('');
-  }
-
-  async function submitCompare(keepCurrent: boolean): Promise<void> {
-    if (selectedItem === null || compareOther === null || compareBusy) return;
-    const winnerId = keepCurrent ? selectedItem.id : compareOther.id;
-    const loserId = keepCurrent ? compareOther.id : selectedItem.id;
-    setCompareBusy(true);
-    setCompareError(null);
-    try {
-      await postJson('/api/memory/verdict', { winnerId, loserId });
-      notify('已记录裁决：保留的一方计成功，另一方降权但不删除。', 'success');
-      setCompareOpen(false);
-      setCompareOther(null);
-      await load();
-      await loadDetail(selectedItem.id);
-    } catch (err) {
-      setCompareError(errorMessage(err));
-    } finally {
-      setCompareBusy(false);
-    }
-  }
-  async function resolveConflict(keepCurrent: boolean): Promise<void> {
-    if (selectedItem === null || selectedConflict === undefined || compareBusy) return;
-    const winnerId = keepCurrent ? selectedItem.id : selectedConflict.otherMemoryId;
-    const loserId = keepCurrent ? selectedConflict.otherMemoryId : selectedItem.id;
-    setCompareBusy(true);
-    setCompareError(null);
-    try {
-      await postJson('/api/memory/verdict', { winnerId, loserId });
-      notify('已记录裁决：落败方降权但不删除。', 'success');
-      await load();
-      await loadDetail(selectedItem.id);
-    } catch (err) {
-      setCompareError(errorMessage(err));
-    } finally {
-      setCompareBusy(false);
-    }
-  }
-
   const hasFilters =
     q.trim().length > 0 ||
     lifecycle !== null ||
@@ -480,22 +367,14 @@ export function MemoryView({
       item={selectedItem}
       revisions={detail?.revisions ?? []}
       loading={detailLoading}
-      reviewing={reviewing === selectedItem?.id}
-      evolving={evolutionBusy !== null && evolutionBusy.endsWith(`:${selectedItem?.id ?? ''}`)}
-      onEvolve={(action) => {
-        if (selectedItem !== null) void evolve(selectedItem, action);
-      }}
-      onReview={(decision) => {
-        if (selectedItem !== null) void review(selectedItem, decision);
-      }}
       onForget={() => {
-        if (selectedItem !== null) setForgetTarget(selectedItem);
+        if (selectedItem !== null) {
+          setHardConfirm(false);
+          setForgetTarget(selectedItem);
+        }
       }}
       onGrant={() => void openGrant()}
-      onCompare={() => void openCompare()}
       {...(selectedConflict !== undefined ? { conflict: selectedConflict } : {})}
-      conflictBusy={compareBusy}
-      onResolveConflict={(keepCurrent) => void resolveConflict(keepCurrent)}
       now={now}
     />
   );
@@ -511,8 +390,8 @@ export function MemoryView({
         title="记忆"
         description={
           effectiveStats !== null
-            ? `它现在记得 ${formatNumber(effectiveStats.total)} 条。每一条都能追问来源、调整去留。`
-            : '每一条记忆都能追问来源、调整去留。'
+            ? `它现在记得 ${formatNumber(effectiveStats.total)} 条。每一条都能追问来源，最终由你决定是否删除。`
+            : '每一条记忆都能追问来源，最终由你决定是否删除。'
         }
         actions={
           <>
@@ -545,11 +424,10 @@ export function MemoryView({
           note={effectiveStats !== null ? `近 7 天命中 ${effectiveStats.hitLast7Days} 条` : undefined}
         />
         <StatCard
-          label="待审候选"
+          label="试行记忆"
           value={effectiveStats?.pending ?? 0}
           icon="clock"
-          tone={(effectiveStats?.pending ?? 0) > 0 ? 'warn' : 'default'}
-          note="未审核的候选不进入召回"
+          note="系统自主观察，不需要审核"
           onClick={() => setLifecycle('candidate')}
         />
         <StatCard
@@ -562,21 +440,6 @@ export function MemoryView({
           note="按使用与效果持续调整"
         />
       </div>
-
-      {(effectiveStats?.pending ?? 0) > 0 && lifecycle !== 'candidate' && (
-        <div className="pending-banner">
-          <span className="pending-icon">
-            <Icon name="clock" size={18} />
-          </span>
-          <div className="pending-text">
-            <strong>有 {effectiveStats?.pending} 条记忆等你决定</strong>
-            <p>批准之后才会进入召回；拒绝的记录会留下，避免同样的候选被反复提出。</p>
-          </div>
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => setLifecycle('candidate')}>
-            只看候选
-          </button>
-        </div>
-      )}
 
       <div className="memory-layout">
         <section className="memory-list-pane">
@@ -609,7 +472,7 @@ export function MemoryView({
                 count={effectiveStats?.byLifecycle.candidate}
                 onClick={() => setLifecycle('candidate')}
               >
-                待审
+                试行
               </FilterChip>
               <FilterChip
                 active={lifecycle === 'active'}
@@ -746,10 +609,8 @@ export function MemoryView({
                 item={item}
                 selected={selectedId === item.id}
                 index={i}
-                reviewing={reviewing === item.id}
                 conflict={conflictByMemory.has(item.id)}
                 onSelect={() => select(item)}
-                onReview={(decision) => void review(item, decision)}
                 now={now}
               />
             ))}
@@ -773,16 +634,44 @@ export function MemoryView({
 
       <Modal
         open={forgetTarget !== null}
-        onClose={() => setForgetTarget(null)}
-        title="彻底删除这条记忆？"
-        description="这会从记忆库里移除内容，无法恢复到删除前的状态。"
+        onClose={() => {
+          setForgetTarget(null);
+          setHardConfirm(false);
+        }}
+        title={
+          forgetTarget?.memClass === 'global_constraint' ? '删除全局硬约束？' : '彻底删除这条记忆？'
+        }
+        description={
+          forgetTarget?.memClass === 'global_constraint'
+            ? '这是安全边界。删除后系统不再自动规避这条约束，必须由你二次确认。'
+            : '这会从记忆库里移除内容，无法恢复到删除前的状态。'
+        }
         footer={
           <div className="modal-actions">
-            <button type="button" className="btn btn-ghost" onClick={() => setForgetTarget(null)}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                setForgetTarget(null);
+                setHardConfirm(false);
+              }}
+            >
               取消
             </button>
-            <button type="button" className="btn btn-danger" onClick={() => void forget()} disabled={forgetting}>
-              {forgetting ? '删除中…' : '彻底删除'}
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => void forget()}
+              disabled={
+                forgetting ||
+                (forgetTarget?.memClass === 'global_constraint' && !hardConfirm)
+              }
+            >
+              {forgetting
+                ? '删除中…'
+                : forgetTarget?.memClass === 'global_constraint'
+                  ? '确认删除硬约束'
+                  : '彻底删除'}
             </button>
           </div>
         }
@@ -790,9 +679,25 @@ export function MemoryView({
         {forgetTarget !== null && (
           <div className="forget-confirm">
             <p className="forget-content">{forgetTarget.content}</p>
-            <p className="forget-note">
-              事件日志里只会留下“这条被删除过”的事实，不会保留内容本身。硬约束不提供删除入口。
-            </p>
+            {forgetTarget.memClass === 'global_constraint' ? (
+              <>
+                <p className="forget-note">
+                  删除后会留下不可还原的墓碑；系统以后不会再自动遵守这条约束。
+                </p>
+                <label className="hard-confirm">
+                  <input
+                    type="checkbox"
+                    checked={hardConfirm}
+                    onChange={(e) => setHardConfirm(e.target.checked)}
+                  />
+                  <span>我确认删除这条硬约束，并理解后果。</span>
+                </label>
+              </>
+            ) : (
+              <p className="forget-note">
+                事件日志里只会留下“这条被删除过”的事实，不会保留内容本身。
+              </p>
+            )}
           </div>
         )}
       </Modal>
@@ -863,87 +768,6 @@ export function MemoryView({
         <p className="grant-note">任务结束或取消时自动撤销；授权记录包含 taskId、用途与到期时间，可在审计中查看。</p>
       </Modal>
 
-      <Modal
-        open={compareOpen}
-        onClose={() => setCompareOpen(false)}
-        title="与另一条记忆比较"
-        description="系统不会自动判定矛盾。你选择两条记忆并决定保留哪一条；落败方只降权，不删除。"
-        footer={
-          <div className="modal-actions">
-            <button type="button" className="btn btn-ghost" onClick={() => setCompareOpen(false)}>
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              disabled={compareBusy || compareOther === null}
-              onClick={() => void submitCompare(false)}
-            >
-              保留对方
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={compareBusy || compareOther === null}
-              onClick={() => void submitCompare(true)}
-            >
-              {compareBusy ? '记录中…' : '保留当前这条'}
-            </button>
-          </div>
-        }
-      >
-        {compareError !== null && <p className="grant-error">{compareError}</p>}
-        {selectedItem !== null && (
-          <div className="compare-current">
-            <span className="mini-label">当前记忆</span>
-            <p>{selectedItem.content}</p>
-            <div className="compare-meta">
-              <Badge tone={CLASS_TONE[selectedItem.memClass] ?? 'neutral'}>{selectedItem.memClassLabel}</Badge>
-              <span>置信 {formatPercent(selectedItem.confidence)}</span>
-            </div>
-          </div>
-        )}
-        <div className="compare-search">
-          <input
-            value={compareQ}
-            onChange={(e) => setCompareQ(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void loadCompareOptions(compareQ);
-            }}
-            placeholder="搜索另一条记忆…"
-            aria-label="搜索另一条记忆"
-          />
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void loadCompareOptions(compareQ)}>
-            搜索
-          </button>
-        </div>
-        {compareOther === null ? (
-          <div className="compare-options">
-            {compareOptions.length === 0 ? (
-              <p className="detail-footnote">没有可比较的活跃记忆；换一个关键词试试。</p>
-            ) : (
-              compareOptions.slice(0, 8).map((m) => (
-                <button key={m.id} type="button" className="compare-option" onClick={() => setCompareOther(m)}>
-                  <span>{truncate(m.content, 70)}</span>
-                  <small>{m.memClassLabel} · 置信 {formatPercent(m.confidence)}</small>
-                </button>
-              ))
-            )}
-          </div>
-        ) : (
-          <div className="compare-other">
-            <span className="mini-label">另一条记忆</span>
-            <p>{compareOther.content}</p>
-            <div className="compare-meta">
-              <Badge tone={CLASS_TONE[compareOther.memClass] ?? 'neutral'}>{compareOther.memClassLabel}</Badge>
-              <span>置信 {formatPercent(compareOther.confidence)}</span>
-              <button type="button" className="text-btn" onClick={() => setCompareOther(null)}>
-                换一条
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }
@@ -956,19 +780,15 @@ function MemoryCard({
   item,
   selected,
   index,
-  reviewing,
   conflict,
   onSelect,
-  onReview,
   now,
 }: {
   readonly item: MemoryItem;
   readonly selected: boolean;
   readonly index: number;
-  readonly reviewing: boolean;
   readonly conflict: boolean;
   readonly onSelect: () => void;
-  readonly onReview: (decision: 'approve' | 'reject') => void;
   readonly now: number;
 }): JSX.Element {
   const candidate = item.lifecycle === 'candidate';
@@ -985,7 +805,9 @@ function MemoryCard({
           {item.kindLabel}
         </span>
         <Badge tone={CLASS_TONE[item.memClass] ?? 'neutral'}>{item.memClassLabel}</Badge>
-        <Badge tone={LIFECYCLE_TONE[item.lifecycle]}>{item.lifecycleLabel}</Badge>
+        <Badge tone={LIFECYCLE_TONE[item.lifecycle]}>
+          {item.lifecycle === 'candidate' ? '试行' : item.lifecycleLabel}
+        </Badge>
         {conflict && <Badge tone="warn">可能冲突</Badge>}
         {item.domainLabel !== null && <span className="mem-domain">{item.domainLabel}</span>}
         <span className="mem-time">{relativeTime(item.updatedAt, now)}</span>
@@ -1014,33 +836,6 @@ function MemoryCard({
         )}
       </div>
 
-      {candidate && (
-        <div className="mem-actions">
-          <span className="mem-actions-hint">这条候选要留下吗？</span>
-          <button
-            type="button"
-            className="btn btn-primary btn-xs"
-            disabled={reviewing}
-            onClick={(e) => {
-              e.stopPropagation();
-              onReview('approve');
-            }}
-          >
-            <Icon name="check" size={13} /> 批准
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-xs"
-            disabled={reviewing}
-            onClick={(e) => {
-              e.stopPropagation();
-              onReview('reject');
-            }}
-          >
-            拒绝
-          </button>
-        </div>
-      )}
     </article>
   );
 }
@@ -1053,31 +848,17 @@ function MemoryDetail({
   item,
   revisions,
   loading,
-  reviewing,
-  evolving,
-  onReview,
-  onEvolve,
   onForget,
   onGrant,
-  onCompare,
   conflict,
-  conflictBusy,
-  onResolveConflict,
   now,
 }: {
   readonly item: MemoryItem | null;
   readonly revisions: readonly MemoryRevision[];
   readonly loading: boolean;
-  readonly reviewing: boolean;
-  readonly evolving: boolean;
-  readonly onReview: (decision: 'approve' | 'reject') => void;
-  readonly onEvolve: (action: 'boost' | 'lower' | 'revive' | 'archive') => void;
   readonly onForget: () => void;
   readonly onGrant: () => void;
-  readonly onCompare: () => void;
   readonly conflict?: MemoryConflictView;
-  readonly conflictBusy: boolean;
-  readonly onResolveConflict: (keepCurrent: boolean) => void;
   readonly now: number;
 }): JSX.Element {
   if (item === null) {
@@ -1095,8 +876,6 @@ function MemoryDetail({
   const hard = item.memClass === 'global_constraint';
   const sensitive = item.memClass === 'sensitive';
   const candidate = item.lifecycle === 'candidate';
-  const canRevive = item.lifecycle === 'dormant' || item.lifecycle === 'archived';
-  const canArchive = item.lifecycle !== 'archived';
   const successRate =
     item.effectiveness !== null && item.effectiveness.applied > 0
       ? item.effectiveness.succeeded / item.effectiveness.applied
@@ -1108,7 +887,9 @@ function MemoryDetail({
         <div className="detail-badges">
           <Badge tone={KIND_TONE[item.kind]}>{item.kindLabel}</Badge>
           <Badge tone={CLASS_TONE[item.memClass] ?? 'neutral'}>{item.memClassLabel}</Badge>
-          <Badge tone={LIFECYCLE_TONE[item.lifecycle]}>{item.lifecycleLabel}</Badge>
+          <Badge tone={LIFECYCLE_TONE[item.lifecycle]}>
+          {item.lifecycle === 'candidate' ? '试行' : item.lifecycleLabel}
+        </Badge>
         </div>
       </div>
 
@@ -1135,39 +916,15 @@ function MemoryDetail({
           </div>
           <p className="detail-conflict-reason">发现可能冲突：{conflict.reason}</p>
           <p className="detail-conflict-other">另一条：{truncate(conflict.other.content, 100)}</p>
-          <div className="detail-conflict-actions">
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={conflictBusy}
-              onClick={() => onResolveConflict(false)}
-            >
-              保留对方
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={conflictBusy}
-              onClick={() => onResolveConflict(true)}
-            >
-              {conflictBusy ? '记录中…' : '保留当前这条'}
-            </button>
-          </div>
-          <p className="detail-footnote">只标记待审，不自动裁决；落败方降权但不删除。</p>
+          <p className="detail-footnote">
+            冲突由系统自动裁决并留下审计记录；用户不再手动决定保留哪一条。
+          </p>
         </div>
       )}
 
       {candidate && (
         <div className="detail-review">
-          <p>这是从对话里提取的候选。批准后才会参与召回。</p>
-          <div>
-            <button type="button" className="btn btn-primary btn-sm" disabled={reviewing} onClick={() => onReview('approve')}>
-              <Icon name="check" size={14} /> 批准
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" disabled={reviewing} onClick={() => onReview('reject')}>
-              拒绝
-            </button>
-          </div>
+          <p>这是试行记忆，由系统自动验证；不需要你审核。用户只保留删除权。</p>
         </div>
       )}
 
@@ -1183,63 +940,6 @@ function MemoryDetail({
           <Meter value={item.fitness} tone={item.fitness >= 0.5 ? 'accent' : 'warn'} />
         </div>
       </div>
-
-      {!hard && !candidate && (
-        <div className="detail-section detail-evolve">
-          <p className="mini-label">手动干预</p>
-          <div className="detail-evolve-actions">
-            {!sensitive && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={evolving}
-                onClick={onCompare}
-              >
-                与另一条比较
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={evolving}
-              onClick={() => onEvolve('boost')}
-            >
-              提升权重
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={evolving}
-              onClick={() => onEvolve('lower')}
-            >
-              降低权重
-            </button>
-            {canRevive && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={evolving}
-                onClick={() => onEvolve('revive')}
-              >
-                唤醒
-              </button>
-            )}
-            {canArchive && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm btn-ghost-danger"
-                disabled={evolving}
-                onClick={() => onEvolve('archive')}
-              >
-                归档
-              </button>
-            )}
-          </div>
-          <p className="detail-footnote">
-            干预会写入审计与演化日志；归档不是删除，之后被命中仍可唤醒。
-          </p>
-        </div>
-      )}
 
       <dl className="detail-grid">
         <div>
@@ -1356,15 +1056,14 @@ function MemoryDetail({
           <p>遗忘权</p>
           <small>
             {hard
-              ? '全局硬约束不提供删除入口 —— 它可能是过敏史这类不能丢的东西。'
+              ? '硬约束需要二次确认才能删除；删除后留下不可还原的墓碑。'
               : '删除内容，并抹除审计事件里的原文。'}
           </small>
         </div>
         <button
           type="button"
           className="btn btn-ghost btn-sm btn-ghost-danger"
-          disabled={hard}
-          title={hard ? '全局硬约束不可遗忘' : '彻底删除'}
+          title={hard ? '删除硬约束需要二次确认' : '彻底删除'}
           onClick={onForget}
         >
           <Icon name="trash" size={14} /> 删除
