@@ -187,7 +187,7 @@ export function GrowthView({
 
   const segments: readonly { key: keyof typeof LIFECYCLE_COLORS; label: string; value: number }[] = [
     { key: 'active', label: '活跃', value: m.active },
-    { key: 'candidate', label: '待审', value: m.pending },
+    { key: 'candidate', label: '试行', value: m.pending },
     { key: 'dormant', label: '休眠', value: m.dormant },
     { key: 'archived', label: '归档', value: m.archived },
   ];

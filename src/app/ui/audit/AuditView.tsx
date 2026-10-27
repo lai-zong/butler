@@ -63,6 +63,7 @@ const FAMILIES: readonly { readonly value: string; readonly label: string }[] = 
   { value: 'memoryPartition', label: '分权' },
   { value: 'evolution', label: '演化' },
   { value: 'reflection', label: '反思' },
+  { value: 'diary', label: '日记' },
   { value: 'reasoning', label: '推理与工具' },
   { value: 'context', label: '上下文' },
   { value: 'chat', label: '会话' },
