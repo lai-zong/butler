@@ -6,3 +6,4 @@ export * from './prompt.js';
 export * from './generate.js';
 export * from './ingest.js';
 export * from './pipeline.js';
+export * from './weekly.js';

@@ -31,6 +31,7 @@
     "eval:recall:all": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-recall.ts --split=all",
     "eval:memory": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-recall.ts --split=dev --mode=literal",
     "eval:memory:semantic": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-recall.ts --split=dev --mode=semantic",
+    "eval:autonomous": "node --import tsx scripts/eval-autonomous-memory.ts",
     "validate:1": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/01-orchestration.ts",
     "validate:2": "node node_modules/tsx/dist/cli.mjs src/validate/02-memory-loop.ts",
     "validate:3": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/03-tool-use.ts",

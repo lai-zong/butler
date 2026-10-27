@@ -64,6 +64,7 @@ import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import { DiaryStore } from '@/core/diary/store.js';
 import { diarySummary, runDailyDiaries } from '@/core/diary/pipeline.js';
+import { weeklyDiaryDigest } from '@/core/diary/weekly.js';
 import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
 import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
 import { httpTransportFactory } from '@/adapters/mcp/http.js';
@@ -574,8 +575,13 @@ async function initRuntime(): Promise<ButlerRuntime> {
      */
     ...(model !== null
       ? {
-          reflect: (a: { readonly scope: 'daily' | 'weekly'; readonly temporalPatterns?: readonly string[] }) =>
-            reflectScheduled({
+          reflect: (a: { readonly scope: 'daily' | 'weekly'; readonly temporalPatterns?: readonly string[] }) => {
+            // 周复盘已切到日记材料：只汇总，不新增候选。
+            // 旧的 reflectScheduled 仍保留给显式 daily 路径/兼容测试。
+            if (a.scope === 'weekly') {
+              return Promise.resolve(weeklyDiaryDigest({ diary, clock }));
+            }
+            return reflectScheduled({
               scope: a.scope,
               model: model as ModelPort,
               log: bootstrapped.log,
@@ -583,9 +589,9 @@ async function initRuntime(): Promise<ButlerRuntime> {
               store: bootstrapped.memory,
               chat: bootstrapped.chat,
               userId: DEFAULT_USER_ID,
-              // ★ 周复盘算好的时间规律原样传下去（daily 会忽略）
               ...(a.temporalPatterns !== undefined ? { temporalPatterns: a.temporalPatterns } : {}),
-            }),
+            });
+          },
         }
       : {}),
     ...(model !== null
