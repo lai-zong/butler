@@ -12,6 +12,7 @@ import type { ClockPort } from '../ports/clock.js';
 import { containsCredential } from '../tools/redact.js';
 import type { MemoryStore } from '../memory/store.js';
 import { isDuplicate } from '../memory/sink.js';
+import { explicitNegationConflict } from '../memory/conflict.js';
 import {
   DIARY_EVIDENCE_PREFIX,
   DIARY_PROMOTION_CONFIDENCE,
@@ -87,9 +88,78 @@ export function ingestDiary(args: {
     }
 
     const evidence = [...new Set([...item.evidence, `${DIARY_EVIDENCE_PREFIX}${args.diary.dayKey}`])];
+
+    // 先处理可证明的矛盾（显式否定），再走去重。
+    // 其它“主题相近但可同时成立”的情况不在这里硬判冲突。
+    const conflict = args.store
+      .all()
+      .filter(
+        (entry) =>
+          (entry.memClass === 'global_shared' || entry.memClass === 'global_constraint') &&
+          entry.kind === item.kind &&
+          entry.content !== item.content,
+      )
+      .find((entry) => explicitNegationConflict(item.content, entry.content) !== null);
+    if (conflict) {
+      const newDays = diaryDays(evidence).size;
+      const oldDays = diaryDays(conflict.evidence).size;
+      const oldWins =
+        conflict.memClass === 'global_constraint' ||
+        conflict.lifecycle === 'active' ||
+        (conflict.lifecycle === 'candidate' &&
+          !conflict.evidence.some((e) => e.startsWith(DIARY_EVIDENCE_PREFIX))) ||
+        oldDays > newDays ||
+        (oldDays === newDays && conflict.confidence >= item.confidence);
+      args.log.append({
+        type: 'conflict.detected',
+        actor: 'system',
+        payload: {
+          detector: 'explicit',
+          source: 'dailyDiary',
+          candidateId: item.id,
+          memoryId: conflict.id,
+          candidateContent: item.content,
+          existingContent: conflict.content,
+          reason: '显式否定：两条陈述除否定词外相同',
+        },
+        createdAt: args.clock.now(),
+      });
+      if (oldWins) {
+        args.log.append({
+          type: 'conflict.resolved',
+          actor: 'system',
+          payload: {
+            source: 'dailyDiary',
+            candidateId: item.id,
+            memoryId: conflict.id,
+            winner: 'existing',
+            reason: '既有记忆优先级更高（硬约束/稳定记忆/更多独立证据）',
+          },
+          createdAt: args.clock.now(),
+        });
+        skipped += 1;
+        continue;
+      }
+      if (conflict.lifecycle === 'candidate') {
+        args.store.archive(conflict.id, '被更新的试行证据取代，归档保留');
+      }
+      args.log.append({
+        type: 'conflict.resolved',
+        actor: 'system',
+        payload: {
+          source: 'dailyDiary',
+          candidateId: item.id,
+          memoryId: conflict.id,
+          winner: 'new',
+          reason: '新试行条目拥有更多独立证据或更高置信度',
+        },
+        createdAt: args.clock.now(),
+      });
+    }
+
     const existing = args.store
       .all()
-      .find((entry) => isDuplicate(entry, itemAsCandidate(item)));
+      .find((entry) => entry.id !== conflict?.id && isDuplicate(entry, itemAsCandidate(item)));
 
     if (existing) {
       // 硬约束不参与日记强化/合并。

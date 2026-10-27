@@ -991,6 +991,32 @@ export class MemoryStore {
     return true;
   }
 
+  /**
+   * 系统归档一条记忆（保留数据与来源）。
+   *
+   * 与手动 setLifecycle 的区别：这里同时写 `memory.archived` 状态事件，
+   * 供重放、审计和演化叙事使用。
+   */
+  archive(memoryId: string, reason: string): boolean {
+    const entry = this.entries.get(memoryId);
+    if (!entry || entry.memClass === 'global_constraint') return false;
+    if (entry.lifecycle === 'archived') return true;
+    const now = this.clock.now();
+    this.entries.set(memoryId, { ...entry, lifecycle: 'archived', archivedAt: now, updatedAt: now });
+    this.log.append({
+      type: 'memory.archived',
+      actor: 'system',
+      payload: {
+        memoryId,
+        content: entry.content,
+        reason,
+        snapshot: snapshotOf(this.entries.get(memoryId)),
+      },
+      createdAt: now,
+    });
+    return true;
+  }
+
   /** 写入生命周期与相关时间戳（演化引擎专用，同样不经过 canWrite）。 */
   setLifecycle(
     memoryId: string,

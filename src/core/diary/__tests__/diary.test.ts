@@ -255,6 +255,55 @@ describe('diary ingest', () => {
     expect(store.get(id)?.lifecycle).toBe('archived');
   });
 
+  it('resolves explicit contradiction in favor of an existing active memory', () => {
+    const { log, clock, store } = setup();
+    const active = store.create(
+      { kind: 'butler', userId: 'u1' },
+      {
+        memClass: 'global_shared',
+        kind: 'fact',
+        content: '用户对花生不过敏',
+        confidence: 0.9,
+        evidence: ['user_stated'],
+        lifecycle: 'active',
+      },
+    );
+    if (!active.ok) throw new Error('seed failed');
+    const r = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户对花生过敏', 0.8),
+    });
+    expect(r.created).toHaveLength(0);
+    expect(store.get(active.entry.id)?.lifecycle).toBe('active');
+    expect(log.byType('conflict.detected')).toHaveLength(1);
+    const resolved = log.byType('conflict.resolved').at(-1);
+    expect(resolved?.payload).toMatchObject({ winner: 'existing' });
+  });
+
+  it('replaces a weaker trial on an explicit contradiction and keeps the loser archived', () => {
+    const { log, clock, store } = setup();
+    const first = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-26', '用户喜欢安静', 0.5),
+    });
+    const oldId = first.created[0]!;
+    const r = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户不喜欢安静', 0.9),
+    });
+    expect(r.created).toHaveLength(1);
+    expect(store.get(oldId)?.lifecycle).toBe('archived');
+    const newId = r.created[0]!;
+    expect(store.get(newId)?.content).toContain('不喜欢安静');
+    expect(log.byType('conflict.resolved').at(-1)?.payload).toMatchObject({ winner: 'new' });
+  });
+
   it('does not auto-promote an old review candidate without diary evidence', () => {
     const { log, clock, store } = setup();
     const old = store.create(
