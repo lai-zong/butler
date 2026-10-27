@@ -89,6 +89,13 @@ export interface RunTurnArgs {
   readonly supervisionMode?: 'auto' | 'manual';
   /** 记忆归属的用户 */
   readonly userId: string;
+  /**
+   * 反思模式。
+   *
+   * `turn`（默认，测试兼容）：每轮结束后反思并写候选。
+   * `dailyDiary`：不在轮次内调用记忆模型，长期记忆统一由每日日记生成。
+   */
+  readonly reflectionMode?: 'turn' | 'dailyDiary';
   readonly random: RandomPort;
   readonly model: ModelPort;
   readonly log: EventLog;
@@ -632,7 +639,10 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   args.onProgress?.({ kind: 'stage', stage: 'reflect', label: '整理这次的经验' });
 
   let reflection: ReflectTurnResult | null = null;
-  try {
+  if (args.reflectionMode === 'dailyDiary') {
+    // 常规长期记忆由每日日记统一生成；本轮不调用记忆模型。
+    // 明确事实/附件的即时候选仍走各自的确定性/显式路径。
+  } else try {
     reflection = await reflectTurn({
       model: args.model,
       log: args.log,

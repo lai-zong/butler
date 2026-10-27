@@ -253,6 +253,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           ...(approvals !== undefined ? { asker: approvals } : {}),
           // ★ 监督员触发：默认 manual（用户按需），可用 SUPERVISOR_MODE=auto 回退
           supervisionMode: supervisionConfig.mode,
+          reflectionMode: 'dailyDiary',
           userId: session.userId,
           model: chatModel,
           random: rt.random,

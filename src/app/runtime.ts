@@ -62,6 +62,8 @@ import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
 import { OpenAIEmbedding } from '@/adapters/embedding/openaiEmbedding.js';
 import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
+import { DiaryStore } from '@/core/diary/store.js';
+import { diarySummary, runDailyDiaries } from '@/core/diary/pipeline.js';
 import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
 import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
 import { httpTransportFactory } from '@/adapters/mcp/http.js';
@@ -140,6 +142,8 @@ export interface ButlerRuntime {
   readonly evolution: EvolutionEngine;
   /** 本地语义索引；模型缺失时 scores 会抛错，调用方回退字面召回。 */
   readonly semantic: SemanticIndex;
+  /** 每日日记仓储（事件溯源、每作用域每天唯一）。 */
+  readonly diary: DiaryStore;
   /** 行为观察器（同意开关由界面通过 /api/observation 操作）*/
   readonly activityObserver: ActivityObserver;
   /** 定时任务运行时（调度器在任务注册后才是完整的） */
@@ -253,6 +257,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
     random,
     userId: DEFAULT_USER_ID,
   });
+  // 日记以事件为真相源：构造时自动回放历史 diary.created。
+  const diary = new DiaryStore(bootstrapped.log, clock);
 
   /**
    * 本地语义索引。
@@ -582,6 +588,27 @@ async function initRuntime(): Promise<ButlerRuntime> {
             }),
         }
       : {}),
+    ...(model !== null
+      ? {
+          diary: async () => {
+            const result = await runDailyDiaries({
+              model: model as ModelPort,
+              log: bootstrapped.log,
+              clock,
+              chat: bootstrapped.chat,
+              diary,
+              memory: bootstrapped.memory,
+            });
+            return {
+              created: result.created,
+              skipped: result.skipped,
+              failed: result.failed,
+              summary: diarySummary(result),
+              usage: result.usage,
+            };
+          },
+        }
+      : {}),
   });
   startActivityLoop({
     runtime: activityRuntime,
@@ -610,6 +637,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     activeTurns: 0,
     evolution,
     semantic,
+    diary,
     activityObserver,
     activityRuntime,
     mcpConfigPath,

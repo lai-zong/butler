@@ -148,6 +148,9 @@ export type EventType =
   // ── 族 8 · 反思与行为观察 ──
   | 'reflection.started'
   | 'reflection.done'
+  // ── 族 8b · 每日日记 ──
+  | 'diary.created'
+  | 'diary.failed'
   | 'profile.snapshot'
   | 'activity.sampled'
   | 'activity.aggregated'
@@ -319,6 +322,13 @@ export const EVENT_FAMILIES = {
     'pattern.derived',
     'pattern.invalidated',
   ],
+  /**
+   * 每日日记：每个活跃作用域每天一篇。
+   *
+   * ★ 日记不是记忆节点，也不是新的真相源；它是由原始消息派生、
+   *   可重放、可删除的当日经历摘要。
+   */
+  diary: ['diary.created', 'diary.failed'],
   /**
    * ★ 多模态（v8.2 补登记）：附件解析留痕。
    *

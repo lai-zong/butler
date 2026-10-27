@@ -61,6 +61,17 @@ export interface ActivityRuntimeArgs {
   readonly evolve?: () => EvolutionPassResult;
   /** 周级相似合并（由上层注入 mergeAll；不接也能跑） */
   readonly merge?: () => { readonly merged: number; readonly absorbed: number };
+  /** 每日日记（接入后替代旧 dailyReflection 注册） */
+  readonly diary?: (args: {
+    readonly scheduledAt: number;
+    readonly manual: boolean;
+  }) => Promise<{
+    readonly created: number;
+    readonly skipped: number;
+    readonly failed: number;
+    readonly summary: string;
+    readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+  }>;
 }
 
 export interface ActivityRuntime {
@@ -93,10 +104,13 @@ export function createActivityRuntime(args: ActivityRuntimeArgs): ActivityRuntim
     ...(args.checkReminders !== undefined ? { checkReminders: args.checkReminders } : {}),
     ...(args.evolve !== undefined ? { evolve: args.evolve } : {}),
     ...(args.merge !== undefined ? { merge: args.merge } : {}),
+    ...(args.diary !== undefined ? { diary: args.diary } : {}),
   });
 
   // ★ 注册全部任务（改造前这里一次都没被调用过）
+  //   接入日记后不再注册旧 dailyReflection，避免两套常规总结同时跑。
   for (const [kind, handler] of Object.entries(tasks.handlers)) {
+    if (kind === 'dailyReflection' && args.diary !== undefined) continue;
     scheduler.register({ kind: kind as Parameters<typeof scheduler.register>[0]['kind'], handler });
   }
 

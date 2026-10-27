@@ -71,6 +71,20 @@ export interface TaskContext {
    * 不接时周复盘照常跑，只在摘要里注明未做；不假装合并过。
    */
   readonly merge?: () => { readonly merged: number; readonly absorbed: number };
+  /**
+   * 每日日记任务。注入后由调度器在 04:10 执行；
+   * 旧 dailyReflection 不再注册，避免两套常规总结同时消耗 token。
+   */
+  readonly diary?: (args: {
+    readonly scheduledAt: number;
+    readonly manual: boolean;
+  }) => Promise<{
+    readonly created: number;
+    readonly skipped: number;
+    readonly failed: number;
+    readonly summary: string;
+    readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+  }>;
 }
 
 /** 最近一次规律提取的结果（供界面与主动服务复用）。*/
@@ -141,6 +155,24 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
       summary: `每日反思完成，产出 ${r.candidateCount} 条候选。${r.summary}${evolutionText}`,
       ...(r.usage !== undefined ? { usage: r.usage } : {}),
     };
+  };
+
+  // ── 每日日记（新的常规长期记忆入口）──
+  const dailyDiary: TaskHandler = async () => {
+    if (!ctx.diary) {
+      return { summary: '未接入日记生成器' };
+    }
+    try {
+      const r = await ctx.diary({ scheduledAt: ctx.clock.now(), manual: false });
+      return {
+        summary: r.summary,
+        ...(r.usage !== undefined ? { usage: r.usage } : {}),
+      };
+    } catch (err) {
+      return {
+        summary: `每日日记失败：${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   };
 
   // ── 管家周复盘 ──
@@ -289,7 +321,7 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
   };
 
   return {
-    handlers: { dailyReflection, weeklyReview, proactiveCheck, activityAggregate },
+    handlers: { dailyReflection, dailyDiary, weeklyReview, proactiveCheck, activityAggregate },
     latestProfile: () => latest,
     previousProfile: () => previous,
     patterns: () => patternState,

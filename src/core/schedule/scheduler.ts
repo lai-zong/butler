@@ -32,7 +32,8 @@ import type { ClockPort } from '../ports/clock.js';
  *    这样调度器不需要知道反思/画像/聚合的任何细节。
  */
 export type ScheduledTaskKind =
-  | 'dailyReflection' // 每日反思：汇总当日会话，领域层反思 → 产出候选
+  | 'dailyReflection' // 旧每日反思（保留兼容；接入日记后不再注册）
+  | 'dailyDiary' // 每日日记：每个活跃作用域每天一篇 + 候选
   | 'weeklyReview' // 管家周复盘：跨领域复盘 + 画像快照 + 重算规律
   | 'proactiveCheck' // 主动服务检查：需提前提醒的事项
   | 'activityAggregate'; // 行为聚合：原始记录 → ActivityAggregate
@@ -49,6 +50,7 @@ export interface TaskSchedule {
 /** 方案 § 5.4 的默认频率。 */
 export const DEFAULT_SCHEDULES: Record<ScheduledTaskKind, TaskSchedule> = {
   dailyReflection: { hour: 23, minute: 0 },
+  dailyDiary: { hour: 4, minute: 10 },
   weeklyReview: { hour: 22, minute: 0, weekday: 0 }, // 周日
   proactiveCheck: { hour: 8, minute: 0 },
   activityAggregate: { hour: -1, minute: 0 }, // 每小时（hour=-1 表示按小时触发）
@@ -56,6 +58,7 @@ export const DEFAULT_SCHEDULES: Record<ScheduledTaskKind, TaskSchedule> = {
 
 export const TASK_LABEL: Record<ScheduledTaskKind, string> = {
   dailyReflection: '每日反思',
+  dailyDiary: '每日日记',
   weeklyReview: '管家周复盘',
   proactiveCheck: '主动服务检查',
   activityAggregate: '行为聚合',
@@ -64,6 +67,7 @@ export const TASK_LABEL: Record<ScheduledTaskKind, string> = {
 /** 哪些任务会消耗模型 token（额度熔断主要防它们）。 */
 export const COSTS_TOKENS: Record<ScheduledTaskKind, boolean> = {
   dailyReflection: true,
+  dailyDiary: true,
   weeklyReview: true,
   proactiveCheck: true,
   activityAggregate: false, // 纯本地聚合，不调模型

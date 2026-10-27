@@ -47,11 +47,17 @@ function fakeSource(app = 'VS Code'): ActivitySourcePort {
 }
 
 describe('★★ A10 接线：定时任务真的被注册了', () => {
-  it('★ 四类任务全部注册（改造前一个都没注册）', () => {
+  it('★ 五类任务全部注册（改造前一个都没注册）', () => {
     const { runtime } = setup();
     const overview = runtime.scheduler.overview();
     const kinds = overview.map((o) => o.kind).sort();
-    expect(kinds).toEqual(['activityAggregate', 'dailyReflection', 'proactiveCheck', 'weeklyReview']);
+    expect(kinds).toEqual([
+      'activityAggregate',
+      'dailyDiary',
+      'dailyReflection',
+      'proactiveCheck',
+      'weeklyReview',
+    ]);
   });
 
   it('★★ 到期后会真的执行（不再是空转）', async () => {
