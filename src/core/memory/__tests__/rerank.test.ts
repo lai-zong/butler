@@ -55,6 +55,22 @@ function modelScored(items: readonly { readonly id: string; readonly relevance: 
 }
 
 describe('语义精排', () => {
+  it('本地 scorer 不经过对话模型也能排序', async () => {
+    const candidates = [scored('a', '用户喜欢安静'), scored('b', '用户喜欢热闹')];
+    const r = await rerankRecall({
+      scorer: {
+        name: 'fake-local',
+        score: async () => new Map([['a', 0.2], ['b', 0.9]]),
+      },
+      query: '聚会',
+      candidates,
+      filter: false,
+    });
+    expect(r.used).toBe(true);
+    expect(r.items[0]?.memory.id).toBe('b');
+    expect(r.usage).toBeNull();
+  });
+
   it('按模型顺序排非硬约束，硬约束仍然最前', async () => {
     const candidates = [
       scored('hard', '用户对花生过敏', true),

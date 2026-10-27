@@ -254,9 +254,16 @@ export async function POST(req: NextRequest): Promise<Response> {
           // ★ 监督员触发：默认 manual（用户按需），可用 SUPERVISOR_MODE=auto 回退
           supervisionMode: supervisionConfig.mode,
           reflectionMode: 'dailyDiary',
+          memoryMode:
+            process.env['BUTLER_MEMORY_MODE'] === 'shadow'
+              ? 'shadow'
+              : process.env['BUTLER_MEMORY_MODE'] === 'off'
+                ? 'off'
+                : 'on',
           userId: session.userId,
           model: chatModel,
           ...(rt.rerankModel !== null ? { rerankModel: rt.rerankModel } : {}),
+          ...(rt.rerankScorer !== null ? { reranker: rt.rerankScorer } : {}),
           random: rt.random,
           log: rt.bootstrapped.log,
           clock: rt.clock,

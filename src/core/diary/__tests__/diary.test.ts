@@ -263,6 +263,25 @@ describe('diary ingest', () => {
     expect(store.get(id)?.lifecycle).toBe('archived');
   });
 
+  it('reinforces the same preference when the diary paraphrases it', () => {
+    const { log, clock, store } = setup();
+    const first = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-26', '用户平时一般晚上十二点以后才睡', 0.8),
+    });
+    const id = first.created[0]!;
+    const second = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户十二点以后才睡', 0.8),
+    });
+    expect(second.reinforced).toContain(id);
+    expect(store.get(id)?.evidence).toContain(`${DIARY_EVIDENCE_PREFIX}2026-10-27`);
+  });
+
   it('creates a fresh trial when the same content was archived', () => {
     const { log, clock, store } = setup();
     const old = store.create(

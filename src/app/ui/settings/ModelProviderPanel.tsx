@@ -640,7 +640,8 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
   const memoryValue = data.memory === null ? '' : `${data.memory.profileId}::${data.memory.modelId}`;
   const memoryLabel = roleLabel(data.memory, chatChoices);
   const rerankValue = data.rerank === null ? '' : `${data.rerank.profileId}::${data.rerank.modelId}`;
-  const rerankLabel = roleLabel(data.rerank, rerankChoices);
+  const rerankLabel =
+    data.rerank === null ? '本地 embedding 重排' : roleLabel(data.rerank, rerankChoices);
   const typeLabel = modelType === 'chat' ? '对话模型' : modelType === 'embedding' ? '嵌入模型' : '重排模型';
   const typeDescription =
     modelType === 'chat'
@@ -784,7 +785,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
             <div>
               <span className="model-field-label">固定重排模型</span>
               <strong>{rerankLabel}</strong>
-              <small>只负责召回排序；未配置时跳过重排，不回退到对话模型。</small>
+              <small>只负责召回排序；未选独立模型时使用本地 embedding 打分，不回退对话模型。</small>
             </div>
             <select
               className="model-role-select"
@@ -796,7 +797,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
                 if (profileId && modelId) void selectRerank(profileId, modelId);
               }}
             >
-              <option value="">未配置</option>
+              <option value="">本地 embedding 重排</option>
               {rerankChoices.map(({ profile, model }) => (
                 <option key={`${profile.id}::${model.id}`} value={`${profile.id}::${model.id}`}>
                   {profile.name} · {model.id}

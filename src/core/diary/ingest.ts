@@ -11,14 +11,14 @@ import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 import { containsCredential } from '../tools/redact.js';
 import type { MemoryStore } from '../memory/store.js';
-import { isDuplicate } from '../memory/sink.js';
+import { similarity } from '../memory/sink.js';
 import { explicitNegationConflict } from '../memory/conflict.js';
 import {
   DIARY_EVIDENCE_PREFIX,
   DIARY_PROMOTION_CONFIDENCE,
   DIARY_PROMOTION_DAYS,
 } from '../memory/types.js';
-import type { DiaryEntry, DiaryExtractedItem } from './types.js';
+import type { DiaryEntry } from './types.js';
 
 export { DIARY_EVIDENCE_PREFIX };
 
@@ -29,22 +29,12 @@ export interface DiaryIngestResult {
   readonly skipped: number;
 }
 
-interface CandidateLike {
-  readonly kind: string;
-  readonly content: string;
-  readonly scope: { readonly memClass: 'global_shared' };
-}
-
 function diaryDays(evidence: readonly string[]): Set<string> {
   const days = new Set<string>();
   for (const e of evidence) {
     if (e.startsWith(DIARY_EVIDENCE_PREFIX)) days.add(e.slice(DIARY_EVIDENCE_PREFIX.length));
   }
   return days;
-}
-
-function itemAsCandidate(item: DiaryExtractedItem): CandidateLike {
-  return { kind: item.kind, content: item.content, scope: { memClass: 'global_shared' } };
 }
 
 function shouldPromote(evidence: readonly string[], confidence: number): boolean {
@@ -167,7 +157,9 @@ export function ingestDiary(args: {
           (entry.lifecycle === 'active' ||
             entry.lifecycle === 'candidate' ||
             entry.lifecycle === 'dormant') &&
-          isDuplicate(entry, itemAsCandidate(item)),
+          // 日记是自然语言复述，同一条记忆换一种说法很常见；
+          // 这里比普通候选去重略宽松，但仍要求同 kind。
+          similarity(entry.content, item.content) >= 0.62,
       );
 
     if (existing) {

@@ -60,6 +60,7 @@ import { ActivityObserver, DEFAULT_CONSENT } from '@/core/activity/observe.js';
 import { EvolutionEngine } from '@/core/memory/evolution.js';
 import { mergeAll } from '@/core/memory/merge.js';
 import { SemanticIndex } from '@/core/memory/semantic.js';
+import type { RerankScorer } from '@/core/memory/rerank.js';
 import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
 import { OpenAIEmbedding } from '@/adapters/embedding/openaiEmbedding.js';
 import { replayConsent } from '@/core/activity/consent.js';
@@ -124,6 +125,8 @@ export interface ButlerRuntime {
   readonly memoryModel: ModelPort | null;
   /** 固定的召回重排模型；不跟随对话模型切换。 */
   readonly rerankModel: ModelPort | null;
+  /** 没有独立重排模型时使用本地 embedding 打分；它不是对话模型。 */
+  readonly rerankScorer: RerankScorer | null;
   /** 流式模型（推理流用） */
   readonly streamModel: ModelStreamPort | null;
   /** 英文思考增量翻译；没有模型时为 null */
@@ -286,6 +289,14 @@ async function initRuntime(): Promise<ButlerRuntime> {
   const embeddingModelRoot =
     configuredModelRoot.length > 0 ? configuredModelRoot : join(DATA_DIR, 'models');
   const semantic = await createSemantic(dir, embeddingModelRoot);
+  const rerankScorer: RerankScorer | null = {
+    name: 'local-embedding',
+    score: async (query, candidates) =>
+      semantic.scores(
+        query,
+        candidates.map((c) => c.memory),
+      ),
+  };
 
   // ── 模型（没有 API Key 时为 null，界面据此提示"未配置模型"）──
   let model: ModelPort | null = null;
@@ -684,6 +695,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     model,
     memoryModel,
     rerankModel,
+    rerankScorer,
     streamModel,
     translator,
     tools,

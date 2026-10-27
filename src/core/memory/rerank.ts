@@ -26,6 +26,20 @@ const rerankSchema = z.object({
     .max(20),
 });
 
+/**
+ * 本地/外部重排打分器。
+ *
+ * 与 `ModelPort` 分开：重排器只需要给出 query × memory 的相关性，
+ * 不需要伪装成聊天模型。
+ */
+export interface RerankScorer {
+  readonly name: string;
+  score(
+    query: string,
+    candidates: readonly ScoredMemory[],
+  ): Promise<ReadonlyMap<string, number>>;
+}
+
 export interface RerankResult {
   readonly items: readonly ScoredMemory[];
   readonly used: boolean;
@@ -65,7 +79,9 @@ function promptFor(query: string, candidates: readonly ScoredMemory[]): string {
 }
 
 export async function rerankRecall(args: {
-  readonly model: ModelPort;
+  /** 有本地/外部 scorer 时优先使用；此时不需要聊天模型。 */
+  readonly scorer?: RerankScorer;
+  readonly model?: ModelPort;
   readonly query: string;
   readonly candidates: readonly ScoredMemory[];
   /**
@@ -89,10 +105,54 @@ export async function rerankRecall(args: {
   }
 
   const started = Date.now();
+
+  if (args.scorer !== undefined) {
+    try {
+      const scores = await args.scorer.score(args.query, args.candidates);
+      const hard = args.candidates.filter((c) => c.memory.memClass === 'global_constraint');
+      const soft = args.candidates.filter((c) => c.memory.memClass !== 'global_constraint');
+      let rankedSoft = soft.sort(
+        (a, b) =>
+          (scores.get(b.memory.id) ?? 0) - (scores.get(a.memory.id) ?? 0) ||
+          a.memory.id.localeCompare(b.memory.id),
+      );
+      if (args.filter === true) {
+        const min = Math.min(1, Math.max(0, args.minRelevance ?? 0.5));
+        rankedSoft = rankedSoft.filter((c) => (scores.get(c.memory.id) ?? 0) >= min);
+      }
+      return {
+        items: [...hard, ...rankedSoft],
+        used: true,
+        fallbackReason: null,
+        usage: null,
+        latencyMs: Date.now() - started,
+      };
+    } catch (err) {
+      return {
+        items: args.candidates,
+        used: false,
+        fallbackReason: err instanceof Error ? err.message : String(err),
+        usage: null,
+        latencyMs: Date.now() - started,
+      };
+    }
+  }
+
+  const model = args.model;
+  if (model === undefined) {
+    return {
+      items: args.candidates,
+      used: false,
+      fallbackReason: '没有可用的重排器',
+      usage: null,
+      latencyMs: Date.now() - started,
+    };
+  }
+
   let raw: z.infer<typeof rerankSchema>;
   let usage: ModelUsage | null = null;
   try {
-    const res = await args.model.completeStructured({
+    const res = await model.completeStructured({
       purpose: 'routing',
       schema: rerankSchema,
       schemaName: 'MemoryRerank',

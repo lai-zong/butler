@@ -38,7 +38,7 @@ import { DEFAULT_PARAMS } from '../memory/fitness.js';
 import { retrievalConfig } from '../config/env.js';
 import type { EvolutionEngine } from '../memory/evolution.js';
 import type { SemanticIndex } from '../memory/semantic.js';
-import { rerankRecall } from '../memory/rerank.js';
+import { rerankRecall, type RerankScorer } from '../memory/rerank.js';
 import { runSession, type ProgressEvent, type RunSessionResult } from '../runtime/orchestrator.js';
 import { throwIfAborted } from '../runtime/abort.js';
 import {
@@ -96,10 +96,18 @@ export interface RunTurnArgs {
    * `dailyDiary`：不在轮次内调用记忆模型，长期记忆统一由每日日记生成。
    */
   readonly reflectionMode?: 'turn' | 'dailyDiary';
+  /**
+   * 记忆注入模式：
+   * on=正常注入；shadow=只计算不注入；off=不注入。
+   * shadow/off 都不更新命中适应度。
+   */
+  readonly memoryMode?: 'on' | 'shadow' | 'off';
   readonly random: RandomPort;
   readonly model: ModelPort;
   /** 独立重排模型；未配置时不调用对话模型做重排。 */
   readonly rerankModel?: ModelPort;
+  /** 本地/外部打分器；优先于 rerankModel。 */
+  readonly reranker?: RerankScorer;
   readonly log: EventLog;
   readonly clock: ClockPort;
   readonly store: MemoryStore;
@@ -426,18 +434,22 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   // 语义召回的第二阶段：对候选做精排，并允许按相关性过滤。
   // 没有语义分时不额外调用模型 —— 字面召回路径不增加成本。
+  const reranker = args.reranker;
   const rerankModel = args.rerankModel;
   if (
-    rerankModel !== undefined &&
+    (reranker !== undefined || rerankModel !== undefined) &&
     semanticScores !== undefined &&
     semanticScores.size > 0 &&
     recalled.length > 1
   ) {
     const reranked = await rerankRecall({
-      model: rerankModel,
+      ...(rerankModel !== undefined
+        ? { model: rerankModel }
+        : { scorer: reranker as RerankScorer }),
       query: userText,
       candidates: recalled,
-      filter: true,
+      // 本地 embedding 只排序、不丢记忆；过滤阈值只适用于专门的重排模型。
+      filter: rerankModel !== undefined,
       minRelevance: retrievalConfig.rerankMinRelevance,
     });
     if (reranked.used) {
@@ -448,14 +460,19 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     }
   }
 
+  // shadow/off 只计算召回，不把记忆注入上下文，也不更新命中适应度。
+  // 这就是影子测试与 A/B 的运行时分界。
+  const memoryMode = args.memoryMode ?? 'on';
+  const injected = memoryMode === 'on' ? recalled : [];
+
   // 召回即命中：记录 fitness 与唤醒（休眠/归档记忆被再次命中会回升）。
   // ⚠️ 只在实际进入本轮上下文后记录，不能把候选集全算成命中。
   const recallBatchId = `recall_${args.clock.now()}_${Math.floor(args.random.next() * 1_000_000)}`;
-  for (const r of recalled) {
+  for (const r of injected) {
     args.evolution?.recordHit(r.memory.id, recallBatchId);
   }
 
-  const memRefs = recalled.map((r) => ({
+  const memRefs = injected.map((r) => ({
     id: r.memory.id,
     content: r.memory.content,
   }));
@@ -484,7 +501,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           clock: args.clock,
           taskId: sessionId,
           userGoal: userText,
-          context: narrationContext(args.store, recalled, args.userId, args.sessionId),
+          context: narrationContext(args.store, injected, args.userId, args.sessionId),
           onUpdate: (s) => args.onNarration?.(s),
           ...(args.translatorPort !== undefined ? { translatorPort: args.translatorPort } : {}),
           ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -545,7 +562,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     session,
     chat,
     clock: args.clock,
-    recalledCount: recalled.length,
+    recalledCount: injected.length,
   });
 
   // ── ⑤ 汇报（通过）或告知（打回）──
