@@ -172,6 +172,23 @@ describe('recall · 基本行为', () => {
     expect(ids).toContain('ok');
   });
 
+  it('日记产生的试行记忆参与召回，但分数低于同内容稳定记忆', () => {
+    const trial = mem({
+      id: 'trial',
+      content: '你偏好清淡口味',
+      lifecycle: 'candidate',
+      evidence: ['diary:2026-10-27'],
+      fitness: 0.8,
+      confidence: 0.8,
+    });
+    const active = mem({ id: 'active', content: '你偏好清淡口味' });
+    const trialScore = scoreMemory(trial, '周末请朋友吃饭，需要清淡的菜').score;
+    const activeScore = scoreMemory(active, '周末请朋友吃饭，需要清淡的菜').score;
+    expect(trialScore).toBeLessThan(activeScore);
+    const r = run({ candidates: [trial, active], limit: 5 });
+    expect(r.selected.map((s) => s.memory.id)).toContain('trial');
+  });
+
   it('结果不超过名额', () => {
     const many = Array.from({ length: 20 }, (_, i) =>
       mem({ id: `m${i}`, content: `你偏好清淡口味的第 ${i} 条` }),

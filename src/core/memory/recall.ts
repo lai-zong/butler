@@ -62,6 +62,16 @@ export const SEMANTIC_RELEVANCE_THRESHOLD = 0.35;
  *   后面还有精排过滤，风险面不同。两者不能共用一个数字。
  */
 export const SEMANTIC_CANDIDATE_FLOOR = 0.30;
+/** 试行记忆参与召回，但只按这个权重参与竞争。 */
+export const TRIAL_SCORE_WEIGHT = 0.55;
+
+/** 只有日记产生的候选才是“试行”；旧的待审候选仍不参与召回。 */
+export function isDiaryTrial(memory: MemoryEntry): boolean {
+  return (
+    memory.lifecycle === 'candidate' &&
+    memory.evidence.some((e) => e.startsWith('diary:'))
+  );
+}
 
 export interface ScoredMemory {
   readonly memory: MemoryEntry;
@@ -177,10 +187,11 @@ export function scoreMemory(
     relevance = Math.min(1, relevance + 0.15);
   }
 
-  const score =
+  const rawScore =
     RECALL_WEIGHTS.relevance * relevance +
     RECALL_WEIGHTS.fitness * memory.fitness +
     RECALL_WEIGHTS.confidence * memory.confidence;
+  const score = isDiaryTrial(memory) ? rawScore * TRIAL_SCORE_WEIGHT : rawScore;
 
   return { memory, score, relevance, fitness: memory.fitness, confidence: memory.confidence };
 }
@@ -196,7 +207,7 @@ export function recall(args: RecallArgs): RecallResult {
   const semanticFloor = args.semanticFloor ?? SEMANTIC_CANDIDATE_FLOOR;
 
   /**
-   * ── ① 只考虑活跃与休眠（候选不参与召回；归档仅在探索时可能被唤醒）──
+   * ── ① 活跃 / 休眠 / 归档，以及日记产生的试行候选 ──
    *
    * ⚠️ 硬约束**不需要在这里特判** —— `relevanceOf` 已经对
    *    `global_constraint` 恒返回 1.0，所以它永远不会被
@@ -207,7 +218,11 @@ export function recall(args: RecallArgs): RecallResult {
    *      多加一层特判会让"谁在保证安全"变得没人说得清。）
    */
   const eligible = args.candidates.filter(
-    (m) => m.lifecycle === 'active' || m.lifecycle === 'dormant' || m.lifecycle === 'archived',
+    (m) =>
+      m.lifecycle === 'active' ||
+      m.lifecycle === 'dormant' ||
+      m.lifecycle === 'archived' ||
+      isDiaryTrial(m),
   );
 
   /**

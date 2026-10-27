@@ -8,9 +8,10 @@ import { SessionStore } from '../../chat/types.js';
 import { DiaryStore } from '../store.js';
 import { dayKeyFor, dayWindow, previousDayKey } from '../time.js';
 import { generateDiary } from '../generate.js';
+import { ingestDiary, DIARY_EVIDENCE_PREFIX } from '../ingest.js';
 import { diaryWorthy, runDailyDiaries } from '../pipeline.js';
 import type { DiaryModelOutput } from '../schema.js';
-import type { DiarySourceMessage } from '../types.js';
+import type { DiaryEntry, DiarySourceMessage } from '../types.js';
 
 
 function makeModel(output: DiaryModelOutput, seen: string[] = []): ModelPort {
@@ -40,6 +41,7 @@ function setup(): {
   clock: FixedClock;
   chat: SessionStore;
   memory: MemoryStore;
+  store: MemoryStore;
   diary: DiaryStore;
 } {
   const log = new EventLog('s_diary');
@@ -47,7 +49,7 @@ function setup(): {
   const chat = new SessionStore(log, clock, 'u1');
   const memory = new MemoryStore(log, clock, 'u1');
   const diary = new DiaryStore(log, clock);
-  return { log, clock, chat, memory, diary };
+  return { log, clock, chat, memory, store: memory, diary };
 }
 
 function append(
@@ -166,6 +168,96 @@ describe('diary generation', () => {
   });
 });
 
+function entry(dayKey: string, content: string, confidence = 0.8): DiaryEntry {
+  return {
+    id: `diary_test_${dayKey}`,
+    scopeId: 'session:s1',
+    sessionId: 's1',
+    userId: 'u1',
+    dayKey,
+    startAt: 0,
+    endAt: 1,
+    content: 'test diary',
+    sourceMessageIds: ['m1'],
+    items: [
+      {
+        id: `diary_test_${dayKey}_item_0`,
+        kind: 'fact',
+        content,
+        confidence,
+        evidence: ['m1'],
+        rationale: 'test',
+      },
+    ],
+    model: 'fake-memory',
+    promptVersion: 'diary.v1',
+    usage: { inputTokens: 1, outputTokens: 1 },
+    createdAt: 1,
+  };
+}
+
+describe('diary ingest', () => {
+  it('creates trial candidates and promotes only after independent days', () => {
+    const { log, clock, store } = setup();
+    const first = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-26', '用户喜欢先看结论', 0.7),
+    });
+    expect(first.created).toHaveLength(1);
+    expect(first.promoted).toHaveLength(0);
+    const id = first.created[0]!;
+    expect(store.get(id)?.lifecycle).toBe('candidate');
+    expect(store.get(id)?.evidence).toContain(`${DIARY_EVIDENCE_PREFIX}2026-10-26`);
+
+    // 同一天重复日记不会制造第二条节点。
+    const sameDay = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-26', '用户喜欢先看结论', 0.7),
+    });
+    expect(sameDay.created).toHaveLength(0);
+    expect(store.size()).toBe(1);
+
+    const secondDay = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户喜欢先看结论', 0.75),
+    });
+    expect(secondDay.promoted).toEqual([id]);
+    expect(store.get(id)?.lifecycle).toBe('active');
+    expect(store.get(id)?.evidence).toContain(`${DIARY_EVIDENCE_PREFIX}2026-10-27`);
+  });
+
+  it('does not auto-promote an old review candidate without diary evidence', () => {
+    const { log, clock, store } = setup();
+    const old = store.create(
+      { kind: 'butler', userId: 'u1' },
+      {
+        memClass: 'global_shared',
+        kind: 'fact',
+        content: '用户喜欢先看结论',
+        confidence: 0.8,
+        evidence: ['old_review'],
+        lifecycle: 'candidate',
+      },
+    );
+    expect(old.ok).toBe(true);
+    if (!old.ok) throw new Error('seed failed');
+    const r = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户喜欢先看结论', 0.8),
+    });
+    expect(r.promoted).toHaveLength(0);
+    expect(store.get(old.entry.id)?.lifecycle).toBe('candidate');
+  });
+});
+
 describe('daily diary pipeline', () => {
   it('skips sessions with fewer than four user messages, then creates one diary', async () => {
     const { log, clock, chat, memory, diary } = setup();
@@ -223,6 +315,8 @@ describe('daily diary pipeline', () => {
     });
     expect(second.created).toBe(1);
     expect(diary.all()).toHaveLength(1);
+    expect(memory.size()).toBe(1);
+    expect(memory.all()[0]?.lifecycle).toBe('candidate');
     expect(seen).toHaveLength(1);
 
     const third = await runDailyDiaries({

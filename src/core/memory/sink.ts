@@ -176,7 +176,10 @@ export function sinkCandidates(
  * 用长度比值而不是编辑距离：中文短句下长度比就够用，
  * 且**确定性**（不依赖外部库，可重放）。
  */
-export function isDuplicate(existing: MemoryEntry, cand: MemoryCandidate): boolean {
+export function isDuplicate(
+  existing: MemoryEntry,
+  cand: Pick<MemoryCandidate, 'content' | 'scope'>,
+): boolean {
   if (existing.memClass !== cand.scope.memClass) return false;
 
   if (cand.scope.memClass === 'domain') {

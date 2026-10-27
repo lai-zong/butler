@@ -461,6 +461,76 @@ export class MemoryStore {
   }
 
   /**
+   * 给试行记忆补一条独立证据。
+   *
+   * ★ 这不是“人工审核通过”，而是每日日记反复观察到同一件事后的自动强化。
+   *   证据去重、置信度只升不降、每次变化都留下 `memory.revised` 快照。
+   */
+  reinforce(
+    memoryId: string,
+    evidence: readonly string[],
+    confidence: number,
+    reason: string,
+  ): { readonly ok: boolean; readonly added: number; readonly version?: number } {
+    const before = this.entries.get(memoryId);
+    if (!before || before.memClass === 'global_constraint') {
+      return { ok: false, added: 0 };
+    }
+
+    const existing = new Set(before.evidence);
+    const added = [...new Set(evidence)].filter((e) => !existing.has(e));
+    const nextConfidence = Math.max(before.confidence, Math.min(1, confidence));
+    if (added.length === 0 && nextConfidence <= before.confidence) {
+      return { ok: false, added: 0 };
+    }
+
+    const now = this.clock.now();
+    const after: MemoryEntry = {
+      ...before,
+      evidence: [...before.evidence, ...added],
+      confidence: nextConfidence,
+      fitness: Math.max(before.fitness, nextConfidence * 0.9),
+      version: before.version + 1,
+      updatedAt: now,
+    };
+    this.entries.set(memoryId, after);
+
+    const revision: MemoryRevision = {
+      id: `rev_${memoryId}_${after.version}`,
+      memoryId,
+      version: after.version,
+      patch: {
+        before: { evidence: before.evidence, confidence: before.confidence, fitness: before.fitness },
+        after: { evidence: after.evidence, confidence: after.confidence, fitness: after.fitness },
+      },
+      reason,
+      actor: 'verification',
+      createdAt: now,
+    };
+    this.revisions.push(revision);
+
+    this.log.append({
+      type: 'memory.revised',
+      actor: 'system',
+      payload: {
+        memoryId,
+        version: after.version,
+        patch: {
+          evidence: after.evidence,
+          confidence: after.confidence,
+          fitness: after.fitness,
+        },
+        reason,
+        snapshot: snapshotOf(after),
+        audit: 'diaryEvidence',
+      },
+      createdAt: now,
+    });
+
+    return { ok: true, added: added.length, version: after.version };
+  }
+
+  /**
    * 修改一条记忆（产生新版本，保留历史）。
    *
    * 历史保留是"可回滚"的前提 —— 也是用户能追问"这条记忆是怎么变成现在这样的"的依据。
