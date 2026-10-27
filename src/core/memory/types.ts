@@ -37,6 +37,15 @@ import type { DomainId } from '../domain/types.js';
  */
 export type MemoryKind = 'fact' | 'preference' | 'principle' | 'summary';
 
+/** 日记来源的证据标记；只有带这个标记的 candidate 才是“试行记忆”。 */
+export const DIARY_EVIDENCE_PREFIX = 'diary:';
+/** 试行记忆自动转正所需的最少独立日期数。 */
+export const DIARY_PROMOTION_DAYS = 2;
+/** 试行记忆自动转正所需的最低置信度。 */
+export const DIARY_PROMOTION_CONFIDENCE = 0.65;
+/** 试行记忆未转正的最长保留天数，之后归档。 */
+export const DIARY_TRIAL_TTL_DAYS = 14;
+
 // ═══════════════════════════════════════════════════════════
 // 分权（§ 2.2⑥）
 // ═══════════════════════════════════════════════════════════

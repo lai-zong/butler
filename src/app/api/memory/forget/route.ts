@@ -19,16 +19,19 @@ export const runtime = 'nodejs';
 
 const REASON_LABEL: Record<string, string> = {
   not_found: '找不到这条记忆',
-  hard_constraint_cannot_be_forgotten: '全局硬约束不可遗忘',
+  hard_constraint_cannot_be_forgotten: '全局硬约束需要显式确认后才能删除',
+  user_confirmation_required: '硬约束只能由用户本人删除',
+  confirmation_required: '删除硬约束需要显式确认',
+  not_hard_constraint: '这条记忆不是硬约束',
   domain_not_owner: '没有权限删除这条记忆',
   butler_write_only: '这条记忆只能由管家写入',
   sensitive_no_grant: '敏感域尚未授权',
 };
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  let body: { id?: unknown };
+  let body: { id?: unknown; hardConstraintConfirmation?: unknown };
   try {
-    body = (await req.json()) as { id?: unknown };
+    body = (await req.json()) as { id?: unknown; hardConstraintConfirmation?: unknown };
   } catch {
     return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 });
   }
@@ -40,7 +43,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const rt = await getRuntime();
   const store = rt.bootstrapped.memory;
-  const res = store.forget({ kind: 'user', userId: DEFAULT_USER_ID }, id);
+  const entry = store.get(id);
+  const hardConfirmed = body.hardConstraintConfirmation === 'confirmed';
+  const res =
+    entry?.memClass === 'global_constraint'
+      ? hardConfirmed
+        ? store.forgetHardConstraint({ kind: 'user', userId: DEFAULT_USER_ID }, id, 'confirmed')
+        : { ok: false, reason: 'hard_constraint_cannot_be_forgotten' }
+      : store.forget({ kind: 'user', userId: DEFAULT_USER_ID }, id);
 
   if (!res.ok) {
     const reason = res.reason ?? 'unknown';

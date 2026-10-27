@@ -445,6 +445,26 @@ describe('遗忘权', () => {
     expect(store.get(id)).toBeDefined();
   });
 
+  it('★★ 硬约束只有用户显式确认后才能删除，并留下不可还原的墓碑', () => {
+    const { store, log } = setup();
+    const id = seed(store, 'global_constraint', '你对花生严重过敏');
+
+    expect(store.forgetHardConstraint(butler, id, 'confirmed').ok).toBe(false);
+    expect(store.get(id)).toBeDefined();
+
+    const r = store.forgetHardConstraint(user, id, 'confirmed');
+    expect(r.ok).toBe(true);
+    expect(store.get(id)).toBeUndefined();
+
+    const tomb = log.byType('intervention.forgotten').at(-1);
+    expect(tomb?.payload).toMatchObject({
+      hardConstraint: true,
+      confirmedBy: 'user',
+      erased: true,
+    });
+    expect(JSON.stringify(tomb?.payload)).not.toContain('花生');
+  });
+
   /**
    * ⚠️ v7（A2）：这条能力**反转**了 —— 领域已不是权限边界。
    *

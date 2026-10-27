@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { EventLog } from '../../events/log.js';
-import { FixedClock } from '../../ports/clock.js';
+import { FixedClock, SeededRandom } from '../../ports/clock.js';
 import type { ModelPort } from '../../ports/model.js';
+import { EvolutionEngine } from '../../memory/evolution.js';
 import { MemoryStore } from '../../memory/store.js';
 import { SessionStore } from '../../chat/types.js';
 import { DiaryStore } from '../store.js';
@@ -230,6 +231,28 @@ describe('diary ingest', () => {
     expect(secondDay.promoted).toEqual([id]);
     expect(store.get(id)?.lifecycle).toBe('active');
     expect(store.get(id)?.evidence).toContain(`${DIARY_EVIDENCE_PREFIX}2026-10-27`);
+  });
+
+  it('archives a trial that never gets a second independent day', () => {
+    const { log, clock, store } = setup();
+    const r = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-26', '用户今天只提了一次这件事', 0.8),
+    });
+    const id = r.created[0]!;
+    clock.advance(15 * 24 * 60 * 60 * 1000);
+    const engine = new EvolutionEngine({
+      log,
+      store,
+      clock,
+      random: new SeededRandom(1),
+      userId: 'u1',
+    });
+    const pass = engine.runPass();
+    expect(pass.trialArchived).toContain(id);
+    expect(store.get(id)?.lifecycle).toBe('archived');
   });
 
   it('does not auto-promote an old review candidate without diary evidence', () => {

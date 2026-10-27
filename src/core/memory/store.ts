@@ -705,6 +705,54 @@ export class MemoryStore {
     return { ok: true };
   }
 
+  /**
+   * 用户明确确认后删除硬约束。
+   *
+   * 普通 `forget` 仍然拒绝硬约束（防止 AI/误操作绕过）。
+   * 这个方法只接受用户主体 + 显式确认，且同样：
+   *   · 删除条目与版本；
+   *   · 写墓碑（只留内容哈希）；
+   *   · 抹除历史事件中的原文；
+   *   · 保留审计事实。
+   */
+  forgetHardConstraint(
+    actor: MemoryActor,
+    id: string,
+    confirmation: 'confirmed',
+  ): { ok: boolean; reason?: string } {
+    if (actor.kind !== 'user') return { ok: false, reason: 'user_confirmation_required' };
+    if (confirmation !== 'confirmed') return { ok: false, reason: 'confirmation_required' };
+    const entry = this.entries.get(id);
+    if (!entry) return { ok: false, reason: 'not_found' };
+    if (entry.memClass !== 'global_constraint') {
+      return { ok: false, reason: 'not_hard_constraint' };
+    }
+
+    const content = entry.content;
+    this.entries.delete(id);
+    const kept = this.revisions.filter((r) => r.memoryId !== id);
+    this.revisions.splice(0, this.revisions.length, ...kept);
+
+    this.log.append({
+      type: 'intervention.forgotten',
+      actor: 'user',
+      payload: {
+        memoryId: id,
+        memClass: entry.memClass,
+        hardConstraint: true,
+        erased: true,
+        confirmedBy: 'user',
+        confirmation: 'explicit',
+        contentHash: hashContent(content),
+        note: '用户显式确认删除硬约束；保留不可还原的墓碑',
+      },
+      createdAt: this.clock.now(),
+    });
+
+    this.log.scrubForMemory(id, content);
+    return { ok: true };
+  }
+
   // ── 敏感域授权 ──
 
   /**

@@ -12,11 +12,14 @@ import type { ClockPort } from '../ports/clock.js';
 import { containsCredential } from '../tools/redact.js';
 import type { MemoryStore } from '../memory/store.js';
 import { isDuplicate } from '../memory/sink.js';
+import {
+  DIARY_EVIDENCE_PREFIX,
+  DIARY_PROMOTION_CONFIDENCE,
+  DIARY_PROMOTION_DAYS,
+} from '../memory/types.js';
 import type { DiaryEntry, DiaryExtractedItem } from './types.js';
 
-export const DIARY_EVIDENCE_PREFIX = 'diary:';
-export const DIARY_PROMOTION_DAYS = 2;
-export const DIARY_PROMOTION_CONFIDENCE = 0.65;
+export { DIARY_EVIDENCE_PREFIX };
 
 export interface DiaryIngestResult {
   readonly created: readonly string[];

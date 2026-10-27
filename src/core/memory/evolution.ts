@@ -25,7 +25,14 @@ import {
   type OutcomeStats,
 } from './fitness.js';
 import type { MemoryStore } from './store.js';
-import type { EvolutionEvent, MemoryEntry } from './types.js';
+import {
+  DIARY_EVIDENCE_PREFIX,
+  DIARY_PROMOTION_CONFIDENCE,
+  DIARY_PROMOTION_DAYS,
+  DIARY_TRIAL_TTL_DAYS,
+  type EvolutionEvent,
+  type MemoryEntry,
+} from './types.js';
 
 /** 行为统计的累计器 —— 由反馈事件驱动，不由模型判断。 */
 interface StatsAccumulator {
@@ -51,6 +58,9 @@ export interface EvolutionPassResult {
   readonly archived: readonly string[];
   readonly revived: readonly string[];
   readonly threshold: number;
+  /** 日记试行记忆本轮转正 / 到期归档（新字段，旧调用方可忽略）。 */
+  readonly trialPromoted?: readonly string[];
+  readonly trialArchived?: readonly string[];
 }
 
 export class EvolutionEngine {
@@ -216,6 +226,58 @@ export class EvolutionEngine {
       }
     }
 
+    // ②b 日记试行记忆：满足独立证据就转正；长期不转正则归档。
+    const trialPromoted: string[] = [];
+    const trialArchived: string[] = [];
+    const trialTtl = DIARY_TRIAL_TTL_DAYS * 24 * 60 * 60 * 1000;
+    for (const entry of this.store.all()) {
+      if (entry.lifecycle !== 'candidate') continue;
+      if (!entry.evidence.some((e) => e.startsWith(DIARY_EVIDENCE_PREFIX))) continue;
+      const days = new Set(
+        entry.evidence
+          .filter((e) => e.startsWith(DIARY_EVIDENCE_PREFIX))
+          .map((e) => e.slice(DIARY_EVIDENCE_PREFIX.length)),
+      ).size;
+      if (days >= DIARY_PROMOTION_DAYS && entry.confidence >= DIARY_PROMOTION_CONFIDENCE) {
+        const promoted = this.store.review(
+          { kind: 'butler', userId: this.userId },
+          entry.id,
+          'approve',
+          `试行期间获得 ${days} 个独立日期的证据，自动转正`,
+          {
+            decidedBy: 'system',
+            source: 'dailyDiary',
+            sourceLabel: '每日日记',
+            audit: 'probationPromotion',
+          },
+        );
+        if (promoted.ok) trialPromoted.push(entry.id);
+        continue;
+      }
+      if (now - entry.createdAt >= trialTtl) {
+        this.store.setLifecycle(entry.id, 'archived', { archivedAt: now });
+        const archivedEntry = this.store.get(entry.id);
+        this.log.append({
+          type: 'memory.archived',
+          actor: 'system',
+          payload: {
+            memoryId: entry.id,
+            content: entry.content,
+            reason: `试行 ${DIARY_TRIAL_TTL_DAYS} 天仍未获得足够独立证据，自动归档`,
+            snapshot: snapshotOf(archivedEntry),
+          },
+          createdAt: now,
+        });
+        this.pushEvolution({
+          type: 'archived',
+          memoryIds: [entry.id],
+          detail: `试行到期未转正（独立证据 ${days} 天），归档保留`,
+          actor: 'system',
+        });
+        trialArchived.push(entry.id);
+      }
+    }
+
     // ③ 参数自适应：库规模变了，阈值跟着变
     const threshold = this.currentThreshold();
     if (Math.abs(threshold - this.lastThreshold) > 1e-6) {
@@ -245,6 +307,8 @@ export class EvolutionEngine {
       archived,
       revived,
       threshold,
+      trialPromoted,
+      trialArchived,
     };
   }
 

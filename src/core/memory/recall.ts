@@ -18,7 +18,7 @@ import type { RandomPort } from '../ports/clock.js';
 import type { DomainId } from '../domain/types.js';
 import { isRelevant } from '../text/keywords.js';
 import { adaptThreshold, DEFAULT_PARAMS, type EvolutionParams } from './fitness.js';
-import type { MemoryEntry, MemoryKind } from './types.js';
+import { DIARY_EVIDENCE_PREFIX, type MemoryEntry, type MemoryKind } from './types.js';
 import { retrievalConfig } from '../config/env.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -69,7 +69,7 @@ export const TRIAL_SCORE_WEIGHT = 0.55;
 export function isDiaryTrial(memory: MemoryEntry): boolean {
   return (
     memory.lifecycle === 'candidate' &&
-    memory.evidence.some((e) => e.startsWith('diary:'))
+    memory.evidence.some((e) => e.startsWith(DIARY_EVIDENCE_PREFIX))
   );
 }
 

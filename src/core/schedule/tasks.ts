@@ -164,8 +164,20 @@ export function buildTasks(ctx: TaskContext): TaskBundle {
     }
     try {
       const r = await ctx.diary({ scheduledAt: ctx.clock.now(), manual: false });
+      let evolutionText = '';
+      if (ctx.evolve) {
+        try {
+          const e = ctx.evolve();
+          evolutionText =
+            ` 演化：评估 ${e.evaluated} 条，休眠 ${e.dormant.length}，` +
+            `归档 ${e.archived.length}，唤醒 ${e.revived.length}` +
+            `，试行转正 ${e.trialPromoted?.length ?? 0}，试行到期 ${e.trialArchived?.length ?? 0}。`;
+        } catch (err) {
+          evolutionText = ` 演化失败：${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
       return {
-        summary: r.summary,
+        summary: r.summary + evolutionText,
         ...(r.usage !== undefined ? { usage: r.usage } : {}),
       };
     } catch (err) {
