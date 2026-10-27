@@ -43,6 +43,7 @@ import type {
   MemoryTarget,
 } from '../lib/types.js';
 import { CheckpointsPanel } from './CheckpointsPanel';
+import { GovernanceStrip } from './GovernanceStrip';
 
 interface AuditViewProps {
   readonly range: { readonly fromSeq: number; readonly toSeq: number } | null;
@@ -318,6 +319,8 @@ export function AuditView({
           {auditError !== null && !auditLoading && (
             <InlineError message={auditError} onRetry={() => void loadAudit()} />
           )}
+
+          <GovernanceStrip />
 
           {!auditLoading && auditError === null && a !== null && (
             <>

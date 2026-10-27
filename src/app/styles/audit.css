@@ -1014,3 +1014,56 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.governance-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.governance-strip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-4);
+  font-size: 9px;
+}
+
+.governance-strip-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  color: var(--ink-3);
+  font-size: 9px;
+}
+
+.governance-strip-events span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.governance-strip-events b {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.governance-strip-events i {
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.governance-strip-events small {
+  color: var(--ink-4);
+  font: 8px var(--font-mono);
+}

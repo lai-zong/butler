@@ -69,6 +69,26 @@ describe('SemanticIndex · 向量缓存', () => {
     expect(calls).toEqual(['咖啡', '喜欢咖啡']);
   });
 
+  it('两两相似度复用缓存，并返回对称的语义分数', async () => {
+    const calls: string[] = [];
+    const fake: EmbeddingPort = {
+      model: 'fake',
+      embed: async (texts) => {
+        calls.push(...texts);
+        return texts.map((t) => (t.includes('咖啡') ? [1, 0] : [0, 1]));
+      },
+    };
+    const index = new SemanticIndex(fake);
+    const candidates = [memory('m1', '喜欢咖啡'), memory('m2', '咖啡不加糖')];
+    const first = await index.pairwise(candidates);
+    expect(first.get('m1')?.get('m2')).toBeCloseTo(1);
+    expect(first.get('m2')?.get('m1')).toBeCloseTo(1);
+
+    calls.length = 0;
+    await index.pairwise(candidates);
+    expect(calls).toEqual([]);
+  });
+
   it('记忆内容/版本变化后重新编码', async () => {
     let calls = 0;
     const fake: EmbeddingPort = {

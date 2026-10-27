@@ -932,7 +932,7 @@ function MemoryDetail({
         <div className="detail-conflict">
           <div className="detail-conflict-head">
             <span className="badge-warn">可能冲突</span>
-            <small>{conflict.detector === 'model' ? '模型判断 · review' : '显式否定 · review'}</small>
+            <small>{conflict.detector === 'model' ? '自动检测 · 模型' : '自动检测 · 显式否定'}</small>
           </div>
           <p className="detail-conflict-reason">发现可能冲突：{conflict.reason}</p>
           <p className="detail-conflict-other">另一条：{truncate(conflict.other.content, 100)}</p>

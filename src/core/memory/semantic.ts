@@ -51,10 +51,46 @@ export class SemanticIndex {
     const [queryVector] = await this.embedding.embed([query]);
     if (queryVector === undefined) return new Map();
 
+    const vectors = await this.vectorsFor(candidates);
+    const result = new Map<string, number>();
+    for (const memory of candidates) {
+      const vector = vectors.get(memory.id);
+      if (vector !== undefined) result.set(memory.id, cosine(queryVector, vector));
+    }
+    return result;
+  }
+
+  /**
+   * 全量两两语义相似度。图投影用；没有向量/模型不可用时由调用方降级。
+   * 结果只包含成功嵌入的节点。
+   */
+  async pairwise(
+    memories: readonly MemoryEntry[],
+  ): Promise<ReadonlyMap<string, ReadonlyMap<string, number>>> {
+    const vectors = await this.vectorsFor(memories);
+    const result = new Map<string, Map<string, number>>();
+    for (const a of memories) {
+      const va = vectors.get(a.id);
+      if (va === undefined) continue;
+      const row = new Map<string, number>();
+      for (const b of memories) {
+        if (a.id === b.id) continue;
+        const vb = vectors.get(b.id);
+        if (vb === undefined) continue;
+        row.set(b.id, cosine(va, vb));
+      }
+      result.set(a.id, row);
+    }
+    return result;
+  }
+
+  private async vectorsFor(
+    memories: readonly MemoryEntry[],
+  ): Promise<Map<string, readonly number[]>> {
     const missing: { readonly id: string; readonly key: string; readonly text: string }[] = [];
     const vectors = new Map<string, readonly number[]>();
 
-    for (const memory of candidates) {
+    for (const memory of memories) {
       const text = embeddingTextOf(memory);
       const key = `${this.embedding.model}|${memory.id}|${memory.version}|${memory.updatedAt}|${memory.content.length}`;
       const hit = this.cache.get(memory.id);
@@ -77,11 +113,6 @@ export class SemanticIndex {
       }
     }
 
-    const result = new Map<string, number>();
-    for (const memory of candidates) {
-      const vector = vectors.get(memory.id);
-      if (vector !== undefined) result.set(memory.id, cosine(queryVector, vector));
-    }
-    return result;
+    return vectors;
   }
 }

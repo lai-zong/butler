@@ -15,7 +15,7 @@ import { errorMessage, fetchJson } from '../lib/api.js';
 import { truncate } from '../lib/format.js';
 import type { MemoryItem } from '../lib/types.js';
 
-type EdgeType = 'content' | 'sharedEvidence' | 'conflict' | 'merge' | 'coRecall';
+type EdgeType = 'content' | 'semantic' | 'sharedEvidence' | 'conflict' | 'merge' | 'coRecall';
 
 interface GraphNode extends MemoryItem {
   readonly degree: number;
@@ -55,6 +55,7 @@ const KIND_COLOR: Record<string, string> = {
 
 const EDGE_COLOR: Record<EdgeType, string> = {
   content: '#5d8f81',
+  semantic: '#6aa6d8',
   sharedEvidence: '#b08a5a',
   conflict: '#b56e63',
   merge: '#9a86bd',
@@ -63,6 +64,7 @@ const EDGE_COLOR: Record<EdgeType, string> = {
 
 const EDGE_LABEL: Record<EdgeType, string> = {
   content: '内容相似',
+  semantic: '语义相似',
   sharedEvidence: '共享证据',
   conflict: '冲突',
   merge: '合并来源',
@@ -468,7 +470,8 @@ export function MemoryGraphPanel({
               <i style={{ background: KIND_COLOR.principle }} /> 原则
             </div>
             <div>
-              <b style={{ background: EDGE_COLOR.content }} /> 内容相似
+              <b style={{ background: EDGE_COLOR.semantic }} /> 语义相似
+              <b style={{ background: EDGE_COLOR.content }} /> 文本相似
               <b style={{ background: EDGE_COLOR.sharedEvidence }} /> 共享证据
               <b style={{ background: EDGE_COLOR.merge }} /> 合并
             </div>

@@ -24,7 +24,7 @@ const MAX_NODES = 200;
 const MAX_EDGES = 600;
 const CONTENT_EDGE_FLOOR = 0.38;
 
-type EdgeType = 'content' | 'sharedEvidence' | 'conflict' | 'merge' | 'coRecall';
+type EdgeType = 'content' | 'semantic' | 'sharedEvidence' | 'conflict' | 'merge' | 'coRecall';
 
 interface GraphEdge {
   readonly id: string;
@@ -71,8 +71,18 @@ export async function GET(): Promise<NextResponse> {
     });
   };
 
-  // ① 内容相似：每个节点只保留最强的几条，避免毛线团。
-  const contentEdges: { a: string; b: string; weight: number }[] = [];
+  // ① 语义相似：优先用 embedding；模型不可用时降级为确定性文本相似。
+  // 每个节点只保留最强的几条，避免毛线团。
+  let semanticPairs: ReadonlyMap<string, ReadonlyMap<string, number>> | null = null;
+  if (process.env.MEMORY_GRAPH_LEXICAL !== '1' && nodes.length > 1) {
+    try {
+      semanticPairs = await rt.semantic.pairwise(nodes);
+    } catch {
+      semanticPairs = null;
+    }
+  }
+
+  const contentEdges: { a: string; b: string; weight: number; semantic: boolean }[] = [];
   for (let i = 0; i < nodes.length; i += 1) {
     const a = nodes[i];
     if (!a) continue;
@@ -80,8 +90,17 @@ export async function GET(): Promise<NextResponse> {
       const b = nodes[j];
       if (!b) continue;
       if (a.memClass !== b.memClass || a.kind !== b.kind) continue;
-      const w = similarity(a.content, b.content);
-      if (w >= CONTENT_EDGE_FLOOR) contentEdges.push({ a: a.id, b: b.id, weight: w });
+      const semanticWeight = semanticPairs?.get(a.id)?.get(b.id);
+      const w = semanticWeight ?? similarity(a.content, b.content);
+      const floor = semanticWeight !== undefined ? 0.62 : CONTENT_EDGE_FLOOR;
+      if (w >= floor) {
+        contentEdges.push({
+          a: a.id,
+          b: b.id,
+          weight: w,
+          semantic: semanticWeight !== undefined,
+        });
+      }
     }
   }
   contentEdges.sort((x, y) => y.weight - x.weight);
@@ -90,7 +109,13 @@ export async function GET(): Promise<NextResponse> {
     const ca = perNode.get(e.a) ?? 0;
     const cb = perNode.get(e.b) ?? 0;
     if (ca >= 3 || cb >= 3) continue;
-    addEdge(e.a, e.b, 'content', e.weight, `内容相似 ${Math.round(e.weight * 100)}%`);
+    addEdge(
+      e.a,
+      e.b,
+      e.semantic ? 'semantic' : 'content',
+      e.weight,
+      `${e.semantic ? '语义' : '文本'}相似 ${Math.round(e.weight * 100)}%`,
+    );
     perNode.set(e.a, ca + 1);
     perNode.set(e.b, cb + 1);
     if (edges.length >= MAX_EDGES) break;
@@ -180,7 +205,8 @@ export async function GET(): Promise<NextResponse> {
     edges,
     total: { nodes: nodes.length, edges: edges.length },
     note:
-      '内容相似边是确定性文本相似度预览；正式语义边应使用 embedding。' +
-      '同轮召回边只对带 batchId 的新召回事件生效。',
+      semanticPairs !== null
+        ? '语义边来自 embedding；同轮召回边只对带 batchId 的新召回事件生效。'
+        : '当前嵌入模型不可用，内容边降级为确定性文本相似；同轮召回边只对带 batchId 的新召回事件生效。',
   });
 }
