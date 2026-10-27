@@ -128,6 +128,13 @@ export interface RecallArgs {
   readonly semanticTopK?: number;
   /** top-k 补充通道的相似度下限，默认 0.30。 */
   readonly semanticFloor?: number;
+  /**
+   * 是否允许召回归档记忆。
+   *
+   * 默认 false：归档意味着退出常规召回，只保留数据供审计/手动查看。
+   * 只有显式探索/回放实验才应打开。
+   */
+  readonly includeArchived?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -221,7 +228,7 @@ export function recall(args: RecallArgs): RecallResult {
     (m) =>
       m.lifecycle === 'active' ||
       m.lifecycle === 'dormant' ||
-      m.lifecycle === 'archived' ||
+      (args.includeArchived === true && m.lifecycle === 'archived') ||
       isDiaryTrial(m),
   );
 

@@ -51,6 +51,7 @@ function run(args: {
   limit?: number;
   seed?: number;
   favored?: 'life' | 'health';
+  includeArchived?: boolean;
 }) {
   return recall({
     query: args.query ?? '周末请朋友吃饭，需要清淡的菜',
@@ -58,6 +59,7 @@ function run(args: {
     limit: args.limit ?? 5,
     now: T0,
     random: new SeededRandom(args.seed ?? 42),
+    ...(args.includeArchived === true ? { includeArchived: true } : {}),
     ...(args.favored !== undefined ? { favoredServant: args.favored } : {}),
   });
 }
@@ -244,6 +246,20 @@ describe('★ 探索性召回 · 防局部最优', () => {
     expect(exploratory.length + (sleepy?.exploratory ? 0 : 1)).toBeGreaterThan(0);
   });
 
+  it('归档记忆默认不进入常规召回', () => {
+    const candidates = [
+      mem({ id: 'active', content: '你偏好清淡口味' }),
+      mem({
+        id: 'archived',
+        content: '你偏好清淡口味',
+        lifecycle: 'archived',
+        archivedAt: T0 - 100 * 86_400_000,
+      }),
+    ];
+    const r = run({ candidates, limit: 10 });
+    expect(r.selected.some((s) => s.memory.id === 'archived')).toBe(false);
+  });
+
   it('探索项标注了原因（可解释）', () => {
     const candidates = [
       mem({ id: 'a', content: '你偏好清淡口味' }),
@@ -256,7 +272,7 @@ describe('★ 探索性召回 · 防局部最优', () => {
         lastHitAt: T0 - 300 * 86_400_000,
       }),
     ];
-    const r = run({ candidates, limit: 20 });
+    const r = run({ candidates, limit: 20, includeArchived: true });
     const e = r.selected.find((s) => s.exploratory);
     if (e) {
       expect(e.why).toContain('探索性召回');
