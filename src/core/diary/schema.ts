@@ -18,6 +18,10 @@ export const diarySchema = z.object({
         kind: z
           .enum(['fact', 'preference', 'principle'])
           .describe('fact=可验证事实；preference=稳定偏好；principle=可复用行为原则'),
+        stability: z
+          .enum(['stable', 'temporary', 'unknown'])
+          .optional()
+          .describe('stable=长期稳定属性；temporary=只对本次任务有效；unknown=无法判断'),
         content: z.string().min(1).max(600),
         confidence: z.number().min(0).max(1),
         evidence: z

@@ -9,7 +9,7 @@
 import { msg, type ModelMessage } from '../ports/model.js';
 import type { DiarySourceMessage } from './types.js';
 
-export const DIARY_PROMPT_VERSION = 'diary.v1';
+export const DIARY_PROMPT_VERSION = 'diary.v2';
 
 export function diarySystemPrompt(): string {
   return `你是这个系统的“每日记录员”。请把当天对话整理成一篇日记，并提取少量值得长期记住的条目。
@@ -36,18 +36,40 @@ export function diarySystemPrompt(): string {
 只提取**未来可能真正有用**的内容，最多 8 条，宁缺毋滥：
 
 - fact：用户明确说过、可验证的事实；
-- preference：用户表现出的稳定偏好（一次观察要保守，置信度低于 0.6）；
+- preference：用户表现出的稳定偏好或缺省选择；
 - principle：多次验证后可复用的行为原则，必须给出适用条件和动作。
+
+### 先判断稳定性，再决定提取
+
+每条候选都必须标 "stability"：
+
+- "stable"：长期属性或长期偏好，例如长期忌口/过敏、作息、常用工具、流程偏好、
+  审美偏好、沟通偏好；
+- "temporary"：只对本次任务有效，例如这次库存、这次截止时间、本次任务范围、
+  这次数量、这次主题；
+- "unknown"：无法判断。
+
+稳定信息即使只出现一次，也应该提取；不要因为“只出现一次”就把所有条目都丢掉。
+临时的任务参数不要写成长期记忆。
+
+建议置信度：
+
+- 单次观察的稳定偏好：0.45—0.65；
+- 用户明确、可验证的稳定事实：0.6—0.8；
+- 只有多次验证的 principle 才给 0.8 以上；
+- "temporary" 不提取。
+
+空数组只用于**确实没有任何关于用户的稳定信息**时。只有临时任务参数时返回空数组；
+有明确稳定偏好或长期事实时，应至少提取一条低置信条目，而不是保守地全部省略。
 
 每条必须：
 
 - 用一句话写清；
 - 给出 evidence（输入消息里的 [msg:...] id）；
-- 置信度诚实：单次观察 0.4—0.6，多次验证才可 0.8 以上；
-- 不重复既有记忆；
-- 不能把 AI 推断写成硬约束。
+- 不能把 AI 推断写成事实或硬约束；
+- 不重复既有记忆。
 
-如果当天没有值得长期保留的内容，items 返回空数组。这是正常的。`;
+如果当天只有临时任务参数，没有长期价值，items 返回空数组；不要为了凑数提取。`;
 }
 
 export interface DiaryPromptInput {
@@ -92,3 +114,4 @@ ${lines.join('\n')}
 export function diaryMessages(input: DiaryPromptInput): readonly ModelMessage[] {
   return [msg.system(diarySystemPrompt()), msg.user(diaryUserPrompt(input))];
 }
+

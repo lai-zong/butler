@@ -98,6 +98,8 @@ export interface RunTurnArgs {
   readonly reflectionMode?: 'turn' | 'dailyDiary';
   readonly random: RandomPort;
   readonly model: ModelPort;
+  /** 独立重排模型；未配置时不调用对话模型做重排。 */
+  readonly rerankModel?: ModelPort;
   readonly log: EventLog;
   readonly clock: ClockPort;
   readonly store: MemoryStore;
@@ -424,9 +426,15 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   // 语义召回的第二阶段：对候选做精排，并允许按相关性过滤。
   // 没有语义分时不额外调用模型 —— 字面召回路径不增加成本。
-  if (semanticScores !== undefined && semanticScores.size > 0 && recalled.length > 1) {
+  const rerankModel = args.rerankModel;
+  if (
+    rerankModel !== undefined &&
+    semanticScores !== undefined &&
+    semanticScores.size > 0 &&
+    recalled.length > 1
+  ) {
     const reranked = await rerankRecall({
-      model: args.model,
+      model: rerankModel,
       query: userText,
       candidates: recalled,
       filter: true,

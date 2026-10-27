@@ -36,6 +36,7 @@ import {
   type ModelProfile,
 } from '@/app/server/modelProfiles.js';
 import { MODEL_PRESETS, presetById } from '@/app/server/modelPresets.js';
+import { loadModelRoles, saveModelRoles } from '@/app/server/modelRoles.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -99,6 +100,7 @@ function modelsOf(body: Body): readonly unknown[] {
 export async function GET(): Promise<NextResponse> {
   const rt = await getRuntime();
   const store = await loadProfileStore(DATA_DIR);
+  const roles = await loadModelRoles(DATA_DIR);
   const profiles = await Promise.all(store.profiles.map(profileView));
   const active = await activeView(store);
   const describe = rt.model?.describe() ?? null;
@@ -109,6 +111,8 @@ export async function GET(): Promise<NextResponse> {
       active,
       lastChat: store.lastChat,
       lastReview: store.lastReview,
+      memory: roles.memory,
+      rerank: roles.rerank,
       embedding: store.embedding,
       presets: MODEL_PRESETS,
       envLocked: isProviderEnvLocked(),
@@ -253,8 +257,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ? DEFAULT_EMBEDDING_ROLE
       : store.embedding;
     await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding });
+    const roles = await loadModelRoles(DATA_DIR);
+    if (roles.memory?.profileId === id || roles.rerank?.profileId === id) {
+      await saveModelRoles(DATA_DIR, {
+        ...roles,
+        ...(roles.memory?.profileId === id ? { memory: null } : {}),
+        ...(roles.rerank?.profileId === id ? { rerank: null } : {}),
+      });
+    }
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
+  }
+
+  if (action === 'set-memory' || action === 'set-rerank') {
+    const rt = await getRuntime();
+    if (rt.activeTurns > 0) {
+      return NextResponse.json(
+        { error: '有对话正在执行，等这一轮结束后再更换模型角色。' },
+        { status: 409 },
+      );
+    }
+    const role = action === 'set-memory' ? 'memory' : 'rerank';
+    const profileId = typeof body.profileId === 'string' ? body.profileId : '';
+    const modelId = typeof body.modelId === 'string' ? body.modelId : '';
+    const profile = findProfile(store, profileId);
+    const model = profile !== undefined ? findModel(profile, modelId) : undefined;
+    const expectedKind = role === 'memory' ? 'chat' : 'rerank';
+    if (profile === undefined || model === undefined || model.kind !== expectedKind) {
+      return NextResponse.json({ error: '找不到这个模型' }, { status: 404 });
+    }
+    const roles = await loadModelRoles(DATA_DIR);
+    await saveModelRoles(DATA_DIR, {
+      ...roles,
+      [role]: { profileId, modelId },
+    });
+    await resetRuntime();
+    return NextResponse.json({ ok: true, [role]: { profileId, modelId } });
   }
 
   if (action === 'set-embedding') {

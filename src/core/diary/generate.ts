@@ -52,7 +52,17 @@ function clipMessages(messages: readonly DiarySourceMessage[]): readonly DiarySo
 }
 
 function validEvidence(ids: readonly string[], allowed: Set<string>): readonly string[] {
-  return [...new Set(ids.filter((id) => allowed.has(id)))];
+  const normalized: string[] = [];
+  for (const raw of ids) {
+    // 提示词里展示的是 [msg:<id>]，模型经常把 "msg:" 前缀原样返回。
+    // 统一还原成内部消息 id，否则真实模型产出的每一条都会被误判为无来源。
+    const id = raw
+      .trim()
+      .replace(/^\[?msg:/, '')
+      .replace(/\]$/, '');
+    if (allowed.has(id)) normalized.push(id);
+  }
+  return [...new Set(normalized)];
 }
 
 export async function generateDiary(args: GenerateDiaryArgs): Promise<GenerateDiaryResult> {
@@ -89,6 +99,8 @@ export async function generateDiary(args: GenerateDiaryArgs): Promise<GenerateDi
   for (let i = 0; i < result.value.items.length; i += 1) {
     const raw = result.value.items[i];
     if (!raw) continue;
+    // 只对本次任务有效的参数不进入长期记忆。
+    if (raw.stability === 'temporary') continue;
     const evidence = validEvidence(raw.evidence, allowed);
     // 没有可验证来源的条目直接丢弃：日记可以叙述，记忆条目必须有证据。
     // 并且至少要有一条证据来自用户消息 —— 不能把助手自述/系统提示词

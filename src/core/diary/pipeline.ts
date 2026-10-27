@@ -14,6 +14,7 @@ import type { DiaryStore } from './store.js';
 import type { DiaryEntry, DiarySourceMessage } from './types.js';
 import { generateDiary } from './generate.js';
 import { ingestDiary } from './ingest.js';
+import { reviewTrialConflicts } from './conflicts.js';
 import { dayWindow, previousDayKey } from './time.js';
 
 export const MIN_USER_MESSAGES_FOR_DIARY = 4;
@@ -29,6 +30,8 @@ export interface DailyDiaryArgs {
   /** 默认处理前一天；测试可显式指定。 */
   readonly dayKey?: string;
   readonly minUserMessages?: number;
+  /** 跑完后用记忆模型检查模糊冲突；默认关闭，测试/离线不额外调用模型。 */
+  readonly reviewConflicts?: boolean;
 }
 
 export interface DailyDiarySessionResult {
@@ -54,6 +57,7 @@ export interface DailyDiaryResult {
   readonly memoriesCreated: number;
   readonly memoriesReinforced: number;
   readonly memoriesPromoted: number;
+  readonly conflictsResolved: number;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
 }
 
@@ -185,6 +189,26 @@ export async function runDailyDiaries(args: DailyDiaryArgs): Promise<DailyDiaryR
     }
   }
 
+  let conflictsResolved = 0;
+  if (
+    args.reviewConflicts === true &&
+    (results.some((r) => r.status === 'created') || results.some((r) => r.memoriesReinforced))
+  ) {
+    try {
+      const review = await reviewTrialConflicts({
+        model: args.model,
+        log: args.log,
+        clock: args.clock,
+        store: args.memory,
+        userId: args.chat.listSessions()[0]?.userId ?? 'local',
+        maxPairs: 4,
+      });
+      conflictsResolved = review.resolved;
+    } catch {
+      // 冲突复核是优化，不改变日记已生成的事实；失败留给审计事件。
+    }
+  }
+
   return {
     dayKey,
     sessions: results,
@@ -194,6 +218,7 @@ export async function runDailyDiaries(args: DailyDiaryArgs): Promise<DailyDiaryR
     memoriesCreated: results.reduce((n, r) => n + (r.memoriesCreated ?? 0), 0),
     memoriesReinforced: results.reduce((n, r) => n + (r.memoriesReinforced ?? 0), 0),
     memoriesPromoted: results.reduce((n, r) => n + (r.memoriesPromoted ?? 0), 0),
+    conflictsResolved,
     usage: { inputTokens, outputTokens },
   };
 }
@@ -201,7 +226,8 @@ export async function runDailyDiaries(args: DailyDiaryArgs): Promise<DailyDiaryR
 export function diarySummary(result: DailyDiaryResultLike): string {
   return (
     `日记 ${result.dayKey}：生成 ${result.created} 篇，跳过 ${result.skipped}，失败 ${result.failed}；` +
-    `记忆新增 ${result.memoriesCreated ?? 0}，补证据 ${result.memoriesReinforced ?? 0}，转正 ${result.memoriesPromoted ?? 0}`
+    `记忆新增 ${result.memoriesCreated ?? 0}，补证据 ${result.memoriesReinforced ?? 0}，转正 ${result.memoriesPromoted ?? 0}` +
+    (result.conflictsResolved !== undefined ? `，冲突裁决 ${result.conflictsResolved}` : '')
   );
 }
 
@@ -213,6 +239,7 @@ interface DailyDiaryResultLike {
   readonly memoriesCreated?: number;
   readonly memoriesReinforced?: number;
   readonly memoriesPromoted?: number;
+  readonly conflictsResolved?: number;
 }
 
 /** 供后续阶段使用：日记条目 → 候选（暂不做准入）。 */

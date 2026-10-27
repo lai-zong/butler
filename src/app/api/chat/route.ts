@@ -256,6 +256,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           reflectionMode: 'dailyDiary',
           userId: session.userId,
           model: chatModel,
+          ...(rt.rerankModel !== null ? { rerankModel: rt.rerankModel } : {}),
           random: rt.random,
           log: rt.bootstrapped.log,
           clock: rt.clock,

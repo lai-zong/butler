@@ -62,9 +62,16 @@ interface EmbeddingRoleView {
   readonly modelId?: string;
 }
 
+interface RoleSelectionView {
+  readonly profileId: string;
+  readonly modelId: string;
+}
+
 interface ModelResponse {
   readonly profiles: readonly ProfileView[];
   readonly active: ActiveView | null;
+  readonly memory: RoleSelectionView | null;
+  readonly rerank: RoleSelectionView | null;
   readonly embedding: EmbeddingRoleView;
   readonly presets: readonly ModelPreset[];
   readonly envLocked: boolean;
@@ -121,6 +128,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
   const [embeddingOpen, setEmbeddingOpen] = useState(false);
   const [embeddingBusy, setEmbeddingBusy] = useState(false);
   const [embeddingNotice, setEmbeddingNotice] = useState<string | null>(null);
+  const [roleBusy, setRoleBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -344,6 +352,36 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       setActionError(errorMessage(err));
     } finally {
       setEmbeddingBusy(false);
+    }
+  }
+
+  async function selectMemory(profileId: string, modelId: string): Promise<void> {
+    setRoleBusy(true);
+    setActionError(null);
+    try {
+      await postJson('/api/model', { action: 'set-memory', profileId, modelId });
+      notify('记忆模型已切换；之后不再跟随对话模型', 'success');
+      await load();
+      onRefreshOverview();
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setRoleBusy(false);
+    }
+  }
+
+  async function selectRerank(profileId: string, modelId: string): Promise<void> {
+    setRoleBusy(true);
+    setActionError(null);
+    try {
+      await postJson('/api/model', { action: 'set-rerank', profileId, modelId });
+      notify('重排模型已切换；召回排序不再使用对话模型', 'success');
+      await load();
+      onRefreshOverview();
+    } catch (err) {
+      setActionError(errorMessage(err));
+    } finally {
+      setRoleBusy(false);
     }
   }
 
@@ -577,10 +615,36 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       .filter((model) => model.kind === 'embedding')
       .map((model) => ({ profile, model })),
   );
+  const chatChoices = data.profiles.flatMap((profile) =>
+    profile.models
+      .filter((model) => model.kind === 'chat')
+      .map((model) => ({ profile, model })),
+  );
+  const rerankChoices = data.profiles.flatMap((profile) =>
+    profile.models
+      .filter((model) => model.kind === 'rerank')
+      .map((model) => ({ profile, model })),
+  );
+  const roleLabel = (
+    selected: { readonly profileId: string; readonly modelId: string } | null,
+    choices: readonly { readonly profile: ProfileView; readonly model: ProfileModelView }[],
+  ): string => {
+    if (selected === null) return '未配置';
+    return (
+      choices.find(
+        ({ profile, model }) =>
+          profile.id === selected.profileId && model.id === selected.modelId,
+      )?.model.id ?? `${selected.profileId} / ${selected.modelId}`
+    );
+  };
+  const memoryValue = data.memory === null ? '' : `${data.memory.profileId}::${data.memory.modelId}`;
+  const memoryLabel = roleLabel(data.memory, chatChoices);
+  const rerankValue = data.rerank === null ? '' : `${data.rerank.profileId}::${data.rerank.modelId}`;
+  const rerankLabel = roleLabel(data.rerank, rerankChoices);
   const typeLabel = modelType === 'chat' ? '对话模型' : modelType === 'embedding' ? '嵌入模型' : '重排模型';
   const typeDescription =
     modelType === 'chat'
-      ? '用于对话、审查和反思等文本生成场景；这里只管理连接与能力，不设置对话默认模型。'
+      ? '用于对话与审查；记忆模型单独选择，不跟随这里的对话模型。'
       : modelType === 'embedding'
         ? '把文字变成向量，用于记忆语义召回；嵌入模型决定向量空间。'
         : '对记忆召回结果重新排序；独立重排接口与对话接口不同。';
@@ -613,13 +677,37 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
           <h3>{typeLabel}</h3>
           <p>{typeDescription}</p>
         </div>
-        {modelType !== 'rerank' && (
-          <>
-            <span className="model-muted">{typedProfiles.length} 个配置</span>
-            <button type="button" className="model-primary" onClick={resetForm}>＋ 新增配置</button>
-          </>
-        )}
+        <span className="model-muted">{typedProfiles.length} 个配置</span>
+        <button type="button" className="model-primary" onClick={resetForm}>＋ 新增配置</button>
       </div>
+
+      {modelType === 'chat' && (
+        <div className="model-embedding-role">
+          <span className="model-current-mark">MM</span>
+          <div>
+            <span className="model-field-label">固定记忆模型</span>
+            <strong>{memoryLabel}</strong>
+            <small>日记与记忆提取使用这个模型；切换对话模型不会改变它。</small>
+          </div>
+          <select
+            className="model-role-select"
+            value={memoryValue}
+            disabled={roleBusy || chatChoices.length === 0}
+            aria-label="选择记忆模型"
+            onChange={(e) => {
+              const [profileId, modelId] = e.target.value.split('::');
+              if (profileId && modelId) void selectMemory(profileId, modelId);
+            }}
+          >
+            <option value="">未配置</option>
+            {chatChoices.map(({ profile, model }) => (
+              <option key={`${profile.id}::${model.id}`} value={`${profile.id}::${model.id}`}>
+                {profile.name} · {model.id}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {modelType === 'embedding' && (
         <>
@@ -689,12 +777,43 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
         </>
       )}
 
-      {modelType === 'rerank' ? (
-        <div className="model-rerank-empty">
-          <strong>暂未接入独立重排模型</strong>
-          <p>当前记忆重排由对话模型完成结构化判断。接入 Cohere Rerank、BGE Reranker 等独立服务后，再在这里配置。</p>
-        </div>
-      ) : typedProfiles.length === 0 ? (
+      {modelType === 'rerank' && (
+        <>
+          <div className="model-embedding-role">
+            <span className="model-current-mark">RR</span>
+            <div>
+              <span className="model-field-label">固定重排模型</span>
+              <strong>{rerankLabel}</strong>
+              <small>只负责召回排序；未配置时跳过重排，不回退到对话模型。</small>
+            </div>
+            <select
+              className="model-role-select"
+              value={rerankValue}
+              disabled={roleBusy || rerankChoices.length === 0}
+              aria-label="选择重排模型"
+              onChange={(e) => {
+                const [profileId, modelId] = e.target.value.split('::');
+                if (profileId && modelId) void selectRerank(profileId, modelId);
+              }}
+            >
+              <option value="">未配置</option>
+              {rerankChoices.map(({ profile, model }) => (
+                <option key={`${profile.id}::${model.id}`} value={`${profile.id}::${model.id}`}>
+                  {profile.name} · {model.id}
+                </option>
+              ))}
+            </select>
+          </div>
+          {rerankChoices.length === 0 && (
+            <div className="model-rerank-empty">
+              <strong>还没有可用的重排模型</strong>
+              <p>先在“重排模型”类型下添加配置；当前不会用对话模型冒充重排模型。</p>
+            </div>
+          )}
+        </>
+      )}
+
+      {typedProfiles.length === 0 ? (
         <div className="model-empty-state">
           <p>还没有{typeLabel}配置。</p>
           <button type="button" className="model-primary" onClick={resetForm}>新增第一个配置</button>

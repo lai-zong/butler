@@ -4210,3 +4210,19 @@
   color: var(--accent);
   font-size: 8.5px;
 }
+
+.model-role-select {
+  min-width: 170px;
+  max-width: 240px;
+  height: 28px;
+  border: 1px solid #cfe0d4;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 9px;
+  padding: 0 7px;
+}
+
+.model-role-select:disabled {
+  opacity: .55;
+}

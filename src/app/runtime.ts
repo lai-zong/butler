@@ -39,7 +39,9 @@ import {
   loadProfileStore,
   resolveActiveModel,
   resolveProfileModel,
+  type ResolvedModel,
 } from './server/modelProfiles.js';
+import { loadModelRoles } from './server/modelRoles.js';
 import { limitsConfig, modelConfig } from '@/core/config/env.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
@@ -118,6 +120,10 @@ export interface ButlerRuntime {
   readonly random: SeededRandom;
   /** 主模型（文本 + 结构化 + 工具） */
   readonly model: ModelPort | null;
+  /** 固定的记忆模型；不跟随对话模型切换。 */
+  readonly memoryModel: ModelPort | null;
+  /** 固定的召回重排模型；不跟随对话模型切换。 */
+  readonly rerankModel: ModelPort | null;
   /** 流式模型（推理流用） */
   readonly streamModel: ModelStreamPort | null;
   /** 英文思考增量翻译；没有模型时为 null */
@@ -217,6 +223,15 @@ async function createSemantic(dir: string, modelRoot: string): Promise<SemanticI
       dimensions: resolved.model.dimension ?? role.dimension,
     }),
   );
+}
+
+function buildRoleModel(resolved: ResolvedModel): ModelPort {
+  return resolved.preset.adapter === 'deepseek'
+    ? new DeepSeekModel(resolved.config)
+    : new OpenAICompatibleModel(
+        resolved.config,
+        resolved.preset.adapter === 'ollama' ? 'ollama' : 'openai-compatible',
+      );
 }
 
 async function initRuntime(): Promise<ButlerRuntime> {
@@ -332,6 +347,35 @@ async function initRuntime(): Promise<ButlerRuntime> {
   } catch {
     // 没有配置模型不是致命错误 —— 记忆治理界面不需要模型也能用
     model = null;
+  }
+
+  // ── 固定模型角色：记忆 / 重排 ──
+  // 角色未配置就是 null，绝不静默回退到当前对话模型。
+  let memoryModel: ModelPort | null = null;
+  let rerankModel: ModelPort | null = null;
+  try {
+    const roles = await loadModelRoles(dir);
+    if (roles.memory !== null) {
+      const resolved = await resolveProfileModel(
+        dir,
+        roles.memory.profileId,
+        roles.memory.modelId,
+        'chat',
+      );
+      if (resolved !== null) memoryModel = buildRoleModel(resolved);
+    }
+    if (roles.rerank !== null) {
+      const resolved = await resolveProfileModel(
+        dir,
+        roles.rerank.profileId,
+        roles.rerank.modelId,
+        'rerank',
+      );
+      if (resolved !== null) rerankModel = buildRoleModel(resolved);
+    }
+  } catch {
+    memoryModel = null;
+    rerankModel = null;
   }
 
   /**
@@ -573,37 +617,41 @@ async function initRuntime(): Promise<ButlerRuntime> {
      * 没有模型时**不接** —— 那样每日/周任务会如实返回「未接入反思引擎」，
      * 而不是假装跑过（聚合任务不需要模型，照常工作）。
      */
-    ...(model !== null
-      ? {
-          reflect: (a: { readonly scope: 'daily' | 'weekly'; readonly temporalPatterns?: readonly string[] }) => {
-            // 周复盘已切到日记材料：只汇总，不新增候选。
-            // 旧的 reflectScheduled 仍保留给显式 daily 路径/兼容测试。
-            if (a.scope === 'weekly') {
-              return Promise.resolve(weeklyDiaryDigest({ diary, clock }));
-            }
-            return reflectScheduled({
-              scope: a.scope,
-              model: model as ModelPort,
-              log: bootstrapped.log,
-              clock,
-              store: bootstrapped.memory,
-              chat: bootstrapped.chat,
-              userId: DEFAULT_USER_ID,
-              ...(a.temporalPatterns !== undefined ? { temporalPatterns: a.temporalPatterns } : {}),
-            });
-          },
-        }
-      : {}),
-    ...(model !== null
+    reflect: (a: { readonly scope: 'daily' | 'weekly'; readonly temporalPatterns?: readonly string[] }) => {
+      // 周复盘已切到日记材料：只汇总，不新增候选。
+      if (a.scope === 'weekly') {
+        return Promise.resolve(weeklyDiaryDigest({ diary, clock }));
+      }
+      const memory = memoryModel;
+      if (memory === null) {
+        return Promise.resolve({
+          candidateCount: 0,
+          summary: '记忆模型未配置，跳过定时反思；请先在设置中选择记忆模型。',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        });
+      }
+      return reflectScheduled({
+        scope: a.scope,
+        model: memory,
+        log: bootstrapped.log,
+        clock,
+        store: bootstrapped.memory,
+        chat: bootstrapped.chat,
+        userId: DEFAULT_USER_ID,
+        ...(a.temporalPatterns !== undefined ? { temporalPatterns: a.temporalPatterns } : {}),
+      });
+    },
+    ...(memoryModel !== null
       ? {
           diary: async () => {
             const result = await runDailyDiaries({
-              model: model as ModelPort,
+              model: memoryModel as ModelPort,
               log: bootstrapped.log,
               clock,
               chat: bootstrapped.chat,
               diary,
               memory: bootstrapped.memory,
+              reviewConflicts: true,
             });
             return {
               created: result.created,
@@ -634,6 +682,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
     clock,
     random,
     model,
+    memoryModel,
+    rerankModel,
     streamModel,
     translator,
     tools,
