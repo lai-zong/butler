@@ -442,8 +442,9 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   // 召回即命中：记录 fitness 与唤醒（休眠/归档记忆被再次命中会回升）。
   // ⚠️ 只在实际进入本轮上下文后记录，不能把候选集全算成命中。
+  const recallBatchId = `recall_${args.clock.now()}_${Math.floor(args.random.next() * 1_000_000)}`;
   for (const r of recalled) {
-    args.evolution?.recordHit(r.memory.id);
+    args.evolution?.recordHit(r.memory.id, recallBatchId);
   }
 
   const memRefs = recalled.map((r) => ({

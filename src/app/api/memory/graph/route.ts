@@ -120,7 +120,31 @@ export async function GET(): Promise<NextResponse> {
     }
   }
 
-  // ③ 冲突事件（只取双方仍在图中的）
+  // ③ 同轮召回：同一批次进入上下文的记忆之间建立弱边。
+  const byBatch = new Map<string, string[]>();
+  for (const event of rt.bootstrapped.log.byType('memory.recalled')) {
+    const p = (event.payload ?? {}) as Record<string, unknown>;
+    const memoryId = asString(p['memoryId']);
+    const batchId = asString(p['batchId']);
+    if (memoryId.length === 0 || batchId.length === 0) continue;
+    const list = byBatch.get(batchId) ?? [];
+    if (!list.includes(memoryId)) list.push(memoryId);
+    byBatch.set(batchId, list);
+  }
+  for (const list of byBatch.values()) {
+    if (list.length < 2) continue;
+    for (let i = 0; i < list.length; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const a = list[i];
+        const b = list[j];
+        if (!a || !b) continue;
+        addEdge(a, b, 'coRecall', 0.65, '同一轮召回');
+        if (edges.length >= MAX_EDGES) break;
+      }
+    }
+  }
+
+  // ④ 冲突事件（只取双方仍在图中的）
   for (const event of rt.bootstrapped.log.byType('conflict.detected')) {
     const p = (event.payload ?? {}) as Record<string, unknown>;
     const memoryId = asString(p['memoryId']);

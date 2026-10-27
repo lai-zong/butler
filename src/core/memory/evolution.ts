@@ -119,7 +119,7 @@ export class EvolutionEngine {
    * 顺带处理**唤醒** —— 休眠/归档的记忆被再次命中时会自动回升，
    * 这是"淘汰 ≠ 删除"的关键行为。
    */
-  recordHit(memoryId: string): LifecycleTransition {
+  recordHit(memoryId: string, batchId?: string): LifecycleTransition {
     const entry = this.store.get(memoryId);
     if (!entry) return { kind: 'none' };
 
@@ -140,7 +140,12 @@ export class EvolutionEngine {
     this.log.append({
       type: 'memory.recalled',
       actor: 'butler',
-      payload: { memoryId, hits: acc.hits, lifecycle: this.store.get(memoryId)?.lifecycle },
+      payload: {
+        memoryId,
+        hits: acc.hits,
+        lifecycle: this.store.get(memoryId)?.lifecycle,
+        ...(batchId !== undefined ? { batchId } : {}),
+      },
       createdAt: now,
     });
 
