@@ -28,6 +28,7 @@ import {
 import { Icon, type IconName } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { DiaryPanel } from './DiaryPanel';
+import { MemoryGraphPanel } from './MemoryGraphPanel';
 import { useMediaQuery, useNow } from '../lib/hooks.js';
 import { errorMessage, fetchJson, postJson } from '../lib/api.js';
 import {
@@ -136,6 +137,7 @@ export function MemoryView({
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const [diaryOpen, setDiaryOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
   const [forgetTarget, setForgetTarget] = useState<MemoryItem | null>(null);
   const [forgetting, setForgetting] = useState(false);
   const [hardConfirm, setHardConfirm] = useState(false);
@@ -379,6 +381,21 @@ export function MemoryView({
     />
   );
 
+  if (graphOpen) {
+    return (
+      <MemoryGraphPanel
+        onBack={() => setGraphOpen(false)}
+        onSelectMemory={(id) => {
+          setGraphOpen(false);
+          setSelectedId(id);
+          setDetail(null);
+          void loadDetail(id);
+          if (narrow) setSheetOpen(true);
+        }}
+      />
+    );
+  }
+
   if (diaryOpen) {
     return <DiaryPanel onBack={() => setDiaryOpen(false)} />;
   }
@@ -395,6 +412,9 @@ export function MemoryView({
         }
         actions={
           <>
+            <button type="button" className="btn btn-ghost" onClick={() => setGraphOpen(true)}>
+              <Icon name="memory" size={15} /> 图谱
+            </button>
             <button type="button" className="btn btn-ghost" onClick={() => setDiaryOpen(true)}>
               <Icon name="quote" size={15} /> 日记
             </button>
