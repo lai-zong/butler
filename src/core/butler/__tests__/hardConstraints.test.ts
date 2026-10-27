@@ -118,6 +118,18 @@ describe('verifyHardConstraints · 未处理时机械拦截', () => {
     expect(blocked[0]?.payload).toMatchObject({ deterministic: true });
   });
 
+  it('过于泛化的硬约束不强求每轮回答都提它', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('用户有过敏情况')],
+      reports: [report('life', { artifacts: ['你喜欢美式咖啡'] })],
+      now: T,
+    });
+    expect(result.mustBlock).toBe(false);
+    expect(result.verdicts).toHaveLength(0);
+  });
+
   it('仆人产出提到过敏 → 通过', () => {
     const log = new EventLog('s');
     const result = verifyHardConstraints({

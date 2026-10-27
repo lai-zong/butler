@@ -83,6 +83,11 @@ function mentions(text: string, constraint: string): boolean {
   return hasAnyNgram(text, core, 2);
 }
 
+/** 去掉“用户/有/情况”这类泛化词，判断是否还有可机械核对的具体实词。 */
+function specificCore(constraint: string): string {
+  return coreOf(constraint).replace(/用户|你|我|有|情况|严重|这个|那个|需要|记住/g, '');
+}
+
 /**
  * 从约束文本提取候选片段（供日志与调试展示）。
  *
@@ -113,6 +118,16 @@ export function verifyHardConstraints(args: {
   const verdicts: HardConstraintVerdict[] = [];
 
   for (const hc of args.hardConstraints) {
+    /**
+     * 泛化到无法机械核对的硬约束不强行拦截。
+     *
+     * 例：「用户有过敏情况」核心实词只有「过敏」，无法从产出文本判断是否
+     * 真的处理过；强行要求每轮回答都提“过敏”会把咖啡偏好这类无关回答也扣下。
+     * 这类约束仍会被注入并交给 LLM 监督；只有能抽出具体实词片段的约束
+     * （如「花生严重过敏」）才做确定性机械校验。
+     */
+    if (specificCore(hc.memory.content).length < 3) continue;
+
     const unhandledBy: string[] = [];
     for (const rep of args.reports) {
       // 状态为 failed 的仆人没有产出，不算"未处理"

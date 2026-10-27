@@ -51,6 +51,26 @@ const cases = [
     memory: '用户偏好低饱和的蓝绿色，不喜欢高对比。',
     query: '给这张产品海报一个配色方向。',
   },
+  {
+    name: 'study',
+    memory: '用户背单词时更喜欢用例句记，晚上记忆效果比早上好。',
+    query: '帮我安排今天的背单词时间。',
+  },
+  {
+    name: 'life',
+    memory: '用户周末通常喜欢在家休息，不喜欢太吵的地方。',
+    query: '周末给我一个放松安排。',
+  },
+  {
+    name: 'finance',
+    memory: '用户买东西习惯先比较性价比，不追求最新款。',
+    query: '我想换一台笔记本，给个购买建议。',
+  },
+  {
+    name: 'planning',
+    memory: '用户不喜欢临时改计划，计划变更需要提前说。',
+    query: '帮我把这周的事情排一下。',
+  },
 ] as const;
 
 const judgeSchema = z.object({
