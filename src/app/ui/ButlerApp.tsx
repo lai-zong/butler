@@ -539,7 +539,6 @@ export function ButlerApp(): JSX.Element {
       <div className={`app-shell${hydrated ? '' : ' is-boot-pending'}${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`} ref={appShellRef}>
         <Sidebar
           view={view}
-          overview={overview}
           collapsed={sidebarCollapsed}
           onNavigate={navigate}
           onOpenConsole={() => openMemory()}

@@ -167,8 +167,8 @@ export function ConsoleShell({
               <b className="mono">{formatNumber(total)}</b>
             </span>
             <span className="console-metric">
-              <i>PEND</i>
-              <b className="mono is-warn">{formatNumber(pending)}</b>
+              <i>TRIAL</i>
+              <b className="mono">{formatNumber(pending)}</b>
             </span>
             <span className="console-metric">
               <i>EVT</i>
@@ -225,7 +225,7 @@ export function ConsoleShell({
             SYS / LOCAL ONLY
           </span>
           <span className="cf-item mono">
-            MEM {formatNumber(total)} · PEND {formatNumber(pending)} · EVT {formatNumber(events)}
+            MEM {formatNumber(total)} · TRIAL {formatNumber(pending)} · EVT {formatNumber(events)}
           </span>
           <span className="cf-item mono">MODEL {model}</span>
           <span className="cf-end mono">BUTLER · TERMINAL 02</span>

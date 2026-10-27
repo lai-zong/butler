@@ -59,6 +59,7 @@ export async function generateDiary(args: GenerateDiaryArgs): Promise<GenerateDi
   const window = dayWindow(args.dayKey);
   const messages = clipMessages(args.messages);
   const allowed = new Set(messages.map((m) => m.id));
+  const userMessageIds = new Set(messages.filter((m) => m.role === 'user').map((m) => m.id));
 
   const userMessages = messages.filter((m) => m.role === 'user');
   const min = args.minUserMessages ?? 4;
@@ -90,7 +91,9 @@ export async function generateDiary(args: GenerateDiaryArgs): Promise<GenerateDi
     if (!raw) continue;
     const evidence = validEvidence(raw.evidence, allowed);
     // 没有可验证来源的条目直接丢弃：日记可以叙述，记忆条目必须有证据。
-    if (evidence.length === 0) continue;
+    // 并且至少要有一条证据来自用户消息 —— 不能把助手自述/系统提示词
+    // 当成用户偏好或事实写进长期记忆。
+    if (evidence.length === 0 || !evidence.some((id) => userMessageIds.has(id))) continue;
     if (raw.kind === 'principle' && (!raw.principleCondition || !raw.principleAction)) {
       // 原则缺少条件/动作就无法注入，也无法检测违背，降级为事实/偏好候选。
       items.push({

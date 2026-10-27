@@ -88,8 +88,8 @@ export function diaryWorthy(
 /**
  * 跑一次昨日日记。失败不抛整轮，逐会话记录。
  *
- * ⚠️ 这里只生成日记，不直接把条目写入记忆仓库。
- *   条目的准入/试行/图谱映射属于后续阶段；日记是它们的事实来源。
+ * 日记是条目的事实来源；条目由 ingestDiary 写入试行记忆，
+ * 再按独立日期证据自动转正。
  */
 export async function runDailyDiaries(args: DailyDiaryArgs): Promise<DailyDiaryResult> {
   const dayKey = args.dayKey ?? previousDayKey(args.clock.now());

@@ -7,7 +7,7 @@
  *   · 流式叙述：等待执行时先说思路，不让用户盯着转圈
  *   · 过程面板：思考 → 工具 → 再思考，全部可展开
  *   · 契约与复核：干前写了什么、干完逐条核对
- *   · 反思回执：这一轮学到了什么、几条等你确认
+ *   · 反思回执：这一轮记录了什么试行记忆
  *   · 依据条：召回 / 注入 / 拦截，一键跳到审计
  *
  * ⚠️ 对话在切换空间时**不卸载**（由父层保持挂载）：
@@ -1396,7 +1396,7 @@ export function ChatView({
                   <>
                     <span className="hero-dot">·</span>
                     <button type="button" className="is-accent" onClick={() => onOpenMemory({ pending: true })}>
-                      {overview?.memory.pending} 条等你确认
+                      {overview?.memory.pending} 条试行记忆
                     </button>
                   </>
                 )}

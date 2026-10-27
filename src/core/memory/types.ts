@@ -102,7 +102,7 @@ export function participatesInEvolution(cls: MemoryClass): boolean {
 export type MemoryLifecycle = 'candidate' | 'active' | 'dormant' | 'archived';
 
 export const LIFECYCLE_LABEL: Record<MemoryLifecycle, string> = {
-  candidate: '候选',
+  candidate: '试行',
   active: '活跃',
   dormant: '休眠',
   archived: '归档',

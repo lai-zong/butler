@@ -6,7 +6,7 @@
  * 通用文档能力的前端入口：
  *   上传 → 提取 → 入库 → 检索 → 查看片段 → 选择性“记住这一条”。
  *
- * ⚠️ 文档正文默认只做检索；只有用户明确点“记住这一段”才进入记忆候选。
+ * ⚠️ 文档正文默认只做检索；只有用户明确点“记住这一段”才写入记忆并直接生效。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -161,7 +161,7 @@ export function DocumentsPanel({
         memClass: rememberScope,
         ...(rememberScope === 'domain' ? { domain: rememberDomain } : {}),
       });
-      notify('已加入记忆候选；需要你在记忆治理里审核后才会生效。', 'success');
+      notify('已记住这一段；这是你明确选择的记忆，已直接生效。', 'success');
     } catch (err) {
       notify(errorMessage(err), 'warning');
     } finally {
@@ -334,7 +334,7 @@ export function DocumentsPanel({
                   ))}
                 </select>
               )}
-              <span className="doc-remember-hint">先入候选，审核后才生效</span>
+              <span className="doc-remember-hint">明确选择，直接生效</span>
             </div>
             {detail.chunks.map((chunk) => (
               <article key={chunk.id} className="doc-chunk">

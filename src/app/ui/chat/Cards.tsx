@@ -289,19 +289,13 @@ export function ReflectionCard({
         <Icon name="sparkle" size={15} />
       </span>
       <span className="reflect-text">
-        刚学到 <strong>{learned}</strong> 条
-        {reflection.pendingReview > 0 ? (
-          <>
-            ，其中 <strong>{reflection.pendingReview}</strong> 条等你确认
-          </>
-        ) : (
-          '，已按分级策略自动生效'
-        )}
+        刚记录 <strong>{learned}</strong> 条试行记忆
+        {reflection.pendingReview > 0 ? '，系统会按独立证据自动验证' : '，已按分级策略自动生效'}
         {reflection.skippedDuplicates > 0 ? `；${reflection.skippedDuplicates} 条重复已跳过` : ''}。
       </span>
       {reflection.pendingReview > 0 && (
         <button type="button" className="text-btn" onClick={onOpenMemory}>
-          去审核
+          查看试行
           <Icon name="chevronRight" size={13} />
         </button>
       )}

@@ -1017,6 +1017,32 @@ export class MemoryStore {
     return true;
   }
 
+  /**
+   * 休眠记忆被新证据再次命中时唤醒。
+   *
+   * 归档记忆不走这里：归档是“退出竞争”，新日记应重新进入试行，
+   * 而不是把旧条目直接抬回 active（尤其旧候选可能是过拟合规则）。
+   */
+  revive(memoryId: string, reason: string): boolean {
+    const entry = this.entries.get(memoryId);
+    if (!entry || entry.lifecycle !== 'dormant') return false;
+    const now = this.clock.now();
+    const revivedCount = entry.revivedCount + 1;
+    this.setLifecycle(memoryId, 'active', { revivedCount, clearDormant: true });
+    this.log.append({
+      type: 'memory.revived',
+      actor: 'system',
+      payload: {
+        memoryId,
+        content: entry.content,
+        reason,
+        snapshot: snapshotOf(this.entries.get(memoryId)),
+      },
+      createdAt: now,
+    });
+    return true;
+  }
+
   /** 写入生命周期与相关时间戳（演化引擎专用，同样不经过 canWrite）。 */
   setLifecycle(
     memoryId: string,

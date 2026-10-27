@@ -22,7 +22,7 @@ export const CLASS_LABEL: Record<MemoryClass, string> = {
 };
 
 export const LIFECYCLE_LABEL: Record<MemoryLifecycle, string> = {
-  candidate: '待审',
+  candidate: '试行',
   active: '活跃',
   dormant: '休眠',
   archived: '归档',

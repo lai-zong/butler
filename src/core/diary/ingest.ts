@@ -97,6 +97,7 @@ export function ingestDiary(args: {
         (entry) =>
           (entry.memClass === 'global_shared' || entry.memClass === 'global_constraint') &&
           entry.kind === item.kind &&
+          entry.lifecycle !== 'archived' &&
           entry.content !== item.content,
       )
       .find((entry) => explicitNegationConflict(item.content, entry.content) !== null);
@@ -159,7 +160,15 @@ export function ingestDiary(args: {
 
     const existing = args.store
       .all()
-      .find((entry) => entry.id !== conflict?.id && isDuplicate(entry, itemAsCandidate(item)));
+      .find(
+        (entry) =>
+          entry.id !== conflict?.id &&
+          entry.kind === item.kind &&
+          (entry.lifecycle === 'active' ||
+            entry.lifecycle === 'candidate' ||
+            entry.lifecycle === 'dormant') &&
+          isDuplicate(entry, itemAsCandidate(item)),
+      );
 
     if (existing) {
       // 硬约束不参与日记强化/合并。
@@ -175,9 +184,8 @@ export function ingestDiary(args: {
         skipped += 1;
         continue;
       }
-      if (existing.lifecycle === 'dormant' || existing.lifecycle === 'archived') {
-        skipped += 1;
-        continue;
+      if (existing.lifecycle === 'dormant') {
+        args.store.revive(existing.id, `日记 ${args.diary.dayKey} 再次出现，唤回休眠记忆`);
       }
 
       const r = args.store.reinforce(

@@ -11,7 +11,7 @@
  */
 
 import { Icon, type IconName } from './Icon';
-import type { Overview, ViewId } from '../lib/types.js';
+import type { ViewId } from '../lib/types.js';
 
 interface NavItem {
   readonly id: ViewId;
@@ -29,7 +29,6 @@ const NAV_BOTTOM: readonly NavItem[] = [
 
 interface SidebarProps {
   readonly view: ViewId;
-  readonly overview: Overview | null;
   readonly collapsed: boolean;
   readonly onNavigate: (view: ViewId) => void;
   readonly onOpenConsole: () => void;
@@ -39,15 +38,12 @@ interface SidebarProps {
 
 export function Sidebar({
   view,
-  overview,
   collapsed,
   onNavigate,
   onOpenConsole,
   onOpenCommand,
   onToggleCollapse,
 }: SidebarProps): JSX.Element {
-  const pending = overview?.memory.pending ?? 0;
-
   function renderNavItem(item: NavItem): JSX.Element {
     const active = view === item.id;
     return (
@@ -98,11 +94,6 @@ export function Sidebar({
           <span className="nav-text">
             <strong>控制台</strong>
           </span>
-          {pending > 0 && (
-            <span className="nav-badge" aria-label={`${pending} 条待审`}>
-              {pending > 99 ? '99+' : pending}
-            </span>
-          )}
           <span className="nav-console-arrow" aria-hidden="true">
             <Icon name="chevronRight" size={13} />
           </span>

@@ -937,7 +937,7 @@ function MemoryDetail({
           <p className="detail-conflict-reason">发现可能冲突：{conflict.reason}</p>
           <p className="detail-conflict-other">另一条：{truncate(conflict.other.content, 100)}</p>
           <p className="detail-footnote">
-            冲突由系统自动裁决并留下审计记录；用户不再手动决定保留哪一条。
+            冲突关系只读展示；显式否定由系统自动裁决，其它冲突保留审计记录。
           </p>
         </div>
       )}

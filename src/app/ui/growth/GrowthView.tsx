@@ -594,7 +594,7 @@ export function GrowthView({
         <section className="panel growth-events panel--wide">
           <SectionHeading
             title="演化日志"
-            description="写入、审核、休眠、唤醒 —— 它正在淘汰什么、保留什么。"
+            description="写入、试行、休眠、唤醒 —— 它正在淘汰什么、保留什么。"
             actions={
               <button type="button" className="text-btn" onClick={() => onNavigate('audit')}>
                 事件流
@@ -603,7 +603,7 @@ export function GrowthView({
             }
           />
           {overview.recentEvolution.length === 0 ? (
-            <p className="panel-empty">还没有演化事件。随着使用会出现写入、审核与休眠。</p>
+            <p className="panel-empty">还没有演化事件。随着使用会出现写入、试行与休眠。</p>
           ) : (
             <ol className="evolution-timeline">
               {overview.recentEvolution.map((e) => (

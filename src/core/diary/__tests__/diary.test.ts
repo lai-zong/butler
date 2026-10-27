@@ -127,8 +127,10 @@ describe('diary generation', () => {
     const session = chat.latestOrCreate();
     const at = new Date(2026, 9, 27, 10, 0, 0).getTime();
     const id1 = append(chat, clock, session.id, at, 'user', '我更喜欢先看结论');
+    const id2 = append(chat, clock, session.id, at + 1000, 'butler', '我会先给结论。');
     const messages: DiarySourceMessage[] = [
       { id: id1, role: 'user', text: '我更喜欢先看结论', createdAt: at },
+      { id: id2, role: 'butler', text: '我会先给结论。', createdAt: at + 1000 },
     ];
     const r = await generateDiary({
       model: makeModel({
@@ -151,6 +153,12 @@ describe('diary generation', () => {
             content: '回答先给结论',
             confidence: 0.7,
             evidence: [id1],
+          },
+          {
+            kind: 'fact',
+            content: '助手自己说的话不能当用户记忆',
+            confidence: 0.9,
+            evidence: [id2],
           },
         ],
       }),
@@ -253,6 +261,57 @@ describe('diary ingest', () => {
     const pass = engine.runPass();
     expect(pass.trialArchived).toContain(id);
     expect(store.get(id)?.lifecycle).toBe('archived');
+  });
+
+  it('creates a fresh trial when the same content was archived', () => {
+    const { log, clock, store } = setup();
+    const old = store.create(
+      { kind: 'butler', userId: 'u1' },
+      {
+        memClass: 'global_shared',
+        kind: 'fact',
+        content: '用户喜欢安静',
+        confidence: 0.8,
+        evidence: ['diary:2026-10-20'],
+        lifecycle: 'candidate',
+      },
+    );
+    if (!old.ok) throw new Error('seed failed');
+    expect(store.archive(old.entry.id, '试行到期')).toBe(true);
+    const r = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户喜欢安静', 0.8),
+    });
+    expect(r.created).toHaveLength(1);
+    expect(store.get(old.entry.id)?.lifecycle).toBe('archived');
+    expect(store.get(r.created[0]!)?.lifecycle).toBe('candidate');
+  });
+
+  it('revives a dormant memory when the diary brings new evidence', () => {
+    const { log, clock, store } = setup();
+    const active = store.create(
+      { kind: 'butler', userId: 'u1' },
+      {
+        memClass: 'global_shared',
+        kind: 'fact',
+        content: '用户喜欢安静',
+        confidence: 0.8,
+        evidence: ['diary:2026-10-20', 'diary:2026-10-21'],
+        lifecycle: 'active',
+      },
+    );
+    if (!active.ok) throw new Error('seed failed');
+    store.setLifecycle(active.entry.id, 'dormant', { dormantSince: clock.now() });
+    const r = ingestDiary({
+      log,
+      clock,
+      store,
+      diary: entry('2026-10-27', '用户喜欢安静', 0.8),
+    });
+    expect(r.reinforced).toContain(active.entry.id);
+    expect(store.get(active.entry.id)?.lifecycle).toBe('active');
   });
 
   it('resolves explicit contradiction in favor of an existing active memory', () => {
