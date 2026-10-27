@@ -20,6 +20,7 @@ interface Counts {
   readonly resolved: number;
   readonly trialArchived: number;
   readonly tombstones: number;
+  readonly archived: number;
   readonly legacyPending: number;
 }
 
@@ -64,7 +65,7 @@ export function GovernanceStrip(): JSX.Element | null {
         <span className="mini-label">自主治理 · 最近</span>
         <span className="mono">
           日记 {data.counts.diaries} · 试行 {data.counts.trial} · 转正 {data.counts.promoted} · 裁决{' '}
-          {data.counts.resolved}
+          {data.counts.resolved} · 归档 {data.counts.archived}
         </span>
       </div>
       <div className="governance-strip-events">
