@@ -15,6 +15,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
@@ -50,8 +51,8 @@ import type {
   ToastMessage,
   VerdictDto,
   MemoryTarget,
-  ReviewRunDto,
 } from '../lib/types.js';
+import { ModelPicker, type ModelChoice, type PickableProfile } from './ModelPicker';
 import { ProcessPanel, type ProcRound } from './Process';
 import {
   AssumptionNotice,
@@ -63,6 +64,51 @@ import {
   VerdictCard,
 } from './Cards';
 import { QuizSection } from './Quiz';
+
+const DRAFT_STORAGE_KEY = 'butler.chat.draft';
+
+function readDraftText(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(DRAFT_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeDraftText(text: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (text.length === 0) window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+    else window.localStorage.setItem(DRAFT_STORAGE_KEY, text);
+  } catch {
+    // localStorage 不可用时不阻塞输入。
+  }
+}
+
+function clearDraftText(): void {
+  writeDraftText('');
+}
+
+interface ModelCatalogResponse {
+  readonly profiles: readonly PickableProfile[];
+  readonly lastChat: ModelChoice | null;
+  readonly lastReview: ModelChoice | null;
+}
+
+function fallbackModelChoice(profiles: readonly PickableProfile[]): ModelChoice | null {
+  for (const profile of profiles) {
+    const model = profile.models.find((m) => m.kind === 'chat');
+    if (model === undefined) continue;
+    if ((profile.requiresKey ?? true) && !profile.hasKey) continue;
+    return { profileId: profile.id, modelId: model.id };
+  }
+  for (const profile of profiles) {
+    const model = profile.models.find((m) => m.kind === 'chat');
+    if (model !== undefined) return { profileId: profile.id, modelId: model.id };
+  }
+  return null;
+}
 
 interface ChatViewProps {
   readonly active: boolean;
@@ -76,6 +122,7 @@ interface ChatViewProps {
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onRefreshOverview: () => void;
   readonly onBootState: (state: ChatBootState) => void;
+  readonly onReviewModeChange: (open: boolean) => void;
 }
 
 interface SpeechResultLike {
@@ -242,6 +289,7 @@ export function ChatView({
   notify,
   onRefreshOverview,
   onBootState,
+  onReviewModeChange,
 }: ChatViewProps): JSX.Element {
   const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -253,13 +301,14 @@ export function ChatView({
   const [liveTurns, setLiveTurns] = useState<readonly LiveTurn[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
+  const [modelCatalog, setModelCatalog] = useState<readonly PickableProfile[]>([]);
+  const [lastChatModel, setLastChatModel] = useState<ModelChoice | null>(null);
+  const [chatModel, setChatModel] = useState<ModelChoice | null>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [reviewHistoryOpen, setReviewHistoryOpen] = useState(false);
-  const [reviewRuns, setReviewRuns] = useState<readonly ReviewRunDto[]>([]);
-  const [reviewRunId, setReviewRunId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<readonly ApprovalQueueItem[]>([]);
   const [answering, setAnswering] = useState(false);
   const [listening, setListening] = useState(false);
@@ -270,15 +319,23 @@ export function ChatView({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRange, setReviewRange] = useState<{ readonly start: number; readonly end: number } | null>(null);
   const [reviewAnchor, setReviewAnchor] = useState<number | null>(null);
+  const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
+  const [reviewModelOpen, setReviewModelOpen] = useState(false);
+  const [reviewModel, setReviewModel] = useState<ModelChoice | null>(null);
+  const [reviewRatio, setReviewRatio] = useState(0.5);
   const [navTurn, setNavTurn] = useState<number | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewResults, setReviewResults] = useState<readonly ReviewResult[]>([]);
   const [reviewError, setReviewError] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const chatBodyRef = useRef<HTMLDivElement | null>(null);
+  const reviewRatioRestoredRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lastChatModelRef = useRef<ModelChoice | null>(null);
+  const modelCatalogRef = useRef<readonly PickableProfile[]>([]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const voiceBaseRef = useRef('');
   const reviewAbortRef = useRef<AbortController | null>(null);
@@ -290,15 +347,108 @@ export function ChatView({
 
   const now = useNow(30_000);
   const mounted = useMounted();
-  const canChat = overview === null || overview.model !== null;
   const hasContent = messages.length > 0 || liveTurns.length > 0;
   const reviewTurns = useMemo(() => buildReviewTurns(messages, verdicts), [messages, verdicts]);
   const reviewableTurns = reviewTurns.filter((t) => t.state === 'done' && t.assistant !== null);
   const lastReviewable = reviewableTurns[reviewableTurns.length - 1] ?? null;
-  const selectedTurns = useMemo(() => {
-    if (reviewRange === null) return [];
-    return reviewTurns.filter((t) => t.index >= reviewRange.start && t.index <= reviewRange.end);
-  }, [reviewRange, reviewTurns]);
+  const reviewRangeText =
+    reviewRange === null
+      ? '选择轮次'
+      : reviewRange.start === reviewRange.end
+        ? `第 ${reviewRange.start + 1} 轮`
+        : `第 ${reviewRange.start + 1}–${reviewRange.end + 1} 轮`;
+
+  useEffect(() => {
+    let alive = true;
+    void fetchJson<ModelCatalogResponse>('/api/model')
+      .then((res) => {
+        if (!alive) return;
+        setModelCatalog(res.profiles);
+        const last = res.lastChat ?? fallbackModelChoice(res.profiles);
+        setLastChatModel(last);
+        setChatModel((previous) => previous ?? last);
+        setReviewModel((previous) => previous ?? res.lastReview ?? last);
+      })
+      .catch(() => {
+        // 模型列表读不到时，发送仍会由后端给出明确错误。
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    let alive = true;
+    void fetchJson<ModelCatalogResponse>('/api/model')
+      .then((res) => {
+        if (!alive) return;
+        setModelCatalog(res.profiles);
+        const last = res.lastChat ?? fallbackModelChoice(res.profiles);
+        setLastChatModel(last);
+        setChatModel((previous) => previous ?? last);
+        setReviewModel((previous) => previous ?? res.lastReview ?? last);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [modelPickerOpen]);
+
+  useEffect(() => {
+    lastChatModelRef.current = lastChatModel;
+  }, [lastChatModel]);
+
+  useEffect(() => {
+    modelCatalogRef.current = modelCatalog;
+  }, [modelCatalog]);
+
+  const availableChatModels = useMemo(
+    () =>
+      modelCatalog.some((profile) =>
+        profile.models.some(
+          (model) => model.kind === 'chat' && (!(profile.requiresKey ?? true) || profile.hasKey),
+        ),
+      ),
+    [modelCatalog],
+  );
+  const canChat = availableChatModels || overview === null || overview.model !== null;
+
+  const currentSession = sessions.find((s) => s.id === sessionId);
+  const historySessions = useMemo(
+    () => sessions.filter((s) => s.messageCount > 0),
+    [sessions],
+  );
+  const isDraftSession = currentSession !== undefined && currentSession.messageCount === 0;
+
+  useEffect(() => {
+    if (isDraftSession) writeDraftText(input);
+  }, [input, isDraftSession]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    try {
+      const saved = Number(window.localStorage.getItem('butler.review.split'));
+      if (Number.isFinite(saved) && saved >= 0.35 && saved <= 0.65) setReviewRatio(saved);
+    } catch {
+      // localStorage 不可用时保持默认 50/50。
+    } finally {
+      reviewRatioRestoredRef.current = true;
+    }
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!reviewRatioRestoredRef.current) return;
+    try {
+      window.localStorage.setItem('butler.review.split', String(reviewRatio));
+    } catch {
+      // ignore
+    }
+  }, [reviewRatio]);
+
+  useEffect(() => {
+    onReviewModeChange(reviewOpen);
+  }, [onReviewModeChange, reviewOpen]);
 
   function jumpToTurn(index: number): void {
     const turn = reviewTurns[index];
@@ -319,7 +469,9 @@ export function ChatView({
     stopReview();
     setReviewResults([]);
     setReviewError(null);
-    if (shift && reviewAnchor !== null) {
+    setReviewModelOpen(false);
+    const extend = (shift || (reviewRange !== null && reviewRange.start === reviewRange.end)) && reviewAnchor !== null;
+    if (extend) {
       setReviewRange({ start: Math.min(reviewAnchor, index), end: Math.max(reviewAnchor, index) });
     } else {
       setReviewAnchor(index);
@@ -346,6 +498,8 @@ export function ChatView({
     setReviewResults([]);
     setReviewError(null);
     setReviewAnchor(range.start);
+    setReviewPickerOpen(false);
+    setReviewModelOpen(false);
 
     try {
       const res = await postJson<ReviewApiResponse>(
@@ -353,6 +507,9 @@ export function ChatView({
         {
           sessionId,
           messageIds: targets.map((t) => t.assistant?.id).filter((id): id is string => id !== undefined),
+          ...(reviewModel !== null
+            ? { modelProfileId: reviewModel.profileId, modelId: reviewModel.modelId }
+            : {}),
         },
         { signal: controller.signal },
       );
@@ -393,38 +550,65 @@ export function ChatView({
     setReviewError('已停止审查');
   }
 
+  function clampReviewRatio(value: number): number {
+    return Math.min(0.65, Math.max(0.35, value));
+  }
+
+  function resizeReviewTo(value: number): void {
+    setReviewRatio(clampReviewRatio(value));
+  }
+
+  function handleReviewSplitterPointerDown(event: ReactPointerEvent<HTMLDivElement>): void {
+    const body = chatBodyRef.current;
+    if (body === null) return;
+    event.preventDefault();
+    const width = body.getBoundingClientRect().width;
+    if (width <= 0) return;
+    const startX = event.clientX;
+    const startRatio = reviewRatio;
+    const onMove = (moveEvent: PointerEvent): void => {
+      resizeReviewTo(startRatio + (startX - moveEvent.clientX) / width);
+    };
+    const onUp = (): void => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  function handleReviewSplitterKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    resizeReviewTo(reviewRatio + (event.key === 'ArrowLeft' ? 0.02 : -0.02));
+  }
+
   function openReview(): void {
     if (lastReviewable === null) {
       notify('还没有可审查的已完成轮次', 'warning');
       return;
     }
     const target = reviewRange ?? { start: lastReviewable.index, end: lastReviewable.index };
-    void startReview(target);
+    stopReview();
+    setReviewRange(target);
+    setReviewAnchor(null);
+    setReviewResults([]);
+    setReviewError(null);
+    setReviewPickerOpen(false);
+    setReviewModelOpen(false);
+    setReviewOpen(true);
   }
 
-  async function openReviewHistory(): Promise<void> {
-    if (sessionId === null) return;
-    try {
-      const res = await fetchJson<{ ok: boolean; reviews: readonly ReviewRunDto[] }>(
-        `/api/reviews?sessionId=${encodeURIComponent(sessionId)}`,
-      );
-      setReviewRuns(res.reviews);
-      setReviewRunId(res.reviews[0]?.id ?? null);
-      setReviewHistoryOpen(true);
-    } catch (err) {
-      notify(errorMessage(err), 'danger');
-    }
+  function closeReview(): void {
+    stopReview();
+    setReviewPickerOpen(false);
+    setReviewModelOpen(false);
+    setReviewOpen(false);
   }
 
-  function reviewRangeLabel(run: ReviewRunDto): string {
-    const indexes = run.turnIds
-      .map((id) => reviewTurns.find((t) => t.assistant?.id === id)?.index)
-      .filter((i): i is number => i !== undefined)
-      .sort((a, b) => a - b);
-    if (indexes.length === 0) return `${run.turnIds.length} 轮`;
-    const start = indexes[0]!;
-    const end = indexes[indexes.length - 1]!;
-    return start === end ? `第 ${start + 1} 轮` : `第 ${start + 1}–${end + 1} 轮`;
+  function toggleReview(): void {
+    if (reviewOpen) closeReview();
+    else openReview();
   }
 
   useAutoResize(textareaRef, input);
@@ -456,6 +640,8 @@ export function ChatView({
     setReviewOpen(false);
     setReviewRange(null);
     setReviewAnchor(null);
+    setReviewPickerOpen(false);
+    setReviewModelOpen(false);
     setNavTurn(null);
     reviewAbortRef.current?.abort();
     reviewAbortRef.current = null;
@@ -470,7 +656,14 @@ export function ChatView({
       setCancellations(res.cancellations ?? []);
       setVerdicts(res.verdicts);
       setQuizzes(res.quizzes);
-      setReviewRuns(res.reviews ?? []);
+      if (res.session.modelProfileId !== undefined && res.session.modelId !== undefined) {
+        setChatModel({ profileId: res.session.modelProfileId, modelId: res.session.modelId });
+      } else {
+        setChatModel(
+          lastChatModelRef.current ?? fallbackModelChoice(modelCatalogRef.current),
+        );
+      }
+      setInput(res.messages.length === 0 ? readDraftText() : '');
       return { ok: true, error: null };
     } catch (err) {
       if (token !== loadSeqRef.current) return { ok: false, error: null };
@@ -498,9 +691,12 @@ export function ChatView({
     setApprovals([]);
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
-      setSessions((prev) => [res.session, ...prev]);
+      setSessions((prev) => [res.session, ...prev.filter((s) => s.id !== res.session.id)]);
       setSessionId(res.session.id);
+      setChatModel(lastChatModel ?? fallbackModelChoice(modelCatalog));
+      setModelPickerOpen(false);
       setMessages([]);
+      setInput(readDraftText());
       setCancellations([]);
       setLocalCancel(null);
       setVerdicts([]);
@@ -512,6 +708,8 @@ export function ChatView({
       setReviewOpen(false);
       setReviewRange(null);
       setReviewAnchor(null);
+      setReviewPickerOpen(false);
+      setReviewModelOpen(false);
       setNavTurn(null);
       reviewAbortRef.current?.abort();
       reviewAbortRef.current = null;
@@ -522,7 +720,28 @@ export function ChatView({
     } catch (err) {
       notify(errorMessage(err), 'danger');
     }
-  }, [notify]);
+  }, [lastChatModel, modelCatalog, notify]);
+
+  const selectChatModel = useCallback(async (choice: ModelChoice): Promise<void> => {
+    const previous = chatModel;
+    const previousLast = lastChatModel;
+    setChatModel(choice);
+    setLastChatModel(choice);
+    setModelPickerOpen(false);
+    if (sessionId === null) return;
+    try {
+      await postJson('/api/model', {
+        action: 'select-chat',
+        sessionId,
+        profileId: choice.profileId,
+        modelId: choice.modelId,
+      });
+    } catch (err) {
+      setChatModel(previous);
+      setLastChatModel(previousLast);
+      notify(errorMessage(err), 'danger');
+    }
+  }, [chatModel, lastChatModel, notify, sessionId]);
 
   // 首屏：取会话列表；有历史则打开最近一个
   useEffect(() => {
@@ -536,7 +755,7 @@ export function ChatView({
         const res = await fetchJson<SessionsResponse>('/api/sessions');
         if (cancelled) return;
         setSessions(res.sessions);
-        const first = res.sessions[0];
+        const first = res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
         if (first !== undefined) {
           onBootState({ state: 'loading', phase: 'session' });
           const outcome = await loadSession(first.id);
@@ -579,7 +798,7 @@ export function ChatView({
       try {
         const res = await fetchJson<SessionsResponse>('/api/sessions');
         setSessions(res.sessions);
-        const first = res.sessions[0];
+        const first = res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
         if (first !== undefined) {
           await loadSession(first.id);
         } else {
@@ -634,7 +853,7 @@ export function ChatView({
     if (sessionId !== null) return sessionId;
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
-      setSessions((prev) => [res.session, ...prev]);
+      setSessions((prev) => [res.session, ...prev.filter((s) => s.id !== res.session.id)]);
       setSessionId(res.session.id);
       return res.session.id;
     } catch (err) {
@@ -653,8 +872,10 @@ export function ChatView({
     }
 
     const outgoing = attachments.map((a) => a.url);
+    const sendingDraft = isDraftSession || sessionId === null;
     forceScrollRef.current = true;
     atBottomRef.current = true;
+    if (sendingDraft) clearDraftText();
     setInput('');
     setAttachments([]);
 
@@ -751,6 +972,7 @@ export function ChatView({
           sessionId: id,
           text,
           supportsApproval: true,
+          ...(chatModel !== null ? { modelProfileId: chatModel.profileId, modelId: chatModel.modelId } : {}),
           ...(outgoing.length > 0 ? { images: outgoing.map((url) => ({ url })) } : {}),
         }),
         signal: controller.signal,
@@ -1006,7 +1228,6 @@ export function ChatView({
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 180;
   }
 
-  const currentSession = sessions.find((s) => s.id === sessionId);
   const liveTitle = liveTurns[0] !== undefined ? truncate(liveTurns[0].userText, 24) : null;
   const derivedTitle =
     currentSession !== undefined && currentSession.title !== '新对话'
@@ -1117,23 +1338,15 @@ export function ChatView({
           </div>
         </div>
         <div className="chat-head-actions">
-          {overview !== null && overview.model !== null && (
-            <span className="model-pill mono" title="当前主力模型">
-              <span className="status-dot is-ok" />
-              {overview.model.model}
-            </span>
-          )}
           <button
             type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={lastReviewable === null}
-            onClick={openReview}
-            title={lastReviewable === null ? '还没有可审查的完成轮次' : '审查选中的轮次'}
+            className={`btn btn-ghost btn-sm${reviewOpen ? ' is-review-toggle' : ''}`}
+            disabled={!reviewOpen && lastReviewable === null}
+            onClick={toggleReview}
+            aria-pressed={reviewOpen}
+            title={reviewOpen ? '关闭审查' : lastReviewable === null ? '还没有可审查的完成轮次' : '打开审查'}
           >
             <Icon name="audit" size={15} /> 审查
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void openReviewHistory()}>
-            <Icon name="history" size={15} /> 审查历史
           </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setHistoryOpen(true); void refreshSessions(); }}>
             <Icon name="history" size={15} /> 记录
@@ -1144,7 +1357,15 @@ export function ChatView({
         </div>
       </header>
 
-      <div className="chat-body">
+      <div
+        className="chat-body"
+        ref={chatBodyRef}
+        style={
+          reviewOpen
+            ? { gridTemplateColumns: `${1 - reviewRatio}fr 1px ${reviewRatio}fr` }
+            : undefined
+        }
+      >
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll} aria-busy={streaming}>
         <div className="chat-column">
           {!hasContent && !loadingSession && sessionError === null && (
@@ -1275,105 +1496,167 @@ export function ChatView({
       </div>
 
       {reviewOpen && (
-        <section className="review-pane" aria-label="监督员审查">
-          <header className="review-pane-head">
-            <div>
-              <div className="review-pane-kicker">Supervisor</div>
-              <div className="review-pane-title">
-                监督员审查
-                <span>
-                  第 {(reviewRange?.start ?? 0) + 1}–{(reviewRange?.end ?? 0) + 1} 轮 · 只读
-                </span>
-              </div>
-            </div>
-            {reviewBusy && (
-              <button type="button" className="review-stop" onClick={stopReview}>
-                停止
-              </button>
-            )}
-            <button
-              type="button"
-              className="review-close"
-              aria-label="关闭审查"
-              onClick={() => {
-                stopReview();
-                setReviewOpen(false);
-              }}
-            >
-              ×
-            </button>
-          </header>
-          <div className="review-scope">
-            <span className="review-scope-label">审查轮次</span>
-            <div className="review-scope-dots">
-              {reviewableTurns.map((t) => {
-                const inRange =
-                  reviewRange !== null && t.index >= reviewRange.start && t.index <= reviewRange.end;
-                return (
-                  <button
-                    key={t.user.id}
-                    type="button"
-                    className={`review-pick${inRange ? ' is-selected' : ''}`}
-                    title={`第 ${t.index + 1} 轮${inRange ? ' · 已选' : ''}`}
-                    aria-label={`选择第 ${t.index + 1} 轮`}
-                    onClick={(e) => selectReviewTurn(t.index, e.shiftKey)}
-                  />
-                );
-              })}
-            </div>
-            <button
-              type="button"
-              className="review-run"
-              disabled={reviewBusy || reviewRange === null}
-              onClick={() => {
-                if (reviewRange !== null) void startReview(reviewRange);
-              }}
-            >
-              {reviewResults.length > 0 ? '重新审查' : '开始审查'}
-            </button>
-          </div>
-          <div className="review-thread">
-            <div className="review-thread-inner">
-              <div className="reviewer-head">
-                <span className="reviewer-mark">监</span>
-                <strong>监督员</strong>
-                <span className="reviewer-tag">
-                  {reviewBusy ? '审查中 · 不写入主对话' : '已完成 · 未写入主对话'}
-                </span>
-              </div>
-              <div className="review-process">
-                <span>过程</span>
-                {reviewBusy ? (
-                  <b>正在读取快照并核对判据…</b>
-                ) : (
-                  <>
-                    <b>读取 {selectedTurns.filter((t) => t.state === 'done').length} 轮</b>
-                    <span>核对 {reviewResults.reduce((n, r) => n + r.criteria, 0)} 条判据</span>
-                  </>
-                )}
-              </div>
-              <div className="review-output">
-                {reviewResults.map((r) => (
-                  <div className="review-result" key={r.turn}>
-                    <p className="review-result-label">第 {r.turn} 轮</p>
-                    {r.error !== undefined ? (
-                      <p className="review-error">{r.error}</p>
-                    ) : r.summary.length > 0 ? (
-                      <Markdown text={r.summary} />
-                    ) : (
-                      <p className="review-empty">监督员没有返回可展示的结论。</p>
-                    )}
+        <>
+          <div
+            className="review-splitter"
+            role="separator"
+            aria-label="调整主对话与审查宽度"
+            aria-orientation="vertical"
+            aria-valuemin={35}
+            aria-valuemax={65}
+            aria-valuenow={Math.round(reviewRatio * 100)}
+            tabIndex={0}
+            onPointerDown={handleReviewSplitterPointerDown}
+            onKeyDown={handleReviewSplitterKeyDown}
+          />
+          <section className="review-pane" aria-label="审查">
+            {reviewBusy || reviewResults.length > 0 || reviewError !== null ? (
+              <div className="review-report review-report--simple">
+                <div className="review-report-head">
+                  <div>
+                    <p className="review-overline">本次审查</p>
+                    <h3>{reviewBusy ? '正在审查' : '审查结果'}</h3>
                   </div>
-                ))}
-                {reviewBusy && reviewResults.length === 0 && (
-                  <p className="review-placeholder">正在核对这一轮的契约、产出与硬约束…</p>
+                  <span className={`review-status${reviewBusy ? ' is-busy' : reviewError !== null ? ' is-warn' : ''}`}>
+                    {reviewBusy ? '审查中' : reviewError !== null ? '未完成' : '已完成'}
+                  </span>
+                </div>
+                {reviewBusy ? (
+                  <p className="review-placeholder">正在读取快照并核对判据…</p>
+                ) : (
+                  reviewResults.map((r) => (
+                    <div className="review-result" key={r.turn}>
+                      <div className="review-result-head">
+                        第 {r.turn} 轮 <span>{r.criteria} 条判据</span>
+                      </div>
+                      {r.error !== undefined ? (
+                        <p className="review-error">{r.error}</p>
+                      ) : r.summary.length > 0 ? (
+                        <Markdown text={r.summary} />
+                      ) : (
+                        <p className="review-empty">监督员没有返回可展示的结论。</p>
+                      )}
+                    </div>
+                  ))
                 )}
                 {reviewError !== null && <p className="review-error">{reviewError}</p>}
+                <div className="review-foot">
+                  <button
+                    type="button"
+                    className="review-back"
+                    onClick={() => {
+                      stopReview();
+                      setReviewResults([]);
+                      setReviewError(null);
+                    }}
+                  >
+                    重新选择
+                  </button>
+                  {reviewBusy && (
+                    <button type="button" className="review-stop" onClick={stopReview}>
+                      停止
+                    </button>
+                  )}
+                </div>
               </div>
-              <p className="review-footnote">只读审查窗口，不能继续对话</p>
-            </div>
-          </div>
-        </section>
+            ) : (
+              <div className="review-min">
+                <div className="review-min-hero">
+                  <h2>想要审查些什么</h2>
+                  <div className="review-composer">
+                    <button
+                      type="button"
+                      className="review-composer-control"
+                      aria-expanded={reviewPickerOpen}
+                      aria-haspopup="dialog"
+                      onClick={() => {
+                        setReviewModelOpen(false);
+                        setReviewPickerOpen((open) => !open);
+                      }}
+                    >
+                      {reviewRangeText} <span>▾</span>
+                    </button>
+                    <span className="review-composer-spacer" />
+                    <div className="review-model-wrap">
+                      <ModelPicker
+                        profiles={modelCatalog}
+                        value={reviewModel}
+                        onSelect={(choice) => {
+                          setReviewModel(choice);
+                          setReviewModelOpen(false);
+                        }}
+                        open={reviewModelOpen}
+                        onOpenChange={(open) => {
+                          setReviewPickerOpen(false);
+                          setReviewModelOpen(open);
+                        }}
+                        disabled={reviewBusy}
+                        label="选择审查模型"
+                        note="默认沿用最近一次审查使用的模型；只影响本次审查。"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="review-start"
+                      disabled={reviewRange === null || reviewModel === null}
+                      onClick={() => {
+                        if (reviewRange !== null) void startReview(reviewRange);
+                      }}
+                    >
+                      开始审查
+                    </button>
+                  </div>
+                </div>
+
+                {reviewPickerOpen && (
+                  <div className="review-picker" role="dialog" aria-label="选择审查轮次">
+                    <div className="review-pop-head">
+                      选择审查轮次 <span>仅终态</span>
+                    </div>
+                    <p className="review-picker-hint">点击起点，再点终点；Shift + 点击选择连续范围</p>
+                    <div className="review-picker-list">
+                      {reviewTurns.map((t) => {
+                        const selectable = t.state === 'done' && t.assistant !== null;
+                        const inRange =
+                          reviewRange !== null && t.index >= reviewRange.start && t.index <= reviewRange.end;
+                        const isStart = reviewRange !== null && t.index === reviewRange.start;
+                        const isEnd = reviewRange !== null && t.index === reviewRange.end;
+                        return (
+                          <button
+                            key={t.user.id}
+                            type="button"
+                            className={`review-picker-row${inRange ? ' is-selected' : ''}${!selectable ? ' is-disabled' : ''}`}
+                            disabled={!selectable}
+                            onClick={(e) => selectReviewTurn(t.index, e.shiftKey)}
+                          >
+                            <span className="review-picker-num">{String(t.index + 1).padStart(2, '0')}</span>
+                            <span className="review-picker-copy">
+                              <strong>{truncate(t.user.text, 34)}</strong>
+                              <small>
+                                第 {t.index + 1} 轮 ·{' '}
+                                {t.state === 'done' ? '完成' : t.state === 'interrupted' ? '中断' : t.state === 'failed' ? '失败' : '运行中'}
+                              </small>
+                            </span>
+                            {isStart && <span className="review-picker-mark">起点</span>}
+                            {isEnd && reviewRange !== null && reviewRange.start !== reviewRange.end && (
+                              <span className="review-picker-mark">终点</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="review-picker-foot">
+                      <span>已选 <b>{reviewRangeText}</b></span>
+                      <button type="button" className="review-apply" onClick={() => setReviewPickerOpen(false)}>
+                        应用
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </>
       )}
 
       <aside className="turn-rail" aria-label="轮次导航">
@@ -1405,13 +1688,13 @@ export function ChatView({
 
       <div className="chat-composer-wrap">
         <div className="chat-column">
-          {overview !== null && overview.model === null && (
+          {overview !== null && overview.model === null && !availableChatModels && (
             <div className="chat-banner">
               <span className="chat-banner-icon">
                 <Icon name="info" size={16} />
               </span>
               <span>
-                还没有配置模型。设置 <code className="mono">DEEPSEEK_API_KEY</code> 后重启服务即可对话；
+                还没有可用的对话模型。去设置 → 模型接入添加配置并选择模型；
                 记忆治理不依赖模型。
               </span>
               <button type="button" className="text-btn" onClick={onOpenSettings}>
@@ -1509,6 +1792,15 @@ export function ChatView({
                 </span>
               </div>
 
+              <ModelPicker
+                profiles={modelCatalog}
+                value={chatModel}
+                onSelect={(choice) => void selectChatModel(choice)}
+                open={modelPickerOpen}
+                onOpenChange={setModelPickerOpen}
+                disabled={streaming || !canChat}
+              />
+
               {streaming ? (
                 <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
                   <Icon name="stop" size={16} />
@@ -1551,7 +1843,7 @@ export function ChatView({
         variant="sheet"
         footer={
           <div className="sheet-footer">
-            <span className="sheet-foot-note">共 {formatNumber(sessions.length)} 段对话</span>
+            <span className="sheet-foot-note">共 {formatNumber(historySessions.length)} 段对话</span>
             <button type="button" className="btn btn-primary btn-sm" onClick={() => void createNewChat()}>
               <Icon name="plus" size={15} /> 新建对话
             </button>
@@ -1559,10 +1851,10 @@ export function ChatView({
         }
       >
         <div className="session-list">
-          {sessions.length === 0 && (
+          {historySessions.length === 0 && (
             <EmptyState compact icon="history" title="还没有对话" description="第一次开口之后，这里会出现历史。" />
           )}
-          {sessions.map((s) => (
+          {historySessions.map((s) => (
             <button
               key={s.id}
               type="button"
@@ -1655,89 +1947,6 @@ export function ChatView({
         )}
       </Modal>
 
-      <Modal
-        open={reviewHistoryOpen}
-        onClose={() => setReviewHistoryOpen(false)}
-        title="审查历史"
-        description="每次重新审查都会生成新的 ReviewRun；中止也会留下记录。"
-        variant="wide"
-      >
-        <div className="review-history">
-          <div className="review-history-list">
-            {reviewRuns.length === 0 && (
-              <EmptyState compact icon="audit" title="还没有审查记录" description="点击“审查”后会在这里留下 ReviewRun。" />
-            )}
-            {reviewRuns.map((run) => (
-              <button
-                key={run.id}
-                type="button"
-                className={`review-history-item ${run.id === reviewRunId ? 'is-active' : ''}`}
-                onClick={() => setReviewRunId(run.id)}
-              >
-                <span className="review-history-top">
-                  <strong>{reviewRangeLabel(run)}</strong>
-                  <Badge tone={run.status === 'completed' ? 'accent' : run.status === 'aborted' ? 'warn' : 'danger'}>
-                    {run.status === 'completed' ? '已完成' : run.status === 'aborted' ? '已中止' : run.status === 'failed' ? '失败' : '运行中'}
-                  </Badge>
-                </span>
-                <span className="review-history-meta mono">{run.id} · {relativeTime(run.createdAt, now)}</span>
-                <span className="review-history-summary">
-                  {run.report?.summary ?? run.error ?? '没有报告'}
-                </span>
-              </button>
-            ))}
-          </div>
-          <div className="review-history-detail">
-            {(() => {
-              const run = reviewRuns.find((r) => r.id === reviewRunId);
-              if (run === undefined) return <p className="review-empty">选择一条审查记录。</p>;
-              return (
-                <>
-                  <div className="review-history-title">
-                    {run.status === 'completed' ? '监督员审查报告' : '审查未完成'}
-                    <span className="mono">{run.id}</span>
-                  </div>
-                  <div className="review-history-tags mono">
-                    <span>{run.model}</span>
-                    <span>{run.promptVersion}</span>
-                    <span>{run.snapshotHash}</span>
-                    <span>{run.turnIds.length} turns</span>
-                  </div>
-                  {run.report !== null ? (
-                    <div className="review-history-report">
-                      {run.report.criteriaChecks.length > 0 && (
-                        <div className="review-history-section">
-                          <p className="mini-label">判据 · {run.report.criteriaChecks.filter((c) => c.met).length}/{run.report.criteriaChecks.length}</p>
-                          {run.report.criteriaChecks.map((c, i) => (
-                            <p key={`${c.criterion}-${i}`} className={c.met ? 'review-check is-met' : 'review-check is-missing'}>
-                              {c.met ? '✓' : '×'} {c.criterion}
-                              {c.note !== undefined && <small>{c.note}</small>}
-                            </p>
-                          ))}
-                        </div>
-                      )}
-                      {run.report.findings.length > 0 && (
-                        <div className="review-history-section">
-                          <p className="mini-label">发现</p>
-                          {run.report.findings.map((f, i) => (
-                            <p key={`${f.message}-${i}`} className={`review-finding is-${f.severity}`}>{f.message}</p>
-                          ))}
-                        </div>
-                      )}
-                      <div className="review-history-section">
-                        <p className="mini-label">报告</p>
-                        <Markdown text={run.report.summary} />
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="review-error">{run.error ?? '这次审查没有生成报告。'}</p>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-        </div>
-      </Modal>
     </div>
   );
 }

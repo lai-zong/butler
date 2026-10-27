@@ -51,6 +51,70 @@ interface SettingsViewProps {
   readonly onDataReset: () => void;
 }
 
+type SettingsPage =
+  | 'runtime'
+  | 'model'
+  | 'automation'
+  | 'security'
+  | 'data'
+  | 'privacy'
+  | 'transfer'
+  | 'mcp'
+  | 'about';
+
+const SETTINGS_NAV: readonly {
+  readonly label: string;
+  readonly items: readonly { readonly id: SettingsPage; readonly label: string }[];
+}[] = [
+  {
+    label: '运行',
+    items: [
+      { id: 'runtime', label: '运行状态' },
+      { id: 'model', label: '模型接入' },
+      { id: 'automation', label: '自动化' },
+    ],
+  },
+  {
+    label: '治理',
+    items: [
+      { id: 'security', label: '权限与工具' },
+      { id: 'data', label: '数据与记忆' },
+      { id: 'privacy', label: '隐私与观察' },
+      { id: 'transfer', label: '数据迁移' },
+    ],
+  },
+  {
+    label: '系统',
+    items: [
+      { id: 'mcp', label: 'MCP 扩展' },
+      { id: 'about', label: '关于' },
+    ],
+  },
+];
+
+function SettingsPageHead({
+  eyebrow,
+  title,
+  description,
+  actions,
+}: {
+  readonly eyebrow: string;
+  readonly title: string;
+  readonly description: string;
+  readonly actions?: JSX.Element;
+}): JSX.Element {
+  return (
+    <header className="settings-content-head">
+      <div>
+        <p className="settings-content-eyebrow">{eyebrow}</p>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+      {actions !== undefined && <div className="settings-content-actions">{actions}</div>}
+    </header>
+  );
+}
+
 interface ImportedSummary {
   readonly events: number;
   readonly lastSeq: number;
@@ -107,6 +171,9 @@ export function SettingsView({
   onRefreshOverview,
   onDataReset,
 }: SettingsViewProps): JSX.Element {
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>('runtime');
+  const settingsPageRef = useRef<HTMLDivElement | null>(null);
+  const settingsPageMountedRef = useRef(false);
   const [obs, setObs] = useState<ObservationState | null>(null);
   const [obsLoading, setObsLoading] = useState(true);
   const [obsError, setObsError] = useState<string | null>(null);
@@ -140,6 +207,14 @@ export function SettingsView({
       setObsLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!settingsPageMountedRef.current) {
+      settingsPageMountedRef.current = true;
+      return;
+    }
+    settingsPageRef.current?.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }, [settingsPage]);
 
   useEffect(() => {
     void loadObservation();
@@ -316,27 +391,61 @@ export function SettingsView({
   }
 
   return (
-    <div className="page settings-page">
+    <div className="page settings-page" ref={settingsPageRef}>
       <PageHeader
         eyebrow="RUNTIME / DATA / PRIVACY"
         title="设置"
         description="本地优先。记忆、对话与事件都在这台电脑上；密钥不会出现在任何界面与导出文件里。"
       />
 
-      <div className="settings-stack">
-        <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="设置导航">
+          {SETTINGS_NAV.map((group) => (
+            <div className="settings-nav-group" key={group.label}>
+              <p className="settings-nav-label">{group.label}</p>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`settings-nav-item${settingsPage === item.id ? ' is-active' : ''}`}
+                  aria-current={settingsPage === item.id ? 'page' : undefined}
+                  onClick={() => setSettingsPage(item.id)}
+                >
+                  <span className="settings-nav-dot" />
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
 
-        {/* ── 运行 ── */}
-        <section className="panel settings-panel">
-          <SectionHeading
-            title="运行状态"
-            description="服务端是一个常驻单例；事件文件是唯一真相源。"
-            actions={
-              <Badge tone={model !== null ? 'accent' : 'warn'}>
-                {model !== null ? '模型已接入' : '未配置模型'}
-              </Badge>
-            }
-          />
+        <div className="settings-content">
+          <div className="settings-page-view" hidden={settingsPage !== 'model'}>
+            <SettingsPageHead
+              eyebrow="MODELS"
+              title="模型接入"
+              description="按模型类型管理连接；对话和审查在各自界面选择具体模型。"
+            />
+            <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
+          </div>
+
+          {/* ── 运行 ── */}
+          <div className="settings-page-view" hidden={settingsPage !== 'runtime'}>
+            <SettingsPageHead
+              eyebrow="RUNTIME"
+              title="运行状态"
+              description="服务端是一个常驻单例；事件文件是唯一真相源。"
+              actions={
+                <Badge tone={model !== null ? 'accent' : 'warn'}>
+                  {model !== null ? '模型已接入' : '未配置模型'}
+                </Badge>
+              }
+            />
+            <section className="panel settings-panel">
+              <SectionHeading
+                title="运行概览"
+                description="模型、启动、写入与本地路径的当前快照。"
+              />
 
           {overview === null ? (
             <Skeleton rows={4} height={14} />
@@ -478,40 +587,52 @@ export function SettingsView({
               )}
             </>
           )}
-        </section>
+            </section>
+          </div>
 
-        {/* ── 自动化 / 定时任务（只读） ── */}
-        <AutomationPanel />
+          <div className="settings-page-view" hidden={settingsPage !== 'automation'}>
+            <AutomationPanel />
+          </div>
 
-        {/* ── C5 三档权限 ── */}
-        <PermissionsPanel notify={notify} />
+          <div className="settings-page-view" hidden={settingsPage !== 'security'}>
+            <SettingsPageHead
+              eyebrow="ACCESS"
+              title="权限与工具"
+              description="权限档位、凭证与工具分级都集中在这里；默认最小授权。"
+            />
+            <PermissionsPanel notify={notify} />
+            <CredentialsPanel notify={notify} />
+            <ToolsPanel />
+          </div>
 
-        {/* ── 凭证保险库 ── */}
-        <CredentialsPanel notify={notify} />
+          <div className="settings-page-view" hidden={settingsPage !== 'data'}>
+            <SettingsPageHead
+              eyebrow="DATA"
+              title="数据与记忆"
+              description="文档库、操作记忆与产出物版本；只读数据也在这里可查。"
+            />
+            <DocumentsPanel notify={notify} />
+            <OperationsPanel />
+            <ArtifactsPanel />
+          </div>
 
-        {/* ── 工具分级矩阵 ── */}
-        <ToolsPanel />
-
-        {/* ── 文档库 ── */}
-        <DocumentsPanel notify={notify} />
-
-        {/* ── 操作记忆（只读） ── */}
-        <OperationsPanel />
-
-        {/* ── 产出物版本（只读） ── */}
-        <ArtifactsPanel />
-
-        {/* ── 隐私 ── */}
-        <section className="panel settings-panel">
-          <SectionHeading
-            title="隐私与行为观察"
-            description="默认关闭。只有你显式同意之后，才可能产生任何采样。"
-            actions={
-              <span className="privacy-pill">
-                <Icon name="lock" size={13} /> 本地存储
-              </span>
-            }
-          />
+          {/* ── 隐私 ── */}
+          <div className="settings-page-view" hidden={settingsPage !== 'privacy'}>
+            <SettingsPageHead
+              eyebrow="PRIVACY"
+              title="隐私与观察"
+              description="默认关闭。只有你显式同意之后，才可能产生任何采样。"
+              actions={
+                <span className="privacy-pill">
+                  <Icon name="lock" size={13} /> 本地存储
+                </span>
+              }
+            />
+            <section className="panel settings-panel">
+              <SectionHeading
+                title="行为观察"
+                description="采样开关、保留期限与活动记录。"
+              />
 
           {obsError !== null && <InlineError message={obsError} onRetry={() => void loadObservation()} />}
           {obsLoading && obs === null && <Skeleton rows={3} height={14} />}
@@ -655,15 +776,22 @@ export function SettingsView({
             </>
           )}
 
-          <ActivityDetail key={activityNonce} notify={notify} />
-        </section>
+              <ActivityDetail key={activityNonce} notify={notify} />
+            </section>
+          </div>
 
-        {/* ── 数据 ── */}
-        <section className="panel settings-panel">
-          <SectionHeading
-            title="数据迁移"
-            description="导出是单文件 JSON；导入会用文件里的历史替换当前事件流。"
-          />
+          {/* ── 数据 ── */}
+          <div className="settings-page-view" hidden={settingsPage !== 'transfer'}>
+            <SettingsPageHead
+              eyebrow="TRANSFER"
+              title="数据迁移"
+              description="导出是单文件 JSON；导入会用文件里的历史替换当前事件流。"
+            />
+            <section className="panel settings-panel">
+              <SectionHeading
+                title="备份与恢复"
+                description="迁移前先备份；导入是原子替换。"
+              />
 
           <div className="transfer-grid">
             <div className="transfer-card">
@@ -725,18 +853,27 @@ export function SettingsView({
               </div>
             </div>
           )}
-        </section>
+            </section>
+          </div>
 
-        {/* ── MCP 扩展 ── */}
-        <McpPanel notify={notify} />
+          {/* ── MCP 扩展 ── */}
+          <div className="settings-page-view" hidden={settingsPage !== 'mcp'}>
+            <McpPanel notify={notify} />
+          </div>
 
-        {/* ── 关于 ── */}
-        <section className="panel settings-panel">
-          <SectionHeading
-            title="关于"
-            description="管家式 AI · 可审计的记忆治理与自进化系统"
-            actions={<Badge tone="outline">v8 · 本地运行</Badge>}
-          />
+          {/* ── 关于 ── */}
+          <div className="settings-page-view" hidden={settingsPage !== 'about'}>
+            <SettingsPageHead
+              eyebrow="ABOUT"
+              title="关于"
+              description="管家式 AI · 可审计的记忆治理与自进化系统。"
+              actions={<Badge tone="outline">v8 · 本地运行</Badge>}
+            />
+            <section className="panel settings-panel">
+              <SectionHeading
+                title="版本与架构"
+                description="分层反思、效果跟踪、契约复核与渐进演化。"
+              />
 
           <div className="about-layers">
             <div>
@@ -781,10 +918,12 @@ export function SettingsView({
             </div>
           </div>
 
-          <p className="about-stack">
-            Next.js · React · TypeScript · Node.js · 事件溯源（JSONL）· 本地优先
-          </p>
-        </section>
+              <p className="about-stack">
+                Next.js · React · TypeScript · Node.js · 事件溯源（JSONL）· 本地优先
+              </p>
+            </section>
+          </div>
+        </div>
       </div>
 
       {/* 同意 */}

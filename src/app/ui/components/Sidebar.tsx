@@ -12,21 +12,19 @@
 
 import { Icon, type IconName } from './Icon';
 import type { Overview, ViewId } from '../lib/types.js';
-import { formatNumber } from '../lib/format.js';
 
 interface NavItem {
   readonly id: ViewId;
   readonly label: string;
-  readonly hint: string;
   readonly icon: IconName;
 }
 
 const NAV_TOP: readonly NavItem[] = [
-  { id: 'chat', label: '对话', hint: '与管家工作', icon: 'chat' },
+  { id: 'chat', label: '对话', icon: 'chat' },
 ];
 
 const NAV_BOTTOM: readonly NavItem[] = [
-  { id: 'settings', label: '设置', hint: '运行与数据', icon: 'settings' },
+  { id: 'settings', label: '设置', icon: 'settings' },
 ];
 
 interface SidebarProps {
@@ -35,7 +33,6 @@ interface SidebarProps {
   readonly collapsed: boolean;
   readonly onNavigate: (view: ViewId) => void;
   readonly onOpenConsole: () => void;
-  readonly onOpenPending: () => void;
   readonly onOpenCommand: () => void;
   readonly onToggleCollapse: () => void;
 }
@@ -46,7 +43,6 @@ export function Sidebar({
   collapsed,
   onNavigate,
   onOpenConsole,
-  onOpenPending,
   onOpenCommand,
   onToggleCollapse,
 }: SidebarProps): JSX.Element {
@@ -61,14 +57,13 @@ export function Sidebar({
         className={`nav-item ${active ? 'is-active' : ''}`}
         aria-current={active ? 'page' : undefined}
         onClick={() => onNavigate(item.id)}
-        title={`${item.label} · ${item.hint}`}
+        title={item.label}
       >
         <span className="nav-icon">
           <Icon name={item.icon} size={18} />
         </span>
         <span className="nav-text">
           <strong>{item.label}</strong>
-          <small>{item.hint}</small>
         </span>
         <span className="nav-indicator" aria-hidden="true" />
       </button>
@@ -95,14 +90,13 @@ export function Sidebar({
           type="button"
           className="nav-item nav-item--console"
           onClick={onOpenConsole}
-          title="控制台 · 记忆 / 审计 / 演化"
+          title="控制台"
         >
           <span className="nav-icon">
             <Icon name="console" size={18} />
           </span>
           <span className="nav-text">
             <strong>控制台</strong>
-            <small>记忆 · 审计 · 演化</small>
           </span>
           {pending > 0 && (
             <span className="nav-badge" aria-label={`${pending} 条待审`}>
@@ -117,49 +111,6 @@ export function Sidebar({
 
         {NAV_BOTTOM.map(renderNavItem)}
       </nav>
-
-      <div className="side-glance">
-        <div className="side-glance-head">
-          <span>今日</span>
-          <span className="side-glance-date">
-            {overview !== null
-              ? new Date(overview.now).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
-              : '—'}
-          </span>
-        </div>
-
-        {overview === null ? (
-          <div className="side-glance-skel" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </div>
-        ) : (
-          <div className="glance-rows">
-            <div className="glance-row">
-              <span className="glance-label">
-                <i className="glance-dot glance-dot--ink" /> 发言
-              </span>
-              <span className="glance-value mono">{formatNumber(overview.totals.todayUserMessages)}</span>
-            </div>
-            <button type="button" className="glance-row is-action" onClick={onOpenPending}>
-              <span className="glance-label">
-                <i className={`glance-dot ${pending > 0 ? 'glance-dot--accent' : 'glance-dot--muted'}`} />
-                待审候选
-              </span>
-              <span className={`glance-value mono ${pending > 0 ? 'is-accent' : ''}`}>
-                {formatNumber(pending)}
-              </span>
-            </button>
-            <div className="glance-row">
-              <span className="glance-label">
-                <i className="glance-dot glance-dot--muted" /> 新增记忆
-              </span>
-              <span className="glance-value mono">{formatNumber(overview.totals.todayMemories)}</span>
-            </div>
-          </div>
-        )}
-      </div>
 
       <div className="side-foot">
         <button type="button" className="cmd-hint" onClick={onOpenCommand}>

@@ -179,6 +179,8 @@ export interface SessionSummary {
   readonly messageCount: number;
   readonly verdictCount: number;
   readonly lastPreview: string;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
 }
 
 export type MessageRole = 'user' | 'butler' | 'servant' | 'system';
@@ -336,6 +338,8 @@ export interface ReviewRunDto {
   readonly turnIds: readonly string[];
   readonly status: 'running' | 'completed' | 'failed' | 'aborted';
   readonly model: string;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
   readonly promptVersion: string;
   readonly snapshotHash: string;
   readonly stages: readonly { readonly name: string; readonly status: 'done' | 'failed' }[];

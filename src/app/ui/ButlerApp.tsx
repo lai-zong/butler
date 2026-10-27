@@ -207,6 +207,22 @@ export function ButlerApp(): JSX.Element {
     });
   }, []);
 
+  const sidebarBeforeReviewRef = useRef<boolean | null>(null);
+  const handleReviewModeChange = useCallback((open: boolean): void => {
+    if (open) {
+      setSidebarCollapsed((prev) => {
+        if (sidebarBeforeReviewRef.current === null) sidebarBeforeReviewRef.current = prev;
+        return true;
+      });
+      return;
+    }
+    const restore = sidebarBeforeReviewRef.current;
+    if (restore !== null) {
+      sidebarBeforeReviewRef.current = null;
+      setSidebarCollapsed(restore);
+    }
+  }, []);
+
   const bootStatus = computeBootStatus({
     hydrated,
     overview: overview !== null ? 'ready' : overviewError !== null ? 'error' : 'loading',
@@ -527,7 +543,6 @@ export function ButlerApp(): JSX.Element {
           collapsed={sidebarCollapsed}
           onNavigate={navigate}
           onOpenConsole={() => openMemory()}
-          onOpenPending={() => openMemory({ pending: true })}
           onOpenCommand={() => setCommandOpen(true)}
           onToggleCollapse={toggleSidebar}
         />
@@ -564,6 +579,7 @@ export function ButlerApp(): JSX.Element {
               notify={notify}
               onRefreshOverview={() => void refreshOverview()}
               onBootState={handleChatBoot}
+              onReviewModeChange={handleReviewModeChange}
             />
           </div>
 
