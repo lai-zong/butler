@@ -27,6 +27,7 @@ import {
 } from '../components/Common';
 import { Icon, type IconName } from '../components/Icon';
 import { Modal } from '../components/Modal';
+import { DiaryPanel } from './DiaryPanel';
 import { useMediaQuery, useNow } from '../lib/hooks.js';
 import { errorMessage, fetchJson, postJson } from '../lib/api.js';
 import {
@@ -134,6 +135,7 @@ export function MemoryView({
   const [detailLoading, setDetailLoading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
 
+  const [diaryOpen, setDiaryOpen] = useState(false);
   const [reviewing, setReviewing] = useState<string | null>(null);
   const [evolutionBusy, setEvolutionBusy] = useState<string | null>(null);
   const [forgetTarget, setForgetTarget] = useState<MemoryItem | null>(null);
@@ -498,6 +500,10 @@ export function MemoryView({
     />
   );
 
+  if (diaryOpen) {
+    return <DiaryPanel onBack={() => setDiaryOpen(false)} />;
+  }
+
   return (
     <div className="page memory-page">
       <PageHeader
@@ -509,9 +515,14 @@ export function MemoryView({
             : '每一条记忆都能追问来源、调整去留。'
         }
         actions={
-          <button type="button" className="btn btn-ghost" onClick={() => void load()} disabled={loading}>
-            <Icon name="refresh" size={15} className={loading ? 'spin' : ''} /> 刷新
-          </button>
+          <>
+            <button type="button" className="btn btn-ghost" onClick={() => setDiaryOpen(true)}>
+              <Icon name="quote" size={15} /> 日记
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => void load()} disabled={loading}>
+              <Icon name="refresh" size={15} className={loading ? 'spin' : ''} /> 刷新
+            </button>
+          </>
         }
       />
 

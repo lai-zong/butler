@@ -6,6 +6,7 @@ import './styles/boot.css';
 import './styles/shell.css';
 import './styles/chat.css';
 import './styles/memory.css';
+import './styles/diary.css';
 import './styles/audit.css';
 import './styles/growth.css';
 import './styles/settings.css';
