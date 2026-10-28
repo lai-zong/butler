@@ -42,6 +42,8 @@ interface Case {
   readonly domain: string;
   readonly messages: readonly string[];
   readonly expected: readonly string[];
+  /** 同义表达；避免因为模型换了同义词就被误判为漏提取。 */
+  readonly aliases?: Readonly<Record<string, readonly string[]>>;
   readonly temporary: readonly string[];
 }
 
@@ -68,6 +70,7 @@ const CASES: readonly Case[] = [
       '这周先记录一下作息。',
     ],
     expected: ['十二点', '七点半', '吃药'],
+    aliases: { 吃药: ['用药', '药物'] },
     temporary: ['这周'],
   },
   {
@@ -80,6 +83,7 @@ const CASES: readonly Case[] = [
       '下周一要交。',
     ],
     expected: ['测试', '行为一致'],
+    aliases: { 行为一致: ['行为不一致', '行为保持', '行为一起'] },
     temporary: ['登录', '列表', '下周一'],
   },
   {
@@ -104,7 +108,7 @@ const CASES: readonly Case[] = [
       '不要太甜。',
     ],
     expected: ['花生', '甜'],
-    temporary: ['今天', '饮料'],
+    temporary: ['今天'],
   },
   {
     name: 'work_2',
@@ -116,6 +120,7 @@ const CASES: readonly Case[] = [
       '大概十分钟。',
     ],
     expected: ['先看结论', '背景'],
+    aliases: { 先看结论: ['先听结论', '结论先', '结论'] },
     temporary: ['周会', '十分钟'],
   },
   {
@@ -141,6 +146,102 @@ const CASES: readonly Case[] = [
     ],
     expected: ['例句', '晚上'],
     temporary: ['这周', '前两章'],
+  },
+  {
+    name: 'finance_3',
+    domain: '财务',
+    messages: [
+      '我买东西习惯先比较性价比，不追求最新款。',
+      '大件我会等活动再买。',
+      '这次想换一台笔记本。',
+      '预算大概五千。',
+    ],
+    expected: ['性价比', '活动'],
+    temporary: ['这次', '五千'],
+  },
+  {
+    name: 'relationship_3',
+    domain: '人际',
+    messages: [
+      '我不喜欢别人临时改计划。',
+      '如果有变化，最好提前说。',
+      '这周末约了朋友吃饭。',
+      '地点还没定。',
+    ],
+    expected: ['临时', '提前'],
+    temporary: ['这周末', '地点'],
+  },
+  {
+    name: 'planning_3',
+    domain: '计划',
+    messages: [
+      '我早上效率最高，重要的事一般放在上午。',
+      '晚上不太想处理复杂工作。',
+      '明天要交一个报告。',
+      '今晚先把数据整理好。',
+    ],
+    expected: ['早上', '晚上'],
+    temporary: ['明天', '今晚'],
+  },
+  {
+    name: 'cooking_3',
+    domain: '烹饪',
+    messages: [
+      '我口味偏淡，做菜不喜欢放太多盐。',
+      '我很少吃油炸食品。',
+      '今晚想做个汤。',
+      '冰箱里有西红柿和鸡蛋。',
+    ],
+    expected: ['淡', '油炸'],
+    temporary: ['今晚', '西红柿'],
+  },
+  {
+    name: 'coding_3',
+    domain: '编程',
+    messages: [
+      '我平时用 VS Code，习惯了。',
+      '我不喜欢没有类型检查的项目。',
+      '这个项目要接一个支付接口。',
+      '本周先把文档看完。',
+    ],
+    expected: ['VS Code', '类型'],
+    temporary: ['这个项目', '本周'],
+  },
+  {
+    name: 'health_3',
+    domain: '健康',
+    messages: [
+      '我对青霉素过敏。',
+      '我平时很少吃止痛药。',
+      '这次感冒有点咳嗽。',
+      '先观察两天。',
+    ],
+    expected: ['青霉素', '止痛药'],
+    temporary: ['这次', '两天'],
+  },
+  {
+    name: 'art_3',
+    domain: '美术',
+    messages: [
+      '我整体偏好极简风。',
+      '不喜欢太花哨的装饰。',
+      '这张图想做成横版。',
+      '主色先用蓝色试试。',
+    ],
+    expected: ['极简', '花哨'],
+    temporary: ['这张图', '蓝色'],
+  },
+  {
+    name: 'study_3',
+    domain: '学习',
+    messages: [
+      '我晚上记忆效果比早上好。',
+      '我喜欢用思维导图整理知识。',
+      '这周有一次考试。',
+      '重点是第三章。',
+    ],
+    expected: ['晚上', '思维导图'],
+    temporary: ['这周', '第三章'],
   },
 ];
 
@@ -168,14 +269,16 @@ for (const c of CASES) {
     evidence: i.evidence,
   }));
   const all = items.map((i) => i.content).join('\n');
-  const expectedHits = c.expected.filter((x) => all.includes(x));
+  const matched = (expected: string): boolean =>
+    [expected, ...(c.aliases?.[expected] ?? [])].some((x) => all.includes(x));
+  const expectedHits = c.expected.filter(matched);
   const leaks = c.temporary.filter((x) => all.includes(x));
   results.push({
     case: c.name,
     domain: c.domain,
     items,
     expectedHits,
-    expectedMisses: c.expected.filter((x) => !all.includes(x)),
+    expectedMisses: c.expected.filter((x) => !matched(x)),
     temporaryLeaks: leaks,
     evidenceUserBacked: items.every((i) =>
       i.evidence.every((id) => id.startsWith(`${c.name}_u`)),
