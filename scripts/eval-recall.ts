@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { DeepSeekModel, deepSeekConfigFromEnv } from '../src/adapters/model/deepseek.js';
 import type { ModelPort } from '../src/core/ports/model.js';
 import { LocalBgeEmbedding } from '../src/adapters/embedding/localBge.js';
+import { LocalBgeReranker } from '../src/adapters/rerank/localBgeReranker.js';
 import { retrievalConfig, loadEnvFile } from '../src/core/config/env.js';
 import { EventLog } from '../src/core/events/log.js';
 import { MemoryStore } from '../src/core/memory/store.js';
@@ -29,8 +30,15 @@ import { SemanticIndex } from '../src/core/memory/semantic.js';
 import { FixedClock, SeededRandom } from '../src/core/ports/clock.js';
 import { RECALL_NEGATIVES, RECALL_POSITIVES, RECALL_SEEDS, type RecallCase, type RecallSplit } from './eval-recall-data.js';
 
-type Mode = 'literal' | 'semantic' | 'topk' | 'topk-rerank' | 'local-rerank';
-const ALL_MODES: readonly Mode[] = ['literal', 'semantic', 'topk', 'topk-rerank', 'local-rerank'];
+type Mode = 'literal' | 'semantic' | 'topk' | 'topk-rerank' | 'local-rerank' | 'cross-rerank';
+const ALL_MODES: readonly Mode[] = [
+  'literal',
+  'semantic',
+  'topk',
+  'topk-rerank',
+  'local-rerank',
+  'cross-rerank',
+];
 const ROOT = process.cwd();
 const NOW = 1_760_000_000_000;
 
@@ -185,6 +193,7 @@ async function runMode(
   store: MemoryStore,
   index: SemanticIndex | null,
   rerankModel: ModelPort | null,
+  crossReranker: LocalBgeReranker | null,
 ): Promise<Metrics> {
   const m = emptyMetrics();
   const started = performance.now();
@@ -228,6 +237,31 @@ async function runMode(
         semanticTopK: topK,
         semanticFloor: floor,
       }).selected;
+    } else if (mode === 'cross-rerank') {
+      if (crossReranker === null) throw new Error('cross-rerank 需要本地 reranker 模型');
+      const base = recall({
+        query: c.text,
+        candidates: store.all(),
+        limit,
+        now: NOW,
+        random: new SeededRandom(1),
+        semantic,
+        semanticThreshold: threshold,
+        semanticTopK: topK,
+        semanticFloor: floor,
+      });
+      if (base.selected.length > 1) {
+        const rr = await rerankRecall({
+          scorer: crossReranker,
+          query: c.text,
+          candidates: base.selected,
+          filter: true,
+          minRelevance: localRerankMin,
+        });
+        selected = rr.used ? rr.items : base.selected;
+      } else {
+        selected = base.selected;
+      }
     } else if (mode === 'local-rerank') {
       if (index === null) throw new Error('local-rerank 需要 embedding 模型');
       const base = recall({
@@ -343,6 +377,9 @@ function printMode(mode: Mode, m: Metrics): void {
         `tokens=${m.rerankInputTokens}/${m.rerankOutputTokens} latency=${m.rerankLatencyMs}ms`,
     );
   }
+  if (mode === 'cross-rerank') {
+    console.log(`  本地 cross-encoder rerank threshold=${localRerankMin}`);
+  }
   console.log(`  耗时 ${m.elapsedMs}ms`);
 }
 
@@ -378,9 +415,16 @@ async function main(): Promise<void> {
     }
   }
 
+  const crossReranker = modes.includes('cross-rerank')
+    ? new LocalBgeReranker(join(ROOT, '.butler-data', 'models'))
+    : null;
+  if (crossReranker !== null && !crossReranker.isAvailable()) {
+    throw new Error('缺少本地 cross-encoder reranker 模型');
+  }
+
   const report: Record<string, Metrics> = {};
   for (const mode of modes) {
-    const m = await runMode(mode, data, store, index, rerankModel);
+    const m = await runMode(mode, data, store, index, rerankModel, crossReranker);
     report[mode] = m;
     printMode(mode, m);
   }

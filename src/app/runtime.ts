@@ -62,6 +62,7 @@ import { mergeAll } from '@/core/memory/merge.js';
 import { SemanticIndex } from '@/core/memory/semantic.js';
 import type { RerankScorer } from '@/core/memory/rerank.js';
 import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
+import { LocalBgeReranker } from '@/adapters/rerank/localBgeReranker.js';
 import { OpenAIEmbedding } from '@/adapters/embedding/openaiEmbedding.js';
 import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
@@ -289,7 +290,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
   const embeddingModelRoot =
     configuredModelRoot.length > 0 ? configuredModelRoot : join(DATA_DIR, 'models');
   const semantic = await createSemantic(dir, embeddingModelRoot);
-  const rerankScorer: RerankScorer | null = {
+  const embeddingScorer: RerankScorer = {
     name: 'local-embedding',
     score: async (query, candidates) =>
       semantic.scores(
@@ -297,6 +298,12 @@ async function initRuntime(): Promise<ButlerRuntime> {
         candidates.map((c) => c.memory),
       ),
   };
+  // 默认用经过 dev/test 校准的 embedding 重排；cross-encoder 可显式开启，
+  // 但在当前中文 dev/test 集上没有超过 embedding 阈值方案。
+  const crossReranker = new LocalBgeReranker(embeddingModelRoot);
+  const useCross = process.env['BUTLER_RERANK_CROSS'] === '1';
+  const rerankScorer: RerankScorer =
+    useCross && crossReranker.isAvailable() ? crossReranker : embeddingScorer;
 
   // ── 模型（没有 API Key 时为 null，界面据此提示"未配置模型"）──
   let model: ModelPort | null = null;
