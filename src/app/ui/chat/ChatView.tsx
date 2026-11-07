@@ -22,7 +22,7 @@ import { Modal } from '../components/Modal';
 import { Markdown } from '../components/Markdown';
 import { Badge, Collapse, EmptyState, InlineError, Skeleton } from '../components/Common';
 import { useAutoResize, useMounted, useNow } from '../lib/hooks.js';
-import { ApiError, errorMessage, fetchJson, postJson } from '../lib/api.js';
+import { ApiError, errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
 import {
   formatClock,
   formatDateFull,
@@ -42,9 +42,12 @@ import type {
   MessageDto,
   Overview,
   QuizItem,
+  ReasoningLevel,
   SessionCreateResponse,
   SessionDetailResponse,
   SessionCancellationDto,
+  SessionSettingsPatch,
+  SessionSettingsPatchResponse,
   SessionSummary,
   SessionsResponse,
   SseEvent,
@@ -53,6 +56,22 @@ import type {
   MemoryTarget,
 } from '../lib/types.js';
 import { ModelPicker, type ModelChoice, type PickableProfile } from './ModelPicker';
+import {
+  parsePetFocusPayload,
+  petFocusOriginChanged,
+  withSessionParam,
+  type PendingPetFocus,
+  type PetFocusTarget,
+} from './petFocus.js';
+import { SessionControls } from './SessionControls';
+import { SessionSettingsSheet } from './SessionSettingsSheet';
+import { HistorySessionRow } from './HistorySessionRow';
+import {
+  DEFAULT_REASONING,
+  modelRefOf,
+  sanitizeSessionSummary,
+  settingsOf,
+} from './sessionSettings.js';
 import { ProcessPanel, type ProcRound } from './Process';
 import {
   AssumptionNotice,
@@ -208,6 +227,27 @@ const SUGGESTIONS: readonly { readonly icon: 'memory' | 'calendar' | 'growth'; r
 const MAX_IMAGES = 10;
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 
+/** 桌宠聚焦请求的一次性 TTL 很短（约 15s），2s 轮询能在过期前取走。 */
+const PET_FOCUS_POLL_MS = 2_000;
+
+/**
+ * 把 ?session=<id> 写回地址栏，保留 hash（#/chat）。
+ *
+ * ★ 用 replaceState 而不是 location.assign/open：同一个标签页、不新增历史、
+ *   不触发页面重载。更新地址失败也不影响已经加载好的会话。
+ */
+function replaceSessionParam(sessionId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const next = withSessionParam(window.location.href, sessionId);
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next === current) return;
+    window.history.replaceState(window.history.state, '', next);
+  } catch {
+    // 地址栏只是展示投影：写不进去不影响会话本身。
+  }
+}
+
 function patchLast(turns: readonly LiveTurn[], fn: (a: LiveAssistant) => LiveAssistant): LiveTurn[] {
   if (turns.length === 0) return [...turns];
   const index = turns.length - 1;
@@ -300,7 +340,17 @@ export function ChatView({
   const [modelCatalog, setModelCatalog] = useState<readonly PickableProfile[]>([]);
   const [lastChatModel, setLastChatModel] = useState<ModelChoice | null>(null);
   const [chatModel, setChatModel] = useState<ModelChoice | null>(null);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelCatalogLoading, setModelCatalogLoading] = useState(true);
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
+  const [activeReasoning, setActiveReasoning] = useState<ReasoningLevel>(DEFAULT_REASONING);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsTargetId, setSettingsTargetId] = useState<string | null>(null);
+  const [turnSettings, setTurnSettings] = useState<{
+    readonly reasoning: ReasoningLevel;
+    readonly applied: ReasoningLevel | null;
+  } | null>(null);
+  const [nextTurnPending, setNextTurnPending] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -332,6 +382,8 @@ export function ChatView({
   const abortRef = useRef<AbortController | null>(null);
   const lastChatModelRef = useRef<ModelChoice | null>(null);
   const modelCatalogRef = useRef<readonly PickableProfile[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
+  const settingsSavingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const voiceBaseRef = useRef('');
   const reviewAbortRef = useRef<AbortController | null>(null);
@@ -339,6 +391,12 @@ export function ChatView({
   const forceScrollRef = useRef(true);
   const bootRef = useRef(false);
   const loadSeqRef = useRef(0);
+  const sessionsRef = useRef<readonly SessionSummary[]>([]);
+  const streamingRef = useRef(false);
+  const bootDoneRef = useRef(false);
+  const pendingPetFocusRef = useRef<PendingPetFocus | null>(null);
+  const petFocusSeqRef = useRef(0);
+  const petFocusDrainingRef = useRef(false);
 
   const now = useNow(30_000);
   const mounted = useMounted();
@@ -353,42 +411,37 @@ export function ChatView({
         ? `第 ${reviewRange.start + 1} 轮`
         : `第 ${reviewRange.start + 1}–${reviewRange.end + 1} 轮`;
 
-  useEffect(() => {
-    let alive = true;
-    void fetchJson<ModelCatalogResponse>('/api/model')
-      .then((res) => {
-        if (!alive) return;
-        setModelCatalog(res.profiles);
-        const last = res.lastChat ?? fallbackModelChoice(res.profiles);
-        setLastChatModel(last);
-        setChatModel((previous) => previous ?? last);
-        setReviewModel((previous) => previous ?? res.lastReview ?? last);
-      })
-      .catch(() => {
-        // 模型列表读不到时，发送仍会由后端给出明确错误。
-      });
-    return () => {
-      alive = false;
-    };
+  /**
+   * streaming 同时写进 ref。
+   *
+   * ★ 轮询与排空桌宠聚焦用的是稳定闭包：不能等 React 下一次渲染才知道
+   *   当前是否在流式执行，否则可能在流式中途把页面切走。
+   */
+  const updateStreaming = useCallback((value: boolean): void => {
+    streamingRef.current = value;
+    setStreaming(value);
+  }, []);
+
+  const loadModelCatalog = useCallback(async (): Promise<void> => {
+    setModelCatalogLoading(true);
+    setModelCatalogError(null);
+    try {
+      const res = await fetchJson<ModelCatalogResponse>('/api/model');
+      setModelCatalog(res.profiles);
+      const last = res.lastChat ?? fallbackModelChoice(res.profiles);
+      setLastChatModel(last);
+      setChatModel((previous) => previous ?? last);
+      setReviewModel((previous) => previous ?? res.lastReview ?? last);
+    } catch (err) {
+      setModelCatalogError(errorMessage(err));
+    } finally {
+      setModelCatalogLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    if (!modelPickerOpen) return;
-    let alive = true;
-    void fetchJson<ModelCatalogResponse>('/api/model')
-      .then((res) => {
-        if (!alive) return;
-        setModelCatalog(res.profiles);
-        const last = res.lastChat ?? fallbackModelChoice(res.profiles);
-        setLastChatModel(last);
-        setChatModel((previous) => previous ?? last);
-        setReviewModel((previous) => previous ?? res.lastReview ?? last);
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [modelPickerOpen]);
+    void loadModelCatalog();
+  }, [loadModelCatalog]);
 
   useEffect(() => {
     lastChatModelRef.current = lastChatModel;
@@ -397,6 +450,18 @@ export function ChatView({
   useEffect(() => {
     modelCatalogRef.current = modelCatalog;
   }, [modelCatalog]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!streaming) setNextTurnPending(false);
+  }, [streaming]);
 
   const availableChatModels = useMemo(
     () =>
@@ -415,6 +480,26 @@ export function ChatView({
     [sessions],
   );
   const isDraftSession = currentSession !== undefined && currentSession.messageCount === 0;
+  const settingsTarget = useMemo(
+    () => sessions.find((s) => s.id === settingsTargetId) ?? null,
+    [sessions, settingsTargetId],
+  );
+
+  /**
+   * 把一次会话投影（列表或详情）同步到 composer 的设置。
+   *
+   * ★ 只读取 settings 里的档位/模型，**不读取人格正文**；
+   *   人格正文只留在设置抽屉里。
+   */
+  const syncActiveSettings = useCallback((summary: SessionSummary): void => {
+    setActiveReasoning(settingsOf(summary).reasoning);
+    const modelRef = modelRefOf(summary);
+    if (modelRef !== null) {
+      setChatModel({ profileId: modelRef.profileId, modelId: modelRef.modelId });
+    } else {
+      setChatModel(lastChatModelRef.current ?? fallbackModelChoice(modelCatalogRef.current));
+    }
+  }, []);
 
   useEffect(() => {
     if (isDraftSession) writeDraftText(input);
@@ -608,20 +693,29 @@ export function ChatView({
 
   useAutoResize(textareaRef, input);
 
-  const refreshSessions = useCallback(async (): Promise<void> => {
+  const refreshSessions = useCallback(async (): Promise<readonly SessionSummary[] | null> => {
     try {
       const res = await fetchJson<SessionsResponse>('/api/sessions');
       setSessions(res.sessions);
+      sessionsRef.current = res.sessions;
+      // 刷新列表后让 composer 跟上当前会话（保存请求进行中时不覆盖乐观值）。
+      const currentId = sessionIdRef.current;
+      if (currentId !== null && !settingsSavingRef.current) {
+        const current = res.sessions.find((s) => s.id === currentId);
+        if (current !== undefined) syncActiveSettings(current);
+      }
+      return res.sessions;
     } catch {
       // 列表刷新失败不打断主流程；首屏错误由 loadSession 呈现
+      return null;
     }
-  }, []);
+  }, [syncActiveSettings]);
 
   const loadSession = useCallback(async (id: string): Promise<{ readonly ok: boolean; readonly error: string | null }> => {
     const token = ++loadSeqRef.current;
     abortRef.current?.abort();
     abortRef.current = null;
-    setStreaming(false);
+    updateStreaming(false);
     setLoadingSession(true);
     setSessionError(null);
     setLiveTurns([]);
@@ -631,7 +725,12 @@ export function ChatView({
     setVerdicts([]);
     setQuizzes([]);
     setSessionId(id);
+    sessionIdRef.current = id;
     setApprovals([]);
+    setTurnSettings(null);
+    setNextTurnPending(false);
+    setSettingsError(null);
+    setSettingsTargetId(null);
     setReviewOpen(false);
     setReviewRange(null);
     setReviewAnchor(null);
@@ -651,13 +750,8 @@ export function ChatView({
       setCancellations(res.cancellations ?? []);
       setVerdicts(res.verdicts);
       setQuizzes(res.quizzes);
-      if (res.session.modelProfileId !== undefined && res.session.modelId !== undefined) {
-        setChatModel({ profileId: res.session.modelProfileId, modelId: res.session.modelId });
-      } else {
-        setChatModel(
-          lastChatModelRef.current ?? fallbackModelChoice(modelCatalogRef.current),
-        );
-      }
+      // 详情接口带完整 settings；只取档位/模型，正文不进入列表或 composer。
+      syncActiveSettings(res.session);
       setInput(res.messages.length === 0 ? readDraftText() : '');
       return { ok: true, error: null };
     } catch (err) {
@@ -668,7 +762,113 @@ export function ChatView({
     } finally {
       if (token === loadSeqRef.current) setLoadingSession(false);
     }
-  }, []);
+  }, [syncActiveSettings, updateStreaming]);
+
+  /**
+   * 应用一次桌宠聚焦请求（只在当前页跳转，不新开窗口）。
+   *
+   * 竞态保护分三层：
+   *   1. seq：后到的桌宠请求会让更早的请求失效；
+   *   2. originSessionId：收到请求后用户手动切过会话，旧请求不再覆盖；
+   *   3. loadSession 自己的 loadSeqRef token：加载期间又被切走时，旧结果不会落盘。
+   */
+  const applyPetFocus = useCallback(
+    async (pending: PendingPetFocus): Promise<void> => {
+      const targetId = pending.sessionId;
+      if (pending.seq !== petFocusSeqRef.current) return;
+      if (petFocusOriginChanged(pending, sessionIdRef.current)) return;
+      if (targetId === sessionIdRef.current) return;
+
+      // 目标不在列表里：先刷新一次。刷新失败或仍不存在就放弃，绝不调用
+      // loadSession —— 它会把当前页清空后再显示错误，等于破坏了用户正看的内容。
+      if (!sessionsRef.current.some((s) => s.id === targetId)) {
+        const latest = await refreshSessions();
+        if (latest === null || !latest.some((s) => s.id === targetId)) return;
+        if (pending.seq !== petFocusSeqRef.current) return;
+        if (petFocusOriginChanged(pending, sessionIdRef.current)) return;
+      }
+
+      // 等待期间用户开了新一轮：把请求放回队列，等这一轮结束后再应用，
+      // 不打断正在执行的轮次，也不静默丢掉。
+      if (streamingRef.current) {
+        if (pendingPetFocusRef.current === null && pending.seq === petFocusSeqRef.current) {
+          pendingPetFocusRef.current = pending;
+        }
+        return;
+      }
+
+      // 预读一次详情。loadSession 会先把当前页清空再发请求；如果目标读不到，
+      // 用户正在看的内容就变成错误页了。先确认可读，失败就保持现状。
+      try {
+        await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(targetId)}`);
+      } catch {
+        return;
+      }
+      if (pending.seq !== petFocusSeqRef.current) return;
+      if (petFocusOriginChanged(pending, sessionIdRef.current)) return;
+      if (streamingRef.current) {
+        if (pendingPetFocusRef.current === null && pending.seq === petFocusSeqRef.current) {
+          pendingPetFocusRef.current = pending;
+        }
+        return;
+      }
+
+      const outcome = await loadSession(targetId);
+      if (!outcome.ok) return;
+      if (pending.seq !== petFocusSeqRef.current) return;
+      if (sessionIdRef.current !== targetId) return;
+      replaceSessionParam(targetId);
+    },
+    [loadSession, refreshSessions],
+  );
+
+  /**
+   * 排空待处理的聚焦请求。
+   *
+   * 串行执行：同一时刻只应用一个；流式执行中/首屏还没就绪就直接返回，
+   * 由对应状态变化的 effect 再次调用，不静默丢弃。
+   */
+  const drainPetFocus = useCallback((): void => {
+    if (petFocusDrainingRef.current) return;
+    if (!bootDoneRef.current) return;
+    petFocusDrainingRef.current = true;
+    void (async () => {
+      try {
+        for (;;) {
+          if (!bootDoneRef.current) break;
+          if (streamingRef.current) break;
+          const pending = pendingPetFocusRef.current;
+          if (pending === null) break;
+          pendingPetFocusRef.current = null;
+          if (pending.seq !== petFocusSeqRef.current) continue;
+          if (petFocusOriginChanged(pending, sessionIdRef.current)) continue;
+          if (pending.sessionId === sessionIdRef.current) continue;
+          try {
+            await applyPetFocus(pending);
+          } catch {
+            // 单次聚焦失败不影响当前页面，也不让整个轮询循环卡死。
+          }
+        }
+      } finally {
+        petFocusDrainingRef.current = false;
+      }
+    })();
+  }, [applyPetFocus]);
+
+  /** 轮询拿到请求：当前会话直接忽略；流式中先排队，其余立即应用。 */
+  const acceptPetFocus = useCallback(
+    (focus: PetFocusTarget): void => {
+      if (focus.sessionId === sessionIdRef.current) return;
+      pendingPetFocusRef.current = {
+        sessionId: focus.sessionId,
+        seq: ++petFocusSeqRef.current,
+        originSessionId: sessionIdRef.current,
+        fromBeforeBoot: !bootDoneRef.current,
+      };
+      drainPetFocus();
+    },
+    [drainPetFocus],
+  );
 
   const refreshCancellations = useCallback(async (id: string): Promise<void> => {
     try {
@@ -682,14 +882,19 @@ export function ChatView({
   const createNewChat = useCallback(async (): Promise<void> => {
     abortRef.current?.abort();
     abortRef.current = null;
-    setStreaming(false);
+    updateStreaming(false);
     setApprovals([]);
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
       setSessions((prev) => [res.session, ...prev.filter((s) => s.id !== res.session.id)]);
       setSessionId(res.session.id);
-      setChatModel(lastChatModel ?? fallbackModelChoice(modelCatalog));
-      setModelPickerOpen(false);
+      sessionIdRef.current = res.session.id;
+      // 新对话默认 high / 记忆 on（由后端会话投影给出，不在前端另写一套）。
+      syncActiveSettings(res.session);
+      setSettingsError(null);
+      setSettingsTargetId(null);
+      setTurnSettings(null);
+      setNextTurnPending(false);
       setMessages([]);
       setInput(readDraftText());
       setCancellations([]);
@@ -715,28 +920,100 @@ export function ChatView({
     } catch (err) {
       notify(errorMessage(err), 'danger');
     }
-  }, [lastChatModel, modelCatalog, notify]);
+  }, [notify, syncActiveSettings, updateStreaming]);
 
-  const selectChatModel = useCallback(async (choice: ModelChoice): Promise<void> => {
-    const previous = chatModel;
-    const previousLast = lastChatModel;
-    setChatModel(choice);
-    setLastChatModel(choice);
-    setModelPickerOpen(false);
-    if (sessionId === null) return;
-    try {
-      await postJson('/api/model', {
-        action: 'select-chat',
-        sessionId,
-        profileId: choice.profileId,
-        modelId: choice.modelId,
-      });
-    } catch (err) {
-      setChatModel(previous);
-      setLastChatModel(previousLast);
-      notify(errorMessage(err), 'danger');
+  function applyPatchedSession(detail: SessionSummary): void {
+    const summary = sanitizeSessionSummary(detail);
+    setSessions((prev) => {
+      if (prev.some((s) => s.id === summary.id)) {
+        return prev.map((s) => (s.id === summary.id ? summary : s));
+      }
+      return [summary, ...prev];
+    });
+  }
+
+  const handleSessionSaved = useCallback(
+    (detail: SessionSummary): void => {
+      applyPatchedSession(detail);
+      if (sessionIdRef.current === detail.id) syncActiveSettings(detail);
+    },
+    [syncActiveSettings],
+  );
+
+  /**
+   * 会话设置的唯一写入路径。
+   *
+   * ★ 目标 session 在请求开始时固定：切换会话后返回的旧响应只更新列表，
+   *   不会覆盖新会话的 composer 状态。
+   * ★ run 中的 PATCH 只写会话；当前轮由后端 TurnSettings 快照保护。
+   */
+  async function patchCurrentSettings(
+    patch: SessionSettingsPatch,
+    optimistic: () => void,
+    rollback: () => void,
+    successModel?: ModelChoice,
+  ): Promise<void> {
+    if (settingsSavingRef.current) return;
+    settingsSavingRef.current = true;
+    setSettingsSaving(true);
+    setSettingsError(null);
+    optimistic();
+
+    let targetId = sessionId;
+    if (targetId === null) targetId = await ensureSession();
+    if (targetId === null) {
+      rollback();
+      settingsSavingRef.current = false;
+      setSettingsSaving(false);
+      return;
     }
-  }, [chatModel, lastChatModel, notify, sessionId]);
+
+    try {
+      const res = await patchJson<SessionSettingsPatchResponse>(
+        `/api/sessions/${encodeURIComponent(targetId)}`,
+        patch,
+      );
+      applyPatchedSession(res.session);
+      if (sessionIdRef.current === targetId) {
+        syncActiveSettings(res.session);
+      }
+      if (successModel !== undefined) {
+        setLastChatModel(successModel);
+        lastChatModelRef.current = successModel;
+      }
+      if (streaming) setNextTurnPending(true);
+      setSettingsError(null);
+    } catch (err) {
+      if (sessionIdRef.current === targetId) rollback();
+      const message = errorMessage(err);
+      setSettingsError(message);
+      notify(message, 'danger');
+    } finally {
+      settingsSavingRef.current = false;
+      setSettingsSaving(false);
+    }
+  }
+
+  function selectChatModel(choice: ModelChoice): void {
+    if (chatModel?.profileId === choice.profileId && chatModel.modelId === choice.modelId) return;
+    const previous = chatModel;
+    void patchCurrentSettings(
+      { modelProfileId: choice.profileId, modelId: choice.modelId },
+      () => setChatModel(choice),
+      () => setChatModel(previous),
+      choice,
+    );
+  }
+
+  function selectReasoning(level: ReasoningLevel): void {
+    if (level === activeReasoning) return;
+    const previous = activeReasoning;
+    void patchCurrentSettings(
+      { reasoning: level },
+      () => setActiveReasoning(level),
+      () => setActiveReasoning(previous),
+    );
+  }
 
   // 首屏：取会话列表；有历史则打开最近一个
   useEffect(() => {
@@ -750,7 +1027,16 @@ export function ChatView({
         const res = await fetchJson<SessionsResponse>('/api/sessions');
         if (cancelled) return;
         setSessions(res.sessions);
-        const first = res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
+        sessionsRef.current = res.sessions;
+        // 桌宠点“打开当前对话”时带 ?session=<id>；直接落到那一条会话。
+        const requested =
+          typeof window !== 'undefined'
+            ? new URLSearchParams(window.location.search).get('session')
+            : null;
+        const requestedSession =
+          requested !== null ? res.sessions.find((s) => s.id === requested) : undefined;
+        const first =
+          requestedSession ?? res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
         if (first !== undefined) {
           onBootState({ state: 'loading', phase: 'session' });
           const outcome = await loadSession(first.id);
@@ -760,7 +1046,10 @@ export function ChatView({
             return;
           }
         }
+        // 首屏会话落位之后才允许桌宠聚焦生效，否则会和首屏的 loadSession 抢同一个页面。
+        bootDoneRef.current = true;
         onBootState({ state: 'ready' });
+        drainPetFocus();
       } catch (err) {
         if (cancelled) return;
         const message = errorMessage(err);
@@ -772,7 +1061,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [loadSession, onBootState]);
+  }, [drainPetFocus, loadSession, onBootState]);
 
   // 数据被替换（导入备份）→ 旧会话 id 已失效，重新读取
   useEffect(() => {
@@ -780,29 +1069,88 @@ export function ChatView({
     void (async () => {
       abortRef.current?.abort();
       abortRef.current = null;
-      setStreaming(false);
+      updateStreaming(false);
       setLiveTurns([]);
       setApprovals([]);
       try {
         const res = await fetchJson<SessionsResponse>('/api/sessions');
         setSessions(res.sessions);
+        sessionsRef.current = res.sessions;
         const first = res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
         if (first !== undefined) {
           await loadSession(first.id);
         } else {
           setSessionId(null);
+          sessionIdRef.current = null;
           setMessages([]);
           setCancellations([]);
           setLocalCancel(null);
           setVerdicts([]);
           setQuizzes([]);
           setSessionError(null);
+          setActiveReasoning(DEFAULT_REASONING);
+          setChatModel(lastChatModelRef.current ?? fallbackModelChoice(modelCatalogRef.current));
+          setTurnSettings(null);
+          setNextTurnPending(false);
+          setSettingsTargetId(null);
         }
       } catch (err) {
         setSessionError(errorMessage(err));
       }
     })();
-  }, [dataResetNonce, loadSession]);
+  }, [dataResetNonce, loadSession, updateStreaming]);
+
+  // 流式执行结束（或被用户停止）后，再应用排队中的桌宠聚焦，避免打断当前轮。
+  useEffect(() => {
+    if (!streaming) drainPetFocus();
+  }, [drainPetFocus, streaming]);
+
+  // 桌宠 → Web 聚焦：每 ~2s 取一次一次性请求。
+  //
+  // ★ 轮询只写 ref / 调稳定回调，不 setState，不会每 2s 触发一次重渲染。
+  // ★ 端点不存在（旧构建/404）时安静停用；其它失败下一轮继续，不打印错误。
+  // ★ 首次轮询放在 2s 后：React StrictMode 会立即卸载重挂 effect，
+  //   立即发请求可能在第一次挂载里把一次性请求取走又丢掉。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let disposed = false;
+    let stopped = false;
+    let timer: number | null = null;
+
+    const schedule = (delay: number): void => {
+      if (disposed || stopped) return;
+      timer = window.setTimeout(() => {
+        void poll();
+      }, delay);
+    };
+
+    const poll = async (): Promise<void> => {
+      timer = null;
+      if (disposed || stopped) return;
+      try {
+        const payload = await fetchJson<unknown>('/api/pet/focus', {
+          signal: AbortSignal.timeout(8_000),
+        });
+        if (disposed || stopped) return;
+        const focus = parsePetFocusPayload(payload);
+        if (focus !== null) acceptPetFocus(focus);
+        schedule(PET_FOCUS_POLL_MS);
+      } catch (err) {
+        if (disposed) return;
+        if (err instanceof ApiError && err.status === 404) {
+          stopped = true;
+          return;
+        }
+        schedule(PET_FOCUS_POLL_MS);
+      }
+    };
+
+    schedule(PET_FOCUS_POLL_MS);
+    return () => {
+      disposed = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [acceptPetFocus]);
 
   // 回到对话时，若本来就在底部就贴到底
   useEffect(() => {
@@ -842,6 +1190,7 @@ export function ChatView({
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
       setSessions((prev) => [res.session, ...prev.filter((s) => s.id !== res.session.id)]);
+      sessionIdRef.current = res.session.id;
       setSessionId(res.session.id);
       return res.session.id;
     } catch (err) {
@@ -881,7 +1230,9 @@ export function ChatView({
       },
     ]);
     setLocalCancel(null);
-    setStreaming(true);
+    updateStreaming(true);
+    setTurnSettings(null);
+    setNextTurnPending(false);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -920,6 +1271,18 @@ export function ChatView({
     const handle = (ev: SseEvent): void => {
       if (ev.type === 'session') {
         setSessionId((current) => (current === ev.sessionId ? current : ev.sessionId));
+        sessionIdRef.current = ev.sessionId;
+        return;
+      }
+
+      if (ev.type === 'settings') {
+        // 本轮开始时的快照：只用于提示“当前轮按哪档执行”。
+        // ★ 不用它回写会话设置 —— 执行中 PATCH 后，会话值已更新，
+        //   但本轮仍然用这份旧快照。
+        setTurnSettings({
+          reasoning: ev.settings.reasoning,
+          applied: ev.settings.reasoningApplied,
+        });
         return;
       }
 
@@ -1027,7 +1390,7 @@ export function ChatView({
     } finally {
       flushQueue();
       if (abortRef.current === controller) abortRef.current = null;
-      setStreaming(false);
+      updateStreaming(false);
       void refreshSessions();
       onRefreshOverview();
       setApprovals((prev) => prev.filter((a) => a.receivedAt + a.timeoutMs > Date.now()));
@@ -1116,7 +1479,7 @@ export function ChatView({
       ) ?? 0;
     abortRef.current?.abort();
     abortRef.current = null;
-    setStreaming(false);
+    updateStreaming(false);
     setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'aborted' })));
     setLocalCancel({
       id: `local_cancel_${Date.now()}`,
@@ -1764,15 +2127,21 @@ export function ChatView({
                 </span>
               </div>
 
-              <ModelPicker
+              <SessionControls
                 profiles={modelCatalog}
-                value={chatModel}
-                onSelect={(choice) => void selectChatModel(choice)}
-                open={modelPickerOpen}
-                onOpenChange={setModelPickerOpen}
-                disabled={streaming || !canChat}
+                model={chatModel}
+                reasoning={activeReasoning}
+                streaming={streaming}
+                saving={settingsSaving}
+                catalogLoading={modelCatalogLoading}
+                catalogError={modelCatalogError}
+                settingsError={settingsError}
+                onRefreshCatalog={() => void loadModelCatalog()}
+                onSelectModel={selectChatModel}
+                onSelectReasoning={selectReasoning}
+                onOpenSettings={onOpenSettings}
+                turnReasoning={turnSettings?.reasoning ?? null}
               />
-
               {streaming ? (
                 <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
                   <Icon name="stop" size={16} />
@@ -1800,6 +2169,9 @@ export function ChatView({
                 </span>
                 {statusLabel(liveTurns[liveTurns.length - 1]?.assistant ?? emptyAssistant()) || '正在处理'}
               </span>
+              {nextTurnPending && (
+                <span className="composer-next-turn">· 新设置下一轮生效</span>
+              )}
             </p>
           )}
         </div>
@@ -1825,27 +2197,32 @@ export function ChatView({
             <EmptyState compact icon="history" title="还没有对话" description="第一次开口之后，这里会出现历史。" />
           )}
           {historySessions.map((s) => (
-            <button
+            <HistorySessionRow
               key={s.id}
-              type="button"
-              className={`session-item ${s.id === sessionId ? 'is-active' : ''}`}
-              onClick={() => {
+              session={s}
+              active={s.id === sessionId}
+              now={now}
+              onOpen={() => {
                 setHistoryOpen(false);
                 void loadSession(s.id);
               }}
-            >
-              <span className="session-item-top">
-                <strong>{s.title}</strong>
-                <small>{relativeTime(s.updatedAt, now)}</small>
-              </span>
-              <span className="session-item-preview">{s.lastPreview.length > 0 ? s.lastPreview : '没有消息'}</span>
-              <span className="session-item-meta mono">
-                {s.messageCount} 条 · {s.turnCount} 回合
-              </span>
-            </button>
+              onOpenSettings={() => {
+                setHistoryOpen(false);
+                setSettingsTargetId(s.id);
+              }}
+            />
           ))}
         </div>
       </Modal>
+
+      <SessionSettingsSheet
+        open={settingsTargetId !== null && settingsTarget !== null}
+        session={settingsTarget}
+        streaming={streaming && settingsTargetId === sessionId}
+        notify={notify}
+        onClose={() => setSettingsTargetId(null)}
+        onSaved={handleSessionSaved}
+      />
 
       <Modal
         open={active && activeApproval !== null}

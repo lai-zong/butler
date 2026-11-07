@@ -304,6 +304,38 @@ export interface MemoryChangesResponse {
 // 会话
 // ═══════════════════════════════════════════════════════════
 
+export type ReasoningLevel = 'off' | 'low' | 'high' | 'max';
+export type SessionMemoryMode = 'on' | 'off';
+/** 会话工具权限；null 表示跟随应用默认（在 DTO 里用 permission 字段表达）。 */
+export type SessionPermission = 'read-only' | 'workspace' | 'full';
+
+/**
+ * 会话设置投影。
+ *
+ * ★ 列表接口只给 `personaPreview`，`persona` 是 null；
+ *   详情接口（GET /api/sessions/[id]）才给完整正文。
+ *   编辑之前必须先取详情，避免把列表摘要当成正文保存回去。
+ *
+ * ★ workspace / permission 是**配置值**（null = 跟随应用）；
+ *   effectiveWorkspace / effectivePermission 是服务端按应用当前默认解析后的
+ *   实际值，界面直接用它们显示“当前实际”，不要在客户端自己猜。
+ */
+export interface SessionSettingsDto {
+  readonly reasoning: ReasoningLevel;
+  readonly memoryMode: SessionMemoryMode;
+  readonly hasPersona: boolean;
+  readonly personaLength: number;
+  readonly personaPreview: string;
+  readonly persona: string | null;
+  readonly personaHash: string;
+  readonly workspace: string | null;
+  readonly permission: SessionPermission | null;
+  readonly effectiveWorkspace: string;
+  readonly effectivePermission: SessionPermission;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
+}
+
 export interface SessionSummary {
   readonly id: string;
   readonly title: string;
@@ -313,9 +345,29 @@ export interface SessionSummary {
   readonly messageCount: number;
   readonly verdictCount: number;
   readonly lastPreview: string;
+  readonly settings: SessionSettingsDto;
+  readonly workspace: string | null;
+  readonly permission: SessionPermission | null;
+  readonly effectiveWorkspace: string;
+  readonly effectivePermission: SessionPermission;
   readonly modelProfileId?: string;
   readonly modelId?: string;
 }
+
+/** 详情接口比列表多一份完整人格正文（类型上收窄成 string）。 */
+export interface SessionDetail extends Omit<SessionSummary, 'settings'> {
+  readonly settings: SessionSettingsDto & { readonly persona: string };
+}
+
+export type SessionSettingsPatch = {
+  readonly persona?: string;
+  readonly reasoning?: ReasoningLevel;
+  readonly memoryMode?: SessionMemoryMode | boolean;
+  readonly workspace?: string | null;
+  readonly permission?: SessionPermission | null;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
+};
 
 export type MessageRole = 'user' | 'butler' | 'servant' | 'system';
 export type MessageStatus = 'done' | 'streaming' | 'interrupted' | 'failed';
@@ -505,12 +557,17 @@ export interface SessionCancellationDto {
 
 export interface SessionDetailResponse {
   readonly ok: boolean;
-  readonly session: SessionSummary;
+  readonly session: SessionDetail;
   readonly messages: readonly MessageDto[];
   readonly verdicts: readonly VerdictDto[];
   readonly reviews?: readonly ReviewRunDto[];
   readonly quizzes: readonly QuizItem[];
   readonly cancellations?: readonly SessionCancellationDto[];
+}
+
+export interface SessionSettingsPatchResponse {
+  readonly ok: boolean;
+  readonly session: SessionDetail;
 }
 
 export interface SessionsResponse {
@@ -1214,6 +1271,23 @@ export type SseEvent =
   | { readonly type: 'verdict'; readonly verdict: VerdictDto }
   | { readonly type: 'reflection'; readonly reflection: ReflectionView | null }
   | { readonly type: 'reports'; readonly reports: readonly ExecutionReport[] }
+  | {
+      readonly type: 'settings';
+      readonly settings: {
+        readonly reasoning: ReasoningLevel;
+        /** 后端实际生效的档位；未知供应商/未发送时为 null。 */
+        readonly reasoningApplied: ReasoningLevel | null;
+        readonly reasoningStyle: string;
+        readonly memoryMode: 'on' | 'shadow' | 'off';
+        readonly personaSource: 'session' | 'request' | 'none';
+        readonly personaLength: number;
+        readonly globalAgents: {
+          readonly hash: string;
+          readonly length: number;
+          readonly loaded: boolean;
+        };
+      };
+    }
   | {
       readonly type: 'audit';
       readonly range: { readonly fromSeq: number; readonly toSeq: number };

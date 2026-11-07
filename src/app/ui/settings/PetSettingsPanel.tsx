@@ -5,7 +5,7 @@
  *
  * ★ 偏好（形象、大小、模型、思考强度与人格）由设置页保存。
  *   页面底部的「启动桌宠」可以启动 / 重新打开桌宠进程，
- *   但不会结束它；退出仍由桌宠右键菜单或托盘完成。
+ *   但不会结束它；关闭这个页面也不会影响正在运行的桌宠。
  *
  * ★ enabled 表示“这份配置被启用”，不代表进程正在运行；
  *   文案必须把这两件事分开说，autoStart 也只记录偏好。
@@ -69,7 +69,7 @@ interface PetFormState {
   readonly size: number;
   readonly sprite: string;
   readonly alwaysOnTop: boolean;
-  /** 空字符串 = 跟随主界面当前对话模型。 */
+  /** 空字符串 = 未指定，使用主界面最近使用的对话模型。 */
   readonly modelKey: string;
   readonly thinkingLevel: PetThinkingLevel;
   readonly persona: string;
@@ -529,7 +529,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
               disabled={saving}
               onChange={(e) => patch({ modelKey: e.target.value })}
             >
-              <option value="">跟随主界面当前对话模型</option>
+              <option value="">未指定（使用主界面最近使用的模型）</option>
               {modelOptions.map((option) => (
                 <option key={option.key} value={option.key}>
                   {option.label}
@@ -540,7 +540,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
               {modelsError ??
                 (models.length === 0
                   ? '还没有配置对话模型；可以到「模型接入」里添加。'
-                  : '留空 = 跟随主界面当前选择的对话模型。')}
+                  : '留空 = 使用主界面最近使用的对话模型。')}
             </small>
           </label>
 
@@ -558,7 +558,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 </option>
               ))}
             </select>
-            <small className="pet-hint-warn">当前聊天后端尚未接入，先保存偏好。</small>
+            <small>桌宠右键切换思考强度会同步到当前对话；这里保存的是桌宠偏好。</small>
           </label>
 
           <label className="pet-field">
@@ -661,7 +661,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
           </p>
         </div>
         <p className="pet-launch-note">
-          设置页可以启动或重新打开桌宠，但不会结束正在运行的桌宠；退出桌宠仍由桌宠右键菜单或托盘完成。
+          设置页可以启动或重新打开桌宠，但不会结束正在运行的桌宠。关闭设置页不会影响桌宠。
         </p>
       </section>
     </>

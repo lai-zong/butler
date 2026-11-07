@@ -11,7 +11,7 @@ type Mode = 'view' | 'workspace' | 'full';
 
 const MODES: readonly { mode: Mode; title: string; desc: string; icon: 'eye' | 'file' | 'shield' }[] = [
   { mode: 'view', title: '仅查看', desc: '读文件、查目录、看状态；不修改任何东西。', icon: 'eye' },
-  { mode: 'workspace', title: '工作区内修改', desc: '可改工作区文件、运行常规命令；高风险操作仍拒绝。', icon: 'file' },
+  { mode: 'workspace', title: '工作区内修改', desc: '可改工作区文件、建目录；命令执行与高风险操作按会话能力处理。', icon: 'file' },
   { mode: 'full', title: '完全权限', desc: '开放常规与高风险操作；危险操作仍禁用。', icon: 'shield' },
 ];
 
@@ -34,7 +34,8 @@ export function PermissionsPanel({
         const res = await fetchJson<{ mode: Mode | null; legacy: boolean }>('/api/permissions');
         if (cancelled) return;
         setSaved(res.mode);
-        setMode(res.mode ?? 'workspace');
+        // 未配置时真实默认是只读；界面必须预选 view，不能预选 workspace。
+        setMode(res.mode ?? 'view');
         setLegacy(res.legacy);
       } catch (err) {
         if (!cancelled) setError(errorMessage(err));
@@ -116,9 +117,9 @@ export function PermissionsPanel({
           <div className="perm-foot">
             <span>
               {legacy
-                ? '当前未配置模式，沿用旧行为。'
+                ? '当前未配置模式，实际按仅查看（只读）运行。'
                 : saved === null
-                  ? '当前未配置模式。'
+                  ? '当前未配置模式，实际按仅查看（只读）运行。'
                   : `当前生效：${MODES.find((m) => m.mode === saved)?.title ?? saved}`}
             </span>
             <button type="button" className="btn btn-ghost btn-sm" disabled={saving || mode === saved} onClick={() => void save()}>

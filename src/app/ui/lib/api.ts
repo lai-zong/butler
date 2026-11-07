@@ -78,6 +78,22 @@ export async function postJson<T>(
   });
 }
 
+export async function patchJson<T>(
+  url: string,
+  body: unknown,
+  init?: Omit<RequestInit, 'method' | 'body'>,
+): Promise<T> {
+  return fetchJson<T>(url, {
+    method: 'PATCH',
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 export function isApiError(err: unknown): err is ApiError {
   return err instanceof ApiError;
 }
