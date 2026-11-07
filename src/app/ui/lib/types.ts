@@ -600,6 +600,13 @@ export interface SessionTitleResponse {
   readonly title: string;
 }
 
+/** PATCH /api/sessions/:id/title：手动重命名；manual=true 后自动生成不再覆盖。 */
+export interface SessionTitlePatchResponse {
+  readonly ok: boolean;
+  readonly title: string;
+  readonly manual: boolean;
+}
+
 // ═══════════════════════════════════════════════════════════
 // 审计
 // ═══════════════════════════════════════════════════════════

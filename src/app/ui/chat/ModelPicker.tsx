@@ -117,7 +117,6 @@ export function ModelPicker({
         <div className="model-picker-pop" role="dialog" aria-label={label}>
           <div className="model-picker-head">
             <strong>{label}</strong>
-            <span>仅当前对话</span>
           </div>
           <label className="model-picker-search">
             <Icon name="search" size={13} />

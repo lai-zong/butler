@@ -34,7 +34,6 @@ import {
 import { applyEvent, asSseEvent, emptyAssistant } from '../lib/chatLive.js';
 import type { ChatBootState } from '../lib/boot.js';
 import { useSessionIndex } from '../lib/sessionIndex.js';
-import { needsGeneratedTitle } from '../lib/sessionSort.js';
 import type {
   AgentTrace,
   AuditResponse,
@@ -358,11 +357,6 @@ export function ChatView({
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsTargetId, setSettingsTargetId] = useState<string | null>(null);
-  const [turnSettings, setTurnSettings] = useState<{
-    readonly reasoning: ReasoningLevel;
-    readonly applied: ReasoningLevel | null;
-  } | null>(null);
-  const [nextTurnPending, setNextTurnPending] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -472,10 +466,6 @@ export function ChatView({
     sessionsRef.current = sessions;
   }, [sessions]);
 
-  useEffect(() => {
-    if (!streaming) setNextTurnPending(false);
-  }, [streaming]);
-
   const availableChatModels = useMemo(
     () =>
       modelCatalog.some((profile) =>
@@ -513,7 +503,10 @@ export function ChatView({
   /**
    * 标题懒生成：打开旧会话 / 新会话第一轮结束后各异步调用一次。
    *
-   * ★ 用 ref 记录已请求过的会话：失败或 generated=false 时保留第一句话兜底，
+   * ★ 不再用 titleGenerated 判断是否请求：旧版本生成的 AI 标题可能缺少
+   *   首条用户消息 hash，必须让后端按幂等规则迁移。只要会话有消息，
+   *   每个会话在本次页面生命周期内最多请求一次。
+   * ★ 用 ref 记录已请求过的会话：失败或 generated=false 时保留当前标题，
    *   绝不循环重试，也不在每次渲染时发请求。
    * ★ 成功后只补丁当前这一行（标题 + titleGenerated），不整表刷新。
    */
@@ -523,25 +516,28 @@ export function ChatView({
       if (titleAttemptRef.current.has(id)) return;
       const summary = sessionsRef.current.find((s) => s.id === id);
       // 列表还没同步到这一条时先不动：等列表更新后 effect 会再触发。
-      if (summary === undefined || !needsGeneratedTitle(summary)) return;
+      if (summary === undefined || summary.messageCount === 0) return;
       titleAttemptRef.current.add(id);
+      const previousTitle = summary.title;
       void postJson<SessionTitleResponse>(`/api/sessions/${encodeURIComponent(id)}/title`, {})
         .then((res) => {
           if (res.generated !== true) return;
           const title = typeof res.title === 'string' ? res.title.trim() : '';
-          if (title.length > 0) patchTitle(id, title);
+          if (title.length === 0 || title === previousTitle) return;
+          // 只在这一行仍是旧标题时补丁：请求期间用户手动重命名时不覆盖。
+          patchTitle(id, title, previousTitle);
         })
         .catch(() => {
-          // 失败保留兜底标题；已加入 attempted 集合，不重试。
+          // 失败保留当前标题；已加入 attempted 集合，不重试。
         });
     },
     [patchTitle],
   );
 
-  // 打开会话后按需生成一次标题；loadingSession 期间不抢跑。
+  // 打开任意有消息的会话后请求一次标题迁移/生成；loadingSession 期间不抢跑。
   useEffect(() => {
     if (sessionId === null || loadingSession) return;
-    if (!needsGeneratedTitle(currentSession)) return;
+    if (currentSession === undefined || currentSession.messageCount === 0) return;
     requestSessionTitle(sessionId);
   }, [currentSession, loadingSession, requestSessionTitle, sessionId]);
 
@@ -764,8 +760,6 @@ export function ChatView({
     setCurrentId(id);
     sessionIdRef.current = id;
     setApprovals([]);
-    setTurnSettings(null);
-    setNextTurnPending(false);
     setSettingsError(null);
     setSettingsTargetId(null);
     setReviewOpen(false);
@@ -947,8 +941,6 @@ export function ChatView({
       syncActiveSettings(res.session);
       setSettingsError(null);
       setSettingsTargetId(null);
-      setTurnSettings(null);
-      setNextTurnPending(false);
       setMessages([]);
       setInput(readDraftText());
       setCancellations([]);
@@ -1031,7 +1023,6 @@ export function ChatView({
         setLastChatModel(successModel);
         lastChatModelRef.current = successModel;
       }
-      if (streaming) setNextTurnPending(true);
       setSettingsError(null);
     } catch (err) {
       if (sessionIdRef.current === targetId) rollback();
@@ -1138,8 +1129,6 @@ export function ChatView({
           setSessionError(null);
           setActiveReasoning(DEFAULT_REASONING);
           setChatModel(lastChatModelRef.current ?? fallbackModelChoice(modelCatalogRef.current));
-          setTurnSettings(null);
-          setNextTurnPending(false);
           setSettingsTargetId(null);
         }
       } catch (err) {
@@ -1280,8 +1269,6 @@ export function ChatView({
     ]);
     setLocalCancel(null);
     updateStreaming(true);
-    setTurnSettings(null);
-    setNextTurnPending(false);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -1327,13 +1314,7 @@ export function ChatView({
       }
 
       if (ev.type === 'settings') {
-        // 本轮开始时的快照：只用于提示“当前轮按哪档执行”。
-        // ★ 不用它回写会话设置 —— 执行中 PATCH 后，会话值已更新，
-        //   但本轮仍然用这份旧快照。
-        setTurnSettings({
-          reasoning: ev.settings.reasoning,
-          applied: ev.settings.reasoningApplied,
-        });
+        // 本轮设置快照不再展示“本轮/下一轮”提示；也不回写会话设置。
         return;
       }
 
@@ -2139,7 +2120,7 @@ export function ChatView({
                   type="button"
                   className="icon-btn"
                   onClick={() => fileRef.current?.click()}
-                  title="添加图片或文档（图片仅本轮可见；文档会放入输入框）"
+                  title="添加图片或文档"
                   aria-label="添加图片或文档"
                 >
                   <Icon name="paperclip" size={18} />
@@ -2161,20 +2142,19 @@ export function ChatView({
                 >
                   <Icon name="mic" size={17} />
                 </button>
-                <span className="composer-hint">
-                  {listening
-                    ? '正在听… 再点麦克风结束'
-                    : attachments.length > 0
-                      ? `${attachments.length} 张 · 仅本轮可见`
-                      : '图片仅本轮可见 · 文档会放入输入框'}
-                </span>
+                {(listening || attachments.length > 0) && (
+                  <span className="composer-hint">
+                    {listening
+                      ? '正在听… 再点麦克风结束'
+                      : `${attachments.length} 张图片`}
+                  </span>
+                )}
               </div>
 
               <SessionControls
                 profiles={modelCatalog}
                 model={chatModel}
                 reasoning={activeReasoning}
-                streaming={streaming}
                 saving={settingsSaving}
                 catalogLoading={modelCatalogLoading}
                 catalogError={modelCatalogError}
@@ -2183,7 +2163,6 @@ export function ChatView({
                 onSelectModel={selectChatModel}
                 onSelectReasoning={selectReasoning}
                 onOpenSettings={onOpenSettings}
-                turnReasoning={turnSettings?.reasoning ?? null}
               />
               {streaming ? (
                 <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
@@ -2212,9 +2191,6 @@ export function ChatView({
                 </span>
                 {statusLabel(liveTurns[liveTurns.length - 1]?.assistant ?? emptyAssistant()) || '正在处理'}
               </span>
-              {nextTurnPending && (
-                <span className="composer-next-turn">· 新设置下一轮生效</span>
-              )}
             </p>
           )}
         </div>
@@ -2224,7 +2200,6 @@ export function ChatView({
       <SessionSettingsSheet
         open={settingsTargetId !== null && settingsTarget !== null}
         session={settingsTarget}
-        streaming={streaming && settingsTargetId === sessionId}
         notify={notify}
         onClose={() => setSettingsTargetId(null)}
         onSaved={handleSessionSaved}

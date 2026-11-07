@@ -1240,15 +1240,16 @@ svg {
 }
 
 .modal-root--dialog,
-.modal-root--wide {
+.modal-root--wide,
+.modal-root--settings {
   align-items: center;
   justify-content: center;
   padding: 24px;
 }
 
-.modal-root--sheet {
-  align-items: stretch;
-  justify-content: flex-end;
+/* 菜单（120）与重命名对话框（130）叠在侧栏/遮罩之上，仍低于 toast（140）。 */
+.modal-root--raised {
+  z-index: 130;
 }
 
 .modal-backdrop {
@@ -1297,17 +1298,10 @@ svg {
   width: min(760px, calc(100vw - 32px));
 }
 
-.modal-panel--sheet {
-  width: min(440px, 94vw);
-  max-height: none;
-  height: 100%;
-  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
-  border-right: 0;
-  transform: translateX(28px);
-}
-
-.modal-root.is-open .modal-panel--sheet {
-  transform: none;
+/* 对话设置：居中弹窗；内容在 modal-body 内部滚动，footer 常驻。 */
+.modal-panel--settings {
+  width: min(600px, calc(100vw - 48px));
+  max-height: 80vh;
 }
 
 .modal-head {

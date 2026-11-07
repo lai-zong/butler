@@ -5,7 +5,7 @@
  *
  * ★ 为什么放在 composer 里：
  *   它改的是**这段对话**下一轮怎么答，和发送动作在同一处；
- *   放进对话设置抽屉会把“当前轮的口味”藏远。
+ *   放进对话设置弹窗会把“当前轮的口味”藏远。
  *
  * ★ 面板向上打开，并做视口夹取：
  *   对话输入框在屏幕底部，向上是常态；靠近顶部/窄屏时自动改成向下，
@@ -31,7 +31,6 @@ interface SessionControlsProps {
   readonly profiles: readonly PickableProfile[];
   readonly model: ModelChoice | null;
   readonly reasoning: ReasoningLevel;
-  readonly streaming: boolean;
   readonly saving: boolean;
   readonly catalogLoading: boolean;
   readonly catalogError: string | null;
@@ -40,12 +39,8 @@ interface SessionControlsProps {
   readonly onSelectModel: (choice: ModelChoice) => void;
   readonly onSelectReasoning: (level: ReasoningLevel) => void;
   readonly onOpenSettings?: () => void;
-  /** 本轮开始时的快照档位（来自 SSE `settings` 事件）。 */
-  readonly turnReasoning: ReasoningLevel | null;
   /** 额外的浮层 class（例如放进 WebPet 时抬高 z-index）。 */
   readonly popoverClassName?: string;
-  /** WebPet 的紧凑面板：不显示“仅当前对话”和静态新对话说明。 */
-  readonly hideScopeHint?: boolean;
 }
 
 interface ModelOption {
@@ -89,7 +84,6 @@ export function SessionControls({
   profiles,
   model,
   reasoning,
-  streaming,
   saving,
   catalogLoading,
   catalogError,
@@ -98,9 +92,7 @@ export function SessionControls({
   onSelectModel,
   onSelectReasoning,
   onOpenSettings,
-  turnReasoning,
   popoverClassName,
-  hideScopeHint = false,
 }: SessionControlsProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -129,9 +121,6 @@ export function SessionControls({
     : catalogError !== null && model === null
       ? '模型未加载'
       : shortModelName(model?.modelId);
-
-  const differsFromTurn =
-    streaming && turnReasoning !== null && turnReasoning !== reasoning;
 
   // ── 定位：向上优先，空间不足翻到下方，水平/垂直都夹在视口内 ──
   const place = useCallback((): void => {
@@ -242,7 +231,6 @@ export function SessionControls({
         >
           <div className="session-controls-head">
             <strong>模型与思考</strong>
-            {!hideScopeHint && <span>仅当前对话</span>}
           </div>
 
           <div className="session-controls-section">
@@ -364,18 +352,6 @@ export function SessionControls({
           {settingsError !== null && (
             <p className="session-controls-error-text" role="alert">
               {settingsError}
-            </p>
-          )}
-
-          {(!hideScopeHint || differsFromTurn || streaming) && (
-            <p className="session-controls-foot">
-              {differsFromTurn
-                ? `本轮仍按 ${turnReasoning} 执行（开始时的快照）；改动下一轮生效。`
-                : streaming
-                  ? turnReasoning === null
-                    ? '当前轮的设置快照已固定；执行中修改只影响下一轮。'
-                    : `本轮快照：${turnReasoning}。执行中修改会在下一轮生效。`
-                  : '只影响这段对话；新对话默认 high。'}
             </p>
           )}
         </div>,

@@ -225,7 +225,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [model, setModel] = useState<ModelChoice | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [turnReasoning, setTurnReasoning] = useState<ReasoningLevel | null>(null);
 
   const [input, setInput] = useState('');
   const [images, setImages] = useState<readonly PetImage[]>([]);
@@ -569,7 +568,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       setDocs([]);
       setAttachError(null);
       setHint(null);
-      setTurnReasoning(null);
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -586,7 +584,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
             continue;
           }
           if (event.kind === 'settings') {
-            setTurnReasoning(event.reasoning);
+            // 本轮设置快照不再展示“本轮/下一轮”提示。
             continue;
           }
           setTurn((prev) => (prev === null ? prev : applyPetEvent(prev, event)));
@@ -626,7 +624,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   //
   // ★ 只 PATCH 这一条固定桌宠会话；pet-config 里的模型/思考是
   //   桌面 Tk 桌宠的偏好，两者互不覆盖。
-  // ★ 执行中允许改：后端本轮已持有 TurnSettings 快照，下一轮生效。
+  // ★ 执行中允许改：后端本轮已持有 TurnSettings 快照。
 
   async function patchSessionSettings(
     patch: SessionSettingsPatch,
@@ -647,7 +645,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       }
     }
 
-    const wasRunning = turn !== null && turn.status === 'running';
     settingsSavingRef.current = true;
     setSettingsSaving(true);
     setSettingsError(null);
@@ -658,11 +655,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       const next = await patchPetSessionSettings(id, patch);
       setReasoning(next.reasoning);
       setModel(next.model);
-      setHint(
-        wasRunning
-          ? '设置已保存；本轮仍按开始时的快照执行，下一轮生效。'
-          : '设置已保存到这条桌宠会话。',
-      );
+      setHint('设置已保存到这条桌宠会话。');
     } catch (err) {
       rollback();
       const message = errorMessage(err);
@@ -1282,7 +1275,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
                   profiles={profiles}
                   model={model}
                   reasoning={reasoning}
-                  streaming={isRunning}
                   saving={settingsSaving}
                   catalogLoading={catalogLoading}
                   catalogError={catalogError}
@@ -1294,9 +1286,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
                     setOpen(false);
                     window.location.hash = '#/settings';
                   }}
-                  turnReasoning={turnReasoning}
                   popoverClassName="webpet-session-pop"
-                  hideScopeHint
                 />
                 <div className="webpet-send-group">
                   {isRunning && (

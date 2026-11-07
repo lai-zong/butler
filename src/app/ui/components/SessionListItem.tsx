@@ -9,14 +9,15 @@
  * ★ 结构是“行容器 + 主按钮 + 更多按钮”：
  *   HTML 不允许 button 嵌套，而 `···` 菜单不能触发切换会话。
  *
- * ★ 菜单只有两个真实入口：对话设置、置顶/取消置顶。
- *   后端没有重命名/删除会话的端点，这里不画假菜单项。
+ * ★ 菜单三个真实入口：重命名、对话设置、置顶/取消置顶。
+ *   “重命名”打开居中小对话框，不走浏览器 prompt。
  */
 
 import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { Icon } from './Icon';
+import { RenameSessionDialog } from './RenameSessionDialog';
 import type { SessionSummary } from '../lib/types.js';
 
 interface SessionListItemProps {
@@ -32,10 +33,12 @@ interface SessionListItemProps {
   readonly onOpen: () => void;
   readonly onOpenSettings: () => void;
   readonly onTogglePin: () => void;
+  /** 保存重命名；失败向对话框抛错。 */
+  readonly onRename: (title: string) => Promise<void>;
 }
 
-/** 两个菜单项的估算高度；用于决定向上还是向下展开。 */
-const MENU_HEIGHT = 76;
+/** 三个菜单项的估算高度；用于决定向上还是向下展开。 */
+const MENU_HEIGHT = 112;
 const MENU_WIDTH = 152;
 
 export function SessionListItem({
@@ -45,8 +48,10 @@ export function SessionListItem({
   onOpen,
   onOpenSettings,
   onTogglePin,
+  onRename,
 }: SessionListItemProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ readonly top: number; readonly left: number } | null>(
     null,
   );
@@ -179,6 +184,22 @@ export function SessionListItem({
                 className="side-session-menu-item"
                 onClick={() => {
                   closeMenu();
+                  // 菜单项会随菜单卸载；把焦点先交还给“···”，
+                  // 对话框关闭后 Modal 才能把焦点还到真正的触发按钮。
+                  moreRef.current?.focus();
+                  setRenameOpen(true);
+                }}
+              >
+                <Icon name="pencil" size={14} />
+                重命名
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="side-session-menu-item"
+                onClick={() => {
+                  closeMenu();
+                  moreRef.current?.focus();
                   onOpenSettings();
                 }}
               >
@@ -201,6 +222,13 @@ export function SessionListItem({
             document.body,
           )
         : null}
+
+      <RenameSessionDialog
+        open={renameOpen}
+        title={session.title}
+        onClose={() => setRenameOpen(false)}
+        onSubmit={onRename}
+      />
     </div>
   );
 }

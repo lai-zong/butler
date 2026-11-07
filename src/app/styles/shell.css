@@ -430,7 +430,8 @@
 
 .side-session-menu {
   position: fixed;
-  z-index: 140;
+  /* 高于侧栏浮层(91)与遮罩(90)，低于重命名对话框(130)与 toast(140)。 */
+  z-index: 120;
   width: 152px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -466,6 +467,65 @@
     opacity: 1;
     transform: none;
   }
+}
+
+/* ─────────────────────────────────────────────
+   重命名对话框（小尺寸居中；z-index 见 modal-root--raised）
+   ───────────────────────────────────────────── */
+
+.rename-dialog {
+  width: min(400px, calc(100vw - 48px));
+}
+
+.rename-field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.rename-field-label {
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+
+.rename-count {
+  color: var(--ink-4);
+  font-size: 9.5px;
+}
+
+.rename-count.is-over {
+  color: var(--danger);
+}
+
+.rename-input {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.rename-hint {
+  margin: 9px 0 0;
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.rename-error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #eccfc7;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.rename-actions {
+  display: flex;
+  width: 100%;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ─────────────────────────────────────────────
@@ -892,21 +952,18 @@
     font-size: 25px;
   }
 
-  .modal-root--sheet {
-    align-items: flex-end;
+  /* 窄屏接近全屏，但保留边距，不与视口边缘/手势区相撞。 */
+  .modal-root--settings {
+    padding: 10px;
   }
 
-  .modal-panel--sheet {
+  .modal-panel--settings {
     width: 100%;
-    height: min(86vh, 760px);
-    border-top: 1px solid var(--line);
-    border-left: 0;
-    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    transform: translateY(26px);
+    max-height: calc(100dvh - 20px);
   }
 
-  .modal-root.is-open .modal-panel--sheet {
-    transform: none;
+  .rename-dialog {
+    width: 100%;
   }
 
   .modal-head,

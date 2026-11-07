@@ -61,7 +61,8 @@ export type IconName =
   | 'volume'
   | 'xCircle'
   | 'more'
-  | 'pin';
+  | 'pin'
+  | 'pencil';
 
 const ICONS: Record<IconName, ReactNode> = {
   chat: (
@@ -315,6 +316,12 @@ const ICONS: Record<IconName, ReactNode> = {
         fill="currentColor"
       />
       <path d="M12 13.5v7" />
+    </>
+  ),
+  pencil: (
+    <>
+      <path d="M4.5 19.5h4.2L19 9.2a2.1 2.1 0 0 0-3-3L5.8 16.4l-1.3 3.1Z" />
+      <path d="m13.8 8.4 3.1 3.1" />
     </>
   ),
 };

@@ -1,20 +1,21 @@
 'use client';
 
 /**
- * 浮层 —— 对话框与侧边抽屉共用一套进出场
+ * 浮层 —— 对话设置、审批、表单共用一套进出场
  *
- * ★ 为什么一个组件做两种形态：
- *   它们的行为完全一样（锁滚动、Esc 关闭、焦点进入、点遮罩关闭），
- *   差别只在定位。拆成两个组件会把这份行为复制两遍。
+ * ★ 行为都在这里收口：
+ *   锁滚动、Esc 关闭、点遮罩关闭、焦点陷阱、关闭后把焦点还给触发元素。
+ * ★ 形态只影响定位与宽度（dialog / wide / settings），
+ *   不再保留右侧滑入的抽屉形态。
  */
 
 import { useEffect, useId, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
 import { Icon } from './Icon';
 
-type Variant = 'dialog' | 'wide' | 'sheet';
+type Variant = 'dialog' | 'wide' | 'settings';
 
 interface ModalProps {
   readonly open: boolean;
@@ -27,6 +28,12 @@ interface ModalProps {
   readonly closeOnBackdrop?: boolean;
   /** 用于“必须做一个选择”的确认框：不显示右上角关闭 */
   readonly hideClose?: boolean;
+  /** 打开时优先聚焦的元素；缺省聚焦对话框本身。 */
+  readonly initialFocusRef?: RefObject<HTMLElement | null>;
+  /** 额外的根节点 class（例如抬高 z-index）。 */
+  readonly rootClassName?: string;
+  /** 额外的面板 class（例如对话框专属宽度）。 */
+  readonly panelClassName?: string;
 }
 
 const EXIT_MS = 260;
@@ -41,11 +48,20 @@ export function Modal({
   variant = 'dialog',
   closeOnBackdrop = true,
   hideClose = false,
+  initialFocusRef,
+  rootClassName,
+  panelClassName,
 }: ModalProps): JSX.Element | null {
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
+  /** 最新 onClose 只走 ref：避免父组件每次渲染都重跑焦点捕获 effect。 */
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   // 进场 / 退场
   useEffect(() => {
@@ -67,12 +83,14 @@ export function Modal({
     const bodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    const timer = window.setTimeout(() => panelRef.current?.focus(), 30);
+    const timer = window.setTimeout(() => {
+      (initialFocusRef?.current ?? panelRef.current)?.focus();
+    }, 30);
 
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab') return;
@@ -101,13 +119,13 @@ export function Modal({
       document.body.style.overflow = bodyOverflow;
       if (previous !== null) previous.focus();
     };
-  }, [open, onClose]);
+  }, [initialFocusRef, open]);
 
   if (!mounted || typeof document === 'undefined') return null;
 
   return createPortal(
     <div
-      className={`modal-root modal-root--${variant} ${visible ? 'is-open' : ''}`}
+      className={`modal-root modal-root--${variant}${rootClassName !== undefined ? ` ${rootClassName}` : ''} ${visible ? 'is-open' : ''}`}
       onMouseDown={(e) => {
         if (!closeOnBackdrop) return;
         if (e.target === e.currentTarget) onClose();
@@ -116,7 +134,7 @@ export function Modal({
       <div className="modal-backdrop" aria-hidden="true" onMouseDown={closeOnBackdrop ? onClose : undefined} />
       <div
         ref={panelRef}
-        className={`modal-panel modal-panel--${variant}`}
+        className={`modal-panel modal-panel--${variant}${panelClassName !== undefined ? ` ${panelClassName}` : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title !== undefined ? titleId : undefined}

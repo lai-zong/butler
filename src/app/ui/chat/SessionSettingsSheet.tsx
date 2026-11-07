@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 对话设置抽屉
+ * 对话设置弹窗
  *
  * ★ 范围：
  *   ① 这段对话的 AI 人格（只写本会话，≤8000 字）
@@ -13,7 +13,7 @@
  *   不是展示性的假控件。服务端会校验路径（绝对、存在、目录、realpath、
  *   非受保护目录），失败时把原因显示在这里。
  *
- * ★ 人格正文只在抽屉的局部状态里：
+ * ★ 人格正文只在弹窗的局部状态里：
  *   打开时 GET 详情拿全文（列表只有 80 字预览），保存后立即丢弃，
  *   不写回列表缓存，也不进 console。
  */
@@ -48,8 +48,6 @@ const PERSONA_MAX = 8_000;
 interface SessionSettingsSheetProps {
   readonly open: boolean;
   readonly session: SessionSummary | null;
-  /** 这段对话当前是否正在执行（执行中修改 → 下一轮生效）。 */
-  readonly streaming: boolean;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onClose: () => void;
   readonly onSaved: (session: SessionSummary) => void;
@@ -65,7 +63,6 @@ interface Baseline {
 export function SessionSettingsSheet({
   open,
   session,
-  streaming,
   notify,
   onClose,
   onSaved,
@@ -185,10 +182,7 @@ export function SessionSettingsSheet({
           permission: savedScope.permission,
         });
         onSaved(res.session);
-        notify(
-          streaming ? '对话设置已保存 · 下一轮生效' : '对话设置已保存',
-          'success',
-        );
+        notify('对话设置已保存', 'success');
         onClose();
       } catch (err) {
         const message = errorMessage(err);
@@ -198,7 +192,7 @@ export function SessionSettingsSheet({
         setSaving(false);
       }
     },
-    [baseline, memoryMode, notify, onClose, onSaved, permission, persona, saving, sessionId, streaming, workspace],
+    [baseline, memoryMode, notify, onClose, onSaved, permission, persona, saving, sessionId, workspace],
   );
 
   const detailLoaded = baseline !== null && !loading && loadError === null;
@@ -214,8 +208,8 @@ export function SessionSettingsSheet({
       open={open}
       onClose={onClose}
       title="对话设置"
-      description="只影响这段对话。模型与思考强度在输入框右侧调整。"
-      variant="sheet"
+      description="模型与思考强度在输入框右侧调整。"
+      variant="settings"
       footer={
         <div className="session-sheet-foot">
           <button
@@ -256,13 +250,6 @@ export function SessionSettingsSheet({
             <Icon name="chat" size={14} />
             <span>{session.title}</span>
           </p>
-
-          {streaming && (
-            <p className="session-sheet-live" role="status">
-              这段对话正在执行。保存会写入会话设置，<strong>从下一轮开始生效</strong>；
-              当前轮仍使用开始时的快照（含工作区与权限）。
-            </p>
-          )}
 
           {saveError !== null && (
             <div className="session-sheet-error" role="alert">
@@ -403,7 +390,7 @@ export function SessionSettingsSheet({
                 <div className="session-sheet-switch-row">
                   <div>
                     <h3 id="session-memory-label">使用记忆</h3>
-                    <p>这段对话是否召回与写入记忆。保存后从下一轮生效。</p>
+                    <p>这段对话是否召回与写入记忆。</p>
                   </div>
                   <Switch
                     checked={memoryMode === 'on'}

@@ -33,8 +33,18 @@ export function SidebarSessions({
   onClose,
   onNavigateToChat,
 }: SidebarSessionsProps): JSX.Element {
-  const { sessions, currentId, petSessionId, mode, setMode, openSession, openSettings, togglePin, refresh } =
-    useSessionIndex();
+  const {
+    sessions,
+    currentId,
+    petSessionId,
+    mode,
+    setMode,
+    openSession,
+    openSettings,
+    togglePin,
+    renameSession,
+    refresh,
+  } = useSessionIndex();
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const visible = listableSessions(sessions);
@@ -98,6 +108,7 @@ export function SidebarSessions({
         onOpen={() => handleOpen(session.id)}
         onOpenSettings={() => handleSettings(session.id)}
         onTogglePin={() => void togglePin(session.id)}
+        onRename={(title) => renameSession(session.id, title)}
       />
     );
   }

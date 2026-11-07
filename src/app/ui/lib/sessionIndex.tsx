@@ -19,12 +19,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
-import { errorMessage, fetchJson, postJson } from './api.js';
+import { errorMessage, fetchJson, patchJson, postJson } from './api.js';
 import type { SessionListMode } from './sessionSort.js';
 import type {
   PetSessionResponse,
   SessionPinResponse,
   SessionSummary,
+  SessionTitlePatchResponse,
   SessionsResponse,
   ToastMessage,
 } from './types.js';
@@ -52,8 +53,10 @@ export interface SessionIndexValue {
   readonly refresh: () => Promise<readonly SessionSummary[] | null>;
   /** 用一份会话投影替换/插入列表（新建、设置保存、置顶、检索回写共用）。 */
   readonly applySummary: (summary: SessionSummary) => void;
-  /** 标题生成成功：只补丁这一行，不再整表刷新。 */
-  readonly patchTitle: (id: string, title: string) => void;
+  /** 标题生成成功：只补丁这一行，不再整表刷新。expectedTitle 用来避免旧响应覆盖新名字。 */
+  readonly patchTitle: (id: string, title: string, expectedTitle?: string) => void;
+  /** 手动重命名：PATCH 成功后原地更新这一行；失败向调用方抛错。 */
+  readonly renameSession: (id: string, title: string) => Promise<void>;
   /** 置顶 / 取消置顶：真实调用接口，写回返回的 pinnedAt / pinnedWorkspace。 */
   readonly togglePin: (id: string) => Promise<void>;
   /** 侧栏点行：切到该会话（同时让对话页载入详情）。 */
@@ -151,11 +154,35 @@ export function SessionIndexProvider({
     );
   }, []);
 
-  const patchTitle = useCallback((id: string, title: string): void => {
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, title, titleGenerated: true } : s)),
-    );
-  }, []);
+  const patchTitle = useCallback(
+    (id: string, title: string, expectedTitle?: string): void => {
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== id) return s;
+          if (expectedTitle !== undefined && s.title !== expectedTitle) return s;
+          return { ...s, title, titleGenerated: true };
+        }),
+      );
+    },
+    [],
+  );
+
+  const renameSession = useCallback(
+    async (id: string, title: string): Promise<void> => {
+      const trimmed = title.replace(/\s+/g, ' ').trim();
+      if (trimmed.length === 0 || trimmed.length > 60) {
+        throw new Error('标题长度需在 1–60 字之间');
+      }
+      const res = await patchJson<SessionTitlePatchResponse>(
+        `/api/sessions/${encodeURIComponent(id)}/title`,
+        { title: trimmed },
+      );
+      const next = typeof res.title === 'string' ? res.title.trim() : '';
+      if (next.length === 0) throw new Error('服务端没有返回标题');
+      patchTitle(id, next);
+    },
+    [patchTitle],
+  );
 
   const patchPinned = useCallback((id: string, res: SessionPinResponse): void => {
     setSessions((prev) =>
@@ -212,6 +239,7 @@ export function SessionIndexProvider({
       refresh,
       applySummary,
       patchTitle,
+      renameSession,
       togglePin,
       openSession,
       openSettings,
@@ -227,6 +255,7 @@ export function SessionIndexProvider({
       refresh,
       applySummary,
       patchTitle,
+      renameSession,
       togglePin,
       openSession,
       openSettings,

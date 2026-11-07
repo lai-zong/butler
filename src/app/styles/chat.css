@@ -3979,12 +3979,6 @@
   font-weight: 600;
 }
 
-.model-picker-head span {
-  color: var(--ink-3);
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-}
-
 .model-picker-search {
   display: flex;
   align-items: center;
@@ -4515,25 +4509,8 @@
   line-height: 1.55;
 }
 
-.session-controls-foot {
-  flex: none;
-  margin: 0;
-  padding: 8px 11px;
-  border-top: 1px solid var(--line-soft);
-  background: var(--surface-2);
-  color: var(--ink-3);
-  font-size: 9.5px;
-  line-height: 1.55;
-}
-
-.composer-next-turn {
-  margin-left: 7px;
-  color: var(--warn);
-  font-size: 10px;
-}
-
 /* ═══════════════════════════════════════════════════════════
-   对话设置抽屉
+   对话设置弹窗
    ═══════════════════════════════════════════════════════════ */
 
 .session-sheet {
@@ -4560,22 +4537,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.session-sheet-live {
-  margin: 0;
-  padding: 9px 11px;
-  border: 1px solid #e9d7bd;
-  border-radius: 8px;
-  background: var(--warn-soft);
-  color: #6c4a1e;
-  font-size: 10.5px;
-  line-height: 1.65;
-}
-
-.session-sheet-live strong {
-  color: #5b3a14;
-  font-weight: 600;
 }
 
 .session-sheet-loading {
