@@ -16,6 +16,9 @@ function summary(patch: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 's1',
     title: '测试',
+    titleGenerated: true,
+    pinnedAt: null,
+    pinnedWorkspace: null,
     createdAt: 1,
     updatedAt: 2,
     turnCount: 3,

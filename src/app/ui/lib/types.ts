@@ -339,6 +339,9 @@ export interface SessionSettingsDto {
 export interface SessionSummary {
   readonly id: string;
   readonly title: string;
+  readonly titleGenerated: boolean;
+  readonly pinnedAt: number | null;
+  readonly pinnedWorkspace: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly turnCount: number;

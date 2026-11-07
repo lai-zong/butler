@@ -37,6 +37,7 @@ import { saveSessionPersona } from '@/app/server/sessionSettingsStore.js';
 import { resolveProfileModel } from '@/app/server/modelProfiles.js';
 import { assertSessionWorkspace } from '@/app/server/sessionWorkspace.js';
 import { dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
+import { readSessionDisplay } from '@/app/server/sessionDisplayStore.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,6 +60,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<NextRes
   const verdicts = chat.verdictsOf(id);
   const reviews = chat.reviewRunsOf(id);
   const quizzes = readQuizzes(rt.bootstrapped.log, id);
+  const display = await readSessionDisplay(dataDirOf(rt), id);
 
   return NextResponse.json({
     ok: true,
@@ -68,6 +70,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<NextRes
       messages,
       verdicts,
       scopeDefaultsOf(rt),
+      display,
     ),
     messages: messages.map(toMessageDto),
     verdicts: verdicts.map(toVerdictDto),

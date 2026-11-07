@@ -19,6 +19,7 @@ import {
   type SessionPermission,
 } from '@/core/chat/settings.js';
 import { defaultScopeDefaults, type ScopeDefaults } from './sessionScope.js';
+import type { SessionDisplay } from './sessionDisplayStore.js';
 import type { ReasoningLevel } from '@/core/model/reasoning.js';
 import type { SessionEvent } from '@/core/events/types.js';
 import { EVENT_FAMILIES, isLegacyEventType } from '@/core/events/types.js';
@@ -407,6 +408,12 @@ export interface SessionSettingsDto {
 export interface SessionDto {
   readonly id: string;
   readonly title: string;
+  /** false = 当前标题还是第一句话兜底，前端可在打开时触发懒生成。 */
+  readonly titleGenerated: boolean;
+  /** 时间模式的置顶标记；null/缺失 = 未置顶。 */
+  readonly pinnedAt: number | null;
+  /** 工作区模式的作用域；null = 未置顶或旧数据。 */
+  readonly pinnedWorkspace: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly turnCount: number;
@@ -511,6 +518,8 @@ export function toSessionDto(
     readonly includePersona?: boolean;
     /** 应用当前默认作用域；不传时回退到 env / 只读 */
     readonly scopeDefaults?: ScopeDefaults;
+    /** sidecar 里的生成标题 / 置顶状态 */
+    readonly display?: SessionDisplay;
   } = {},
 ): SessionDto {
   const last = messages[messages.length - 1];
@@ -529,7 +538,10 @@ export function toSessionDto(
   const effectivePermission = settings.permission ?? defaults.permission;
   return {
     id: session.id,
-    title: sessionTitle(session, messages),
+    title: options.display?.title ?? sessionTitle(session, messages),
+    titleGenerated: typeof options.display?.title === 'string' && options.display.title.length > 0,
+    pinnedAt: options.display?.pinnedAt ?? null,
+    pinnedWorkspace: options.display?.pinnedWorkspace ?? null,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     turnCount: session.turnCount,
@@ -568,10 +580,12 @@ export function toSessionDetailDto(
   messages: readonly ChatMessage[],
   verdicts: readonly Verdict[],
   scopeDefaults?: ScopeDefaults,
+  display?: SessionDisplay,
 ): SessionDto {
   return toSessionDto(session, messages, verdicts, {
     includePersona: true,
     ...(scopeDefaults !== undefined ? { scopeDefaults } : {}),
+    ...(display !== undefined ? { display } : {}),
   });
 }
 
