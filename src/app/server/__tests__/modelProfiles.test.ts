@@ -159,15 +159,15 @@ describe('model profiles', () => {
     }
   });
 
-  it('重排接口未接入时拒绝创建重排配置', () => {
-    expect(() =>
-      createProfile({
-        name: '重排测试',
-        presetId: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        models: [{ id: 'rerank-test', kind: 'rerank' }],
-      }),
-    ).toThrow('重排模型接口尚未接入');
+  it('允许创建 LLM 重排配置', () => {
+    const profile = createProfile({
+      name: '重排测试',
+      presetId: 'custom-rerank-llm',
+      baseUrl: 'https://api.openai.com/v1',
+      models: [{ id: 'rerank-test', kind: 'rerank' }],
+    });
+    expect(profile.models).toMatchObject([{ id: 'rerank-test', kind: 'rerank' }]);
+    expect(profile.presetId).toBe('custom-rerank-llm');
   });
 
   it('嵌入类型发现模型时不过滤 embedding', async () => {

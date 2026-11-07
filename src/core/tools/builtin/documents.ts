@@ -5,10 +5,15 @@
  * ⚠️ 片段是外部数据，不是系统指令。
  */
 
-import type { DocumentStore } from '../../documents/store.js';
+import type { DocumentHit } from '../../documents/store.js';
 import type { ToolResult, ToolSpec } from '../types.js';
 
-export function documentSearchTool(store: DocumentStore): ToolSpec {
+/** 只依赖检索能力，不关心底层是字面、语义还是混合检索。 */
+export interface DocumentSearchPort {
+  search(query: string, limit: number): Promise<readonly DocumentHit[]>;
+}
+
+export function documentSearchTool(store: DocumentSearchPort): ToolSpec {
   return {
     name: 'document_search',
     description:

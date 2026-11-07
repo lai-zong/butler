@@ -376,9 +376,6 @@ export function createProfile(input: {
   if (name.length === 0) throw new Error('配置名称不能为空');
   if (!/^https?:\/\//i.test(baseUrl)) throw new Error('Base URL 必须以 http:// 或 https:// 开头');
   if (models.length === 0) throw new Error('至少选择一个模型');
-  if (models.some((m) => m.kind === 'rerank')) {
-    throw new Error('重排模型接口尚未接入，不能创建重排配置。');
-  }
   const now = Date.now();
   return {
     id: `profile_${randomUUID()}`,
@@ -408,9 +405,6 @@ export function updateProfile(
   if (name.length === 0) throw new Error('配置名称不能为空');
   if (!/^https?:\/\//i.test(baseUrl)) throw new Error('Base URL 必须以 http:// 或 https:// 开头');
   if (models.length === 0) throw new Error('至少选择一个模型');
-  if (models.some((m) => m.kind === 'rerank')) {
-    throw new Error('重排模型接口尚未接入，不能保存重排配置。');
-  }
   if (presetById(presetId) === undefined) throw new Error('未知的模型预设');
   return { ...profile, name, baseUrl, presetId, models, updatedAt: Date.now() };
 }

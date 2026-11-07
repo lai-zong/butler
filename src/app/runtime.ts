@@ -46,7 +46,7 @@ import { limitsConfig, modelConfig } from '@/core/config/env.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
 import { documentSearchTool } from '@/core/tools/builtin/documents.js';
-import { getDocumentStore } from './server/documents.js';
+import { getKnowledgeService } from './server/knowledge.js';
 import { execTool } from '@/core/tools/builtin/exec.js';
 import { NodeFileSystem } from '@/adapters/fs/node.js';
 import { NodeExec } from '@/adapters/exec/node.js';
@@ -82,6 +82,16 @@ import { deepSeekTranslationPort } from '@/adapters/model/translation.js';
 import type { ModelPort } from '@/core/ports/model.js';
 import type { ModelStreamPort } from '@/core/ports/stream.js';
 import type { TranslationPort } from '@/core/stream/translate.js';
+import { runTurn } from '@/core/chat/service.js';
+import {
+  startUserTaskLoop,
+  stopUserTaskLoop,
+  UserTaskService,
+  type UserTask,
+  type WorkTaskResult,
+} from '@/core/tasks/index.js';
+import { TaskPermissionPolicy } from './server/taskPermission.js';
+import { assertWorkspaceDirectory, workspacePathGuard } from './server/taskWorkspace.js';
 
 // ═══════════════════════════════════════════════════════════
 // 配置
@@ -159,6 +169,8 @@ export interface ButlerRuntime {
   readonly activityObserver: ActivityObserver;
   /** 定时任务运行时（调度器在任务注册后才是完整的） */
   readonly activityRuntime: ActivityRuntime;
+  /** 用户自建的提醒 / 工作 */
+  readonly userTasks: UserTaskService;
   /** MCP 配置文件路径（管理界面写回用） */
   readonly mcpConfigPath: string;
 }
@@ -186,6 +198,7 @@ export async function resetRuntime(): Promise<void> {
   const g = globalThis as GlobalWithRuntime;
   // 旧 timer 引用旧 runtime；不停止会在重建后继续空转/复用旧 handle。
   stopActivityLoop();
+  stopUserTaskLoop();
   const current = g[GLOBAL_KEY];
   if (current) {
     const rt = await current;
@@ -451,7 +464,9 @@ async function initRuntime(): Promise<ButlerRuntime> {
   });
   tools.registerAll(fileTools(fsPort));
   tools.register(execTool(new NodeExec({ cwdRoot: WORKSPACE_ROOT }), WORKSPACE_ROOT));
-  tools.register(documentSearchTool(getDocumentStore()));
+  tools.register(documentSearchTool({
+    search: async (query, limit) => (await getKnowledgeService().search(query, limit)).hits,
+  }));
 
   /**
    * ★ 桌面控制（方案 §9）—— **按真实能力注册，失败即降级**。
@@ -690,6 +705,97 @@ async function initRuntime(): Promise<ButlerRuntime> {
     },
   });
 
+  // ── 用户自建任务：提醒只做视图，工作由这里真正执行 ──
+  async function runUserWorkTask(task: UserTask): Promise<WorkTaskResult> {
+    const workspace = await assertWorkspaceDirectory(task.workspace);
+    const policy = new TaskPermissionPolicy(task.permission);
+    const taskFs = new NodeFileSystem({
+      root: workspace,
+      // 完整权限由用户任务显式选择；工作区权限仍保护程序内部数据目录
+      protectedPaths: task.permission === 'full'
+        ? []
+        : [DATA_DIR, join(WORKSPACE_ROOT, '.env.local')],
+    });
+    const taskTools = new ToolFramework({
+      log: bootstrapped.log,
+      clock,
+      policy,
+      fuse: {
+        windowMs: limitsConfig.toolFuseWindowMs,
+        maxWrites: limitsConfig.toolFuseMaxWrites,
+      },
+      ...(task.permission === 'workspace'
+        ? { pathGuard: workspacePathGuard(workspace) }
+        : {}),
+    });
+    taskTools.registerAll(fileTools(taskFs));
+    taskTools.register(execTool(new NodeExec({ cwdRoot: workspace }), workspace));
+    taskTools.register(documentSearchTool({
+      search: async (query, limit) => (await getKnowledgeService().search(query, limit)).hits,
+    }));
+    // 复制桌面 / MCP 等非文件工具；文件工具使用任务自己的工作区根目录。
+    for (const spec of tools.list()) {
+      if (taskTools.get(spec.name) === undefined) taskTools.register(spec);
+    }
+
+    let workModel: ModelPort | null = model;
+    if (task.model !== null) {
+      const resolved = await resolveProfileModel(
+        DATA_DIR,
+        task.model.profileId,
+        task.model.modelId,
+        'chat',
+      );
+      if (resolved === null) throw new Error('定时任务选择的模型不可用');
+      workModel = buildRoleModel(resolved);
+    }
+    if (workModel === null) throw new Error('未配置模型，定时工作无法执行');
+
+    const session = bootstrapped.chat.createSession();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5 * 60_000);
+    try {
+      const fileHint = task.files.length > 0
+        ? `\n参考文件：\n${task.files.map((file) => `- ${file}`).join('\n')}`
+        : '';
+      const result = await runTurn({
+        sessionId: session.id,
+        userText:
+          `【定时工作】${task.title}\n\n` +
+          `工作区：${workspace}\n权限：${task.permission}\n\n` +
+          `${task.instruction ?? ''}${fileHint}`,
+        userId: DEFAULT_USER_ID,
+        random,
+        model: workModel,
+        log: bootstrapped.log,
+        clock,
+        store: bootstrapped.memory,
+        evolution,
+        semantic,
+        chat: bootstrapped.chat,
+        tools: taskTools,
+        supervisionMode: 'manual',
+        reflectionMode: 'dailyDiary',
+        memoryMode: 'on',
+        signal: controller.signal,
+      });
+      return {
+        outcome: 'succeeded',
+        summary: result.replyText.trim().slice(0, 4000) || '任务执行完成',
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  const userTasks = new UserTaskService(DATA_DIR, clock, runUserWorkTask, bootstrapped.log);
+  startUserTaskLoop({
+    service: userTasks,
+    onError: (err) => {
+      console.warn('[user-task] 执行异常：', err instanceof Error ? err.message : String(err));
+    },
+  });
+
   return {
     permissionPolicy,
     setPermissionMode: async (mode) => {
@@ -715,6 +821,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     diary,
     activityObserver,
     activityRuntime,
+    userTasks,
     mcpConfigPath,
   };
 }

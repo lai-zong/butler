@@ -2,6 +2,7 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import { getDocumentStore } from '@/app/server/documents.js';
+import { getKnowledgeService } from '@/app/server/knowledge.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -29,6 +30,11 @@ export async function DELETE(_req: NextRequest, ctx: RouteContext): Promise<Next
   try {
     const removed = await getDocumentStore().remove(id);
     if (!removed) return NextResponse.json({ error: '找不到这个文档' }, { status: 404 });
+    try {
+      await getKnowledgeService().removeDocument(id);
+    } catch {
+      // 文档已经删除；索引清理失败不能把删除操作回滚成失败。
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(

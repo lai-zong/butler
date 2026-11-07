@@ -6,8 +6,9 @@
  * ★ 侧栏只放「去哪」和「现在怎么样」，不放操作。
  *   操作属于各自空间（这样每个界面只有一处主操作，结构不打架）。
  *
- * ★ v10.2：记忆 / 审计 / 演化 合并成一个「控制台」入口，
- *   主界面只保留对话与设置。
+ * ★ v10.2：记忆 / 演化 合并成一个「控制台」入口。
+ *   v11：主界面为「对话 / 定时任务 / 控制台 / 设置」；
+ *   定时任务只放用户自己的提醒与工作，设置里的自动化内置任务仍在设置里。
  */
 
 import { Icon, type IconName } from './Icon';
@@ -21,6 +22,8 @@ interface NavItem {
 
 const NAV_TOP: readonly NavItem[] = [
   { id: 'chat', label: '对话', icon: 'chat' },
+  // 定时任务是用户自己的提醒与工作；放在对话与控制台之间，属于工作台而不是治理层。
+  { id: 'tasks', label: '定时任务', icon: 'calendar' },
 ];
 
 const NAV_BOTTOM: readonly NavItem[] = [
@@ -32,7 +35,6 @@ interface SidebarProps {
   readonly collapsed: boolean;
   readonly onNavigate: (view: ViewId) => void;
   readonly onOpenConsole: () => void;
-  readonly onOpenCommand: () => void;
   readonly onToggleCollapse: () => void;
 }
 
@@ -41,7 +43,6 @@ export function Sidebar({
   collapsed,
   onNavigate,
   onOpenConsole,
-  onOpenCommand,
   onToggleCollapse,
 }: SidebarProps): JSX.Element {
   function renderNavItem(item: NavItem): JSX.Element {
@@ -104,13 +105,6 @@ export function Sidebar({
       </nav>
 
       <div className="side-foot">
-        <button type="button" className="cmd-hint" onClick={onOpenCommand}>
-          <span className="cmd-hint-left">
-            <Icon name="command" size={14} />
-            快速切换
-          </span>
-          <kbd>⌘ K</kbd>
-        </button>
         <button
           type="button"
           className="side-collapse"

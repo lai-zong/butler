@@ -24,6 +24,7 @@
     "bench:events": "node --import tsx scripts/bench-eventlog.ts",
     "eval:extraction": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-extraction.ts",
     "eval:documents": "node --import tsx scripts/eval-documents.ts",
+    "eval:knowledge": "node --import tsx scripts/eval-knowledge-retrieval.ts",
     "eval:documents:qa": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-documents-qa.ts",
     "eval:recall": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-recall.ts",
     "eval:recall:dev": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs scripts/eval-recall.ts --split=dev",
@@ -55,7 +56,8 @@
     "validate:15": "node node_modules/tsx/dist/cli.mjs src/validate/15-desktop.ts",
     "validate:16": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/16-vision.ts",
     "validate:17": "node node_modules/tsx/dist/cli.mjs src/validate/17-attachment.ts",
-    "validate:18": "node node_modules/tsx/dist/cli.mjs src/validate/18-mcp-wiring.ts"
+    "validate:18": "node node_modules/tsx/dist/cli.mjs src/validate/18-mcp-wiring.ts",
+    "pet": "python scripts/desktop_pet.py"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",
@@ -85,4 +87,3 @@
   },
   "packageManager": "pnpm@9.15.0"
 }
-

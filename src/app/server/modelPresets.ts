@@ -5,7 +5,7 @@
  * 这里不做“自动发现能力”——能力由用户在模型上显式勾选，避免静默失效。
  */
 export type ModelPresetAdapter = 'deepseek' | 'openai' | 'ollama';
-export type ModelPresetKind = 'chat' | 'embedding';
+export type ModelPresetKind = 'chat' | 'embedding' | 'rerank';
 
 export interface ModelPreset {
   readonly id: string;
@@ -60,6 +60,10 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
   { kind: 'embedding', id: 'dashscope-embedding', label: '阿里云百炼 Embeddings', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', adapter: 'openai', requiresKey: true },
   { kind: 'embedding', id: 'siliconflow-embedding', label: '硅基流动 Embeddings', baseUrl: 'https://api.siliconflow.cn/v1', adapter: 'openai', requiresKey: true },
   { kind: 'embedding', id: 'ollama-embedding', label: 'Ollama Embeddings', baseUrl: 'http://127.0.0.1:11434/v1', adapter: 'openai', requiresKey: false },
+
+  // 重排：当前使用 OpenAI 兼容的 LLM 精排接口；不是专用 rerank HTTP 协议。
+  { kind: 'rerank', id: 'custom-rerank-llm', label: '自定义 LLM 重排（OpenAI 兼容）', baseUrl: 'https://api.openai.com/v1', adapter: 'openai', requiresKey: true },
+  { kind: 'rerank', id: 'ollama-rerank-llm', label: 'Ollama 本地 LLM 重排', baseUrl: 'http://127.0.0.1:11434/v1', adapter: 'ollama', requiresKey: false },
 ];
 
 export function presetById(id: string): ModelPreset | undefined {

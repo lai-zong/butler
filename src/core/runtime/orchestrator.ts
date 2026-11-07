@@ -40,6 +40,13 @@ export interface RunSessionArgs {
   readonly sessionId: string;
   readonly userGoal: string;
   /**
+   * 调用方附加的人格说明（桌宠设置）。
+   *
+   * 只作为 BUTLER_SYSTEM 之后的一条附加 system 消息，不能替换/删除
+   * 管家不变量；桌面端人格不能绕过硬约束。
+   */
+  readonly persona?: string;
+  /**
    * 本轮附带的图片（**只在这一轮有效**，不落历史、不进事件）。
    * 见 `ButlerRunArgs.images` 的说明。
    */
@@ -446,6 +453,9 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       contract,
       injectedConstraints,
       userGoal: args.userGoal,
+      ...(args.persona !== undefined && args.persona.trim().length > 0
+        ? { persona: args.persona.trim() }
+        : {}),
       // ★ 本轮图片透传给管家执行层（模型在那里才真正看到图）
       ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
       // ★ 询问通道（C6）继续往下传

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 设置空间 —— 运行、隐私、数据
+ * 设置空间 —— 模型、知识、隐私、数据迁移
  *
  * ★ 这里的每一项都必须**真的能用**：
  *   隐私开关调用 /api/observation，导出调用 /api/transfer/export，
@@ -22,41 +22,30 @@ import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { Switch } from '../components/Switch';
 import { AutomationPanel } from './AutomationPanel';
+import { PetSettingsPanel } from './PetSettingsPanel';
 import { PermissionsPanel } from './PermissionsPanel';
 import { ActivityDetail } from './ActivityDetail';
 import { McpPanel } from './McpPanel';
 import { ToolsPanel } from './ToolsPanel';
-import { OperationsPanel } from './OperationsPanel';
 import { DocumentsPanel } from './DocumentsPanel';
-import { ArtifactsPanel } from './ArtifactsPanel';
 import { CredentialsPanel } from './CredentialsPanel';
 import { ModelProviderPanel } from './ModelProviderPanel';
 import { errorMessage, fetchJson, postJson } from '../lib/api.js';
-import {
-  formatDateTime,
-  formatNumber,
-  formatUptime,
-} from '../lib/format.js';
-import type {
-  ModelCapabilities,
-  ObservationState,
-  Overview,
-  ToastMessage,
-} from '../lib/types.js';
+import { formatDateTime, formatNumber } from '../lib/format.js';
+import type { ObservationState, ToastMessage } from '../lib/types.js';
 
 interface SettingsViewProps {
-  readonly overview: Overview | null;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onRefreshOverview: () => void;
   readonly onDataReset: () => void;
 }
 
 type SettingsPage =
-  | 'runtime'
   | 'model'
   | 'automation'
+  | 'pet'
   | 'security'
-  | 'data'
+  | 'knowledge'
   | 'privacy'
   | 'transfer'
   | 'mcp'
@@ -69,16 +58,16 @@ const SETTINGS_NAV: readonly {
   {
     label: '运行',
     items: [
-      { id: 'runtime', label: '运行状态' },
       { id: 'model', label: '模型接入' },
       { id: 'automation', label: '自动化' },
+      { id: 'pet', label: '桌面宠物' },
     ],
   },
   {
     label: '治理',
     items: [
       { id: 'security', label: '权限与工具' },
-      { id: 'data', label: '数据与记忆' },
+      { id: 'knowledge', label: '知识库' },
       { id: 'privacy', label: '隐私与观察' },
       { id: 'transfer', label: '数据迁移' },
     ],
@@ -98,7 +87,7 @@ function SettingsPageHead({
   description,
   actions,
 }: {
-  readonly eyebrow: string;
+  readonly eyebrow?: string;
   readonly title: string;
   readonly description: string;
   readonly actions?: JSX.Element;
@@ -106,7 +95,7 @@ function SettingsPageHead({
   return (
     <header className="settings-content-head">
       <div>
-        <p className="settings-content-eyebrow">{eyebrow}</p>
+        {eyebrow !== undefined && <p className="settings-content-eyebrow">{eyebrow}</p>}
         <h2>{title}</h2>
         <p>{description}</p>
       </div>
@@ -151,13 +140,6 @@ interface ImportResponse {
   readonly historicalEvents: number;
 }
 
-const CAPABILITIES: readonly { readonly key: keyof ModelCapabilities; readonly label: string }[] = [
-  { key: 'supportsStreaming', label: '流式输出' },
-  { key: 'supportsTools', label: '工具调用' },
-  { key: 'supportsThinking', label: '思考分片' },
-  { key: 'supportsVision', label: '读图' },
-];
-
 const RETENTION: readonly { readonly value: number; readonly label: string }[] = [
   { value: 7, label: '保留 7 天' },
   { value: 14, label: '保留 14 天' },
@@ -166,12 +148,11 @@ const RETENTION: readonly { readonly value: number; readonly label: string }[] =
 ];
 
 export function SettingsView({
-  overview,
   notify,
   onRefreshOverview,
   onDataReset,
 }: SettingsViewProps): JSX.Element {
-  const [settingsPage, setSettingsPage] = useState<SettingsPage>('runtime');
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>('model');
   const settingsPageRef = useRef<HTMLDivElement | null>(null);
   const settingsPageMountedRef = useRef(false);
   const [obs, setObs] = useState<ObservationState | null>(null);
@@ -220,8 +201,6 @@ export function SettingsView({
     void loadObservation();
   }, [loadObservation]);
 
-  const model = overview?.model ?? null;
-  const diagnostics = overview?.diagnostics ?? null;
   const consent = obs;
 
   async function updateObservation(body: Record<string, unknown>, successText: string): Promise<void> {
@@ -393,7 +372,6 @@ export function SettingsView({
   return (
     <div className="page settings-page" ref={settingsPageRef}>
       <PageHeader
-        eyebrow="RUNTIME / DATA / PRIVACY"
         title="设置"
         description="本地优先。记忆、对话与事件都在这台电脑上；密钥不会出现在任何界面与导出文件里。"
       />
@@ -422,176 +400,24 @@ export function SettingsView({
         <div className="settings-content">
           <div className="settings-page-view" hidden={settingsPage !== 'model'}>
             <SettingsPageHead
-              eyebrow="MODELS"
               title="模型接入"
-              description="按模型类型管理连接；对话和审查在各自界面选择具体模型。"
+              description="按模型类型管理连接；对话、记忆与知识库在各自功能页选择用哪个模型。"
             />
             <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
           </div>
 
-          {/* ── 运行 ── */}
-          <div className="settings-page-view" hidden={settingsPage !== 'runtime'}>
-            <SettingsPageHead
-              eyebrow="RUNTIME"
-              title="运行状态"
-              description="服务端是一个常驻单例；事件文件是唯一真相源。"
-              actions={
-                <Badge tone={model !== null ? 'accent' : 'warn'}>
-                  {model !== null ? '模型已接入' : '未配置模型'}
-                </Badge>
-              }
-            />
-            <section className="panel settings-panel">
-              <SectionHeading
-                title="运行概览"
-                description="模型、启动、写入与本地路径的当前快照。"
-              />
-
-          {overview === null ? (
-            <Skeleton rows={4} height={14} />
-          ) : (
-            <>
-              <div className="settings-rows">
-                <div className="settings-row">
-                  <span className="settings-key">主力模型</span>
-                  <span className="settings-val">
-                    {model !== null ? (
-                      <>
-                        <strong>{model.model}</strong>
-                        <span className="mono settings-muted">{model.provider}</span>
-                      </>
-                    ) : (
-                      <span className="settings-warn">在 .env.local 设置 DEEPSEEK_API_KEY 后重启</span>
-                    )}
-                  </span>
-                </div>
-
-                {model !== null && (
-                  <div className="settings-row">
-                    <span className="settings-key">模型能力</span>
-                    <span className="settings-val capability-row">
-                      {CAPABILITIES.map((c) => (
-                        <Badge key={c.key} tone={model.capabilities[c.key] ? 'accent' : 'outline'}>
-                          {c.label}
-                        </Badge>
-                      ))}
-                    </span>
-                  </div>
-                )}
-
-                <div className="settings-row">
-                  <span className="settings-key">已运行</span>
-                  <span className="settings-val mono">{formatUptime(diagnostics?.uptimeMs ?? 0)}</span>
-                </div>
-
-                <div className="settings-row">
-                  <span className="settings-key">本次启动</span>
-                  <span className="settings-val">
-                    {diagnostics?.resumed === true ? (
-                      <>
-                        从磁盘恢复 · 读回 <strong className="mono">{formatNumber(diagnostics.historicalEvents)}</strong> 条历史事件
-                      </>
-                    ) : (
-                      '全新开始 · 还没有历史事件'
-                    )}
-                  </span>
-                </div>
-
-                <div className="settings-row">
-                  <span className="settings-key">事件</span>
-                  <span className="settings-val mono">
-                    内存 {formatNumber(diagnostics?.eventsInMemory ?? 0)} 条 · 未落盘{' '}
-                    {formatNumber(diagnostics?.pendingPersistence ?? 0)} 条 · 坏行{' '}
-                    {formatNumber(diagnostics?.badLines ?? 0)}
-                  </span>
-                </div>
-
-                <div className="settings-row">
-                  <span className="settings-key">写操作</span>
-                  <span className="settings-val">
-                    {diagnostics?.allowWrite === true ? (
-                      <span className="settings-warn">已开启自动放行（BUTLER_ALLOW_WRITE=1）</span>
-                    ) : (
-                      '默认拒绝 · 需要确认时会弹窗，允许只对当次生效'
-                    )}
-                  </span>
-                </div>
-
-                <div className="settings-row">
-                  <span className="settings-key">本地用户</span>
-                  <span className="settings-val mono">{diagnostics?.userId ?? 'local'}</span>
-                </div>
-              </div>
-
-              <div className="path-block">
-                <div className="path-row">
-                  <span className="settings-key">数据目录</span>
-                  <code className="path mono">{diagnostics?.dataDir ?? '—'}</code>
-                  <button
-                    type="button"
-                    className="icon-btn icon-btn--sm"
-                    aria-label="复制数据目录"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(diagnostics?.dataDir ?? '')
-                        .then(() => notify('已复制路径', 'success'))
-                        .catch(() => notify('复制失败', 'warning'));
-                    }}
-                  >
-                    <Icon name="copy" size={13} />
-                  </button>
-                </div>
-                <div className="path-row">
-                  <span className="settings-key">事件文件</span>
-                  <code className="path mono">{diagnostics?.eventsFile ?? '—'}</code>
-                  <button
-                    type="button"
-                    className="icon-btn icon-btn--sm"
-                    aria-label="复制事件文件路径"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(diagnostics?.eventsFile ?? '')
-                        .then(() => notify('已复制路径', 'success'))
-                        .catch(() => notify('复制失败', 'warning'));
-                    }}
-                  >
-                    <Icon name="copy" size={13} />
-                  </button>
-                </div>
-              </div>
-
-              {overview.restoreSummary.length > 0 && (
-                <details className="disclosure">
-                  <summary>启动恢复摘要</summary>
-                  <pre className="code-block">{overview.restoreSummary}</pre>
-                </details>
-              )}
-
-              {diagnostics !== null && (
-                <details className="disclosure">
-                  <summary>
-                    运行诊断
-                    {diagnostics.issues > 0 && <Badge tone="warn">{diagnostics.issues} 处信息不足</Badge>}
-                  </summary>
-                  <pre className="code-block diagnostics-json">
-                    {JSON.stringify(
-                      {
-                        ...diagnostics,
-                        restored: diagnostics.restored,
-                      },
-                      null,
-                      2,
-                    )}
-                  </pre>
-                </details>
-              )}
-            </>
-          )}
-            </section>
-          </div>
-
           <div className="settings-page-view" hidden={settingsPage !== 'automation'}>
             <AutomationPanel />
+          </div>
+
+          {/* ── 桌面宠物 ── */}
+          <div className="settings-page-view" hidden={settingsPage !== 'pet'}>
+            <SettingsPageHead
+              eyebrow="PET"
+              title="桌面宠物"
+              description="桌宠是独立的桌面进程；这里保存它读取的形象、模型与人格偏好。"
+            />
+            <PetSettingsPanel notify={notify} />
           </div>
 
           <div className="settings-page-view" hidden={settingsPage !== 'security'}>
@@ -605,15 +431,13 @@ export function SettingsView({
             <ToolsPanel />
           </div>
 
-          <div className="settings-page-view" hidden={settingsPage !== 'data'}>
+          <div className="settings-page-view" hidden={settingsPage !== 'knowledge'}>
             <SettingsPageHead
-              eyebrow="DATA"
-              title="数据与记忆"
-              description="文档库、操作记忆与产出物版本；只读数据也在这里可查。"
+              eyebrow="KNOWLEDGE"
+              title="知识库"
+              description="上传文档用于检索；检索模式、嵌入模型与索引在文档库的「检索设置」里管理。"
             />
             <DocumentsPanel notify={notify} />
-            <OperationsPanel />
-            <ArtifactsPanel />
           </div>
 
           {/* ── 隐私 ── */}
@@ -900,10 +724,6 @@ export function SettingsView({
 
           <div className="shortcuts">
             <p className="mini-label">快捷键</p>
-            <div className="shortcut-row">
-              <span><Kbd>⌘</Kbd> / <Kbd>Ctrl</Kbd> + <Kbd>K</Kbd></span>
-              <span>快速切换页面与动作</span>
-            </div>
             <div className="shortcut-row">
               <span><Kbd>Enter</Kbd></span>
               <span>发送消息</span>

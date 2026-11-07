@@ -105,6 +105,24 @@ describe('★★★ 问不到的时候必须拒绝（fail-closed）', () => {
   it('★ 不存在的 id → 返回 false', () => {
     expect(resolveApproval('ap_nope', true)).toBe(false);
   });
+
+  it('★★ 不同路由 chunk 的两份模块必须共享同一张登记表', async () => {
+    // 模拟 Next.js 将 /api/chat 与 /api/approval 分别打包：
+    // 模块闭包重建，但 globalThis 仍是同一个进程。
+    vi.resetModules();
+    const chatSide = await import('../approval.js');
+    const sent: ApprovalRequest[] = [];
+    const asker = new chatSide.SseApprovals({ emit: (r) => sent.push(r) });
+    const pending = asker.request(REQ);
+    expect(chatSide.pendingApprovalCount()).toBe(1);
+
+    vi.resetModules();
+    const approvalSide = await import('../approval.js');
+    expect(approvalSide.pendingApprovalCount()).toBe(1);
+    expect(approvalSide.resolveApproval(sent[0]!.id, false)).toBe(true);
+    await expect(pending).resolves.toBe(false);
+    expect(approvalSide.pendingApprovalCount()).toBe(0);
+  });
 });
 
 describe('并发与隔离', () => {

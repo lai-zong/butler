@@ -48,6 +48,8 @@ interface ChatBody {
   readonly text?: string;
   readonly modelProfileId?: string;
   readonly modelId?: string;
+  /** 桌宠设置里的附加人格；只追加在管家不变量之后。 */
+  readonly persona?: string;
   /**
    * 调用方是否**能处理确认请求**（`{ type:'approval' }` 事件 + POST 答复）。
    *
@@ -247,6 +249,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         const result = await runTurn({
           sessionId: session.id,
           userText: text,
+          ...(typeof body.persona === 'string' && body.persona.trim().length > 0
+            ? { persona: body.persona.trim() }
+            : {}),
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(images.length > 0 ? { images } : {}),
           // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"

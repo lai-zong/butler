@@ -50,6 +50,9 @@ const MAX_CHUNKS = 500;
 const CHUNK_CHARS = 900;
 const CHUNK_OVERLAP = 120;
 
+/** 分片算法版本。改变分片参数时必须同步更新，避免语义索引复用旧分片向量。 */
+export const DOCUMENT_CHUNK_VERSION = 'v1:900:120';
+
 function chunkText(text: string): readonly string[] {
   const normalized = text.replace(/\r\n/g, '\n').trim();
   if (normalized.length === 0) return [];

@@ -8,7 +8,7 @@
  *   · 过程面板：思考 → 工具 → 再思考，全部可展开
  *   · 契约与复核：干前写了什么、干完逐条核对
  *   · 反思回执：这一轮记录了什么试行记忆
- *   · 依据条：召回 / 注入 / 拦截，一键跳到审计
+ *   · 依据条：召回 / 注入 / 拦截与 seq 范围，直接留在这一轮下面
  *
  * ⚠️ 对话在切换空间时**不卸载**（由父层保持挂载）：
  *   切去看一眼记忆不该把正在跑的任务掐掉。
@@ -56,8 +56,8 @@ import { ModelPicker, type ModelChoice, type PickableProfile } from './ModelPick
 import { ProcessPanel, type ProcRound } from './Process';
 import {
   AssumptionNotice,
-  AuditStrip,
   ContractCard,
+  EvidenceStrip,
   MemoryRefs,
   ReflectionCard,
   ReportsPanel,
@@ -114,9 +114,7 @@ interface ChatViewProps {
   readonly active: boolean;
   readonly focusEnabled: boolean;
   readonly overview: Overview | null;
-  readonly newChatNonce: number;
   readonly dataResetNonce: number;
-  readonly onOpenAudit: (range: { readonly fromSeq: number; readonly toSeq: number } | null) => void;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly onOpenSettings: () => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
@@ -281,9 +279,7 @@ export function ChatView({
   active,
   focusEnabled,
   overview,
-  newChatNonce,
   dataResetNonce,
-  onOpenAudit,
   onOpenMemory,
   onOpenSettings,
   notify,
@@ -343,7 +339,6 @@ export function ChatView({
   const forceScrollRef = useRef(true);
   const bootRef = useRef(false);
   const loadSeqRef = useRef(0);
-  const lastNonceRef = useRef(0);
 
   const now = useNow(30_000);
   const mounted = useMounted();
@@ -779,13 +774,6 @@ export function ChatView({
     };
   }, [loadSession, onBootState]);
 
-  // 外部「新建对话」指令
-  useEffect(() => {
-    if (newChatNonce === 0 || lastNonceRef.current === newChatNonce) return;
-    lastNonceRef.current = newChatNonce;
-    void createNewChat();
-  }, [newChatNonce, createNewChat]);
-
   // 数据被替换（导入备份）→ 旧会话 id 已失效，重新读取
   useEffect(() => {
     if (dataResetNonce === 0) return;
@@ -1140,7 +1128,7 @@ export function ChatView({
       toolResults,
       createdAt: Date.now(),
     });
-    notify('已停止。后台任务已取消，这次取消会写入审计。', 'default');
+    notify('已停止。后台任务已取消，这次取消会写入事件记录。', 'default');
     if (id !== null) {
       window.setTimeout(() => void refreshCancellations(id), 700);
     }
@@ -1346,7 +1334,7 @@ export function ChatView({
             aria-pressed={reviewOpen}
             title={reviewOpen ? '关闭审查' : lastReviewable === null ? '还没有可审查的完成轮次' : '打开审查'}
           >
-            <Icon name="audit" size={15} /> 审查
+            <Icon name="eye" size={15} /> 审查
           </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setHistoryOpen(true); void refreshSessions(); }}>
             <Icon name="history" size={15} /> 记录
@@ -1438,11 +1426,6 @@ export function ChatView({
                 key={m.id}
                 message={m}
                 verdict={verdictFor(messages, verdicts, i)}
-                onOpenAudit={
-                  m.auditRange !== undefined
-                    ? () => onOpenAudit(m.auditRange ?? null)
-                    : undefined
-                }
                 onOpenMemory={onOpenMemory}
                 notify={notify}
                 now={now}
@@ -1456,7 +1439,6 @@ export function ChatView({
               <LiveTurnView
                 key={`live-${i}`}
                 turn={turn}
-                onOpenAudit={onOpenAudit}
                 onOpenMemory={onOpenMemory}
                 onRetry={(text) => {
                   setInput(text);
@@ -1470,16 +1452,6 @@ export function ChatView({
               <CancellationCard
                 cancellation={displayCancellation}
                 retryText={retryText}
-                onOpenAudit={() =>
-                  onOpenAudit(
-                    displayCancellation.fromSeq > 0
-                      ? {
-                          fromSeq: displayCancellation.fromSeq,
-                          toSeq: displayCancellation.toSeq,
-                        }
-                      : null,
-                  )
-                }
                 onRetry={() => {
                   setInput(retryText);
                   window.setTimeout(() => textareaRef.current?.focus(), 60);
@@ -1818,8 +1790,8 @@ export function ChatView({
               )}
             </div>
           </div>
-          <p className="composer-note">
-            {streaming ? (
+          {streaming && (
+            <p className="composer-note">
               <span className="composer-live">
                 <span className="typing-dots" aria-hidden="true">
                   <i />
@@ -1828,10 +1800,8 @@ export function ChatView({
                 </span>
                 {statusLabel(liveTurns[liveTurns.length - 1]?.assistant ?? emptyAssistant()) || '正在处理'}
               </span>
-            ) : (
-              <>它会在动手前写下契约 · 结束后逐条核对 · 随时可查依据</>
-            )}
-          </p>
+            </p>
+          )}
         </div>
       </div>
 
@@ -1958,13 +1928,11 @@ export function ChatView({
 function CancellationCard({
   cancellation,
   retryText,
-  onOpenAudit,
   onRetry,
   now,
 }: {
   readonly cancellation: SessionCancellationDto;
   readonly retryText: string;
-  readonly onOpenAudit: () => void;
   readonly onRetry: () => void;
   readonly now: number;
 }): JSX.Element {
@@ -2011,9 +1979,6 @@ function CancellationCard({
         后台任务已停止，本轮产生的敏感授权已撤销；没有生成最终答复。
       </p>
       <div className="cancel-actions">
-        <button type="button" className="btn btn-ghost-warn" onClick={onOpenAudit}>
-          查看审计
-        </button>
         <button
           type="button"
           className="btn btn-primary"
@@ -2132,7 +2097,6 @@ function verdictFor(
 function ServerMessage({
   message,
   verdict,
-  onOpenAudit,
   onOpenMemory,
   notify,
   now,
@@ -2142,7 +2106,6 @@ function ServerMessage({
 }: {
   readonly message: MessageDto;
   readonly verdict: VerdictDto | undefined;
-  readonly onOpenAudit: (() => void) | undefined;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly now: number;
@@ -2200,9 +2163,7 @@ function ServerMessage({
         <Markdown text={message.text} />
       </div>
 
-      {verdict !== undefined && (
-        <VerdictCard verdict={verdict} onOpenAudit={onOpenAudit} />
-      )}
+      {verdict !== undefined && <VerdictCard verdict={verdict} />}
 
       {message.servantReports !== null && <ReportsPanel reports={message.servantReports} />}
       {message.memoryRefs.length > 0 && <MemoryRefs refs={message.memoryRefs} />}
@@ -2214,11 +2175,6 @@ function ServerMessage({
         {canSpeak && (
           <button type="button" className="text-btn" onClick={onSpeak}>
             <Icon name="volume" size={13} /> {speaking ? '停止朗读' : '朗读'}
-          </button>
-        )}
-        {onOpenAudit !== undefined && (
-          <button type="button" className="text-btn" onClick={onOpenAudit}>
-            <Icon name="audit" size={13} /> 本轮依据
           </button>
         )}
         <button type="button" className="text-btn" onClick={() => onOpenMemory()}>
@@ -2244,13 +2200,11 @@ async function copyToClipboard(text: string, notify: (text: string, tone?: Toast
 
 function LiveTurnView({
   turn,
-  onOpenAudit,
   onOpenMemory,
   onRetry,
   onCopy,
 }: {
   readonly turn: LiveTurn;
-  readonly onOpenAudit: (range: { readonly fromSeq: number; readonly toSeq: number } | null) => void;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly onRetry: (text: string) => void;
   readonly onCopy: (text: string) => void;
@@ -2351,23 +2305,14 @@ function LiveTurnView({
           )}
         </div>
 
-        {a.verdict !== null && (
-          <VerdictCard
-            verdict={a.verdict}
-            onOpenAudit={a.auditRange !== null ? () => onOpenAudit(a.auditRange) : undefined}
-          />
-        )}
+        {a.verdict !== null && <VerdictCard verdict={a.verdict} />}
 
         {a.reflection !== null && (
           <ReflectionCard reflection={a.reflection} onOpenMemory={() => onOpenMemory({ pending: true })} />
         )}
 
         {a.auditRange !== null && (
-          <AuditStrip
-            range={a.auditRange}
-            audit={a.audit}
-            onOpen={() => onOpenAudit(a.auditRange)}
-          />
+          <EvidenceStrip range={a.auditRange} audit={a.audit} />
         )}
 
         {a.reports.length > 0 && <ReportsPanel reports={a.reports} />}
@@ -2377,11 +2322,6 @@ function LiveTurnView({
             <button type="button" className="text-btn" onClick={() => onCopy(a.text)}>
               <Icon name="copy" size={13} /> 复制
             </button>
-            {a.auditRange !== null && (
-              <button type="button" className="text-btn" onClick={() => onOpenAudit(a.auditRange)}>
-                <Icon name="audit" size={13} /> 本轮依据
-              </button>
-            )}
             <button type="button" className="text-btn" onClick={() => onOpenMemory()}>
               <Icon name="memory" size={13} /> 看记忆
             </button>

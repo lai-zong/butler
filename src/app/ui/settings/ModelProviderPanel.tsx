@@ -4,15 +4,19 @@
  * 设置 · 模型接入
  *
  * 一个配置 = 一条连接 + 它的模型目录。
- * 没有 per-profile 默认模型；运行时当前模型是全局状态。
- * API Key 只在首次输入时完整显示，保存后只显示掩码。
+ * 这一页只回答“能连上谁、它提供哪些模型”，不再承担任何角色选择：
+ *   · 对话模型在对话输入框右下角选择；
+ *   · 记忆的三个模型在记忆页「模型设置」里选择；
+ *   · 知识库的嵌入/重排/索引在文档库「检索设置」里管理。
+ *
+ * 没有 per-profile 默认模型；API Key 只在首次输入时完整显示，保存后只显示掩码。
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { Badge, InlineError, Skeleton } from '../components/Common';
+import { InlineError, Skeleton } from '../components/Common';
 import { errorMessage, fetchJson, postJson } from '../lib/api.js';
-import type { ToastMessage } from '../lib/types.js';
+import type { LocalModelView, ToastMessage } from '../lib/types.js';
 
 type CapabilityKey = 'vision' | 'imageGeneration' | 'audio' | 'tools' | 'reasoning';
 type ModelKind = 'chat' | 'embedding' | 'rerank';
@@ -40,46 +44,21 @@ interface ProfileView {
 interface ModelPreset {
   readonly id: string;
   readonly label: string;
-  readonly kind: 'chat' | 'embedding';
+  readonly kind: ModelKind;
   readonly baseUrl: string;
   readonly adapter: 'deepseek' | 'openai' | 'ollama';
   readonly requiresKey: boolean;
 }
 
-interface ActiveView {
-  readonly profileId: string;
-  readonly profileName: string;
-  readonly modelId: string;
-  readonly presetId: string;
-  readonly baseUrl: string;
-}
-
-interface EmbeddingRoleView {
-  readonly kind: 'builtin' | 'profile';
-  readonly label: string;
-  readonly dimension: number;
-  readonly profileId?: string;
-  readonly modelId?: string;
-}
-
-interface RoleSelectionView {
-  readonly profileId: string;
-  readonly modelId: string;
-}
-
+/**
+ * 只读取连接与模型目录；memory/rerank/embedding 等角色字段不再由本页使用。
+ * localModels 是随程序提供的只读资产（本地 BGE 嵌入 / 重排），
+ * 它们必须像模型一样出现在对应页签，但不能当成连接来编辑。
+ */
 interface ModelResponse {
   readonly profiles: readonly ProfileView[];
-  readonly active: ActiveView | null;
-  readonly memory: RoleSelectionView | null;
-  readonly rerank: RoleSelectionView | null;
-  readonly embedding: EmbeddingRoleView;
   readonly presets: readonly ModelPreset[];
-  readonly envLocked: boolean;
-  readonly runtime: {
-    readonly model: string;
-    readonly provider: string;
-    readonly capabilities: Record<string, boolean> | null;
-  } | null;
+  readonly localModels: readonly LocalModelView[];
 }
 
 interface DiscoverResponse {
@@ -117,6 +96,10 @@ function sourceLabel(source: ProfileView['keySource']): string {
   return KEY_SOURCE_LABEL[source];
 }
 
+function kindLabel(kind: ModelKind): string {
+  return kind === 'chat' ? '对话' : kind === 'embedding' ? '嵌入' : '重排';
+}
+
 export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.Element {
   const [data, setData] = useState<ModelResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -125,10 +108,6 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
   const [modelType, setModelType] = useState<ModelKind>('chat');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [embeddingOpen, setEmbeddingOpen] = useState(false);
-  const [embeddingBusy, setEmbeddingBusy] = useState(false);
-  const [embeddingNotice, setEmbeddingNotice] = useState<string | null>(null);
-  const [roleBusy, setRoleBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -306,7 +285,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       };
       await postJson('/api/model', payload);
       notify(editingId === null ? '模型配置已创建' : '模型配置已更新', 'success');
-      setNotice(editingId === null ? '已保存。' : '已保存。');
+      setNotice('已保存。');
       setApiKey('');
       setView('overview');
       await load();
@@ -332,70 +311,6 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       setActionError(errorMessage(err));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function selectEmbedding(profileId: string | null, modelId: string | null): Promise<void> {
-    setEmbeddingBusy(true);
-    setActionError(null);
-    setEmbeddingNotice(null);
-    try {
-      await postJson('/api/model', profileId === null
-        ? { action: 'set-embedding', mode: 'builtin' }
-        : { action: 'set-embedding', profileId, modelId });
-      setEmbeddingOpen(false);
-      setEmbeddingNotice('嵌入模型已切换；语义向量缓存已清空，将在下次召回时重新生成。');
-      notify('嵌入模型已切换', 'success');
-      await load();
-      onRefreshOverview();
-    } catch (err) {
-      setActionError(errorMessage(err));
-    } finally {
-      setEmbeddingBusy(false);
-    }
-  }
-
-  async function selectMemory(profileId: string, modelId: string): Promise<void> {
-    setRoleBusy(true);
-    setActionError(null);
-    try {
-      await postJson('/api/model', { action: 'set-memory', profileId, modelId });
-      notify('记忆模型已切换；之后不再跟随对话模型', 'success');
-      await load();
-      onRefreshOverview();
-    } catch (err) {
-      setActionError(errorMessage(err));
-    } finally {
-      setRoleBusy(false);
-    }
-  }
-
-  async function selectRerank(profileId: string, modelId: string): Promise<void> {
-    setRoleBusy(true);
-    setActionError(null);
-    try {
-      await postJson('/api/model', { action: 'set-rerank', profileId, modelId });
-      notify('重排模型已切换；召回排序不再使用对话模型', 'success');
-      await load();
-      onRefreshOverview();
-    } catch (err) {
-      setActionError(errorMessage(err));
-    } finally {
-      setRoleBusy(false);
-    }
-  }
-
-  async function rebuildEmbedding(): Promise<void> {
-    setEmbeddingBusy(true);
-    setActionError(null);
-    try {
-      await postJson('/api/model', { action: 'rebuild-embedding' });
-      setEmbeddingNotice('语义索引缓存已清空，将在下次召回时重新生成。');
-      notify('语义索引已重建', 'success');
-    } catch (err) {
-      setActionError(errorMessage(err));
-    } finally {
-      setEmbeddingBusy(false);
     }
   }
 
@@ -435,16 +350,22 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
               <span>预设</span>
               <select value={presetId} onChange={(e) => choosePreset(e.target.value)}>
                 <option value="">选择预设</option>
-                {data.presets.filter((p) => p.kind === modelType).map((preset) => (
-                  <option key={preset.id} value={preset.id}>{preset.label}</option>
-                ))}
+                {data.presets
+                  .filter(
+                    (preset) =>
+                      preset.kind === modelType ||
+                      (modelType === 'rerank' && preset.id === presetId),
+                  )
+                  .map((preset) => (
+                    <option key={preset.id} value={preset.id}>{preset.label}</option>
+                  ))}
               </select>
               <small>不提供“自定义”；未覆盖的端点可选择一个兼容预设后修改 Base URL。</small>
             </label>
             <label className="model-field">
               <span>配置名称</span>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：OpenRouter · 工作" />
-              <small>名称唯一，显示在配置列表与当前模型里。</small>
+              <small>名称唯一，显示在配置列表里。</small>
             </label>
           </div>
 
@@ -503,7 +424,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
             <div className="model-model-head">
               <div>
                 <span className="model-field-label">模型</span>
-                <p>从端点读取，或手动输入模型 ID。只显示可用于对话的模型。</p>
+                <p>从端点读取，或手动输入模型 ID。</p>
               </div>
               <div className="model-model-actions">
                 <input
@@ -546,7 +467,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
                   <div className="model-selected" key={model.id}>
                     <div className="model-selected-top">
                       <code>{model.id}</code>
-                      <span className="model-kind-badge">{model.kind === 'chat' ? '对话' : model.kind === 'embedding' ? '嵌入' : '重排'}</span>
+                      <span className="model-kind-badge">{kindLabel(model.kind)}</span>
                       <button type="button" className="model-remove" aria-label={`移除 ${model.id}`} onClick={() => setModels((prev) => prev.filter((m) => m.id !== model.id))}>
                         ×
                       </button>
@@ -610,45 +531,9 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       models: profile.models.filter((m) => m.kind === modelType),
     }))
     .filter((profile) => profile.models.length > 0);
-  const embeddingChoices = data.profiles.flatMap((profile) =>
-    profile.models
-      .filter((model) => model.kind === 'embedding')
-      .map((model) => ({ profile, model })),
-  );
-  const chatChoices = data.profiles.flatMap((profile) =>
-    profile.models
-      .filter((model) => model.kind === 'chat')
-      .map((model) => ({ profile, model })),
-  );
-  const rerankChoices = data.profiles.flatMap((profile) =>
-    profile.models
-      .filter((model) => model.kind === 'rerank')
-      .map((model) => ({ profile, model })),
-  );
-  const roleLabel = (
-    selected: { readonly profileId: string; readonly modelId: string } | null,
-    choices: readonly { readonly profile: ProfileView; readonly model: ProfileModelView }[],
-  ): string => {
-    if (selected === null) return '未配置';
-    return (
-      choices.find(
-        ({ profile, model }) =>
-          profile.id === selected.profileId && model.id === selected.modelId,
-      )?.model.id ?? `${selected.profileId} / ${selected.modelId}`
-    );
-  };
-  const memoryValue = data.memory === null ? '' : `${data.memory.profileId}::${data.memory.modelId}`;
-  const memoryLabel = roleLabel(data.memory, chatChoices);
-  const rerankValue = data.rerank === null ? '' : `${data.rerank.profileId}::${data.rerank.modelId}`;
-  const rerankLabel =
-    data.rerank === null ? '本地 embedding 重排' : roleLabel(data.rerank, rerankChoices);
+  /** 本地资产按页签归属展示；对话页没有本地资产时自然为空。 */
+  const localModels = data.localModels.filter((model) => model.kind === modelType);
   const typeLabel = modelType === 'chat' ? '对话模型' : modelType === 'embedding' ? '嵌入模型' : '重排模型';
-  const typeDescription =
-    modelType === 'chat'
-      ? '用于对话与审查；记忆模型单独选择，不跟随这里的对话模型。'
-      : modelType === 'embedding'
-        ? '把文字变成向量，用于记忆语义召回；嵌入模型决定向量空间。'
-        : '对记忆召回结果重新排序；独立重排接口与对话接口不同。';
 
   return (
     <section className="model-settings-page">
@@ -674,174 +559,84 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       </div>
 
       <div className="model-type-head">
-        <div>
-          <h3>{typeLabel}</h3>
-          <p>{typeDescription}</p>
-        </div>
-        <span className="model-muted">{typedProfiles.length} 个配置</span>
+        <h3>{typeLabel}</h3>
+        <span className="model-muted">
+          {localModels.length > 0 ? `${localModels.length} 个本地 · ` : ''}
+          {typedProfiles.length} 个外部配置
+        </span>
         <button type="button" className="model-primary" onClick={resetForm}>＋ 新增配置</button>
       </div>
 
-      {modelType === 'chat' && (
-        <div className="model-embedding-role">
-          <span className="model-current-mark">MM</span>
-          <div>
-            <span className="model-field-label">固定记忆模型</span>
-            <strong>{memoryLabel}</strong>
-            <small>日记与记忆提取使用这个模型；切换对话模型不会改变它。</small>
+      {localModels.length > 0 && (
+        <div className="model-local-block">
+          <div className="model-local-head">
+            <span className="model-field-label">本地模型</span>
+            <p>随程序提供、只读资产；不需要 Base URL 或 API Key。</p>
           </div>
-          <select
-            className="model-role-select"
-            value={memoryValue}
-            disabled={roleBusy || chatChoices.length === 0}
-            aria-label="选择记忆模型"
-            onChange={(e) => {
-              const [profileId, modelId] = e.target.value.split('::');
-              if (profileId && modelId) void selectMemory(profileId, modelId);
-            }}
-          >
-            <option value="">未配置</option>
-            {chatChoices.map(({ profile, model }) => (
-              <option key={`${profile.id}::${model.id}`} value={`${profile.id}::${model.id}`}>
-                {profile.name} · {model.id}
-              </option>
+          <div className="model-local-list">
+            {localModels.map((model) => (
+              <article className="model-local-card" key={model.id}>
+                <div className="model-local-main">
+                  <strong>{model.label}</strong>
+                  <div className="model-local-tags">
+                    <span className="model-kind-badge">{kindLabel(model.kind)}</span>
+                    <span className="model-local-source">本地</span>
+                    {model.dimension !== null && <span>{model.dimension} 维</span>}
+                  </div>
+                  <p className="model-local-desc">{model.description}</p>
+                </div>
+                <span className={`model-local-state${model.available ? ' is-ready' : ''}`}>
+                  {model.available ? '可用' : '不可用'}
+                </span>
+              </article>
             ))}
-          </select>
+          </div>
         </div>
       )}
 
-      {modelType === 'embedding' && (
-        <>
-          <div className="model-embedding-role">
-            <span className="model-current-mark">EM</span>
-            <div>
-              <span className="model-field-label">系统当前嵌入模型</span>
-              <strong>{data.embedding.label}</strong>
-              <small>
-                {data.embedding.kind === 'builtin' ? '本地内置' : '远程配置'} · {data.embedding.dimension} 维 · 用于记忆语义检索
-              </small>
-            </div>
-            <Badge tone="accent">正在使用</Badge>
-            <button
-              type="button"
-              className="model-ghost"
-              disabled={embeddingBusy}
-              aria-expanded={embeddingOpen}
-              onClick={() => setEmbeddingOpen((open) => !open)}
-            >
-              更换
-            </button>
-            <button type="button" className="model-text-btn" disabled={embeddingBusy} onClick={() => void rebuildEmbedding()}>
-              重建索引
-            </button>
+      {typedProfiles.length > 0 && (
+        <div className="model-profile-block">
+          <div className="model-local-head">
+            <span className="model-field-label">外部连接</span>
           </div>
+          <div className="model-profile-list">
+            {typedProfiles.map((profile) => (
+              <div className="model-profile" key={profile.id}>
+                <div className="model-profile-main">
+                  <strong>{profile.name}</strong>
+                  <span>{profile.models.length} 个模型 · {profile.baseUrl}</span>
+                </div>
+                <span className="model-profile-meta">
+                  {profile.hasKey ? sourceLabel(profile.keySource) : '未配置 Key'}
+                </span>
+                <button type="button" className="model-row-btn" onClick={() => editProfile(profile)}>编辑</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-          {embeddingOpen && (
-            <div className="model-embedding-picker">
-              <div className="model-field-label">选择嵌入模型</div>
-              <button
-                type="button"
-                className={`model-embedding-option${data.embedding.kind === 'builtin' ? ' is-current' : ''}`}
-                disabled={embeddingBusy}
-                onClick={() => void selectEmbedding(null, null)}
-              >
-                <span className="model-embedding-option-main"><strong>本地 BGE</strong><small>bge-base-zh-v1.5 · 768 维 · 离线</small></span>
-                {data.embedding.kind === 'builtin' && <span className="model-embedding-option-current">当前</span>}
-              </button>
-              {embeddingChoices.length === 0 ? (
-                <p className="model-empty">还没有远程嵌入模型。先在嵌入模型类型下添加配置。</p>
-              ) : embeddingChoices.map(({ profile, model }) => {
-                const current = data.embedding.kind === 'profile' && data.embedding.profileId === profile.id && data.embedding.modelId === model.id;
-                const missingKey = profile.requiresKey === true && !profile.hasKey;
-                return (
-                  <button
-                    key={`${profile.id}::${model.id}`}
-                    type="button"
-                    className={`model-embedding-option${current ? ' is-current' : ''}`}
-                    disabled={embeddingBusy || model.dimension === undefined || missingKey}
-                    onClick={() => void selectEmbedding(profile.id, model.id)}
-                  >
-                    <span className="model-embedding-option-main">
-                      <strong>{model.id}</strong>
-                      <small>
-                        {profile.name} · {model.dimension ?? '未设'} 维
-                        {model.dimension === undefined ? ' · 先补维度' : missingKey ? ' · 缺少 Key' : ''}
-                      </small>
-                    </span>
-                    {current && <span className="model-embedding-option-current">当前</span>}
-                  </button>
-                );
-              })}
-            </div>
+      {typedProfiles.length === 0 && (
+        <div className="model-empty-state">
+          <p>
+            {modelType === 'rerank'
+              ? '还没有外部 LLM 重排连接。本地重排模型不依赖连接，始终可用。'
+              : `还没有${typeLabel}连接。添加一条连接后，这里会列出它提供的${typeLabel}。`}
+          </p>
+          {modelType === 'rerank' && (
+            <p className="model-empty-detail">
+              外部重排是用 OpenAI 兼容 LLM 对候选片段精排，不是专用 rerank HTTP 协议；
+              只有端点确实支持对话补全时才添加。
+            </p>
           )}
-          {embeddingNotice !== null && <p className="model-notice">{embeddingNotice}</p>}
-        </>
+          <button type="button" className="model-primary" onClick={resetForm}>添加连接</button>
+        </div>
       )}
 
       {modelType === 'rerank' && (
-        <>
-          <div className="model-embedding-role">
-            <span className="model-current-mark">RR</span>
-            <div>
-              <span className="model-field-label">固定重排模型</span>
-              <strong>{rerankLabel}</strong>
-              <small>只负责召回排序；未选独立模型时使用本地 embedding 打分，不回退对话模型。</small>
-            </div>
-            <select
-              className="model-role-select"
-              value={rerankValue}
-              disabled={roleBusy || rerankChoices.length === 0}
-              aria-label="选择重排模型"
-              onChange={(e) => {
-                const [profileId, modelId] = e.target.value.split('::');
-                if (profileId && modelId) void selectRerank(profileId, modelId);
-              }}
-            >
-              <option value="">本地 embedding 重排</option>
-              {rerankChoices.map(({ profile, model }) => (
-                <option key={`${profile.id}::${model.id}`} value={`${profile.id}::${model.id}`}>
-                  {profile.name} · {model.id}
-                </option>
-              ))}
-            </select>
-          </div>
-          {rerankChoices.length === 0 && (
-            <div className="model-rerank-empty">
-              <strong>还没有可用的重排模型</strong>
-              <p>先在“重排模型”类型下添加配置；当前不会用对话模型冒充重排模型。</p>
-            </div>
-          )}
-        </>
-      )}
-
-      {typedProfiles.length === 0 ? (
-        <div className="model-empty-state">
-          <p>还没有{typeLabel}配置。</p>
-          <button type="button" className="model-primary" onClick={resetForm}>新增第一个配置</button>
-        </div>
-      ) : (
-        <div className="model-profile-list">
-          {typedProfiles.map((profile) => (
-            <div className="model-profile" key={profile.id}>
-              <span className="model-profile-dot" />
-              <div className="model-profile-main">
-                <strong>{profile.name}</strong>
-                <span>{profile.models.length} 个模型 · {profile.baseUrl}</span>
-              </div>
-              <span className="model-profile-meta">
-                {profile.hasKey ? sourceLabel(profile.keySource) : '未配置 Key'}
-              </span>
-              <button type="button" className="model-row-btn" onClick={() => editProfile(profile)}>编辑</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {modelType === 'chat' && (
-        <p className="model-type-note">输入框右下角选择当前对话使用的模型；新对话沿用最近一次修改使用的对话模型。</p>
-      )}
-      {modelType === 'embedding' && (
-        <p className="model-type-note is-warning">更换嵌入模型会清空语义向量缓存；下次召回时重新生成，期间语义召回可能暂时回退字面召回。</p>
+        <p className="model-type-note">
+          外部重排的连接信息与对话模型相同：Base URL + API Key + 模型 ID；精排由 LLM 完成，不调用专用 rerank 接口。
+        </p>
       )}
     </section>
   );

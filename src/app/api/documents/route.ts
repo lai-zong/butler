@@ -12,6 +12,7 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import { getDocumentStore } from '@/app/server/documents.js';
+import { getKnowledgeService } from '@/app/server/knowledge.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,8 +22,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
     const store = getDocumentStore();
     if (q.length > 0) {
-      const hits = await store.search(q, 8);
-      return NextResponse.json({ ok: true, query: q, hits });
+      const result = await getKnowledgeService().search(q, 8);
+      return NextResponse.json({
+        ok: true,
+        query: q,
+        hits: result.hits,
+        mode: result.mode,
+        fallbackReason: result.fallbackReason,
+        rerankUsed: result.rerankUsed,
+      });
     }
     return NextResponse.json({ ok: true, documents: await store.list() });
   } catch (err) {
@@ -54,8 +62,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ...(typeof rec['mime'] === 'string' ? { mime: rec['mime'] } : {}),
       ...(typeof rec['size'] === 'number' ? { size: rec['size'] } : {}),
     });
+    let indexWarning: string | null = null;
+    try {
+      await getKnowledgeService().onDocumentsChanged();
+    } catch (err) {
+      indexWarning = err instanceof Error ? err.message : String(err);
+    }
     return NextResponse.json(
-      { ok: true, document: result.document, duplicate: result.duplicate },
+      {
+        ok: true,
+        document: result.document,
+        duplicate: result.duplicate,
+        ...(indexWarning === null ? {} : { indexWarning }),
+      },
       { status: result.duplicate ? 200 : 201 },
     );
   } catch (err) {

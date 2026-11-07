@@ -19,9 +19,12 @@ import { formatDateTime, formatNumber } from '../lib/format.js';
 import type {
   DocumentDetailDto,
   DocumentHitDto,
+  DocumentIngestResponse,
   DocumentSummaryDto,
   DocumentsResponse,
+  KnowledgeRetrievalMode,
 } from '../lib/types.js';
+import { KnowledgeRetrievalSettings } from './KnowledgeRetrievalSettings';
 
 const DOMAINS = [
   { value: 'life', label: '生活' },
@@ -36,6 +39,19 @@ const CLASS_OPTIONS = [
   { value: 'global_shared', label: '全局共享' },
 ] as const;
 
+/** 最近一次检索的模式与降级信息，只用于结果区的一行状态。 */
+interface SearchMeta {
+  readonly mode: KnowledgeRetrievalMode;
+  readonly fallbackReason: string | null;
+  readonly rerankUsed: boolean;
+}
+
+function searchStatus(meta: SearchMeta): { readonly text: string; readonly warn: boolean } {
+  if (meta.fallbackReason !== null) return { text: meta.fallbackReason, warn: true };
+  const label = meta.mode === 'hybrid' ? '混合检索' : meta.mode === 'semantic' ? '纯语义检索' : '字面检索';
+  return { text: meta.rerankUsed ? `${label} · 已重排` : label, warn: false };
+}
+
 function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -49,6 +65,7 @@ export function DocumentsPanel({
 }): JSX.Element {
   const [docs, setDocs] = useState<readonly DocumentSummaryDto[]>([]);
   const [hits, setHits] = useState<readonly DocumentHitDto[]>([]);
+  const [searchMeta, setSearchMeta] = useState<SearchMeta | null>(null);
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -56,6 +73,7 @@ export function DocumentsPanel({
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<DocumentDetailDto | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [retrievalOpen, setRetrievalOpen] = useState(false);
   const [rememberScope, setRememberScope] = useState<'domain' | 'global_shared'>('domain');
   const [rememberDomain, setRememberDomain] = useState('life');
   const [rememberingChunk, setRememberingChunk] = useState<string | null>(null);
@@ -81,6 +99,7 @@ export function DocumentsPanel({
     const q = query.trim();
     if (q.length === 0) {
       setHits([]);
+      setSearchMeta(null);
       setSearching(false);
       return;
     }
@@ -89,6 +108,15 @@ export function DocumentsPanel({
     try {
       const data = await fetchJson<DocumentsResponse>(`/api/documents?q=${encodeURIComponent(q)}`);
       setHits(data.hits ?? []);
+      setSearchMeta(
+        data.mode === undefined
+          ? null
+          : {
+              mode: data.mode,
+              fallbackReason: data.fallbackReason ?? null,
+              rerankUsed: data.rerankUsed === true,
+            },
+      );
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -111,13 +139,20 @@ export function DocumentsPanel({
       if (typeof extracted.text !== 'string' || extracted.text.trim().length === 0) {
         throw new Error(extracted.error ?? '没有提取到文本');
       }
-      await postJson('/api/documents', {
+      const ingested = await postJson<DocumentIngestResponse>('/api/documents', {
         name: file.name,
         text: extracted.text,
         mime: file.type || 'application/octet-stream',
         size: file.size,
       });
-      notify(`「${file.name}」已加入文档库，可以检索和引用。`, 'success');
+      if (typeof ingested.indexWarning === 'string' && ingested.indexWarning.length > 0) {
+        notify(
+          `「${file.name}」已加入文档库，但知识库索引更新失败：${ingested.indexWarning}`,
+          'warning',
+        );
+      } else {
+        notify(`「${file.name}」已加入文档库，可以检索和引用。`, 'success');
+      }
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -169,6 +204,8 @@ export function DocumentsPanel({
     }
   }
 
+  const hitStatus = searchMeta === null ? null : searchStatus(searchMeta);
+
   return (
     <section className="panel settings-panel doc-panel">
       <SectionHeading
@@ -177,6 +214,13 @@ export function DocumentsPanel({
         actions={
           <div className="doc-actions">
             <Badge tone="accent">{formatNumber(docs.length)} 份</Badge>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setRetrievalOpen(true)}
+            >
+              <Icon name="settings" size={13} /> 检索设置
+            </button>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -221,6 +265,7 @@ export function DocumentsPanel({
             onClick={() => {
               setQuery('');
               setHits([]);
+              setSearchMeta(null);
             }}
           >
             清除
@@ -239,7 +284,14 @@ export function DocumentsPanel({
         <>
           {hits.length > 0 && (
             <div className="doc-hits">
-              <p className="mini-label">检索结果</p>
+              <div className="doc-hits-head">
+                <p className="mini-label">检索结果</p>
+                {hitStatus !== null && (
+                  <span className={`doc-search-mode${hitStatus.warn ? ' is-warn' : ''}`}>
+                    {hitStatus.text}
+                  </span>
+                )}
+              </div>
               {hits.map((h) => (
                 <button
                   key={`${h.documentId}-${h.chunkIndex}`}
@@ -355,6 +407,12 @@ export function DocumentsPanel({
           </div>
         ) : null}
       </Modal>
+
+      <KnowledgeRetrievalSettings
+        open={retrievalOpen}
+        onClose={() => setRetrievalOpen(false)}
+        notify={notify}
+      />
     </section>
   );
 }

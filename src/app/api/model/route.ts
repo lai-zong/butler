@@ -35,8 +35,15 @@ import {
   updateProfileSecret,
   type ModelProfile,
 } from '@/app/server/modelProfiles.js';
+import { localModelViews } from '@/app/server/localModels.js';
 import { MODEL_PRESETS, presetById } from '@/app/server/modelPresets.js';
 import { loadModelRoles, saveModelRoles } from '@/app/server/modelRoles.js';
+import {
+  DEFAULT_KNOWLEDGE_CONFIG,
+  getKnowledgeService,
+  loadKnowledgeConfig,
+  resetKnowledgeService,
+} from '@/app/server/knowledge.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -114,6 +121,7 @@ export async function GET(): Promise<NextResponse> {
       memory: roles.memory,
       rerank: roles.rerank,
       embedding: store.embedding,
+      localModels: localModelViews(),
       presets: MODEL_PRESETS,
       envLocked: isProviderEnvLocked(),
       runtime: describe,
@@ -227,6 +235,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const lastChat = hasChat(store.lastChat) ? store.lastChat : active;
       const lastReview = hasChat(store.lastReview) ? store.lastReview : null;
       await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding: store.embedding });
+      const knowledge = await loadKnowledgeConfig(DATA_DIR);
+      const embedding = knowledge.embedding;
+      if (embedding.kind === 'profile' && embedding.profileId === id) {
+        const stillThere = updated.models.find(
+          (m) => m.id === embedding.modelId && m.kind === 'embedding',
+        );
+        if (stillThere === undefined || stillThere.dimension === undefined) {
+          await getKnowledgeService().setConfig({
+            ...knowledge,
+            embedding: DEFAULT_KNOWLEDGE_CONFIG.embedding,
+          });
+        } else if (stillThere.dimension !== embedding.dimension) {
+          await getKnowledgeService().setConfig({
+            ...knowledge,
+            embedding: {
+              ...embedding,
+              label: stillThere.id,
+              dimension: stillThere.dimension,
+            },
+          });
+        }
+      }
+      resetKnowledgeService();
       await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(updated), active });
     } catch (err) {
@@ -265,8 +296,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ...(roles.rerank?.profileId === id ? { rerank: null } : {}),
       });
     }
+    const knowledge = await loadKnowledgeConfig(DATA_DIR);
+    if (knowledge.embedding.kind === 'profile' && knowledge.embedding.profileId === id) {
+      await getKnowledgeService().setConfig({
+        ...knowledge,
+        embedding: DEFAULT_KNOWLEDGE_CONFIG.embedding,
+      });
+    }
+    resetKnowledgeService();
     await resetRuntime();
     return NextResponse.json({ ok: true, active });
+  }
+
+  if (action === 'clear-memory' || action === 'clear-rerank') {
+    const rt = await getRuntime();
+    if (rt.activeTurns > 0) {
+      return NextResponse.json(
+        { error: '有对话正在执行，等这一轮结束后再清空模型角色。' },
+        { status: 409 },
+      );
+    }
+    const role = action === 'clear-memory' ? 'memory' : 'rerank';
+    const roles = await loadModelRoles(DATA_DIR);
+    await saveModelRoles(DATA_DIR, { ...roles, [role]: null });
+    await resetRuntime();
+    return NextResponse.json({ ok: true, [role]: null });
   }
 
   if (action === 'set-memory' || action === 'set-rerank') {

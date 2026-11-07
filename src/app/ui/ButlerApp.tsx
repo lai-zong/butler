@@ -4,7 +4,7 @@
  * 应用外壳 —— 两个界面、一套状态
  *
  *   主界面：暖纸色工作台，只保留「对话」与「设置」。
- *   控制台：深色治理终端，承接原来的记忆 / 审计 / 演化。
+ *   控制台：深色治理终端，只承接「记忆」与「演化」。
  *
  * ★ 一个刻意的结构决定：**对话层与主界面始终挂载**。
  *   控制台是一层 fixed 覆盖层，进入/退出不会卸载对话 ——
@@ -19,11 +19,12 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Sidebar } from './components/Sidebar';
-import { CommandPalette } from './components/CommandPalette';
 import { ToastStack } from './components/Toast';
 import { BootScreen } from './components/BootScreen';
 import { ChatView } from './chat/ChatView';
 import { SettingsView } from './settings/SettingsView';
+import { TasksView } from './tasks/TasksView';
+import { DueReminderBanner } from './tasks/DueReminderBanner';
 import { ConsoleTransition } from './console/ConsoleTransition';
 import { computeConsoleBootStatus, type ConsoleBootMode } from './console/consoleBoot.js';
 import { errorMessage, fetchJson } from './lib/api.js';
@@ -38,7 +39,7 @@ import type {
   ViewId,
 } from './lib/types.js';
 
-/** 控制台是第二界面：动态加载，首屏不解析它的模块与三个治理视图。 */
+/** 控制台是第二界面：动态加载，首屏不解析它的模块与两个治理视图。 */
 const ConsoleShell = dynamic(() => import('./console/ConsoleShell').then((m) => m.ConsoleShell), {
   ssr: false,
 });
@@ -47,16 +48,16 @@ type Surface = 'main' | 'console';
 
 const MAIN_TITLES: Record<MainView, string> = {
   chat: '对话',
+  tasks: '定时任务',
   settings: '设置',
 };
 
 const SECTION_TITLES: Record<ConsoleSection, string> = {
   memory: '记忆',
-  audit: '审计',
   growth: '演化',
 };
 
-const CONSOLE_SECTIONS: readonly ConsoleSection[] = ['memory', 'audit', 'growth'];
+const CONSOLE_SECTIONS: readonly ConsoleSection[] = ['memory', 'growth'];
 
 interface Route {
   readonly surface: Surface;
@@ -67,8 +68,8 @@ interface Route {
 /**
  * 解析 hash。
  *
- * 兼容旧深链：`#/memory` / `#/audit` / `#/growth` 仍会落到控制台对应分区，
- * 这样之前收藏的地址不会失效。
+ * 兼容旧深链：`#/memory` / `#/growth` 仍会落到控制台对应分区。
+ * 旧的 `#/audit` 入口已删除，落到记忆页，避免收藏的地址变成空白。
  */
 function parseHash(): Route {
   if (typeof window === 'undefined') return { surface: 'main', view: 'chat', section: 'memory' };
@@ -82,11 +83,16 @@ function parseHash(): Route {
     return { surface: 'console', view: 'chat', section: 'memory' };
   }
 
-  if (raw === 'memory' || raw === 'audit' || raw === 'growth') {
+  if (raw === 'memory' || raw === 'growth') {
     return { surface: 'console', view: 'chat', section: raw };
+  }
+  // 审计页已删除；旧书签回到记忆，而不是落到主界面。
+  if (raw === 'audit') {
+    return { surface: 'console', view: 'chat', section: 'memory' };
   }
 
   if (raw === 'settings') return { surface: 'main', view: 'settings', section: 'memory' };
+  if (raw === 'tasks') return { surface: 'main', view: 'tasks', section: 'memory' };
   return { surface: 'main', view: 'chat', section: 'memory' };
 }
 
@@ -123,14 +129,8 @@ export function ButlerApp(): JSX.Element {
   const appShellRef = useRef<HTMLDivElement | null>(null);
 
   const [toasts, setToasts] = useState<readonly ToastMessage[]>([]);
-  const [commandOpen, setCommandOpen] = useState(false);
 
-  const [auditRange, setAuditRange] = useState<{
-    readonly fromSeq: number;
-    readonly toSeq: number;
-  } | null>(null);
   const [memoryPreset, setMemoryPreset] = useState<MemoryPreset>({ nonce: 0 });
-  const [newChatNonce, setNewChatNonce] = useState(0);
   const [dataResetNonce, setDataResetNonce] = useState(0);
 
   const toastSeq = useRef(0);
@@ -268,6 +268,11 @@ export function ButlerApp(): JSX.Element {
   // Hash 路由：可前进后退、可深链。浏览器回退不播完整转场，直接落位。
   useEffect(() => {
     const apply = (): void => {
+      const raw = window.location.hash.replace(/^#\/?/, '').split('?')[0] ?? '';
+      // 审计页已删除：旧深链落到记忆，并把地址也改成新入口，避免刷新后继续停在旧地址。
+      if (raw === 'audit' || raw === 'console/audit') {
+        window.history.replaceState({ hash: '#/console/memory' }, '', '#/console/memory');
+      }
       const route = parseHash();
       if (leaveTimer.current !== null) {
         window.clearTimeout(leaveTimer.current);
@@ -327,19 +332,6 @@ export function ButlerApp(): JSX.Element {
       else el.removeAttribute('inert');
     }
   }, [surface]);
-
-  // ⌘K / Ctrl+K（启动期间不响应，避免在 inert 启动层后面打开命令面板）
-  useEffect(() => {
-    if (booting) return;
-    const onKey = (e: KeyboardEvent): void => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setCommandOpen((v) => !v);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [booting]);
 
   const pushHash = useCallback((hash: string): void => {
     if (window.location.hash !== hash) {
@@ -443,7 +435,6 @@ export function ButlerApp(): JSX.Element {
       setConsoleLeaving(true);
       setConsoleTransition(false);
       setConsoleTransitionLeaving(false);
-      setAuditRange(null);
       pushHash(hashOfMain(nextView));
       if (leaveTimer.current !== null) window.clearTimeout(leaveTimer.current);
       leaveTimer.current = window.setTimeout(() => {
@@ -458,14 +449,13 @@ export function ButlerApp(): JSX.Element {
 
   const navigate = useCallback(
     (next: ViewId): void => {
-      if (next === 'memory' || next === 'audit' || next === 'growth') {
-        if (next === 'audit' && surface === 'main') setAuditRange(null);
+      if (next === 'memory' || next === 'growth') {
         openConsole(next);
         return;
       }
       closeConsole(next);
     },
-    [openConsole, closeConsole, surface],
+    [openConsole, closeConsole],
   );
 
   const openMemory = useCallback(
@@ -476,52 +466,9 @@ export function ButlerApp(): JSX.Element {
     [openConsole],
   );
 
-  const openAudit = useCallback(
-    (range: { readonly fromSeq: number; readonly toSeq: number } | null): void => {
-      setAuditRange(range);
-      openConsole('audit');
-    },
-    [openConsole],
-  );
-
   const openSettings = useCallback((): void => {
     closeConsole('settings');
   }, [closeConsole]);
-
-  const newChat = useCallback((): void => {
-    closeConsole('chat');
-    setNewChatNonce((n) => n + 1);
-  }, [closeConsole]);
-
-  const exportData = useCallback(async (): Promise<void> => {
-    try {
-      const res = await fetch('/api/transfer/export');
-      const text = await res.text();
-      if (!res.ok) {
-        let msg = `导出失败（HTTP ${res.status}）`;
-        try {
-          const data = JSON.parse(text) as { error?: string };
-          if (typeof data.error === 'string') msg = data.error;
-        } catch {
-          // 保持默认
-        }
-        throw new Error(msg);
-      }
-      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `butler-export-${stamp}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 4000);
-      notify(`已导出 ${(text.length / 1024).toFixed(1)} KB`, 'success');
-    } catch (err) {
-      notify(errorMessage(err), 'danger');
-    }
-  }, [notify]);
 
   const onDataReset = useCallback((): void => {
     setDataResetNonce((n) => n + 1);
@@ -542,7 +489,6 @@ export function ButlerApp(): JSX.Element {
           collapsed={sidebarCollapsed}
           onNavigate={navigate}
           onOpenConsole={() => openMemory()}
-          onOpenCommand={() => setCommandOpen(true)}
           onToggleCollapse={toggleSidebar}
         />
 
@@ -565,14 +511,19 @@ export function ButlerApp(): JSX.Element {
             </div>
           )}
 
+          {/* 全局到期提醒：细条放在主区域顶部、聊天头部下方，不压输入框；控制台里不渲染。 */}
+          <DueReminderBanner
+            active={surface === 'main' && !booting && view !== 'tasks'}
+            notify={notify}
+            onOpenTasks={() => navigate('tasks')}
+          />
+
           <div className="view-frame view-frame--chat" hidden={surface !== 'main' || view !== 'chat'}>
             <ChatView
               active={surface === 'main' && view === 'chat'}
               focusEnabled={!booting && surface === 'main' && view === 'chat'}
               overview={overview}
-              newChatNonce={newChatNonce}
               dataResetNonce={dataResetNonce}
-              onOpenAudit={openAudit}
               onOpenMemory={openMemory}
               onOpenSettings={openSettings}
               notify={notify}
@@ -585,11 +536,16 @@ export function ButlerApp(): JSX.Element {
           {view === 'settings' && (
             <div className="view-frame view-frame--page view-enter" key="settings">
               <SettingsView
-                overview={overview}
                 notify={notify}
                 onRefreshOverview={() => void refreshOverview()}
                 onDataReset={onDataReset}
               />
+            </div>
+          )}
+
+          {view === 'tasks' && (
+            <div className="view-frame view-frame--page view-enter" key="tasks">
+              <TasksView notify={notify} />
             </div>
           )}
         </main>
@@ -600,13 +556,11 @@ export function ButlerApp(): JSX.Element {
               section={consoleSection}
               leaving={consoleLeaving}
               overview={overview}
-              auditRange={auditRange}
               memoryPreset={memoryPreset}
               onSection={openConsole}
               onExit={() => closeConsole()}
               onNavigate={navigate}
               onOpenMemory={openMemory}
-              onClearRange={() => setAuditRange(null)}
               notify={notify}
               onRefreshOverview={() => void refreshOverview()}
               onShellMounted={handleConsoleShellMounted}
@@ -614,18 +568,6 @@ export function ButlerApp(): JSX.Element {
             />
           </div>
         )}
-
-        <CommandPalette
-          open={commandOpen}
-          onClose={() => setCommandOpen(false)}
-          onNavigate={navigate}
-          onNewChat={newChat}
-          onExport={() => void exportData()}
-          onRefresh={() => {
-            void refreshOverview();
-            notify('运行概览已刷新');
-          }}
-        />
 
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
 

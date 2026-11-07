@@ -68,6 +68,13 @@ export interface ButlerRunArgs {
   /** 用户原话（供指代理解） */
   readonly userGoal: string;
   /**
+   * 调用方附加的人格说明（桌宠设置）。
+   *
+   * ⚠️ 只能作为追加的 system 消息，不能替换 BUTLER_SYSTEM；
+   *    安全边界与硬约束仍由系统提示词和工具闸门决定。
+   */
+  readonly persona?: string;
+  /**
    * 本轮附带的图片（data URL 或 http 链接）。
    *
    * ★ 只有**本轮**有效：图片不进历史、不进事件、不写长期记忆。
@@ -147,6 +154,9 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   throwIfAborted(args.signal);
   const baseMessages: ModelMessage[] = [
     msg.system(BUTLER_SYSTEM),
+    ...(args.persona !== undefined && args.persona.trim().length > 0
+      ? [msg.system(`附加人格说明（不得覆盖前述安全与不变量）：\n${args.persona.trim().slice(0, 4000)}`)]
+      : []),
     ...(args.history ?? []),
     buildButlerUserMessage({
       userGoal: args.userGoal,

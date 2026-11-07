@@ -25,24 +25,24 @@ export interface ConsoleBootInput {
 
 export function computeConsoleBootStatus(input: ConsoleBootInput): ConsoleBootStatus {
   if (input.mode === 'quick' && input.mounted) {
-    return { progress: 1, stage: '回到控制台', ready: true };
+    return { progress: 1, stage: '返回控制台', ready: true };
   }
 
   if (!input.mounted) {
-    return { progress: 0, stage: '加载控制台', ready: false };
+    return { progress: 0, stage: '启动控制台', ready: false };
   }
 
   if (input.timedOut === true) {
-    return { progress: 0.95, stage: '控制台响应较慢，先进入', ready: true };
+    return { progress: 0.95, stage: '响应较慢，先行进入', ready: true };
   }
 
   if (!input.shellMounted) {
-    return { progress: 0.18, stage: '加载控制台', ready: false };
+    return { progress: 0.18, stage: '启动控制台', ready: false };
   }
 
   if (!input.dataReady) {
-    return { progress: 0.8, stage: '准备治理视图', ready: false };
+    return { progress: 0.8, stage: '准备控制台', ready: false };
   }
 
-  return { progress: 1, stage: '进入控制台', ready: true };
+  return { progress: 1, stage: '控制台已就绪', ready: true };
 }

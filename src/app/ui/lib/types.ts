@@ -6,13 +6,13 @@
  *   的投影，再同步这里 —— 这条边界让“服务端重构”不会把界面一起拖下水。
  */
 
-export type ViewId = 'chat' | 'memory' | 'audit' | 'growth' | 'settings';
+export type ViewId = 'chat' | 'tasks' | 'memory' | 'growth' | 'settings';
 
-/** 主界面只保留对话与设置；治理视图移入控制台。 */
-export type MainView = 'chat' | 'settings';
+/** 主界面：对话、定时任务、设置；治理视图移入控制台。 */
+export type MainView = 'chat' | 'tasks' | 'settings';
 
-/** 控制台内的三个治理分区。 */
-export type ConsoleSection = 'memory' | 'audit' | 'growth';
+/** 控制台只保留记忆与演化两个分区。 */
+export type ConsoleSection = 'memory' | 'growth';
 
 /** 跳到记忆页时可携带的意图。 */
 export interface MemoryTarget {
@@ -46,6 +46,19 @@ export interface ModelInfo {
   readonly provider: string;
   readonly model: string;
   readonly capabilities: ModelCapabilities;
+}
+
+/** 随程序提供的本地模型资产：不是连接，不能填 Base URL / Key。 */
+export type LocalModelKind = 'embedding' | 'rerank';
+
+export interface LocalModelView {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: LocalModelKind;
+  readonly source: 'local';
+  readonly dimension: number | null;
+  readonly available: boolean;
+  readonly description: string;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -164,6 +177,127 @@ export interface MemoryDetailResponse {
   readonly ok: boolean;
   readonly item: MemoryItem;
   readonly revisions: readonly MemoryRevision[];
+}
+
+/**
+ * 记忆关系图（只读派生投影）。
+ *
+ * 服务端不会持久化这张图：节点是记忆本身，边由内容相似、共享证据、
+ * 冲突与合并来源实时推导。界面只消费这份投影，不新增真相源。
+ */
+export type MemoryEdgeType =
+  | 'content'
+  | 'semantic'
+  | 'sharedEvidence'
+  | 'conflict'
+  | 'merge'
+  | 'coRecall';
+
+export interface MemoryGraphNode extends MemoryItem {
+  readonly degree: number;
+}
+
+export interface MemoryGraphEdge {
+  readonly id: string;
+  readonly source: string;
+  readonly target: string;
+  readonly type: MemoryEdgeType;
+  readonly weight: number;
+  readonly reason?: string;
+}
+
+export interface MemoryGraphResponse {
+  readonly ok: boolean;
+  readonly nodes: readonly MemoryGraphNode[];
+  readonly edges: readonly MemoryGraphEdge[];
+  readonly total: { readonly nodes: number; readonly edges: number };
+  readonly note: string;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 记忆变化记录
+// ═══════════════════════════════════════════════════════════
+
+/** 演化页的四条变化线索。 */
+export type MemoryChangeKind = 'promotion' | 'archive' | 'conflict' | 'principle';
+
+/** 变化发生时那条记忆的快照，够卡片引用与跳转即可。 */
+export interface MemoryChangeMemory {
+  readonly id: string;
+  readonly subject: string | null;
+  readonly content: string;
+  readonly lifecycle: MemoryLifecycle;
+  readonly kind: MemoryKind;
+  readonly memClass: MemoryClass;
+  readonly domain: string | null;
+  readonly fitness: number;
+  readonly confidence: number;
+  readonly version: number;
+}
+
+/** 一次冲突：两种说法、是否裁决、留下了哪一边。 */
+export interface MemoryChangeConflict {
+  readonly candidateContent: string | null;
+  readonly existingContent: string | null;
+  readonly candidateId: string | null;
+  readonly existingId: string | null;
+  readonly resolved: boolean;
+  readonly winner: 'new' | 'existing' | null;
+  readonly winnerContent: string | null;
+  readonly loserContent: string | null;
+  readonly detectedAt: number;
+  readonly resolvedAt: number | null;
+}
+
+/** 一条原则最近被用上的情况。 */
+export interface MemoryChangePrinciple {
+  readonly condition: string | null;
+  readonly action: string | null;
+  readonly applied: number;
+  readonly appliedTotal: number;
+  readonly effective: boolean | null;
+  readonly effectNote: string | null;
+}
+
+export interface MemoryChange {
+  readonly id: string;
+  readonly seq: number;
+  readonly at: number;
+  readonly kind: MemoryChangeKind;
+  readonly title: string;
+  readonly summary: string;
+  readonly note: string | null;
+  readonly actor: string;
+  readonly actorLabel: string;
+  readonly memory: MemoryChangeMemory | null;
+  readonly transition: {
+    readonly from: MemoryLifecycle | null;
+    readonly to: MemoryLifecycle;
+  } | null;
+  readonly conflict: MemoryChangeConflict | null;
+  readonly principle: MemoryChangePrinciple | null;
+}
+
+export interface MemoryChangeCounts {
+  readonly promotion: number;
+  readonly archive: number;
+  readonly conflict: number;
+  readonly principle: number;
+  readonly total: number;
+}
+
+export interface MemoryChangesResponse {
+  readonly ok: boolean;
+  readonly changes: readonly MemoryChange[];
+  readonly counts: MemoryChangeCounts;
+  /** 被展示的原则卡片中，最近实际被应用的次数总和。 */
+  readonly applications: number;
+  readonly window: {
+    readonly from: number | null;
+    readonly to: number | null;
+    readonly days: number;
+  };
+  readonly truncated: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1164,6 +1298,112 @@ export interface CredentialsResponse {
   readonly credentials: readonly CredentialMetaDto[];
 }
 
+// ═══════════════════════════════════════════════════════════
+// 知识库检索（GET/POST /api/knowledge/retrieval）
+//
+// 知识库有自己的检索模式、嵌入模型、重排开关与向量索引；
+// 与记忆的模型角色**不是同一套设置**，这里只描述文档检索域。
+// ═══════════════════════════════════════════════════════════
+
+export type KnowledgeRetrievalMode = 'hybrid' | 'lexical' | 'semantic';
+
+/** 知识库嵌入模型的当前选择：本地 BGE，或远程配置里的 embedding 模型。 */
+export type KnowledgeEmbeddingView =
+  | {
+      readonly kind: 'builtin';
+      readonly label: string;
+      readonly dimension: number;
+    }
+  | {
+      readonly kind: 'profile';
+      readonly profileId: string;
+      readonly modelId: string;
+      readonly label: string;
+      readonly dimension: number;
+    };
+
+/** 可选的嵌入模型；缺 Key 或未设维度时前端禁用。 */
+export interface KnowledgeEmbeddingChoice {
+  readonly kind: 'builtin' | 'profile';
+  readonly label: string;
+  readonly dimension: number;
+  readonly profileId?: string;
+  readonly modelId?: string;
+  readonly profileName?: string;
+  readonly baseUrl?: string;
+  readonly hasKey?: boolean;
+  readonly requiresKey?: boolean;
+}
+
+export interface KnowledgeRetrievalConfig {
+  readonly version: 1;
+  readonly mode: KnowledgeRetrievalMode;
+  readonly embedding: KnowledgeEmbeddingView;
+  readonly rerank: boolean;
+}
+
+export interface KnowledgeIndexStatus {
+  readonly ready: boolean;
+  readonly model: string | null;
+  readonly dimension: number | null;
+  readonly indexedChunks: number;
+  readonly staleReason: string | null;
+  readonly rebuiltAt: number | null;
+}
+
+export interface KnowledgeRetrievalStatus {
+  readonly mode: KnowledgeRetrievalMode;
+  readonly embedding: KnowledgeEmbeddingView;
+  readonly rerank: boolean;
+  /** 本地 cross-encoder 是否存在；false 时不应假装可以开启重排。 */
+  readonly rerankAvailable: boolean;
+  /** 实际执行重排的模型名（如 Xenova/bge-reranker-base）；没有时为空。 */
+  readonly rerankModel: string | null;
+  readonly semanticMin: number;
+  readonly documents: number;
+  readonly chunks: number;
+  readonly index: KnowledgeIndexStatus;
+}
+
+/** GET 的响应。 */
+export interface KnowledgeRetrievalResponse {
+  readonly ok: boolean;
+  readonly config: KnowledgeRetrievalConfig;
+  readonly status: KnowledgeRetrievalStatus;
+  readonly choices: readonly KnowledgeEmbeddingChoice[];
+}
+
+/** POST 的响应：设置类 action 会带回 choices，rebuild 只有 config/status。 */
+export interface KnowledgeRetrievalMutationResponse {
+  readonly ok: boolean;
+  readonly config: KnowledgeRetrievalConfig;
+  readonly status: KnowledgeRetrievalStatus;
+  readonly choices?: readonly KnowledgeEmbeddingChoice[];
+}
+
+export type KnowledgeHitRetrieval = 'lexical' | 'semantic' | 'both';
+
+export interface KnowledgeSearchHit {
+  readonly documentId: string;
+  readonly name: string;
+  readonly chunkIndex: number;
+  readonly text: string;
+  readonly score: number;
+  readonly retrieval: KnowledgeHitRetrieval;
+  readonly semanticScore?: number;
+  readonly rerankScore?: number;
+}
+
+/** GET /api/documents?q=... 的搜索响应。 */
+export interface KnowledgeSearchResponse {
+  readonly ok: boolean;
+  readonly query: string;
+  readonly hits: readonly KnowledgeSearchHit[];
+  readonly mode: KnowledgeRetrievalMode;
+  readonly fallbackReason: string | null;
+  readonly rerankUsed: boolean;
+}
+
 export interface DocumentSummaryDto {
   readonly id: string;
   readonly name: string;
@@ -1190,6 +1430,10 @@ export interface DocumentHitDto {
   readonly chunkIndex: number;
   readonly text: string;
   readonly score: number;
+  /** 命中的来源：字面、语义，或两者都命中。 */
+  readonly retrieval?: KnowledgeHitRetrieval;
+  readonly semanticScore?: number;
+  readonly rerankScore?: number;
 }
 
 export interface DocumentsResponse {
@@ -1197,9 +1441,187 @@ export interface DocumentsResponse {
   readonly documents?: readonly DocumentSummaryDto[];
   readonly hits?: readonly DocumentHitDto[];
   readonly query?: string;
+  /** 搜索响应里的检索模式与降级信息；列表响应没有。 */
+  readonly mode?: KnowledgeRetrievalMode;
+  readonly fallbackReason?: string | null;
+  readonly rerankUsed?: boolean;
+}
+
+export interface DocumentIngestResponse {
+  readonly ok: boolean;
+  readonly document: DocumentSummaryDto;
+  readonly duplicate: boolean;
+  /** 文档已入库、但知识库索引更新失败时的提示。 */
+  readonly indexWarning?: string;
 }
 
 export interface DocumentDetailResponse {
   readonly ok: boolean;
   readonly document: DocumentDetailDto;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 用户定时任务（GET/POST /api/tasks，PATCH/DELETE /api/tasks/:id）
+//
+// ★ 与设置里的「自动化」内置任务不是同一套数据：
+//   这里只放用户自己建的提醒与工作，内置任务仍由 /api/schedules 管理。
+// ═══════════════════════════════════════════════════════════
+
+export type TaskKind = 'reminder' | 'work';
+export type TaskRepeat = 'once' | 'daily' | 'weekly';
+export type TaskStatus = 'active' | 'paused' | 'completed';
+export type TaskPermission = 'read-only' | 'workspace' | 'full';
+export type TaskLastOutcome = 'succeeded' | 'failed' | 'skipped';
+
+export interface TaskScheduleView {
+  readonly repeat: TaskRepeat;
+  /** once 使用；绝对毫秒时间戳 */
+  readonly dueAt: number | null;
+  /** daily / weekly 使用，HH:mm */
+  readonly timeOfDay: string | null;
+  /** weekly 使用，0=周日 */
+  readonly weekday: number | null;
+}
+
+export interface TaskModelChoice {
+  readonly profileId: string;
+  readonly modelId: string;
+  readonly label: string;
+}
+
+/** `GET /api/tasks` 的任务投影；`due` 由服务端按当前时间计算。 */
+export interface UserTaskView {
+  readonly id: string;
+  readonly kind: TaskKind;
+  readonly title: string;
+  readonly note: string;
+  readonly schedule: TaskScheduleView;
+  readonly status: TaskStatus;
+  readonly nextRunAt: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly instruction: string | null;
+  readonly workspace: string | null;
+  readonly permission: TaskPermission;
+  readonly model: TaskModelChoice | null;
+  readonly files: readonly string[];
+  readonly snoozeUntil: number | null;
+  readonly completedAt: number | null;
+  readonly lastRunAt: number | null;
+  readonly lastOutcome: TaskLastOutcome | null;
+  readonly lastSummary: string | null;
+  readonly lastError: string | null;
+  readonly due: boolean;
+}
+
+export interface TasksResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly tasks: readonly UserTaskView[];
+}
+
+/**
+ * POST / PATCH 的响应。
+ *
+ * 返回的是任务本身（没有 `due`）；界面写完一律重新拉列表，
+ * 所以这里只当作“写成功了”的凭据，不拿它去拼列表。
+ */
+export interface TaskMutationResponse {
+  readonly ok: boolean;
+  readonly task?: Omit<UserTaskView, 'due'>;
+}
+
+export interface WorkTaskResultView {
+  readonly outcome: 'succeeded' | 'failed';
+  readonly summary: string;
+  readonly error?: string;
+}
+
+/** POST /api/tasks/:id/action 里 `run` 的响应；失败时 ok 为 false 但仍是 200。 */
+export interface TaskRunResponse {
+  readonly ok: boolean;
+  readonly result?: WorkTaskResultView;
+}
+
+/** `/api/model` 的最小投影：只为了给工作挑一个对话模型。 */
+export interface ModelChoiceProfileView {
+  readonly id: string;
+  readonly name: string;
+  readonly models: readonly {
+    readonly id: string;
+    readonly kind: 'chat' | 'embedding' | 'rerank';
+  }[];
+  readonly hasKey: boolean;
+  readonly requiresKey?: boolean;
+}
+
+export interface ModelChoicesResponse {
+  readonly ok: boolean;
+  readonly profiles: readonly ModelChoiceProfileView[];
+}
+
+// ═══════════════════════════════════════════════════════════
+// 桌面宠物（GET / PUT /api/pet/config，GET /api/pet/status，
+//           POST /api/pet/start）
+//
+// 设置页读写这些偏好，并可通过固定的服务端接口启动 / 重新打开
+// 桌宠进程；但不会结束进程 —— 退出仍由桌宠右键菜单或托盘完成。
+// 进程状态只信 PID 文件 + 进程存活，不看“设置页点过按钮”。
+// ═══════════════════════════════════════════════════════════
+
+export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
+
+/** 桌宠用的模型；null = 跟随主界面当前对话模型。 */
+export interface PetModelChoice {
+  readonly profileId: string;
+  readonly modelId: string;
+  readonly label: string;
+}
+
+export interface PetConfigView {
+  readonly version: 1;
+  /** 配置存在，不代表进程正在运行。 */
+  readonly enabled: boolean;
+  /** 第一版只记录偏好，由启动器接入。 */
+  readonly autoStart: boolean;
+  /** 显示高度，120–480。 */
+  readonly size: number;
+  readonly sprite: string;
+  readonly alwaysOnTop: boolean;
+  readonly model: PetModelChoice | null;
+  readonly thinkingLevel: PetThinkingLevel;
+  /** 空字符串 = 默认管家；前端不回填默认提示词。 */
+  readonly persona: string;
+  readonly updatedAt: number;
+}
+
+export interface PetAssetView {
+  readonly id: string;
+  readonly label: string;
+  readonly url: string;
+}
+
+export interface PetConfigResponse {
+  readonly ok: boolean;
+  readonly config: PetConfigView;
+  readonly assets: readonly PetAssetView[];
+}
+
+/** 桌宠进程状态；`pid` 为 null 表示没有存活的进程。 */
+export interface PetRuntimeView {
+  readonly running: boolean;
+  readonly pid: number | null;
+  readonly script: string;
+}
+
+/** GET /api/pet/status：状态读取失败时走 HTTP 500 + `{ error }`。 */
+export interface PetStatusResponse extends PetRuntimeView {
+  readonly ok: boolean;
+}
+
+/** POST /api/pet/start：`alreadyRunning` 为 true 时不会产生第二个实例。 */
+export interface PetStartResponse {
+  readonly ok: boolean;
+  readonly alreadyRunning: boolean;
+  readonly status: PetRuntimeView;
 }

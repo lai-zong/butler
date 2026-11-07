@@ -152,8 +152,28 @@ BUTLER_NO_OPEN=1 pnpm dev
 - `openai`：OpenAI 兼容端点，当前只承诺**非流式主模型**。
 - `ollama`：本地 OpenAI 兼容端点，当前只承诺**非流式主模型**；默认 `qwen3.5:4b`，可用 `OLLAMA_MODEL` 覆盖。
 
-设置页已提供 provider 切换面板：未配置项禁用、先验证后切换、切换前确认并重建运行时。
-后端 `/api/model` 支持状态、真实验证与切换。
+模型接入页只管理连接与模型目录，不再显示“当前正在使用哪个角色”。具体模型在功能页选择：
+
+- 对话模型：输入框右下角按会话选择；
+- 记忆抽取 / 记忆语义嵌入 / 记忆召回重排：记忆页 →「模型设置」；
+- 知识库检索模式 / 知识库嵌入 / 知识库本地重排：设置 → 知识库 →「检索设置」。
+
+记忆和知识库各自保存角色绑定与索引，不共享同一套向量空间。后端 `/api/model` 继续提供连接、验证和记忆角色操作；知识库单独使用 `/api/knowledge/retrieval`。
+
+模型接入会同时列出随程序提供的本地模型（BGE 嵌入、bge-reranker 重排），它们是只读本地资产，不需要 Base URL 或 Key。外部重排目前是 OpenAI 兼容 LLM 精排，不是专用 rerank HTTP 协议；知识库重排固定使用本地 cross-encoder。
+
+### 知识库检索
+
+知识库使用独立检索域：
+
+```text
+字面检索：DocumentStore 的分词匹配
+语义检索：本地 bge-base-zh-v1.5 / 远程嵌入配置
+混合检索：字面优先，语义补足（默认）
+可选重排：本地 bge-reranker-base cross-encoder
+```
+
+默认采用混合检索，理由是评测中它比纯字面和纯语义更稳；纯语义与字面模式仍可在知识库「检索设置」中切换。索引持久化在 `.butler-data/knowledge-index.json`，与记忆语义缓存分开。
 
 ### 评测（手工运行）
 
@@ -162,6 +182,7 @@ pnpm eval:recall:dev        # 记忆召回 dev（40 正例 + 10 负例）
 pnpm eval:recall:test       # 记忆召回 held-out test（20 + 10）
 pnpm eval:extraction        # 事实抽取 50 条
 pnpm eval:documents         # 文档检索 30 条
+pnpm eval:knowledge         # 知识库字面/语义/混合 100 条查询
 pnpm eval:documents:qa      # 文档端到端 QA 30 条（真实模型 + 引用）
 pnpm bench:events 100000    # 事件 JSONL 基准
 ```

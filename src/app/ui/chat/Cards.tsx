@@ -141,10 +141,8 @@ export function ContractCard({ contract }: { readonly contract: ContractView }):
 
 export function VerdictCard({
   verdict,
-  onOpenAudit,
 }: {
   readonly verdict: VerdictDto;
-  readonly onOpenAudit?: (() => void) | undefined;
 }): JSX.Element {
   const rejected = verdict.outcome === 'rejected';
   const [open, setOpen] = useState(rejected);
@@ -233,12 +231,6 @@ export function VerdictCard({
               )}
             </span>
             {verdict.artifactIds.length > 0 && <span>{verdict.artifactIds.length} 个产出物</span>}
-            {onOpenAudit !== undefined && (
-              <button type="button" className="text-btn" onClick={onOpenAudit}>
-                查看依据
-                <Icon name="chevronRight" size={13} />
-              </button>
-            )}
           </div>
         </div>
       </Collapse>
@@ -422,40 +414,34 @@ export function MemoryRefs({ refs }: { readonly refs: readonly MemoryRef[] }): J
 // 本轮依据
 // ═══════════════════════════════════════════════════════════
 
-export function AuditStrip({
+export function EvidenceStrip({
   range,
   audit,
-  onOpen,
 }: {
   readonly range: { readonly fromSeq: number; readonly toSeq: number };
   readonly audit: TurnAudit | null;
-  readonly onOpen: () => void;
 }): JSX.Element {
   const recalls = audit?.recalls.reduce((n, r) => n + r.count, 0) ?? 0;
   const injections = audit?.injections.length ?? 0;
   const blocked = audit?.hardChecks.length ?? 0;
 
   return (
-    <div className={`audit-strip ${audit === null ? 'is-loading' : ''}`}>
-      <span className="audit-strip-label">
-        <Icon name="audit" size={13} /> 本轮依据
+    <div className={`trace-strip ${audit === null ? 'is-loading' : ''}`}>
+      <span className="trace-strip-label">
+        <Icon name="history" size={13} /> 本轮依据
       </span>
       {audit === null ? (
-        <span className="audit-strip-muted">正在读取事件…</span>
+        <span className="trace-strip-muted">正在读取事件…</span>
       ) : (
-        <span className="audit-strip-facts">
+        <span className="trace-strip-facts">
           <span>召回 {recalls}</span>
           <span>注入 {injections}</span>
           {blocked > 0 && <span className="is-danger">拦截 {blocked}</span>}
         </span>
       )}
-      <span className="audit-strip-range mono">
+      <span className="trace-strip-range mono">
         seq {range.fromSeq}–{range.toSeq}
       </span>
-      <button type="button" className="text-btn" onClick={onOpen}>
-        展开
-        <Icon name="chevronRight" size={13} />
-      </button>
     </div>
   );
 }

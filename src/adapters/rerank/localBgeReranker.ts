@@ -66,11 +66,25 @@ export class LocalBgeReranker implements RerankScorer {
     query: string,
     candidates: readonly ScoredMemory[],
   ): Promise<ReadonlyMap<string, number>> {
-    const { tokenizer, model } = await this.load();
+    const scores = await this.scoreTexts(
+      query,
+      candidates.map((candidate) => candidate.memory.content),
+    );
     const out = new Map<string, number>();
-    for (const candidate of candidates) {
+    for (let i = 0; i < candidates.length; i += 1) {
+      const score = scores[i];
+      if (score !== undefined) out.set(candidates[i]!.memory.id, score);
+    }
+    return out;
+  }
+
+  /** 文档知识库使用：只对 query × 文本逐对打分，不需要 MemoryEntry。 */
+  async scoreTexts(query: string, texts: readonly string[]): Promise<readonly number[]> {
+    const { tokenizer, model } = await this.load();
+    const out: number[] = [];
+    for (const text of texts) {
       const inputs = tokenizer(query, {
-        text_pair: candidate.memory.content,
+        text_pair: text,
         padding: true,
         truncation: true,
       });
@@ -78,7 +92,7 @@ export class LocalBgeReranker implements RerankScorer {
       const logits = result.logits.tolist();
       const first = Array.isArray(logits) ? logits[0] : undefined;
       const value = Array.isArray(first) ? first[0] : first;
-      if (typeof value === 'number') out.set(candidate.memory.id, sigmoid(value));
+      out.push(typeof value === 'number' ? sigmoid(value) : 0);
     }
     return out;
   }

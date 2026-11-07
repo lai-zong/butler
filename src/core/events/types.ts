@@ -176,6 +176,10 @@ export type EventType =
   | 'checkpoint.created'
   | 'session.rollback'
   | 'schedule.triggered'
+  | 'user-task.run'
+  | 'user-task.completed'
+  | 'user-task.snoozed'
+  | 'user-task.updated'
   | 'session.forked'
   /** 会话选择的模型；随事件重放，保证刷新后仍能恢复 */
   | 'session.model'
@@ -354,6 +358,10 @@ export const EVENT_FAMILIES = {
     'checkpoint.created',
     'session.rollback',
     'schedule.triggered',
+    'user-task.run',
+    'user-task.completed',
+    'user-task.snoozed',
+    'user-task.updated',
     'session.forked',
     'session.model',
     'session.cancelled',

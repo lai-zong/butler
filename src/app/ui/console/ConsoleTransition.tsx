@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 进入控制台的转场 —— 从暖纸工作台“接管”到深色治理终端
+ * 进入控制台的转场 —— 从暖纸工作台进入深色治理终端
  *
  * ★ 进度由 ButlerApp 计算（真实阶段）后传入，组件本身不跑计时器：
  *   · 首次打开：完整内容层 + 真实进度（0.18 → 0.8 → 1）；
@@ -44,11 +44,9 @@ export function ConsoleTransition({
       {!quick && (
         <div className="ct-content">
           <header className="ct-top">
-            <span className="ct-brand">
+            <span className="ct-brand" aria-hidden="true">
               <Icon name="console" size={14} />
-              CONTROL SURFACE
             </span>
-            <span className="ct-code mono">02 / GOVERNANCE</span>
           </header>
 
           <div className="ct-center">
@@ -56,22 +54,20 @@ export function ConsoleTransition({
               <Icon name="console" size={22} />
               <span />
             </div>
-            <p className="ct-kicker mono">MODE SHIFT</p>
-            <h2>接管治理视图</h2>
-            <p className="ct-sub">从工作台切换到本地控制终端</p>
+            <h2>正在进入控制台</h2>
 
             <div className="ct-readouts mono">
               <span>
-                LINK LOCAL <b>OK</b>
+                本地运行时 <b>已连接</b>
               </span>
               <span>
-                MEMORY <b>{progress >= 0.8 ? 'SYNC' : 'WAIT'}</b>
+                记忆库 <b>{progress >= 0.8 ? '已载入' : '读取中'}</b>
               </span>
               <span>
-                AUDIT <b>{progress >= 0.8 ? 'READY' : 'WAIT'}</b>
+                事件审计 <b>{progress >= 0.8 ? '已就绪' : '同步中'}</b>
               </span>
               <span>
-                EVOLUTION <b>{progress >= 1 ? 'LIVE' : 'WAIT'}</b>
+                演化引擎 <b>{progress >= 1 ? '已就绪' : '准备中'}</b>
               </span>
             </div>
 
@@ -92,11 +88,6 @@ export function ConsoleTransition({
               <span style={{ width: `${Math.max(2, pct)}%` }} />
             </div>
           </div>
-
-          <footer className="ct-bottom">
-            <span className="mono">LOCAL NODE / 127.0.0.1</span>
-            <span className="mono">BUTLER · TERMINAL 02</span>
-          </footer>
         </div>
       )}
     </div>

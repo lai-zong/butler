@@ -42,6 +42,13 @@ export interface ToolFrameworkOptions {
   readonly fuse?: Partial<ToolFuseOptions>;
   /** 审计回调（界面展示"本次会话做了哪些操作"用） */
   readonly onAudit?: (audit: ToolAudit) => void;
+  /**
+   * 可选的路径守卫；用于用户任务的工作区权限。
+   *
+   * 返回 null 放行，返回字符串则拒绝并作为错误原因。
+   * 这里只限制文件类动作；完整权限不传。
+   */
+  readonly pathGuard?: (toolName: string, args: unknown) => string | null;
 }
 
 export class ToolFramework {
@@ -50,6 +57,7 @@ export class ToolFramework {
   private readonly clock: ClockPort;
   private readonly policy: PermissionPolicy;
   private readonly onAudit: ((a: ToolAudit) => void) | undefined;
+  private readonly pathGuard: ((toolName: string, args: unknown) => string | null) | undefined;
   private readonly fuse: ToolFuse;
 
   /** 全量审计记录。事件日志是真相源，这里是便于查询的视图。 */
@@ -60,6 +68,7 @@ export class ToolFramework {
     this.clock = opts.clock;
     this.policy = opts.policy;
     this.onAudit = opts.onAudit;
+    this.pathGuard = opts.pathGuard;
     this.fuse = new ToolFuse(opts.fuse);
   }
 
@@ -157,6 +166,22 @@ export class ToolFramework {
       });
       this.emitDenied(args.toolName, args.taskId, 'unknown_tool');
       throw new ToolError(`未知工具：${args.toolName}`, 'unknown_tool');
+    }
+
+    const guardError = this.pathGuard?.(spec.name, args.args) ?? null;
+    if (guardError !== null) {
+      this.finishAudit({
+        toolName: spec.name,
+        tier: spec.tier,
+        taskId: args.taskId,
+        argsSummary: redactArgs(args.args),
+        authorization: 'deny',
+        outcome: 'denied',
+        started,
+        outputSummary: guardError,
+      });
+      this.emitDenied(spec.name, args.taskId, 'user_denied');
+      throw new ToolError(guardError, 'user_denied');
     }
 
     // ① 分级是否已被用户开启

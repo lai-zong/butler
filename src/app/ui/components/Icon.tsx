@@ -18,6 +18,9 @@ export type IconName =
   | 'growth'
   | 'settings'
   | 'plus'
+  | 'minus'
+  | 'target'
+  | 'orbit'
   | 'search'
   | 'close'
   | 'chevronDown'
@@ -109,6 +112,21 @@ const ICONS: Record<IconName, ReactNode> = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
+  target: (
+    <>
+      <circle cx="12" cy="12" r="6.6" />
+      <path d="M12 2.8v3.2M12 18v3.2M2.8 12H6M18 12h3.2" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    </>
+  ),
+  orbit: (
+    <>
+      <circle cx="12" cy="12" r="3.1" />
+      <ellipse cx="12" cy="12" rx="9" ry="4.2" transform="rotate(-28 12 12)" />
+      <circle cx="19.2" cy="7.5" r="1.2" fill="currentColor" stroke="none" />
+    </>
+  ),
   mic: (
     <>
       <rect x="9" y="3.5" width="6" height="11" rx="3" />

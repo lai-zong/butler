@@ -5,13 +5,11 @@ import './styles/base.css';
 import './styles/boot.css';
 import './styles/shell.css';
 import './styles/chat.css';
-import './styles/memory.css';
-import './styles/memoryGraph.css';
-import './styles/diary.css';
-import './styles/audit.css';
-import './styles/growth.css';
 import './styles/settings.css';
+import './styles/tasks.css';
 import './styles/console.css';
+import './styles/memory.css';
+import './styles/changes.css';
 
 export const metadata: Metadata = {
   title: 'butler · 记忆治理',
@@ -42,3 +40,4 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
     </html>
   );
 }
+

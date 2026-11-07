@@ -69,6 +69,10 @@ export interface RunTurnArgs {
   readonly sessionId: string;
   readonly userText: string;
   /**
+   * 桌宠/调用方附加的人格说明；只追加在 BUTLER_SYSTEM 后，不覆盖不变量。
+   */
+  readonly persona?: string;
+  /**
    * 本轮附带的图片（**只在当前这一轮有效**）。
    *
    * ★ 不进历史、不进事件、不写长期记忆 —— 见 `ButlerRunArgs.images` 的说明。
@@ -529,6 +533,9 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     clock: args.clock,
     sessionId,
     userGoal: userText,
+    ...(args.persona !== undefined && args.persona.trim().length > 0
+      ? { persona: args.persona.trim() }
+      : {}),
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
     // ★ 本轮询问通道（C6）：需要确认的动作会真的停下来问

@@ -43,14 +43,33 @@ export interface ApprovalAsker {
  *   而答复来自**另一个 HTTP 请求**（`POST /api/approval`）。
  *   两者不在同一个闭包里，只能靠一张按 id 查找的表接上。
  *
+ * ⚠️ 不能只写成模块级 `const PENDING`：
+ *    Next.js 会把 `/api/chat` 和 `/api/approval` 编成不同的路由 chunk，
+ *    同一个模块可能在两个 chunk 里各有一份模块状态。
+ *    实测结果是：chat 路由挂起的 id 在 approval 路由里查不到，
+ *    页面点“拒绝”收到 409，而工具侧一直等到 120 秒超时。
+ *
+ *    所以登记表必须落在**进程级 globalThis** 上，而不是模块闭包里。
+ *
  * ⚠️ 每个条目**必定**在 `settle` 里被删除（答复/超时/流断三条路都走它），
  *    否则会随会话数量增长而泄漏。
  */
-const PENDING = new Map<string, (allow: boolean) => void>();
+interface ApprovalGlobal {
+  __butlerPendingApprovals?: Map<string, (allow: boolean) => void>;
+}
+
+function pendingMap(): Map<string, (allow: boolean) => void> {
+  const scope = globalThis as typeof globalThis & ApprovalGlobal;
+  const existing = scope.__butlerPendingApprovals;
+  if (existing !== undefined) return existing;
+  const created = new Map<string, (allow: boolean) => void>();
+  scope.__butlerPendingApprovals = created;
+  return created;
+}
 
 /** 供 `POST /api/approval` 调用：把用户答复送回等待中的那一轮 */
 export function resolveApproval(id: string, allow: boolean): boolean {
-  const settle = PENDING.get(id);
+  const settle = pendingMap().get(id);
   if (settle === undefined) return false;
   settle(allow);
   return true;
@@ -58,7 +77,7 @@ export function resolveApproval(id: string, allow: boolean): boolean {
 
 /** 当前挂着多少个确认（诊断/测试用） */
 export function pendingApprovalCount(): number {
-  return PENDING.size;
+  return pendingMap().size;
 }
 
 export interface SseApprovalsOptions {
@@ -94,7 +113,7 @@ export class SseApprovals implements ApprovalAsker {
       const settle = (allow: boolean): void => {
         if (settled) return;
         settled = true;
-        PENDING.delete(id);
+        pendingMap().delete(id);
         clearTimeout(timer);
         resolve(allow);
       };
@@ -102,7 +121,7 @@ export class SseApprovals implements ApprovalAsker {
       // ① 超时即拒绝（fail-closed）——用户不响应 ≠ 同意
       const timer = setTimeout(() => settle(false), this.timeoutMs);
 
-      PENDING.set(id, settle);
+      pendingMap().set(id, settle);
 
       // ② 推给调用方。推送本身出错也必须收敛成"拒绝"，不能让 Promise 永远挂着。
       try {
@@ -121,8 +140,9 @@ export class SseApprovals implements ApprovalAsker {
  *   不这么做的话，工具循环会一直等到超时（最长 2 分钟）。
  */
 export function denyAllPending(): number {
-  const count = PENDING.size;
-  for (const [, settle] of PENDING) settle(false);
-  PENDING.clear();
+  const pending = pendingMap();
+  const count = pending.size;
+  for (const [, settle] of pending) settle(false);
+  pending.clear();
   return count;
 }
