@@ -17,6 +17,10 @@ export const SESSION_DISPLAY_FILE = 'session-display.json';
 export interface SessionDisplay {
   readonly title?: string;
   readonly titleGeneratedAt?: number;
+  /** 第一条用户消息的 hash；用于识别旧标题是否基于当前输入生成。 */
+  readonly titleInputHash?: string;
+  /** true = 用户手动重命名，自动生成不得覆盖。 */
+  readonly titleManual?: boolean;
   readonly pinnedAt?: number | null;
   readonly pinnedWorkspace?: string | null;
 }
@@ -48,6 +52,10 @@ async function readAll(dir: string): Promise<Record<string, SessionDisplay>> {
       const titleGeneratedAt = typeof v['titleGeneratedAt'] === 'number'
         ? v['titleGeneratedAt']
         : undefined;
+      const titleInputHash = typeof v['titleInputHash'] === 'string'
+        ? v['titleInputHash'].slice(0, 80)
+        : undefined;
+      const titleManual = v['titleManual'] === true;
       const pinnedAt = typeof v['pinnedAt'] === 'number' ? v['pinnedAt'] : null;
       const pinnedWorkspace = typeof v['pinnedWorkspace'] === 'string'
         ? v['pinnedWorkspace']
@@ -55,6 +63,8 @@ async function readAll(dir: string): Promise<Record<string, SessionDisplay>> {
       out[id] = {
         ...(title !== undefined ? { title } : {}),
         ...(titleGeneratedAt !== undefined ? { titleGeneratedAt } : {}),
+        ...(titleInputHash !== undefined ? { titleInputHash } : {}),
+        ...(titleManual ? { titleManual: true } : {}),
         ...(pinnedAt !== null ? { pinnedAt } : { pinnedAt: null }),
         ...(pinnedWorkspace !== null ? { pinnedWorkspace } : { pinnedWorkspace: null }),
       };

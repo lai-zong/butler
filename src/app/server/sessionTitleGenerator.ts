@@ -9,7 +9,6 @@ import { msg, type ModelPort } from '@/core/ports/model.js';
 
 export interface TitleSource {
   readonly userText: string;
-  readonly assistantText: string;
 }
 
 function cleanTitle(raw: string): string | null {
@@ -25,8 +24,7 @@ export async function generateSessionTitle(
   source: TitleSource,
 ): Promise<string | null> {
   if (model === null) return null;
-  const userText = source.userText.replace(/\s+/g, ' ').trim().slice(0, 1200);
-  const assistantText = source.assistantText.replace(/\s+/g, ' ').trim().slice(0, 1600);
+  const userText = source.userText.replace(/\s+/g, ' ').trim().slice(0, 2000);
   if (userText.length === 0) return null;
 
   try {
@@ -39,14 +37,12 @@ export async function generateSessionTitle(
         msg.system(
           [
             '你是一个会话命名器。',
-            '根据第一轮对话，生成一个 6 到 16 个汉字的短标题，概括用户真正想做的事。',
+            '根据用户的第一句话，生成一个 6 到 16 个汉字的短标题，概括用户真正想做的事。',
             '不要引号、句号、感叹号，不要复述整句话，不要写“用户询问”之类的前缀。',
             '只输出标题本身，不要解释。',
           ].join('\n'),
         ),
-        msg.user(
-          `用户：${userText}\n\n管家：${assistantText.length > 0 ? assistantText : '（还没有答复）'}`,
-        ),
+        msg.user(`用户的第一句话：${userText}`),
       ],
     });
     if (result.finishReason !== 'stop' && result.finishReason !== 'length') return null;
