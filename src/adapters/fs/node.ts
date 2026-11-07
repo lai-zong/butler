@@ -10,7 +10,7 @@
 
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 import {
   DEFAULT_MAX_READ_BYTES,
@@ -79,15 +79,49 @@ export class NodeFileSystem implements FileSystemPort {
    *
    * ⚠️ 判据是**解析后的绝对路径前缀**，不是字符串匹配 ——
    *    否则 `./x/../.butler-data/events.jsonl` 这类写法就能绕过。
+   *
+   * ★ 同时比较 realpath：工作区里的符号链接如果指向 `.butler-data`，
+   *   只做字面 resolve 是挡不住的。
    */
-  private checkProtected(path: string): void {
+  private async checkProtected(path: string): Promise<void> {
     const abs = this.resolve(path);
-    for (const p of this.protectedAbs) {
-      if (abs === p || abs.startsWith(p + sep)) {
-        throw new FileSystemError(
-          `路径受保护，拒绝访问：${path}（这是系统内部数据，不属于工作区）`,
-          'PERMISSION',
-        );
+    const candidates = new Set<string>([abs]);
+    try {
+      candidates.add(await fs.realpath(abs));
+    } catch {
+      /**
+       * 目标还不存在（例如新建文件）：解析**父目录**的 realpath。
+       * 否则「工作区里的符号链接目录 → .butler-data」可以绕过写保护。
+       */
+      try {
+        const realParent = await fs.realpath(dirname(abs));
+        candidates.add(resolve(realParent, basename(abs)));
+      } catch {
+        // 父目录也不存在：只比较字面值
+      }
+    }
+    const normalize = (p: string): string =>
+      process.platform === 'win32' ? p.toLowerCase() : p;
+    for (const protectedPath of this.protectedAbs) {
+      const forms = new Set<string>([normalize(protectedPath)]);
+      try {
+        forms.add(normalize(await fs.realpath(protectedPath)));
+      } catch {
+        // 受保护路径不存在时保留字面值
+      }
+      for (const form of forms) {
+        for (const candidate of candidates) {
+          const normalizedCandidate = normalize(candidate);
+          if (
+            normalizedCandidate === form ||
+            normalizedCandidate.startsWith(form + sep)
+          ) {
+            throw new FileSystemError(
+              `路径受保护，拒绝访问：${path}（这是系统内部数据，不属于工作区）`,
+              'PERMISSION',
+            );
+          }
+        }
       }
     }
   }
@@ -102,7 +136,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async stat(path: string): Promise<FileStat> {
-    this.checkProtected(path);
+    await this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const st = await fs.stat(abs);
@@ -118,7 +152,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async readText(path: string, maxBytes = DEFAULT_MAX_READ_BYTES): Promise<string> {
-    this.checkProtected(path);
+    await this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const st = await fs.stat(abs);
@@ -139,7 +173,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async writeText(path: string, content: string): Promise<number> {
-    this.checkProtected(path);
+    await this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       // 上级目录不存在时自动创建 —— 这是用户期待的默认行为
@@ -152,7 +186,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async listDir(path: string): Promise<readonly DirEntry[]> {
-    this.checkProtected(path);
+    await this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const names = await fs.readdir(abs);
@@ -179,7 +213,7 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async mkdir(path: string): Promise<void> {
-    this.checkProtected(path);
+    await this.checkProtected(path);
     try {
       await fs.mkdir(this.resolve(path), { recursive: true });
     } catch (err) {
@@ -194,7 +228,7 @@ export class NodeFileSystem implements FileSystemPort {
    *    目录非空且未声明递归时**拒绝**，而不是默默删掉。
    */
   async remove(path: string, options?: { readonly recursive?: boolean }): Promise<void> {
-    this.checkProtected(path);
+    await this.checkProtected(path);
     const abs = this.resolve(path);
     try {
       const st = await fs.stat(abs);
@@ -217,6 +251,9 @@ export class NodeFileSystem implements FileSystemPort {
   }
 
   async move(from: string, to: string): Promise<void> {
+    // ★ 移动是双向的：既不能从受保护路径搬走，也不能把东西搬进受保护路径。
+    await this.checkProtected(from);
+    await this.checkProtected(to);
     const fromAbs = this.resolve(from);
     const toAbs = this.resolve(to);
     try {

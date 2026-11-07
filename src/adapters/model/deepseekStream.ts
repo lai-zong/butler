@@ -19,6 +19,7 @@ import type { ModelUsage } from '../../core/ports/model.js';
 import type { ModelStreamChunk, ModelStreamPort, StreamCall } from '../../core/ports/stream.js';
 import type { DeepSeekConfig } from './deepseek.js';
 import { applyThinking, capabilitiesOf } from './deepseek.js';
+import { applyReasoningPlan } from './reasoning.js';
 import { toApiMessages } from './convert.js';
 
 /** 官方文档给的 finish_reason 取值。 */
@@ -168,7 +169,8 @@ export class DeepSeekStream implements ModelStreamPort {
      *   流式这边 `max_tokens` 给得更宽（叙述 2000 / 执行 3072），
      *   而且**思考本身就是产品要展示的内容**。
      */
-    applyThinking(body, call, 'enabled');
+    if (call.reasoning !== undefined) applyReasoningPlan(body, call.reasoning);
+    else applyThinking(body, call, 'enabled');
 
     const controller = new AbortController();
     const onAbort = (): void => controller.abort();

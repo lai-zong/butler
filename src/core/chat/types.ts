@@ -19,6 +19,21 @@ import type { ClockPort } from '../ports/clock.js';
 import type { DomainId } from '../execution/types.js';
 import { parseAgentTrace, parseExecutionReports } from './parse.js';
 import type { TaskContract } from '../butler/contract.js';
+import type { ReasoningLevel } from '../model/reasoning.js';
+import { isReasoningLevel } from '../model/reasoning.js';
+import {
+  DEFAULT_MEMORY_MODE,
+  DEFAULT_REASONING,
+  isSessionMemoryMode,
+  isSessionPermission,
+  normalizePersona,
+  normalizeSessionWorkspace,
+  sessionSettingsHash,
+  sessionSettingsOf,
+  shortHash,
+  type SessionMemoryMode,
+  type SessionPermission,
+} from './settings.js';
 
 // ═══════════════════════════════════════════════════════════
 // 消息
@@ -379,6 +394,33 @@ export interface ChatSession {
   /** 当前会话选定的模型；未选择时由最近使用模型解析。 */
   readonly modelProfileId?: string;
   readonly modelId?: string;
+  /**
+   * 对话人格（每个 session 一份，不是请求级临时字段）。
+   *
+   * ⚠️ 可选是为了兼容旧事件 replay —— 旧 session 没有这个字段，
+   *    `sessionSettingsOf()` 会补空字符串。
+   */
+  readonly persona?: string;
+  /** 思考强度：统一四档；旧 session 缺省按 high 补齐。 */
+  readonly reasoning?: ReasoningLevel;
+  /** 记忆注入开关：会话级 on/off；旧 session 缺省按 on 补齐。 */
+  readonly memoryMode?: SessionMemoryMode;
+  /**
+   * 该对话的工具根目录。
+   *
+   * · `null` = 使用应用默认工作区；
+   * · 旧 session 没有这个字段（`undefined`），读取时按 null 处理；
+   * · 只有 app 层校验通过（绝对路径、真实存在、是目录、非受保护目录）后，
+   *   才会写进这里。
+   */
+  readonly workspace?: string | null;
+  /**
+   * 该对话的工具权限档位。
+   *
+   * · `null` = 跟随应用当前默认权限；
+   * · 旧 session 没有这个字段时按 null 处理。
+   */
+  readonly permission?: SessionPermission | null;
 }
 
 /** 界面一次读到的完整状态。 */
@@ -438,6 +480,13 @@ export class SessionStore {
       createdAt: now,
       updatedAt: now,
       turnCount: 0,
+      // ★ 新对话默认值（用户确认过的）：
+      //   persona 空、reasoning high、memory on、工作区/权限跟随应用。
+      persona: '',
+      reasoning: DEFAULT_REASONING,
+      memoryMode: DEFAULT_MEMORY_MODE,
+      workspace: null,
+      permission: null,
     };
     this.sessions.set(session.id, session);
     this.messages.set(session.id, []);
@@ -478,7 +527,88 @@ export class SessionStore {
     return next;
   }
 
-  /** 取最近一个会话；没有则新建。 */
+  /**
+   * 更新会话级设置（persona / reasoning / memoryMode / workspace / permission）。
+   *
+   * ★ 事件只记摘要（hash / 长度），**不写人格正文**。
+   *   人格正文留在 session 状态里；app 层另有 sidecar（session-settings.json）
+   *   负责跨重启保留，事件流只承担审计。
+   *
+   * ★ workspace / permission 必须进事件：重启后会话状态靠 `session.settings`
+   *   事件重放，sidecar 只补人格正文。路径校验与 realpath 归一由 app 层完成，
+   *   这里只接受已经校验过的值。
+   *
+   * ⚠️ 这个方法是**下一轮生效**的：当前正在跑的那一轮已经拿走了
+   *   `TurnSettings` 快照，不会再读这里。
+   */
+  setSessionSettings(
+    sessionId: string,
+    patch: {
+      readonly persona?: string | undefined;
+      readonly reasoning?: ReasoningLevel | undefined;
+      readonly memoryMode?: SessionMemoryMode | undefined;
+      readonly workspace?: string | null | undefined;
+      readonly permission?: SessionPermission | null | undefined;
+    },
+  ): ChatSession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return undefined;
+    const current = sessionSettingsOf(session);
+    const nextWorkspace =
+      'workspace' in patch
+        ? normalizeSessionWorkspace(patch.workspace)
+        : current.workspace;
+    const nextPermission =
+      'permission' in patch
+        ? (isSessionPermission(patch.permission) ? patch.permission : null)
+        : current.permission;
+    const nextSettings = {
+      persona: patch.persona !== undefined ? normalizePersona(patch.persona) : current.persona,
+      reasoning: patch.reasoning ?? current.reasoning,
+      memoryMode: patch.memoryMode ?? current.memoryMode,
+      workspace: nextWorkspace,
+      permission: nextPermission,
+    };
+    const now = this.clock.now();
+    const next: ChatSession = {
+      ...session,
+      ...nextSettings,
+      updatedAt: now,
+    };
+    this.sessions.set(sessionId, next);
+
+    this.log.append({
+      type: 'session.settings',
+      actor: 'user',
+      payload: {
+        sessionId,
+        source: 'patch',
+        settingsHash: sessionSettingsHash(nextSettings),
+        personaHash: shortHash(nextSettings.persona),
+        personaLength: nextSettings.persona.length,
+        reasoning: nextSettings.reasoning,
+        memoryMode: nextSettings.memoryMode,
+        workspace: nextSettings.workspace,
+        permission: nextSettings.permission,
+      },
+      createdAt: now,
+    });
+    return next;
+  }
+
+  /**
+   * 从 app 层 sidecar 恢复人格正文（重放注入路径）。
+   * ⚠️ 不发事件 —— 这不是一次用户修改，只是把事件里刻意省略的正文补回来。
+   */
+  restoreSessionPersona(sessionId: string, persona: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return;
+    this.sessions.set(sessionId, {
+      ...session,
+      persona: normalizePersona(persona),
+    });
+  }
+
   latestOrCreate(): ChatSession {
     const all = [...this.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt);
     return all[0] ?? this.createSession();
@@ -734,6 +864,7 @@ export class SessionStore {
 export const SESSION_STATE_EVENTS: readonly string[] = [
   'session.forked',
   'session.model',
+  'session.settings',
   'session.message',
   'session.reply',
   'session.verdict',
@@ -785,6 +916,11 @@ export function replaySessions(
           createdAt: e.createdAt,
           updatedAt: e.createdAt,
           turnCount: 0,
+          persona: '',
+          reasoning: DEFAULT_REASONING,
+          memoryMode: DEFAULT_MEMORY_MODE,
+          workspace: null,
+          permission: null,
         });
       }
       continue;
@@ -804,6 +940,62 @@ export function replaySessions(
           updatedAt: e.createdAt,
         });
       }
+      continue;
+    }
+
+    /**
+     * 会话设置（PATCH 修改 / 每轮快照）。
+     *
+     * ⚠️ 事件里**没有**人格正文，只有 hash/长度；
+     *    正文由 app 层 sidecar（session-settings.json）在启动时补回。
+     *    如果未来某版事件真的带了正文，这里也接受（向后兼容）。
+     */
+    if (e.type === 'session.settings') {
+      if (sessionId === null) continue;
+      /**
+       * `source: 'turn'` 是**每轮审计快照**，不是一次设置修改。
+       *
+       * ⚠️ 不能拿它覆盖 session 状态：桌宠旧请求的 `thinkingLevel`
+       *    只对当轮有效（快照里会记 requested/applied），
+       *    不该在重放时变成会话的持久设置。
+       */
+      if (p['source'] === 'turn') continue;
+      const session = sessions.get(sessionId);
+      if (session === undefined) continue;
+      const reasoning = isReasoningLevel(p['reasoning'])
+        ? p['reasoning']
+        : session.reasoning ?? DEFAULT_REASONING;
+      const memoryMode = isSessionMemoryMode(p['memoryMode'])
+        ? p['memoryMode']
+        : session.memoryMode ?? DEFAULT_MEMORY_MODE;
+      const persona =
+        typeof p['persona'] === 'string'
+          ? normalizePersona(p['persona'])
+          : session.persona ?? '';
+      /**
+       * ★ 工作区 / 权限同样从事件重放。
+       *
+       * ⚠️ 旧事件没有这两个字段：保持会话已有值（forked 默认 null），
+       *    不能因为“缺字段”把用户后来设置的值清掉。
+       *    null 是合法值（跟随应用），因此必须用 `in` 区分“显式 null”与“旧事件没有”。
+       */
+      const workspace =
+        'workspace' in p ? normalizeSessionWorkspace(p['workspace']) : session.workspace ?? null;
+      const permission =
+        'permission' in p
+          ? isSessionPermission(p['permission'])
+            ? p['permission']
+            : null
+          : session.permission ?? null;
+      sessions.set(sessionId, {
+        ...session,
+        reasoning,
+        memoryMode,
+        persona,
+        workspace,
+        permission,
+        updatedAt: e.createdAt,
+      });
       continue;
     }
 
@@ -966,5 +1158,10 @@ function touch(sessions: Map<string, ChatSession>, id: string, at: number): void
       createdAt: at,
       updatedAt: at,
       turnCount: 0,
+      persona: '',
+      reasoning: DEFAULT_REASONING,
+      memoryMode: DEFAULT_MEMORY_MODE,
+      workspace: null,
+      permission: null,
     });
 }

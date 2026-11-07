@@ -11,6 +11,7 @@
  */
 
 import type { ZodType } from 'zod';
+import type { ReasoningPlan } from '../model/reasoning.js';
 
 // ═══════════════════════════════════════════════════════════
 // 会话消息
@@ -171,6 +172,18 @@ export interface ModelCall {
    * ⚠️ 官方映射：`minimal`/`low` → low · `medium`/`high` → high · `max`/`ultra` → max
    */
   readonly reasoningEffort?: 'low' | 'high' | 'max';
+  /**
+   * 会话级四档的**已映射计划**。
+   *
+   * ★ 与上面的 `thinking` / `reasoningEffort` 的分工：
+   *   · 内部结构化调用（契约 / 监督 / 提取…）继续用上面两个字段，
+   *     它们只关心“开/关”；
+   *   · 面向用户的执行/叙述用这个 plan，里面已经包含
+   *     供应商字段、实际生效档位与回退原因。
+   *
+   * ⚠️ 适配器必须**优先**使用 plan；没有 plan 时才回退到旧字段。
+   */
+  readonly reasoning?: ReasoningPlan;
 }
 
 /**

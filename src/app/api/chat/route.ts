@@ -23,8 +23,20 @@
 import type { NextRequest } from 'next/server';
 
 import { DATA_DIR, getRuntime } from '@/app/runtime';
+import { trackActiveTurn } from '@/app/server/activeTurns.js';
+import { createChatToolScope } from '@/app/server/chatToolScope.js';
+import { getKnowledgeService } from '@/app/server/knowledge.js';
+import { dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import { supervisionConfig } from '@/core/config/env.js';
 import { runTurn } from '@/core/chat/service.js';
+import type { ToolFramework } from '@/core/tools/framework.js';
+import {
+  createTurnSettings,
+  turnSettingsEventPayload,
+  type TurnMemoryMode,
+} from '@/core/chat/settings.js';
+import { detectReasoningProvider, type ReasoningProvider } from '@/core/model/reasoning.js';
+import { loadGlobalAgents } from '@/app/server/globalAgents.js';
 import { denyAllPending, SseApprovals } from '@/core/tools/approval.js';
 import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
 import { DeepSeekModel } from '@/adapters/model/deepseek.js';
@@ -34,7 +46,6 @@ import { deepSeekTranslationPort } from '@/adapters/model/translation.js';
 import {
   loadProfileStore,
   resolveProfileModel,
-  saveProfileStore,
 } from '@/app/server/modelProfiles.js';
 import type { ProgressEvent } from '@/core/runtime/orchestrator.js';
 
@@ -50,6 +61,13 @@ interface ChatBody {
   readonly modelId?: string;
   /** 桌宠设置里的附加人格；只追加在管家不变量之后。 */
   readonly persona?: string;
+  /**
+   * 旧桌宠的思考档位（`default|low|medium|high`）。
+   *
+   * ★ 只做兼容：新 Web 用会话级 `reasoning`，不发送这个字段。
+   *   映射见 `core/chat/settings.ts`（default / medium → high）。
+   */
+  readonly thinkingLevel?: unknown;
   /**
    * 调用方是否**能处理确认请求**（`{ type:'approval' }` 事件 + POST 答复）。
    *
@@ -105,23 +123,60 @@ export async function POST(req: NextRequest): Promise<Response> {
   let model = rt.model;
   let streamModel = rt.streamModel;
   let translator = rt.translator;
+  /**
+   * 推理强度映射需要的供应商信息。
+   *
+   * ★ 只在这里**推断一次**，结果是本轮快照的一部分；
+   *   之后适配器/事件都读同一份 plan，不会两边各算一遍。
+   */
+  const baseDescription = rt.model?.describe();
+  let reasoningProvider: ReasoningProvider = detectReasoningProvider({
+    ...(baseDescription !== undefined ? { adapter: baseDescription.provider } : {}),
+    model: baseDescription?.model ?? '',
+  });
+  let reasoningModel = baseDescription?.model ?? '';
 
   const profileStore = await loadProfileStore(DATA_DIR);
-  const requestedProfileId =
-    typeof body.modelProfileId === 'string' && body.modelProfileId.length > 0
-      ? body.modelProfileId
-      : session.modelProfileId;
-  const requestedModelId =
-    typeof body.modelId === 'string' && body.modelId.length > 0
-      ? body.modelId
-      : session.modelId;
-  const fallback = profileStore.lastChat;
-  const selection =
-    requestedProfileId !== undefined && requestedModelId !== undefined
-      ? { profileId: requestedProfileId, modelId: requestedModelId }
-      : fallback;
+  const bodyProfileId =
+    typeof body.modelProfileId === 'string' && body.modelProfileId.trim().length > 0
+      ? body.modelProfileId.trim()
+      : undefined;
+  const bodyModelId =
+    typeof body.modelId === 'string' && body.modelId.trim().length > 0
+      ? body.modelId.trim()
+      : undefined;
+  const bodyHasModel = bodyProfileId !== undefined && bodyModelId !== undefined;
+  const sessionHasModel =
+    typeof session.modelProfileId === 'string' &&
+    session.modelProfileId.trim().length > 0 &&
+    typeof session.modelId === 'string' &&
+    session.modelId.trim().length > 0;
+
+  /**
+   * ★★ 模型也以 session 为权威（与 reasoning 同一规则）。
+   *
+   *   session 有模型 → 只认 session；body 里的模型**不覆盖**、也不回写。
+   *   session 没有模型 → 才用 body 里的旧桌宠模型兜底；
+   *   再没有 → 最近使用模型。
+   *
+   * ⚠️ 不能把 body 模型写回 session：
+   *    否则桌宠旧请求会悄悄改掉 Web 会话选好的模型。
+   *    桌宠右键切模型要 PATCH 对应 session（scripts/petapp）。
+   */
+  const selection: { profileId: string; modelId: string } | null = sessionHasModel
+    ? { profileId: session.modelProfileId.trim(), modelId: session.modelId.trim() }
+    : bodyHasModel
+      ? { profileId: bodyProfileId, modelId: bodyModelId }
+      : profileStore.lastChat;
+  let effectiveModelProfileId: string | undefined;
+  let effectiveModelId: string | undefined;
   if (selection !== null) {
-    const resolved = await resolveProfileModel(DATA_DIR, selection.profileId, selection.modelId, 'chat');
+    const resolved = await resolveProfileModel(
+      DATA_DIR,
+      selection.profileId,
+      selection.modelId,
+      'chat',
+    );
     if (resolved === null) {
       return Response.json(
         { error: '当前选择的对话模型不可用：配置不存在、模型不存在或缺少 API Key。' },
@@ -143,15 +198,14 @@ export async function POST(req: NextRequest): Promise<Response> {
       ? new DeepSeekStream({ ...cfg, model: cfg.model ?? selection.modelId })
       : null;
     translator = deepSeekTranslationPort(model);
-    if (session.modelProfileId !== resolved.profile.id || session.modelId !== resolved.model.id) {
-      rt.bootstrapped.chat.setSessionModel(session.id, resolved.profile.id, resolved.model.id);
-    }
-    if (profileStore.lastChat?.profileId !== resolved.profile.id || profileStore.lastChat?.modelId !== resolved.model.id) {
-      await saveProfileStore(DATA_DIR, {
-        ...profileStore,
-        lastChat: { profileId: resolved.profile.id, modelId: resolved.model.id },
-      });
-    }
+    reasoningProvider = detectReasoningProvider({
+      presetId: resolved.preset.id,
+      adapter: resolved.preset.adapter,
+      model: resolved.model.id,
+    });
+    reasoningModel = resolved.model.id;
+    effectiveModelProfileId = resolved.profile.id;
+    effectiveModelId = resolved.model.id;
   }
 
   if (model === null) {
@@ -162,6 +216,74 @@ export async function POST(req: NextRequest): Promise<Response> {
           '（记忆治理相关功能不依赖模型，仍可使用）',
       },
       { status: 503 },
+    );
+  }
+
+  /**
+   * ★★ 本轮设置快照 —— 只在这里读一次 session。
+   *
+   *   之后执行中 PATCH 只改 session 状态，不会影响这一轮：
+   *   persona / reasoning / memoryMode / 模型都按这里的值走。
+   */
+  const currentSession = rt.bootstrapped.chat.getSession(session.id) ?? session;
+  const globalAgents = await loadGlobalAgents();
+  const envMemoryMode = process.env['BUTLER_MEMORY_MODE'];
+  const memoryModeOverride: TurnMemoryMode | undefined =
+    envMemoryMode === 'shadow' ? 'shadow' : envMemoryMode === 'off' ? 'off' : undefined;
+  const scopeDefaults = scopeDefaultsOf(rt);
+  const turnSettings = createTurnSettings({
+    session: currentSession,
+    requestPersona: typeof body.persona === 'string' ? body.persona : undefined,
+    legacyThinkingLevel: body.thinkingLevel,
+    ...(memoryModeOverride !== undefined ? { memoryModeOverride } : {}),
+    reasoningProvider,
+    model: reasoningModel,
+    ...(effectiveModelProfileId !== undefined ? { effectiveModelProfileId } : {}),
+    ...(effectiveModelId !== undefined ? { effectiveModelId } : {}),
+    globalAgents,
+    defaultWorkspace: scopeDefaults.workspace,
+    defaultPermission: scopeDefaults.permission,
+    capturedAt: rt.clock.now(),
+  });
+
+  /**
+   * ★★ 本会话/本轮的独立工具作用域。
+   *
+   * 不再使用 `rt.tools`：那个框架的 fs root 与权限策略是所有会话共享的，
+   * 并发对话会串工作区/串权限。这里按 `turnSettings` 快照构造一份全新框架：
+   *   · 工作区 = 快照的 effectiveWorkspace；
+   *   · 权限 = 快照的 effectivePermission（不可变策略）；
+   *   · 受保护路径始终含 DATA_DIR 与 `.env.local`。
+   *
+   * ★ 执行中 PATCH 只改 session；本轮已经拿走快照，下一轮才重建作用域。
+   */
+  let chatTools: ToolFramework;
+  try {
+    const scope = await createChatToolScope({
+      log: rt.bootstrapped.log,
+      clock: rt.clock,
+      workspace: turnSettings.effectiveWorkspace,
+      permission: turnSettings.effectivePermission,
+      dataDir: dataDirOf(rt),
+      // config/ 与 .env.local 的受保护根必须跟随应用根，而不是用户工作区；
+      // 否则设置 BUTLER_WORKSPACE 后 config/AGENTS.md 会落到保护区之外。
+      appRoot: process.cwd(),
+      baseTools: rt.tools,
+      documentSearch: {
+        search: async (query, limit) =>
+          (await getKnowledgeService().search(query, limit)).hits,
+      },
+    });
+    chatTools = scope.tools;
+  } catch (err) {
+    return Response.json(
+      {
+        error:
+          '本对话的工作区不可用：' +
+          (err instanceof Error ? err.message : String(err)) +
+          '。请在对话设置里重新选择已存在的目录。',
+      },
+      { status: 400 },
     );
   }
 
@@ -230,6 +352,40 @@ export async function POST(req: NextRequest): Promise<Response> {
        */
       const fromSeq = rt.bootstrapped.log.length + 1;
 
+      /**
+       * ★ 落本轮设置快照事件（审计）。
+       *
+       * ⚠️ 事件里**不写人格正文**，只有 hash / 长度；
+       *   推理强度会记录 requested 与 applied（含回退原因），
+       *   这样验收时能回答“实际发的是哪一档”。
+       */
+      rt.bootstrapped.log.append({
+        type: 'session.settings',
+        actor: 'user',
+        payload: turnSettingsEventPayload(turnSettings),
+        createdAt: rt.clock.now(),
+      });
+      send({
+        type: 'settings',
+        settings: {
+          reasoning: turnSettings.reasoning,
+          reasoningApplied: turnSettings.reasoningPlan.applied,
+          reasoningStyle: turnSettings.reasoningPlan.style,
+          memoryMode: turnSettings.memoryMode,
+          workspace: turnSettings.workspace,
+          permission: turnSettings.permission,
+          effectiveWorkspace: turnSettings.effectiveWorkspace,
+          effectivePermission: turnSettings.effectivePermission,
+          personaSource: turnSettings.personaSource,
+          personaLength: turnSettings.personaLength,
+          globalAgents: {
+            hash: turnSettings.globalAgents.hash,
+            length: turnSettings.globalAgents.length,
+            loaded: turnSettings.globalAgents.loaded,
+          },
+        },
+      });
+
       // 本轮开始前的会话累计用量（界面用“累计”= 已完成轮次 + 本轮实时）。
       const priorVerdicts = rt.bootstrapped.chat.verdictsOf(session.id);
       const baseInputTokens = priorVerdicts.reduce(
@@ -243,29 +399,28 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       // 取消事件需要知道“取消在哪一步”；只记阶段名，不记正文/参数。
       let lastStage = 'starting';
+      const endActiveTurn = trackActiveTurn({
+        sessionId: session.id,
+        startedAt: Date.now(),
+        text,
+      });
 
       rt.activeTurns += 1;
       try {
         const result = await runTurn({
           sessionId: session.id,
           userText: text,
-          ...(typeof body.persona === 'string' && body.persona.trim().length > 0
-            ? { persona: body.persona.trim() }
-            : {}),
-    // ★ 本轮图片（只这一次有效，不落历史）
-    ...(images.length > 0 ? { images } : {}),
+          // ★ 本轮设置快照：persona / reasoning / memoryMode / global AGENTS
+          //   全部来自这里，执行中 PATCH 不影响当前轮。
+          settings: turnSettings,
+          // ★ 本轮图片（只这一次有效，不落历史）
+          ...(images.length > 0 ? { images } : {}),
           // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"
           ...(approvals !== undefined ? { asker: approvals } : {}),
           // ★ 监督员触发：默认 manual（用户按需），可用 SUPERVISOR_MODE=auto 回退
           supervisionMode: supervisionConfig.mode,
           reflectionMode: 'dailyDiary',
-          memoryMode:
-            process.env['BUTLER_MEMORY_MODE'] === 'shadow'
-              ? 'shadow'
-              : process.env['BUTLER_MEMORY_MODE'] === 'off'
-                ? 'off'
-                : 'on',
-          userId: session.userId,
+          userId: currentSession.userId,
           model: chatModel,
           ...(rt.rerankModel !== null ? { rerankModel: rt.rerankModel } : {}),
           ...(rt.rerankScorer !== null ? { reranker: rt.rerankScorer } : {}),
@@ -276,8 +431,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           evolution: rt.evolution,
           semantic: rt.semantic,
           chat: rt.bootstrapped.chat,
-          // ★ 装配好的工具框架 —— 不给则仆人不调工具
-          tools: rt.tools,
+          // ★ 本会话/本轮的独立工具作用域 —— 不再用共享的 rt.tools
+          tools: chatTools,
           signal: abort.signal,
           onProgress: (e: ProgressEvent) => {
             lastStage = e.kind === 'stage' ? e.stage : e.kind;
@@ -521,6 +676,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           });
         }
       } finally {
+        endActiveTurn();
         rt.activeTurns = Math.max(0, rt.activeTurns - 1);
         req.signal.removeEventListener('abort', onRequestAbort);
         /**

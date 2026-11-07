@@ -51,6 +51,11 @@ import { buildHistoryMessages, buildDomainHistoryMessages } from './history.js';
 import { planHistory, summarizeOlder, pressureOf, historyBudgetForPressure, olderAfterCoverage } from './compaction.js';
 import { createTraceCollector } from './trace.js';
 import { toExecutionReportData } from './reports.js';
+import {
+  fallbackTurnSettings,
+  type TurnSettings,
+  type TurnMemoryMode,
+} from './settings.js';
 import { artifactToText } from '../execution/render.js';
 import type { ApprovalAsker } from '../tools/approval.js';
 import { parseAttachment } from '../multimodal/parse.js';
@@ -69,7 +74,19 @@ export interface RunTurnArgs {
   readonly sessionId: string;
   readonly userText: string;
   /**
+   * 本轮设置快照（`POST /api/chat` 开始时生成）。
+   *
+   * ★ 一旦传入，本轮**不再读 session 设置**：
+   *   persona / reasoning / memoryMode / globalAgents 全部来自这里。
+   *   执行中 PATCH 只影响下一轮。
+   *
+   * ⚠️ 不传时为老调用方（定时任务、验证脚本）回退：
+   *   用下面的 `persona` / `memoryMode` 构造一份默认快照。
+   */
+  readonly settings?: TurnSettings;
+  /**
    * 桌宠/调用方附加的人格说明；只追加在 BUTLER_SYSTEM 后，不覆盖不变量。
+   * @deprecated 新调用方请用 `settings.persona`；这里只做兼容回退。
    */
   readonly persona?: string;
   /**
@@ -154,6 +171,8 @@ export interface RunTurnResult {
   readonly replyText: string;
   readonly verdict: Verdict;
   readonly session: RunSessionResult;
+  /** 本轮实际使用的设置快照（审计/调试用） */
+  readonly settings: TurnSettings;
   /**
    * 本次反思与入库的结果。
    *
@@ -194,6 +213,20 @@ export interface RunTurnResult {
 export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   throwIfAborted(args.signal);
   const { sessionId, userText, chat } = args;
+
+  /**
+   * ★ 本轮设置快照：
+   *   路由入口已经生成好；老调用方没有时在这里构造一份，
+   *   之后全程只用这个对象，不再读 session。
+   */
+  const settings: TurnSettings =
+    args.settings ??
+    fallbackTurnSettings({
+      sessionId,
+      ...(args.persona !== undefined ? { persona: args.persona } : {}),
+      ...(args.memoryMode !== undefined ? { memoryMode: args.memoryMode } : {}),
+      capturedAt: args.clock.now(),
+    });
 
   // 每轮开始清掉已过期授权，保证审计里有 grant.expired 记录；
   // 真正生效仍由 canRead 的 expiresAt + taskId 双重校验兜底。
@@ -469,7 +502,8 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
 
   // shadow/off 只计算召回，不把记忆注入上下文，也不更新命中适应度。
   // 这就是影子测试与 A/B 的运行时分界。
-  const memoryMode = args.memoryMode ?? 'on';
+  // ★ 会话级 off 已包含在快照里；环境变量 shadow/off 由路由层合并后传进来。
+  const memoryMode: TurnMemoryMode = settings.memoryMode;
   const injected = memoryMode === 'on' ? recalled : [];
 
   // 召回即命中：记录 fitness 与唤醒（休眠/归档记忆被再次命中会回升）。
@@ -509,6 +543,8 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           taskId: sessionId,
           userGoal: userText,
           context: narrationContext(args.store, injected, args.userId, args.sessionId),
+          // ★ 完整快照：叙述层不再读 session
+          settings,
           onUpdate: (s) => args.onNarration?.(s),
           ...(args.translatorPort !== undefined ? { translatorPort: args.translatorPort } : {}),
           ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -533,9 +569,8 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     clock: args.clock,
     sessionId,
     userGoal: userText,
-    ...(args.persona !== undefined && args.persona.trim().length > 0
-      ? { persona: args.persona.trim() }
-      : {}),
+    // ★ 完整快照：契约/执行只从这一份读设置
+    settings,
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
     // ★ 本轮询问通道（C6）：需要确认的动作会真的停下来问
@@ -836,6 +871,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     replyText,
     verdict,
     session,
+    settings,
     ...(reflection !== null ? { reflection } : {}),
     ...(narration !== null ? { narration } : {}),
   };

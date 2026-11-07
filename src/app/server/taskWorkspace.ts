@@ -9,11 +9,18 @@
  * 完全权限不挂路径守卫，由模型判断。
  */
 
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { stat } from 'node:fs/promises';
 
 function defaultWorkspaceRoot(): string {
-  return process.env['BUTLER_WORKSPACE'] ?? process.cwd();
+  const root = resolve(process.env['BUTLER_WORKSPACE'] ?? join(process.cwd(), 'workplace'));
+  try {
+    mkdirSync(root, { recursive: true });
+  } catch {
+    // 目录创建失败时交给 assertWorkspaceDirectory 报明确错误。
+  }
+  return root;
 }
 
 const WRITE_PATH_TOOLS: Readonly<Record<string, readonly string[]>> = {

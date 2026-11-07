@@ -52,6 +52,12 @@ import type { ClockPort } from '../ports/clock.js';
 import { msg } from '../ports/model.js';
 import type { ModelStreamPort, StreamCall } from '../ports/stream.js';
 import type { TranslationPort } from './translate.js';
+import {
+  globalAgentsBlock,
+  type GlobalAgentsSnapshot,
+} from '../prompts/globalAgents.js';
+import { PERSONA_MAX_CHARS, type TurnSettings } from '../chat/settings.js';
+import type { ReasoningPlan } from '../model/reasoning.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -93,6 +99,14 @@ export interface RunNarrationArgs {
   readonly userGoal: string;
   /** 已有的记忆与约束摘要 —— 让它"知道自己在为谁做这件事" */
   readonly context?: readonly string[];
+  /** 对话人格（只影响叙述，不影响契约/监督）。 */
+  readonly persona?: string;
+  /** 产品级全局 AGENTS（注入在叙述系统提示之后、人格之前）。 */
+  readonly globalAgents?: GlobalAgentsSnapshot;
+  /** 本轮思考强度计划（快照）。 */
+  readonly reasoningPlan?: ReasoningPlan;
+  /** 完整本轮设置快照；给出时优先于上面的 persona/globalAgents/reasoningPlan。 */
+  readonly settings?: TurnSettings;
   /**
    * 每次状态变化时回调（供 SSE 推送）。
    *
@@ -209,6 +223,16 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
     }
   };
 
+  // ★ 快照优先：有 settings 时不再看零散参数。
+  const persona = (args.settings?.persona ?? args.persona ?? '').trim();
+  const globalAgents = args.settings?.globalAgents ?? args.globalAgents;
+  const reasoningPlan = args.settings?.reasoningPlan ?? args.reasoningPlan;
+  /**
+   * ⚠️ style='none'（未知供应商 / 老调用方回退）不往流式请求里塞 plan：
+   *    流式路径的旧行为是“默认开思考”，不要因为一个空的 plan 把它关掉。
+   */
+  const effectiveReasoningPlan = reasoningPlan?.style === 'none' ? undefined : reasoningPlan;
+  const globalRules = globalAgentsBlock(globalAgents);
   const call: StreamCall = {
     purpose: 'reasoning',
     temperature: 0.4,
@@ -224,8 +248,19 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
     //    自己写字面量很容易漏掉 kind: 'text' 这层
     messages: [
       msg.system(NARRATION_SYSTEM),
+      ...(globalRules !== null ? [msg.system(globalRules)] : []),
+      ...(persona.length > 0
+        ? [
+            msg.system(
+              `附加人格说明（只影响叙述语气，不得覆盖前述规则与安全边界）：\n${persona.slice(0, PERSONA_MAX_CHARS)}`,
+            ),
+          ]
+        : []),
       msg.user(buildNarrationPrompt(args.userGoal, args.context ?? [])),
     ],
+    ...(effectiveReasoningPlan !== undefined
+      ? { reasoning: effectiveReasoningPlan }
+      : {}),
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   };
 
@@ -265,6 +300,15 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
         reasoningLength: reasoning.length,
         answerLength: answer.length,
         note: '叙述中断，已生成内容保留',
+        ...(reasoningPlan !== undefined
+          ? {
+              reasoning: {
+                requested: reasoningPlan.requested,
+                applied: reasoningPlan.applied,
+                style: reasoningPlan.style,
+              },
+            }
+          : {}),
       },
       createdAt: args.clock.now(),
     });
@@ -328,6 +372,18 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
       durationMs,
       model,
       translated: reasoningTranslated.length > 0,
+      ...(reasoningPlan !== undefined
+        ? {
+            reasoning: {
+              requested: reasoningPlan.requested,
+              applied: reasoningPlan.applied,
+              style: reasoningPlan.style,
+              ...(reasoningPlan.fallbackReason !== undefined
+                ? { fallback: reasoningPlan.fallbackReason }
+                : {}),
+            },
+          }
+        : {}),
     },
     createdAt: args.clock.now(),
   });

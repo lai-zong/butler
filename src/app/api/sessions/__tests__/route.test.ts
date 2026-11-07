@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/app/runtime', () => ({ getRuntime: mocks.getRuntime }));
 
 import { SessionStore } from '@/core/chat/types.js';
-import { POST } from '../route.js';
+import { GET, POST } from '../route.js';
 
 let now = 1_800_000_000_000;
 let chat: SessionStore;
@@ -31,6 +31,47 @@ beforeEach(() => {
       chat,
       log,
     },
+    workspaceRoot: 'C:\\app-default',
+    permissionPolicy: { mode: 'view' },
+  });
+});
+
+describe('GET /api/sessions', () => {
+  it('列表带 workspace/permission/effective* 且旧 session 补 null', async () => {
+    const created = await POST();
+    const createdBody = (await created.json()) as { session: { id: string } };
+    const session = chat.getSession(createdBody.session.id)!;
+    // 新会话默认 null/null
+    expect(session.workspace).toBeNull();
+    expect(session.permission).toBeNull();
+
+    const res = await GET();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      sessions: Array<{
+        workspace: string | null;
+        permission: string | null;
+        effectiveWorkspace: string;
+        effectivePermission: string;
+        settings: {
+          workspace: string | null;
+          permission: string | null;
+          effectiveWorkspace: string;
+          effectivePermission: string;
+        };
+      }>;
+    };
+    expect(body.sessions).toHaveLength(1);
+    const dto = body.sessions[0]!;
+    expect(dto.workspace).toBeNull();
+    expect(dto.permission).toBeNull();
+    expect(dto.effectiveWorkspace).toBe('C:\\app-default');
+    // 全局 mode=view → 只读
+    expect(dto.effectivePermission).toBe('read-only');
+    expect(dto.settings.workspace).toBeNull();
+    expect(dto.settings.permission).toBeNull();
+    expect(dto.settings.effectiveWorkspace).toBe('C:\\app-default');
+    expect(dto.settings.effectivePermission).toBe('read-only');
   });
 });
 

@@ -34,6 +34,7 @@ import type { EventLog } from '../events/log.js';
 import { msg, type ModelMessage, type ModelPort, type ModelToolSpec } from '../ports/model.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { ModelStreamPort } from '../ports/stream.js';
+import type { ReasoningPlan } from '../model/reasoning.js';
 import { throwIfAborted } from '../runtime/abort.js';
 import type { ToolFramework } from './framework.js';
 import type { ToolSpec } from './types.js';
@@ -156,6 +157,7 @@ async function runRoundStreaming(args: {
   readonly messages: readonly ModelMessage[];
   readonly toolSpecs: readonly ModelToolSpec[];
   readonly round: number;
+  readonly reasoningPlan?: ReasoningPlan;
   readonly signal?: AbortSignal;
   readonly onProgress?: (e: AgentProgressEvent) => void;
 }): Promise<RoundOutcome> {
@@ -181,6 +183,7 @@ async function runRoundStreaming(args: {
     messages: args.messages,
     ...(args.toolSpecs.length > 0 ? { tools: args.toolSpecs } : {}),
     temperature: 0.2,
+    ...(args.reasoningPlan !== undefined ? { reasoning: args.reasoningPlan } : {}),
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   })) {
     switch (chunk.kind) {
@@ -344,6 +347,13 @@ export interface AgentLoopOptions {
    */
   readonly streamPort?: ModelStreamPort;
   /**
+   * 本轮思考强度计划（会话设置快照）。
+   *
+   * ⚠️ 只在工具循环这一层透传，不在循环里重新读 session ——
+   *    快照语义必须由调用方保证。
+   */
+  readonly reasoningPlan?: ReasoningPlan;
+  /**
    * 用户停止信号。
    *
    * ⚠️ 只在轮次/工具边界检查，并传给模型流；
@@ -445,6 +455,12 @@ export async function runAgentLoop(
 
     let res: RoundResult;
     const streamPort = opts.streamPort;
+    /**
+     * ⚠️ style='none'（未知供应商 / 老调用方回退）不塞 plan：
+     *    保持“没有明确映射就不改变适配器默认行为”的纪律。
+     */
+    const reasoningPlan =
+      opts.reasoningPlan?.style === 'none' ? undefined : opts.reasoningPlan;
 
     if (streamPort !== undefined) {
       const raw = await runRoundStreaming({
@@ -452,6 +468,7 @@ export async function runAgentLoop(
         messages,
         toolSpecs,
         round,
+        ...(reasoningPlan !== undefined ? { reasoningPlan } : {}),
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       });
@@ -472,6 +489,7 @@ export async function runAgentLoop(
         messages,
         ...(toolSpecs.length > 0 ? { tools: toolSpecs } : {}),
         temperature: 0.2,
+        ...(reasoningPlan !== undefined ? { reasoning: reasoningPlan } : {}),
       });
       res = { text: r.text, toolCalls: r.toolCalls, usage: r.usage };
     }

@@ -12,6 +12,14 @@
  */
 
 import type { ChatMessage, ChatSession, Verdict } from '@/core/chat/types.js';
+import {
+  sessionSettingsOf,
+  shortHash,
+  type SessionMemoryMode,
+  type SessionPermission,
+} from '@/core/chat/settings.js';
+import { defaultScopeDefaults, type ScopeDefaults } from './sessionScope.js';
+import type { ReasoningLevel } from '@/core/model/reasoning.js';
 import type { SessionEvent } from '@/core/events/types.js';
 import { EVENT_FAMILIES, isLegacyEventType } from '@/core/events/types.js';
 import type { MemoryEntry, MemoryClass, MemoryKind, MemoryLifecycle } from '@/core/memory/types.js';
@@ -137,6 +145,7 @@ export const EVENT_LABEL: Record<string, string> = {
   'schedule.triggered': '定时任务触发',
   'session.forked': '新建会话',
   'session.model': '选择模型',
+  'session.settings': '会话设置',
   'session.cancelled': '用户取消',
   'session.ended': '会话结束',
   // MCP
@@ -372,6 +381,29 @@ function round3(n: number): number {
 // 会话
 // ═══════════════════════════════════════════════════════════
 
+export interface SessionSettingsDto {
+  readonly reasoning: ReasoningLevel;
+  readonly memoryMode: SessionMemoryMode;
+  readonly hasPersona: boolean;
+  /** 人格正文长度（字符数） */
+  readonly personaLength: number;
+  /** 列表用摘要：前 80 字；没有时为空串 */
+  readonly personaPreview: string;
+  /** 人格正文；列表接口只给预览时是 null，详情接口给全文 */
+  readonly persona: string | null;
+  readonly personaHash: string;
+  /** 会话配置的工作区；null = 跟随应用默认 */
+  readonly workspace: string | null;
+  /** 会话配置的权限；null = 跟随应用默认 */
+  readonly permission: SessionPermission | null;
+  /** 实际使用的工具根目录（配置为 null 时是应用默认） */
+  readonly effectiveWorkspace: string;
+  /** 实际使用的权限档位（配置为 null 时是应用默认映射后的值） */
+  readonly effectivePermission: SessionPermission;
+  readonly modelProfileId?: string;
+  readonly modelId?: string;
+}
+
 export interface SessionDto {
   readonly id: string;
   readonly title: string;
@@ -381,6 +413,11 @@ export interface SessionDto {
   readonly messageCount: number;
   readonly verdictCount: number;
   readonly lastPreview: string;
+  readonly settings: SessionSettingsDto;
+  readonly workspace: string | null;
+  readonly permission: SessionPermission | null;
+  readonly effectiveWorkspace: string;
+  readonly effectivePermission: SessionPermission;
   readonly modelProfileId?: string;
   readonly modelId?: string;
 }
@@ -470,12 +507,26 @@ export function toSessionDto(
   session: ChatSession,
   messages: readonly ChatMessage[],
   verdicts: readonly Verdict[],
+  options: {
+    readonly includePersona?: boolean;
+    /** 应用当前默认作用域；不传时回退到 env / 只读 */
+    readonly scopeDefaults?: ScopeDefaults;
+  } = {},
 ): SessionDto {
   const last = messages[messages.length - 1];
   const preview =
     last !== undefined
       ? last.text.replace(/\s+/g, ' ').trim().slice(0, 90)
       : '';
+  const settings = sessionSettingsOf(session);
+  const personaPreview = settings.persona.replace(/\s+/g, ' ').trim().slice(0, 80);
+  const defaults = options.scopeDefaults ?? defaultScopeDefaults();
+  /**
+   * ★ `effective*` 是界面显示“实际值”的唯一来源。
+   *   会话配置为 null 时显示应用默认；用户不必自己心算当前全局权限。
+   */
+  const effectiveWorkspace = settings.workspace ?? defaults.workspace;
+  const effectivePermission = settings.permission ?? defaults.permission;
   return {
     id: session.id,
     title: sessionTitle(session, messages),
@@ -485,9 +536,43 @@ export function toSessionDto(
     messageCount: messages.length,
     verdictCount: verdicts.length,
     lastPreview: preview,
+    settings: {
+      reasoning: settings.reasoning,
+      memoryMode: settings.memoryMode,
+      hasPersona: settings.persona.trim().length > 0,
+      personaLength: settings.persona.length,
+      personaPreview,
+      persona: options.includePersona === true ? settings.persona : null,
+      personaHash: shortHash(settings.persona),
+      workspace: settings.workspace,
+      permission: settings.permission,
+      effectiveWorkspace,
+      effectivePermission,
+      ...(session.modelProfileId !== undefined
+        ? { modelProfileId: session.modelProfileId }
+        : {}),
+      ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+    },
+    workspace: settings.workspace,
+    permission: settings.permission,
+    effectiveWorkspace,
+    effectivePermission,
     ...(session.modelProfileId !== undefined ? { modelProfileId: session.modelProfileId } : {}),
     ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
   };
+}
+
+/** 详情接口用：带完整人格正文。 */
+export function toSessionDetailDto(
+  session: ChatSession,
+  messages: readonly ChatMessage[],
+  verdicts: readonly Verdict[],
+  scopeDefaults?: ScopeDefaults,
+): SessionDto {
+  return toSessionDto(session, messages, verdicts, {
+    includePersona: true,
+    ...(scopeDefaults !== undefined ? { scopeDefaults } : {}),
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -642,6 +727,27 @@ export function eventSummary(type: string, payload: unknown): string {
       const summary = str(p, 'summary');
       const issues = num(p, 'issueCount');
       return [outcome === 'accepted' ? '通过' : '打回', clip(summary, 80), issues !== null ? `${issues} 个问题` : '']
+        .filter((x) => x.length > 0)
+        .join(' · ');
+    }
+    case 'session.settings': {
+      const source = str(p, 'source');
+      const reasoning = str(p, 'reasoning');
+      const applied = str(p, 'reasoningApplied');
+      const personaLength = num(p, 'personaLength');
+      const memoryMode = str(p, 'memoryMode') === 'off' ? '记忆关' : '记忆开';
+      const reasoningText =
+        reasoning.length > 0
+          ? applied.length > 0 && applied !== reasoning
+            ? `推理 ${reasoning}→${applied}`
+            : `推理 ${applied || reasoning}`
+          : '';
+      return [
+        source === 'turn' ? '本轮设置' : '设置更新',
+        reasoningText,
+        memoryMode,
+        personaLength !== null ? `人格 ${personaLength} 字` : '',
+      ]
         .filter((x) => x.length > 0)
         .join(' · ');
     }

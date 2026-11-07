@@ -43,12 +43,17 @@ export interface ToolFrameworkOptions {
   /** 审计回调（界面展示"本次会话做了哪些操作"用） */
   readonly onAudit?: (audit: ToolAudit) => void;
   /**
-   * 可选的路径守卫；用于用户任务的工作区权限。
+   * 可选的路径守卫；用于会话/用户任务的工作区权限。
    *
    * 返回 null 放行，返回字符串则拒绝并作为错误原因。
+   * 允许返回 Promise：会话作用域需要 `realpath` 才能识别
+   * junction/symlink 逃逸，不能只做同步字面路径判断。
    * 这里只限制文件类动作；完整权限不传。
    */
-  readonly pathGuard?: (toolName: string, args: unknown) => string | null;
+  readonly pathGuard?: (
+    toolName: string,
+    args: unknown,
+  ) => string | null | Promise<string | null>;
 }
 
 export class ToolFramework {
@@ -57,7 +62,9 @@ export class ToolFramework {
   private readonly clock: ClockPort;
   private readonly policy: PermissionPolicy;
   private readonly onAudit: ((a: ToolAudit) => void) | undefined;
-  private readonly pathGuard: ((toolName: string, args: unknown) => string | null) | undefined;
+  private readonly pathGuard:
+    | ((toolName: string, args: unknown) => string | null | Promise<string | null>)
+    | undefined;
   private readonly fuse: ToolFuse;
 
   /** 全量审计记录。事件日志是真相源，这里是便于查询的视图。 */
@@ -168,7 +175,7 @@ export class ToolFramework {
       throw new ToolError(`未知工具：${args.toolName}`, 'unknown_tool');
     }
 
-    const guardError = this.pathGuard?.(spec.name, args.args) ?? null;
+    const guardError = (await this.pathGuard?.(spec.name, args.args)) ?? null;
     if (guardError !== null) {
       this.finishAudit({
         toolName: spec.name,

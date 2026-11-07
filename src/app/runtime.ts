@@ -26,6 +26,7 @@
  */
 
 import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 
 import { JsonlEventStore, loadEvents } from '@/adapters/storage/jsonlEvents.js';
@@ -92,13 +93,17 @@ import {
 } from '@/core/tasks/index.js';
 import { TaskPermissionPolicy } from './server/taskPermission.js';
 import { assertWorkspaceDirectory, workspacePathGuard } from './server/taskWorkspace.js';
+import { loadSessionPersonas } from './server/sessionSettingsStore.js';
 
 // ═══════════════════════════════════════════════════════════
 // 配置
 // ═══════════════════════════════════════════════════════════
 
+/** 程序安装根目录（不是用户工作区）。 */
+export const APP_ROOT = process.cwd();
+
 /** 数据目录（可用环境变量覆盖）。 */
-export const DATA_DIR = process.env['BUTLER_DATA_DIR'] ?? join(process.cwd(), '.butler-data');
+export const DATA_DIR = process.env['BUTLER_DATA_DIR'] ?? join(APP_ROOT, '.butler-data');
 
 /** 事件文件路径。 */
 export function eventsFile(customDir?: string): string {
@@ -116,11 +121,18 @@ export const DEFAULT_USER_ID = process.env['BUTLER_USER_ID'] ?? 'local';
 /**
  * 工具的工作根目录。
  *
- * ⚠️ 这是**应用的启动目录**，不是数据目录 ——
- *    仆人的文件工具在这里读写，而 `.butler-data` 是系统自己的事件流。
- *    让模型能读写自己的事件文件是不必要的风险。
+ * ★ 默认是专门的 `APP_ROOT/workplace`，不是应用启动目录本身。
+ *   否则模型默认能看到 src/、scripts/、config/ 等程序文件。
+ *   `BUTLER_WORKSPACE` 仍可显式覆盖。
+ *
+ * ⚠️ 程序脚本、config/、.env.local 仍挂在 APP_ROOT 下，不能跟着工作区走。
  */
-export const WORKSPACE_ROOT = process.env['BUTLER_WORKSPACE'] ?? process.cwd();
+export const WORKSPACE_ROOT = process.env['BUTLER_WORKSPACE'] ?? join(APP_ROOT, 'workplace');
+try {
+  mkdirSync(WORKSPACE_ROOT, { recursive: true });
+} catch {
+  // 目录创建失败时让后续文件工具报明确错误，不在模块加载阶段崩掉。
+}
 
 // ═══════════════════════════════════════════════════════════
 // 运行时形状
@@ -130,6 +142,10 @@ export interface ButlerRuntime {
   readonly bootstrapped: BootstrapResult;
   readonly clock: SystemClock;
   readonly random: SeededRandom;
+  /** 系统数据目录（与 `DATA_DIR` 同源；供会话工具作用域做受保护路径校验）。 */
+  readonly dataDir: string;
+  /** 应用默认工具工作区（与 `WORKSPACE_ROOT` 同源）。 */
+  readonly workspaceRoot: string;
   /** 主模型（文本 + 结构化 + 工具） */
   readonly model: ModelPort | null;
   /** 固定的记忆模型；不跟随对话模型切换。 */
@@ -276,6 +292,22 @@ async function initRuntime(): Promise<ButlerRuntime> {
   bootstrapped.checkpoints.registerArtifactLabels(
     new Map(bootstrapped.artifacts.all().map((a) => [a.id, a.label])),
   );
+
+  /**
+   * ★ 会话人格正文的 sidecar 恢复。
+   *
+   * 事件里的 `session.settings` 只记 hash/长度（不写正文）；
+   * 正文存在 `.butler-data/session-settings.json`，启动时补回 SessionStore。
+   * 文件缺失/损坏只是“没有人格正文”，不阻断启动。
+   */
+  try {
+    const personas = await loadSessionPersonas(dir);
+    for (const [sessionId, persona] of personas) {
+      bootstrapped.chat.restoreSessionPersona(sessionId, persona);
+    }
+  } catch {
+    // 读不到就按空人格处理 —— 不阻断启动
+  }
 
   /**
    * 记忆演化引擎：生产实例。
@@ -460,7 +492,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
      * ⚠️ 同时保护 `.env.local` —— 那里有 API 密钥。
      *    工具层虽有凭证脱敏，但**不让它读到**比"读到再抹掉"更稳。
      */
-    protectedPaths: [DATA_DIR, join(WORKSPACE_ROOT, '.env.local')],
+    protectedPaths: [DATA_DIR, join(APP_ROOT, '.env.local'), join(APP_ROOT, 'config')],
   });
   tools.registerAll(fileTools(fsPort));
   tools.register(execTool(new NodeExec({ cwdRoot: WORKSPACE_ROOT }), WORKSPACE_ROOT));
@@ -483,7 +515,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
    */
   if (isDesktopPlatform()) {
     const bridge = new PythonDesktopBridge({
-      scriptPath: join(WORKSPACE_ROOT, 'scripts', 'desktop_bridge.py'),
+      scriptPath: join(APP_ROOT, 'scripts', 'desktop_bridge.py'),
     });
     void bridge
       .ping()
@@ -714,7 +746,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
       // 完整权限由用户任务显式选择；工作区权限仍保护程序内部数据目录
       protectedPaths: task.permission === 'full'
         ? []
-        : [DATA_DIR, join(WORKSPACE_ROOT, '.env.local')],
+        : [DATA_DIR, join(APP_ROOT, '.env.local'), join(APP_ROOT, 'config')],
     });
     const taskTools = new ToolFramework({
       log: bootstrapped.log,
@@ -805,6 +837,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
     bootstrapped,
     clock,
     random,
+    dataDir: DATA_DIR,
+    workspaceRoot: WORKSPACE_ROOT,
     model,
     memoryModel,
     rerankModel,

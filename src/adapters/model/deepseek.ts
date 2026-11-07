@@ -9,6 +9,7 @@
 
 import { ModelError } from '../../core/ports/model.js';
 import { toApiMessages, toApiTools } from './convert.js';
+import { applyReasoningPlan } from './reasoning.js';
 import type { ModelCapabilities, ModelDescription } from '../../core/ports/model.js';
 import type {
   ModelCall,
@@ -192,7 +193,8 @@ export class DeepSeekModel implements ModelPort {
     if (call.maxOutputTokens !== undefined) body['max_tokens'] = call.maxOutputTokens;
     const tools = toApiTools(call.tools);
     if (tools) body['tools'] = tools;
-    if (this.thinkingParam) applyThinking(body, call);
+    if (call.reasoning !== undefined) applyReasoningPlan(body, call.reasoning);
+    else if (this.thinkingParam) applyThinking(body, call);
 
     const data = await this.request(body, call.signal);
     const choice = data.choices?.[0];
@@ -282,7 +284,12 @@ export class DeepSeekModel implements ModelPort {
        * 调用方要思考可以显式传 `thinking: 'enabled'`，
        * 但那时应当同时给足 `maxOutputTokens`。
        */
-      if (this.thinkingParam) applyThinking(body, call, 'disabled');
+      /**
+       * ★ 有会话级 plan 时按 plan 发（执行/叙述路径）；
+       *   否则保持“结构化调用默认关思考”的既有纪律。
+       */
+      if (call.reasoning !== undefined) applyReasoningPlan(body, call.reasoning);
+      else if (this.thinkingParam) applyThinking(body, call, 'disabled');
 
       const data = await this.request(body, call.signal);
       const choice = data.choices?.[0];

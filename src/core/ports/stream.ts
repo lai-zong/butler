@@ -16,6 +16,7 @@
  */
 
 import type { ModelMessage, ModelToolSpec, ModelUsage } from './model.js';
+import type { ReasoningPlan } from '../model/reasoning.js';
 
 export interface StreamCall {
   readonly purpose: 'chat' | 'reasoning' | 'execution' | 'reflection';
@@ -33,6 +34,8 @@ export interface StreamCall {
   readonly thinking?: 'enabled' | 'disabled';
   /** 思考强度（官方 `reasoning_effort`），默认 high。 */
   readonly reasoningEffort?: 'low' | 'high' | 'max';
+  /** 会话级四档的已映射计划；适配器优先使用它（见 ModelCall.reasoning）。 */
+  readonly reasoning?: ReasoningPlan;
   /** 用于取消（用户点了"停止"、或切换了会话） */
   readonly signal?: AbortSignal;
 }

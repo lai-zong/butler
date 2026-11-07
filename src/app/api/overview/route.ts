@@ -11,6 +11,7 @@
 import { NextResponse } from 'next/server';
 
 import { DATA_DIR, DEFAULT_USER_ID, getRuntime, WORKSPACE_ROOT, eventsFile } from '@/app/runtime';
+import { scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import {
   computeMemoryStats,
   toEventDto,
@@ -62,6 +63,7 @@ export async function GET(): Promise<NextResponse> {
         s,
         rt.bootstrapped.chat.messagesOf(s.id),
         rt.bootstrapped.chat.verdictsOf(s.id),
+        { scopeDefaults: scopeDefaultsOf(rt) },
       ),
     );
 

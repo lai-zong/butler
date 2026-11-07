@@ -40,6 +40,10 @@ import type { ScoredMemory } from '../memory/recall.js';
 import { inferDomains, type DomainId } from '../domain/types.js';
 import { contractSchema, type TaskContractPlan } from '../prompts/schemas.js';
 import { BUTLER_SYSTEM, contractTask, PROMPT_VERSIONS } from '../prompts/butler.js';
+import {
+  globalAgentsBlock,
+  type GlobalAgentsSnapshot,
+} from '../prompts/globalAgents.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
 
 /** 契约（内部形态，含领域标签）。 */
@@ -106,7 +110,15 @@ export async function writeContract(args: {
   readonly now: number;
   /** 对话历史（供理解跨轮指代，如「那今晚就按你说的做」）*/
   readonly history?: readonly ModelMessage[];
+  /**
+   * 产品级全局 AGENTS（`config/AGENTS.md`）。
+   *
+   * ★ 注入位置：BUTLER_SYSTEM 之后、对话历史之前。
+   *   ⚠️ 契约**不接收**对话人格 —— 人格只影响执行/叙述。
+   */
+  readonly globalAgents?: GlobalAgentsSnapshot;
 }): Promise<WriteContractResult> {
+  const globalRules = globalAgentsBlock(args.globalAgents);
   const result = await args.model.completeStructured({
     purpose: 'planning',
     schema: contractSchema,
@@ -118,6 +130,7 @@ export async function writeContract(args: {
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages: [
       msg.system(BUTLER_SYSTEM),
+      ...(globalRules !== null ? [msg.system(globalRules)] : []),
       ...(args.history ?? []),
       msg.user(
         contractTask({
@@ -196,6 +209,15 @@ export async function writeContract(args: {
       domainsFromHeuristic: fromHeuristic,
       injectedConstraints: constraints.length,
       promptVersion: PROMPT_VERSIONS.contractTask,
+      ...(args.globalAgents !== undefined
+        ? {
+            globalAgents: {
+              hash: args.globalAgents.hash,
+              length: args.globalAgents.length,
+              loaded: args.globalAgents.loaded,
+            },
+          }
+        : {}),
       usage: result.usage,
     },
     createdAt: args.now,

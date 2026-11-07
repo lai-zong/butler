@@ -11,6 +11,7 @@
 import { NextResponse } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
+import { scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import { toSessionDto } from '@/app/server/uiData.js';
 
 export const dynamic = 'force-dynamic';
@@ -19,10 +20,13 @@ export const runtime = 'nodejs';
 export async function GET(): Promise<NextResponse> {
   const rt = await getRuntime();
   const chat = rt.bootstrapped.chat;
+  const scopeDefaults = scopeDefaultsOf(rt);
 
   const sessions = chat
     .listSessions()
-    .map((s) => toSessionDto(s, chat.messagesOf(s.id), chat.verdictsOf(s.id)));
+    .map((s) =>
+      toSessionDto(s, chat.messagesOf(s.id), chat.verdictsOf(s.id), { scopeDefaults }),
+    );
 
   return NextResponse.json({ ok: true, sessions });
 }
@@ -42,6 +46,6 @@ export async function POST(): Promise<NextResponse> {
 
   return NextResponse.json({
     ok: true,
-    session: toSessionDto(session, [], []),
+    session: toSessionDto(session, [], [], { scopeDefaults: scopeDefaultsOf(rt) }),
   });
 }

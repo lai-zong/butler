@@ -183,6 +183,13 @@ export type EventType =
   | 'session.forked'
   /** 会话选择的模型；随事件重放，保证刷新后仍能恢复 */
   | 'session.model'
+  /**
+   * 会话级设置变更 / 每轮设置快照。
+   *
+   * ★ 事件只记摘要（设置 hash、人格长度/hash、推理档位与实际映射），
+   *   **不写人格正文** —— 正文存 session 状态，另有 sidecar 负责跨重启。
+   */
+  | 'session.settings'
   /** 用户主动取消：记录取消阶段、已发生的工具调用/结果数，供回放 */
   | 'session.cancelled'
   | 'session.ended'
@@ -364,6 +371,7 @@ export const EVENT_FAMILIES = {
     'user-task.updated',
     'session.forked',
     'session.model',
+    'session.settings',
     'session.cancelled',
     'session.ended',
   ],

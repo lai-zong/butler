@@ -13,6 +13,9 @@ import { verifyHardConstraints, type HardConstraintReport } from '../butler/hard
 import { supervise, type NormalizedSupervisionOutput, type SupervisionResult } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { domainName } from '../domain/types.js';
+import type { GlobalAgentsSnapshot } from '../prompts/globalAgents.js';
+import type { ReasoningPlan } from '../model/reasoning.js';
+import type { TurnSettings } from '../chat/settings.js';
 import type { ToolFramework } from '../tools/framework.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { EvolutionEngine } from '../memory/evolution.js';
@@ -46,6 +49,23 @@ export interface RunSessionArgs {
    * 管家不变量；桌面端人格不能绕过硬约束。
    */
   readonly persona?: string;
+  /**
+   * 产品级全局 AGENTS（config/AGENTS.md）。
+   * 只进写契约与执行；**不进监督员**。
+   */
+  readonly globalAgents?: GlobalAgentsSnapshot;
+  /**
+   * 本轮思考强度计划（快照）。
+   * 只进执行；写契约与监督员保持“结构化调用关思考”的既有纪律。
+   */
+  readonly reasoningPlan?: ReasoningPlan;
+  /**
+   * 完整的本轮设置快照（路由层生成）。
+   *
+   * ★ 给出时优先于上面的 persona / globalAgents / reasoningPlan ——
+   *   这样“本轮只用一份快照”在每一层都成立，不会出现某层又读到新设置。
+   */
+  readonly settings?: TurnSettings;
   /**
    * 本轮附带的图片（**只在这一轮有效**，不落历史、不进事件）。
    * 见 `ButlerRunArgs.images` 的说明。
@@ -278,6 +298,14 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   const log = args.log ?? new EventLog(args.sessionId);
 
   /**
+   * ★ 本轮快照优先：有 settings 时不再看零散参数。
+   *   零散参数保留给老调用方（验证脚本、定时任务）。
+   */
+  const persona = args.settings?.persona ?? args.persona;
+  const globalAgents = args.settings?.globalAgents ?? args.globalAgents;
+  const reasoningPlan = args.settings?.reasoningPlan ?? args.reasoningPlan;
+
+  /**
    * 进度上报。
    *
    * ⚠️ 必须包 try/catch —— 界面侧的异常**不该拖垮任务**。
@@ -342,6 +370,7 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     recalled: args.recalled,
     now: args.clock.now(),
     ...(args.history !== undefined ? { history: args.history } : {}),
+    ...(globalAgents !== undefined ? { globalAgents } : {}),
   });
   inputTokens += written.usage.inputTokens;
   outputTokens += written.usage.outputTokens;
@@ -453,9 +482,12 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       contract,
       injectedConstraints,
       userGoal: args.userGoal,
-      ...(args.persona !== undefined && args.persona.trim().length > 0
-        ? { persona: args.persona.trim() }
+      ...(persona !== undefined && persona.trim().length > 0
+        ? { persona: persona.trim() }
         : {}),
+      ...(globalAgents !== undefined ? { globalAgents } : {}),
+      ...(reasoningPlan !== undefined ? { reasoningPlan } : {}),
+      ...(args.settings !== undefined ? { settings: args.settings } : {}),
       // ★ 本轮图片透传给管家执行层（模型在那里才真正看到图）
       ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
       // ★ 询问通道（C6）继续往下传

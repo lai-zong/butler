@@ -41,6 +41,12 @@ import {
   type ExecutionReportOutput,
 } from '../prompts/schemas.js';
 import { BUTLER_SYSTEM, butlerExecuteTask, PROMPT_VERSIONS } from '../prompts/butler.js';
+import {
+  globalAgentsBlock,
+  type GlobalAgentsSnapshot,
+} from '../prompts/globalAgents.js';
+import { PERSONA_MAX_CHARS, type TurnSettings } from '../chat/settings.js';
+import type { ReasoningPlan } from '../model/reasoning.js';
 import type { TaskContract } from './contract.js';
 import type { DomainId } from '../domain/types.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
@@ -74,6 +80,12 @@ export interface ButlerRunArgs {
    *    安全边界与硬约束仍由系统提示词和工具闸门决定。
    */
   readonly persona?: string;
+  /** 产品级全局 AGENTS；注入在 BUTLER_SYSTEM 之后、人格之前。 */
+  readonly globalAgents?: GlobalAgentsSnapshot;
+  /** 本轮思考强度计划（面向用户的执行调用使用）。 */
+  readonly reasoningPlan?: ReasoningPlan;
+  /** 完整本轮设置快照；给出时优先于上面的 persona/globalAgents/reasoningPlan。 */
+  readonly settings?: TurnSettings;
   /**
    * 本轮附带的图片（data URL 或 http 链接）。
    *
@@ -152,10 +164,25 @@ export function buildButlerUserMessage(args: {
 
 export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   throwIfAborted(args.signal);
+  /**
+   * ★ 快照优先：有 settings 时不再看零散参数。
+   *   桌面端人格/全局规则/推理强度都必须是“本轮那一份”。
+   */
+  const persona = args.settings?.persona ?? args.persona;
+  const globalAgents = args.settings?.globalAgents ?? args.globalAgents;
+  const reasoningPlan = args.settings?.reasoningPlan ?? args.reasoningPlan;
+  const globalRules = globalAgentsBlock(globalAgents);
   const baseMessages: ModelMessage[] = [
     msg.system(BUTLER_SYSTEM),
-    ...(args.persona !== undefined && args.persona.trim().length > 0
-      ? [msg.system(`附加人格说明（不得覆盖前述安全与不变量）：\n${args.persona.trim().slice(0, 4000)}`)]
+    ...(globalRules !== null ? [msg.system(globalRules)] : []),
+    ...(persona !== undefined && persona.trim().length > 0
+      ? [
+          msg.system(
+            `附加人格说明（不得覆盖前述安全与不变量）：\n${persona
+              .trim()
+              .slice(0, PERSONA_MAX_CHARS)}`,
+          ),
+        ]
       : []),
     ...(args.history ?? []),
     buildButlerUserMessage({
@@ -167,8 +194,8 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   ];
 
   const { raw, usage, attempts, memoryWriteBlocked } = args.tools
-    ? await runWithTools(args, baseMessages)
-    : await runSingleShot(args, baseMessages);
+    ? await runWithTools(args, baseMessages, reasoningPlan)
+    : await runSingleShot(args, baseMessages, reasoningPlan);
 
   // ── 归一化：把模型的多种自然写法收敛成领域模型 ──
   // ⚠️ 复用 `schemas.ts` 里现成的实现，不自己重写 ——
@@ -229,6 +256,18 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
       findings: findings.length,
       uncertainties: report.uncertainties.length,
       domains: args.contract.domains,
+      ...(reasoningPlan !== undefined
+        ? {
+            reasoning: {
+              requested: reasoningPlan.requested,
+              applied: reasoningPlan.applied,
+              style: reasoningPlan.style,
+              ...(reasoningPlan.fallbackReason !== undefined
+                ? { fallback: reasoningPlan.fallbackReason }
+                : {}),
+            },
+          }
+        : {}),
       usage,
     },
     createdAt: args.now,
@@ -286,13 +325,21 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
 async function runSingleShot(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
+  reasoningPlan: ReasoningPlan | undefined,
 ): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number; memoryWriteBlocked: boolean }> {
   throwIfAborted(args.signal);
   const result = await args.model.completeStructured({
     purpose: 'execution',
     schema: executionReportSchema,
     schemaName: 'ExecutionReport',
-    thinking: 'disabled',
+    /**
+     * ⚠️ `style: 'none'` 表示“不知道该发什么”（未知供应商 / 老调用方回退）。
+     *    结构化调用仍按既有纪律**显式关思考**，防止 JSON 被思考吃掉预算；
+     *    真正支持的供应商（DeepSeek/GLM/MiMo）才用 plan。
+     */
+    ...(reasoningPlan !== undefined && reasoningPlan.style !== 'none'
+      ? { reasoning: reasoningPlan }
+      : { thinking: 'disabled' as const }),
     temperature: 0.2,
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     messages,
@@ -304,6 +351,7 @@ async function runSingleShot(
 async function runWithTools(
   args: ButlerRunArgs,
   messages: readonly ModelMessage[],
+  reasoningPlan: ReasoningPlan | undefined,
 ): Promise<{ raw: ExecutionReportOutput; usage: ButlerRunResult['usage']; attempts: number; memoryWriteBlocked: boolean }> {
   const tools = args.tools;
   if (!tools) throw new Error('runWithTools 需要 tools');
@@ -333,6 +381,7 @@ async function runWithTools(
        */
       toolFilter: (t) => t.name === 'submit_report' || t.tier !== 'dangerous',
       terminalTool: 'submit_report',
+      ...(reasoningPlan !== undefined ? { reasoningPlan } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
       ...(args.onAgentProgress !== undefined ? { onProgress: args.onAgentProgress } : {}),
