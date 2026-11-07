@@ -840,9 +840,9 @@ class BoardView:
                 outline=COLOR['accent_line'], width=t.px(2), tags=('voice',),
             )
         draw.icon_mic(
-            c, mx, cy, t.px(15),
+            c, mx, cy, t.px(16),
             COLOR['accent_ink'] if listening else COLOR['ink_2'],
-            width=t.px(1.35), tag='voice',
+            width=t.px(1.5), tag='voice',
         )
 
         sx = self.W - self.body_pad - r

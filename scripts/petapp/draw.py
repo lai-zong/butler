@@ -18,6 +18,8 @@ from typing import Iterable
 
 import tkinter.font as tkfont
 
+from PIL import Image, ImageColor, ImageDraw, ImageTk
+
 # 不能出现在行首的标点
 _NO_LINE_START = set('，。、；：！？）》」』】…·%,.;:!?)]}')
 # 不能出现在行尾的标点
@@ -217,45 +219,85 @@ def icon_file(canvas, cx: float, cy: float, size: float, color: str, width: floa
         )
 
 
-def icon_mic(canvas, cx: float, cy: float, size: float, color: str, width: float = 1.4, tag: str = '') -> None:
-    """线性麦克风：与 Web 的 mic 图标同一套 24×24 几何。
+def _mic_photo(canvas, size: float, color: str, width: float) -> ImageTk.PhotoImage:
+    """把 Web 的 24×24 麦克风图标离屏画成抗锯齿位图。
 
-    Web 图标路径（viewBox 24×24）：
-      rect x=9 y=3.5 w=6 h=11 rx=3
-      M5.5 11.5a6.5 6.5 0 0 0 13 0
-      M12 18v3
-      M8.5 21h7
+    Tk Canvas 的 line/arc 没有抗锯齿；直接画在 15px 上会出现台阶。
+    这里按 8 倍超采样绘制，再用 LANCZOS 缩到目标尺寸，最后作为
+    透明 PhotoImage 贴回 canvas。
     """
-    u = size / 24.0
+    scale = 8
+    side = max(8, int(round(size * scale)))
+    image = Image.new('RGBA', (side, side), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    rgb = ImageColor.getrgb(color)
+    ink = (*rgb, 255)
+    stroke = max(1, int(round(width * scale)))
+    u = side / 24.0
 
-    def px(value: float) -> float:
-        return cx + (value - 12.0) * u
+    def xy(value: float) -> float:
+        return value * u
 
-    def py(value: float) -> float:
-        return cy + (value - 12.0) * u
+    # 胶囊：rect(9,3.5,15,14.5, rx=3)，PIL 的 width 是内缩描边。
+    draw.rounded_rectangle(
+        (xy(9.0), xy(3.5), xy(15.0), xy(14.5)),
+        radius=xy(3.0),
+        outline=ink,
+        width=stroke,
+    )
 
-    # 胶囊：x 9..15, y 3.5..14.5, r 3（Tk 的圆角多边形用椭圆四角拼）。
-    canvas.create_polygon(
-        rounded_points(
-            px(9.0), py(3.5), px(15.0), py(14.5),
-            3.0 * u, 3.0 * u, 3.0 * u, 3.0 * u,
-        ),
-        fill='', outline=color, width=width, tags=(tag, 'icon'),
+    # 托架：PIL 角度 0=东、顺时针增加；0..180 是下半圆。
+    draw.arc(
+        (xy(5.5), xy(5.0), xy(18.5), xy(18.0)),
+        start=0,
+        end=180,
+        fill=ink,
+        width=stroke,
     )
-    # 托架：左端 5.5,11.5 到右端 18.5,11.5 的下半圆。
-    canvas.create_arc(
-        px(5.5), py(5.0), px(18.5), py(18.0),
-        start=180, extent=180, style='arc', outline=color, width=width,
-        tags=(tag, 'icon'),
+    # arc 没有圆头，补两端圆帽。
+    cap = stroke / 2.0
+    for cap_x in (5.5, 18.5):
+        draw.ellipse(
+            (xy(cap_x) - cap, xy(11.5) - cap, xy(cap_x) + cap, xy(11.5) + cap),
+            fill=ink,
+        )
+
+    # 支杆 + 底座。
+    draw.line(
+        (xy(12.0), xy(18.0), xy(12.0), xy(21.0)),
+        fill=ink,
+        width=stroke,
     )
-    canvas.create_line(
-        px(12.0), py(18.0), px(12.0), py(21.0),
-        fill=color, width=width, capstyle='round', tags=(tag, 'icon'),
+    draw.line(
+        (xy(8.5), xy(21.0), xy(15.5), xy(21.0)),
+        fill=ink,
+        width=stroke,
     )
-    canvas.create_line(
-        px(8.5), py(21.0), px(15.5), py(21.0),
-        fill=color, width=width, capstyle='round', tags=(tag, 'icon'),
+    for end_x, end_y in ((12.0, 18.0), (12.0, 21.0), (8.5, 21.0), (15.5, 21.0)):
+        draw.ellipse(
+            (xy(end_x) - cap, xy(end_y) - cap, xy(end_x) + cap, xy(end_y) + cap),
+            fill=ink,
+        )
+
+    target = max(1, int(round(size)))
+    return ImageTk.PhotoImage(
+        image.resize((target, target), Image.Resampling.LANCZOS),
+        master=canvas.winfo_toplevel(),
     )
+
+
+def icon_mic(canvas, cx: float, cy: float, size: float, color: str, width: float = 1.4, tag: str = '') -> None:
+    """线性麦克风：按 Web 的 24×24 几何渲染为抗锯齿透明图片。"""
+    cache = getattr(canvas, '_mic_icon_cache', None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(canvas, '_mic_icon_cache', cache)
+    key = (round(size, 2), round(width, 2), color)
+    photo = cache.get(key)
+    if photo is None:
+        photo = _mic_photo(canvas, size, color, width)
+        cache[key] = photo
+    canvas.create_image(cx, cy, image=photo, anchor='center', tags=(tag, 'icon'))
 
 
 def icon_arrow(canvas, cx: float, cy: float, size: float, color: str, width: float = 1.5, tag: str = '') -> None:
