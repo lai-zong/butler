@@ -238,7 +238,7 @@ def icon_mic(canvas, cx: float, cy: float, size: float, color: str, width: float
     canvas.create_polygon(
         rounded_points(
             px(9.0), py(3.5), px(15.0), py(14.5),
-            3.0 * u, 3.0 * u,
+            3.0 * u, 3.0 * u, 3.0 * u, 3.0 * u,
         ),
         fill='', outline=color, width=width, tags=(tag, 'icon'),
     )
