@@ -30,6 +30,7 @@ import { computeConsoleBootStatus, type ConsoleBootMode } from './console/consol
 import { WebPet } from './pet/WebPet';
 import { errorMessage, fetchJson } from './lib/api.js';
 import { computeBootStatus, type ChatBootState } from './lib/boot.js';
+import { SessionIndexProvider } from './lib/sessionIndex.js';
 import type {
   ConsoleSection,
   MainView,
@@ -109,6 +110,7 @@ export function ButlerApp(): JSX.Element {
   const [surface, setSurface] = useState<Surface>('main');
   const [view, setView] = useState<MainView>('chat');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(true);
   const [consoleSection, setConsoleSection] = useState<ConsoleSection>('memory');
   const [consoleMounted, setConsoleMounted] = useState(false);
   const [consoleMode, setConsoleMode] = useState<ConsoleBootMode>('first');
@@ -191,21 +193,32 @@ export function ButlerApp(): JSX.Element {
   useEffect(() => {
     try {
       setSidebarCollapsed(window.localStorage.getItem('butler.sidebar.collapsed') === '1');
+      setSessionsOpen(window.localStorage.getItem('butler.sidebar.sessionsOpen') !== '0');
     } catch {
-      // 隐私模式/禁用 storage 时忽略，保持展开
+      // 隐私模式/禁用 storage 时忽略，保持默认
+    }
+  }, []);
+
+  const applyCollapsed = useCallback((next: boolean): void => {
+    setSidebarCollapsed(next);
+    try {
+      window.localStorage.setItem('butler.sidebar.collapsed', next ? '1' : '0');
+    } catch {
+      // 忽略写入失败
     }
   }, []);
 
   const toggleSidebar = useCallback((): void => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem('butler.sidebar.collapsed', next ? '1' : '0');
-      } catch {
-        // 忽略写入失败
-      }
-      return next;
-    });
+    applyCollapsed(!sidebarCollapsed);
+  }, [applyCollapsed, sidebarCollapsed]);
+
+  const applySessionsOpen = useCallback((next: boolean): void => {
+    setSessionsOpen(next);
+    try {
+      window.localStorage.setItem('butler.sidebar.sessionsOpen', next ? '1' : '0');
+    } catch {
+      // 忽略写入失败
+    }
   }, []);
 
   const sidebarBeforeReviewRef = useRef<boolean | null>(null);
@@ -459,6 +472,38 @@ export function ButlerApp(): JSX.Element {
     [openConsole, closeConsole],
   );
 
+  /** 从侧栏会话区进对话：只切视图，不额外开新会话。 */
+  const ensureChatView = useCallback((): void => {
+    if (view !== 'chat') closeConsole('chat');
+  }, [closeConsole, view]);
+
+  /**
+   * “对话”导航的点击语义：
+   *   · 不在对话页 → 先过去，并保证列表展开、侧栏不处于收起态；
+   *   · 已在对话页 → 收起/展开列表；若侧栏收起着，先展开（否则列表没空间）。
+   */
+  const handleChatClick = useCallback((): void => {
+    if (view !== 'chat') {
+      closeConsole('chat');
+      if (!sessionsOpen) applySessionsOpen(true);
+      if (sidebarCollapsed) applyCollapsed(false);
+      return;
+    }
+    if (sidebarCollapsed) {
+      applyCollapsed(false);
+      if (!sessionsOpen) applySessionsOpen(true);
+      return;
+    }
+    applySessionsOpen(!sessionsOpen);
+  }, [
+    applyCollapsed,
+    applySessionsOpen,
+    closeConsole,
+    sessionsOpen,
+    sidebarCollapsed,
+    view,
+  ]);
+
   const openMemory = useCallback(
     (target?: MemoryTarget): void => {
       setMemoryPreset((prev) => ({ ...target, nonce: prev.nonce + 1 }));
@@ -483,14 +528,18 @@ export function ButlerApp(): JSX.Element {
    * 无 JS 时由 layout 的 <noscript> 覆盖这条规则，让工作台保持可见。
    */
   return (
-    <>
+    <SessionIndexProvider notify={notify}>
       <div className={`app-shell${hydrated ? '' : ' is-boot-pending'}${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`} ref={appShellRef}>
         <Sidebar
           view={view}
           collapsed={sidebarCollapsed}
+          sessionsOpen={sessionsOpen}
           onNavigate={navigate}
           onOpenConsole={() => openMemory()}
           onToggleCollapse={toggleSidebar}
+          onChatClick={handleChatClick}
+          onCloseSessions={() => applySessionsOpen(false)}
+          onNavigateToChat={ensureChatView}
         />
 
         <main className="app-main" id="view-scroll">
@@ -599,7 +648,7 @@ export function ButlerApp(): JSX.Element {
           onDone={finishBoot}
         />
       )}
-    </>
+    </SessionIndexProvider>
   );
 }
 

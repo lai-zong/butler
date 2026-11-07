@@ -583,6 +583,23 @@ export interface SessionCreateResponse {
   readonly session: SessionSummary;
 }
 
+/** POST /api/sessions/:id/pin：时间模式用 pinnedAt，工作区模式用 pinnedWorkspace。 */
+export interface SessionPinResponse {
+  readonly ok: boolean;
+  readonly pinnedAt: number | null;
+  readonly pinnedWorkspace: string | null;
+}
+
+/**
+ * POST /api/sessions/:id/title：懒生成短标题。
+ * generated=false 表示模型没给出可用标题，界面保留第一句话兜底，不重试。
+ */
+export interface SessionTitleResponse {
+  readonly ok: boolean;
+  readonly generated: boolean;
+  readonly title: string;
+}
+
 // ═══════════════════════════════════════════════════════════
 // 审计
 // ═══════════════════════════════════════════════════════════

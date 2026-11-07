@@ -60,7 +60,8 @@ export type IconName =
   | 'mic'
   | 'volume'
   | 'xCircle'
-  | 'more';
+  | 'more'
+  | 'pin';
 
 const ICONS: Record<IconName, ReactNode> = {
   chat: (
@@ -304,6 +305,16 @@ const ICONS: Record<IconName, ReactNode> = {
       <circle cx="5.5" cy="12" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="18.5" cy="12" r="1.1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  // 实心图钉：置顶行只靠它表示，不用文字标签。
+  pin: (
+    <>
+      <path
+        d="M9.6 3.6h4.8v1.1l-1 1.2v4.1l2.6 2.3v1.2H8V12.3l2.6-2.3V5.9l-1-1.2V3.6Z"
+        fill="currentColor"
+      />
+      <path d="M12 13.5v7" />
     </>
   ),
 };

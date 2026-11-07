@@ -37,8 +37,26 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   padding: 3px 7px 22px;
   text-align: left;
+  transition: opacity 0.16s var(--ease);
+}
+
+/* 品牌区整块是折叠开关：右侧小箭头只在悬停/聚焦时露出来。 */
+.brand-caret {
+  display: grid;
+  place-items: center;
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-4);
+  opacity: 0;
+  transition: opacity 0.16s var(--ease);
+}
+
+.brand:hover .brand-caret,
+.brand:focus-visible .brand-caret {
+  opacity: 0.9;
 }
 
 .brand-mark {
@@ -192,49 +210,314 @@
   height: 18px;
 }
 
-/* 侧栏底部 */
+/* ─────────────────────────────────────────────
+   导航里的“对话”与会话列表
+   ───────────────────────────────────────────── */
 
-.side-foot {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding-top: 12px;
-}
-
-.side-collapse {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 8px 9px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  color: var(--ink-2);
-  text-align: left;
-  transition:
-    background 0.16s var(--ease),
-    border-color 0.16s var(--ease),
-    color 0.16s var(--ease);
-}
-
-.side-collapse:hover {
-  border-color: var(--line);
-  background: rgba(255, 253, 249, 0.8);
-  color: var(--ink);
-}
-
-.side-collapse-icon {
+.nav-chevron {
   display: grid;
   place-items: center;
   flex: none;
+  color: var(--ink-4);
+  transition: transform 0.2s var(--ease);
+}
+
+.nav-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* 设置固定在侧栏底部：列表再长也压不下去。 */
+.side-nav-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.side-sessions {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.side-sessions-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.side-sessions-tab {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 6px;
+  border-radius: 7px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  transition:
+    background 0.16s var(--ease),
+    color 0.16s var(--ease),
+    box-shadow 0.16s var(--ease);
+}
+
+.side-sessions-tab:hover {
+  color: var(--ink-2);
+}
+
+.side-sessions-tab.is-on {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.side-sessions-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-left: 2px;
+  border-radius: 6px;
   color: var(--ink-3);
 }
 
-.side-collapse-text {
-  flex: 1;
-  color: var(--ink-3);
-  font-size: 11px;
+.side-sessions-close:hover {
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+/* 列表独立滚动：品牌区与设置不跟着动。 */
+.side-sessions-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  padding: 2px 2px 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.side-sessions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 工作区模式的组标题；名称是路径末段，悬停给完整路径。 */
+.side-sessions-group-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 8px 3px;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+}
+
+.side-sessions-group-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.side-session {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition:
+    background 0.15s var(--ease),
+    border-color 0.15s var(--ease);
+}
+
+.side-session:hover {
+  background: var(--surface-2);
+}
+
+.side-session.is-active {
+  border-color: var(--line);
+  background: var(--accent-soft);
+}
+
+.side-session-main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 2px 7px 9px;
+  text-align: left;
+}
+
+.side-session-main:focus-visible {
+  outline-offset: -2px;
+}
+
+/* 一行只有标题：时间 / 条数 / 预览 / 人格都不在这里。 */
+.side-session-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-session.is-active .side-session-title {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.side-session-pin {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 17px;
+  color: var(--accent);
+}
+
+.side-session-more {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 3px;
+  border-radius: 6px;
+  color: var(--ink-4);
+  opacity: 0;
+  transition:
+    opacity 0.15s var(--ease),
+    background 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.side-session:hover .side-session-more,
+.side-session.has-menu .side-session-more,
+.side-session-more:focus-visible {
+  opacity: 0.9;
+}
+
+.side-session-more:hover {
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+/* 触屏没有 hover：`···` 必须一直看得见，否则菜单入口等于消失。 */
+@media (hover: none) {
+  .side-session-more {
+    opacity: 0.72;
+  }
+}
+
+.side-session-menu {
+  position: fixed;
+  z-index: 140;
+  width: 152px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  animation: sessionMenuIn 0.16s var(--ease-out) both;
+}
+
+.side-session-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 5px;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.side-session-menu-item:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+@keyframes sessionMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────
+   窄屏：会话列表变成浮层（不挤进图标栏 / 底部导航）
+   ───────────────────────────────────────────── */
+
+.side-sessions-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(35, 33, 28, 0.16);
+}
+
+.side-sessions.is-flyout {
+  position: fixed;
+  top: 12px;
+  bottom: 12px;
+  left: calc(var(--sidebar-w) + 10px);
+  z-index: 91;
+  width: min(320px, calc(100vw - var(--sidebar-w) - 24px));
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  animation: sideSessionsIn 0.18s var(--ease-out) both;
+}
+
+.side-sessions.is-flyout.is-mobile {
+  top: auto;
+  right: 10px;
+  bottom: calc(66px + env(safe-area-inset-bottom));
+  left: 10px;
+  width: auto;
+  max-height: min(62vh, 520px);
+  border-radius: 16px;
+}
+
+.side-sessions.is-flyout .side-sessions-scroll {
+  padding-bottom: 2px;
+}
+
+@keyframes sideSessionsIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* ─────────────────────────────────────────────
@@ -363,8 +646,12 @@
   display: none;
 }
 
+.app-shell.is-sidebar-collapsed .brand-caret {
+  display: none;
+}
+
 .app-shell.is-sidebar-collapsed .side-caption,
-.app-shell.is-sidebar-collapsed .side-collapse-text {
+.app-shell.is-sidebar-collapsed .nav-chevron {
   display: none;
 }
 
@@ -391,16 +678,9 @@
   left: -11px;
 }
 
-.app-shell.is-sidebar-collapsed .side-foot {
+.app-shell.is-sidebar-collapsed .side-nav-bottom {
   align-items: center;
   padding-top: 8px;
-}
-
-.app-shell.is-sidebar-collapsed .side-collapse {
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  padding: 0;
 }
 
 /* ─────────────────────────────────────────────
@@ -462,13 +742,13 @@
     left: -11px;
   }
 
-  .side-foot {
-    align-items: center;
-    padding-top: 8px;
+  .nav-chevron {
+    display: none;
   }
 
-  .side-collapse {
-    display: none;
+  .side-nav-bottom {
+    align-items: center;
+    padding-top: 8px;
   }
 }
 
@@ -519,9 +799,9 @@
     z-index: 80;
   }
 
+  /* 品牌区在底部导航里没有位置；折叠通过窄屏浮层解决，不依赖它。 */
   .brand,
-  .side-caption,
-  .side-foot {
+  .side-caption {
     display: none;
   }
 
@@ -531,6 +811,11 @@
     align-items: center;
     justify-content: space-around;
     gap: 2px;
+  }
+
+  /* 设置不再藏在收起的底栏里：它就是导航里的最后一项。 */
+  .side-nav-bottom {
+    display: contents;
   }
 
   .nav-item {

@@ -20,7 +20,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { Markdown } from '../components/Markdown';
-import { Badge, Collapse, EmptyState, InlineError, Skeleton } from '../components/Common';
+import { Badge, Collapse, InlineError, Skeleton } from '../components/Common';
 import { useAutoResize, useMounted, useNow } from '../lib/hooks.js';
 import { ApiError, errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
 import {
@@ -33,6 +33,8 @@ import {
 } from '../lib/format.js';
 import { applyEvent, asSseEvent, emptyAssistant } from '../lib/chatLive.js';
 import type { ChatBootState } from '../lib/boot.js';
+import { useSessionIndex } from '../lib/sessionIndex.js';
+import { needsGeneratedTitle } from '../lib/sessionSort.js';
 import type {
   AgentTrace,
   AuditResponse,
@@ -49,7 +51,7 @@ import type {
   SessionSettingsPatch,
   SessionSettingsPatchResponse,
   SessionSummary,
-  SessionsResponse,
+  SessionTitleResponse,
   SseEvent,
   ToastMessage,
   VerdictDto,
@@ -65,7 +67,6 @@ import {
 } from './petFocus.js';
 import { SessionControls } from './SessionControls';
 import { SessionSettingsSheet } from './SessionSettingsSheet';
-import { HistorySessionRow } from './HistorySessionRow';
 import {
   DEFAULT_REASONING,
   modelRefOf,
@@ -327,8 +328,19 @@ export function ChatView({
   onBootState,
   onReviewModeChange,
 }: ChatViewProps): JSX.Element {
-  const [sessions, setSessions] = useState<readonly SessionSummary[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  /**
+   * 会话列表 / 当前会话来自共享索引（侧栏与这里同一份真相）。
+   * 这里不再自己维护一份 sessions，避免两侧各自刷新后漂移。
+   */
+  const {
+    sessions,
+    currentId: sessionId,
+    setCurrentId,
+    refresh: refreshSessionIndex,
+    applySummary,
+    patchTitle,
+    registerHandlers,
+  } = useSessionIndex();
   const [messages, setMessages] = useState<readonly MessageDto[]>([]);
   const [cancellations, setCancellations] = useState<readonly SessionCancellationDto[]>([]);
   const [localCancel, setLocalCancel] = useState<SessionCancellationDto | null>(null);
@@ -354,7 +366,6 @@ export function ChatView({
   const [streaming, setStreaming] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [approvals, setApprovals] = useState<readonly ApprovalQueueItem[]>([]);
   const [answering, setAnswering] = useState(false);
   const [listening, setListening] = useState(false);
@@ -392,6 +403,8 @@ export function ChatView({
   const bootRef = useRef(false);
   const loadSeqRef = useRef(0);
   const sessionsRef = useRef<readonly SessionSummary[]>([]);
+  /** 标题懒生成：每个会话在本次页面生命周期里最多请求一次，失败不重试。 */
+  const titleAttemptRef = useRef<Set<string>>(new Set());
   const streamingRef = useRef(false);
   const bootDoneRef = useRef(false);
   const pendingPetFocusRef = useRef<PendingPetFocus | null>(null);
@@ -475,10 +488,6 @@ export function ChatView({
   const canChat = availableChatModels || overview === null || overview.model !== null;
 
   const currentSession = sessions.find((s) => s.id === sessionId);
-  const historySessions = useMemo(
-    () => sessions.filter((s) => s.messageCount > 0),
-    [sessions],
-  );
   const isDraftSession = currentSession !== undefined && currentSession.messageCount === 0;
   const settingsTarget = useMemo(
     () => sessions.find((s) => s.id === settingsTargetId) ?? null,
@@ -500,6 +509,41 @@ export function ChatView({
       setChatModel(lastChatModelRef.current ?? fallbackModelChoice(modelCatalogRef.current));
     }
   }, []);
+
+  /**
+   * 标题懒生成：打开旧会话 / 新会话第一轮结束后各异步调用一次。
+   *
+   * ★ 用 ref 记录已请求过的会话：失败或 generated=false 时保留第一句话兜底，
+   *   绝不循环重试，也不在每次渲染时发请求。
+   * ★ 成功后只补丁当前这一行（标题 + titleGenerated），不整表刷新。
+   */
+  const requestSessionTitle = useCallback(
+    (id: string): void => {
+      if (id.length === 0) return;
+      if (titleAttemptRef.current.has(id)) return;
+      const summary = sessionsRef.current.find((s) => s.id === id);
+      // 列表还没同步到这一条时先不动：等列表更新后 effect 会再触发。
+      if (summary === undefined || !needsGeneratedTitle(summary)) return;
+      titleAttemptRef.current.add(id);
+      void postJson<SessionTitleResponse>(`/api/sessions/${encodeURIComponent(id)}/title`, {})
+        .then((res) => {
+          if (res.generated !== true) return;
+          const title = typeof res.title === 'string' ? res.title.trim() : '';
+          if (title.length > 0) patchTitle(id, title);
+        })
+        .catch(() => {
+          // 失败保留兜底标题；已加入 attempted 集合，不重试。
+        });
+    },
+    [patchTitle],
+  );
+
+  // 打开会话后按需生成一次标题；loadingSession 期间不抢跑。
+  useEffect(() => {
+    if (sessionId === null || loadingSession) return;
+    if (!needsGeneratedTitle(currentSession)) return;
+    requestSessionTitle(sessionId);
+  }, [currentSession, loadingSession, requestSessionTitle, sessionId]);
 
   useEffect(() => {
     if (isDraftSession) writeDraftText(input);
@@ -694,22 +738,15 @@ export function ChatView({
   useAutoResize(textareaRef, input);
 
   const refreshSessions = useCallback(async (): Promise<readonly SessionSummary[] | null> => {
-    try {
-      const res = await fetchJson<SessionsResponse>('/api/sessions');
-      setSessions(res.sessions);
-      sessionsRef.current = res.sessions;
-      // 刷新列表后让 composer 跟上当前会话（保存请求进行中时不覆盖乐观值）。
-      const currentId = sessionIdRef.current;
-      if (currentId !== null && !settingsSavingRef.current) {
-        const current = res.sessions.find((s) => s.id === currentId);
-        if (current !== undefined) syncActiveSettings(current);
-      }
-      return res.sessions;
-    } catch {
-      // 列表刷新失败不打断主流程；首屏错误由 loadSession 呈现
-      return null;
+    const list = await refreshSessionIndex();
+    // 刷新列表后让 composer 跟上当前会话（保存请求进行中时不覆盖乐观值）。
+    const currentId = sessionIdRef.current;
+    if (list !== null && currentId !== null && !settingsSavingRef.current) {
+      const current = list.find((s) => s.id === currentId);
+      if (current !== undefined) syncActiveSettings(current);
     }
-  }, [syncActiveSettings]);
+    return list;
+  }, [refreshSessionIndex, syncActiveSettings]);
 
   const loadSession = useCallback(async (id: string): Promise<{ readonly ok: boolean; readonly error: string | null }> => {
     const token = ++loadSeqRef.current;
@@ -724,7 +761,7 @@ export function ChatView({
     setLocalCancel(null);
     setVerdicts([]);
     setQuizzes([]);
-    setSessionId(id);
+    setCurrentId(id);
     sessionIdRef.current = id;
     setApprovals([]);
     setTurnSettings(null);
@@ -763,6 +800,23 @@ export function ChatView({
       if (token === loadSeqRef.current) setLoadingSession(false);
     }
   }, [syncActiveSettings, updateStreaming]);
+
+  /**
+   * 把“打开会话 / 打开会话设置”注册给侧栏。
+   *
+   * ★ 侧栏只发意图：切会话要清消息、载详情、重置审查状态，只有 ChatView 知道；
+   *   注册句柄让两边共用同一套逻辑，而不是复制一份加载流程。
+   */
+  useEffect(() => {
+    registerHandlers({
+      openSession: (id) => {
+        if (id === sessionIdRef.current) return;
+        void loadSession(id);
+      },
+      openSettings: (id) => setSettingsTargetId(id),
+    });
+    return () => registerHandlers(null);
+  }, [loadSession, registerHandlers]);
 
   /**
    * 应用一次桌宠聚焦请求（只在当前页跳转，不新开窗口）。
@@ -886,8 +940,8 @@ export function ChatView({
     setApprovals([]);
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
-      setSessions((prev) => [res.session, ...prev.filter((s) => s.id !== res.session.id)]);
-      setSessionId(res.session.id);
+      applySummary(res.session);
+      setCurrentId(res.session.id);
       sessionIdRef.current = res.session.id;
       // 新对话默认 high / 记忆 on（由后端会话投影给出，不在前端另写一套）。
       syncActiveSettings(res.session);
@@ -903,7 +957,6 @@ export function ChatView({
       setQuizzes([]);
       setLiveTurns([]);
       setSessionError(null);
-      setHistoryOpen(false);
       setAttachments([]);
       setReviewOpen(false);
       setReviewRange(null);
@@ -920,24 +973,21 @@ export function ChatView({
     } catch (err) {
       notify(errorMessage(err), 'danger');
     }
-  }, [notify, syncActiveSettings, updateStreaming]);
+  }, [applySummary, notify, setCurrentId, syncActiveSettings, updateStreaming]);
 
-  function applyPatchedSession(detail: SessionSummary): void {
-    const summary = sanitizeSessionSummary(detail);
-    setSessions((prev) => {
-      if (prev.some((s) => s.id === summary.id)) {
-        return prev.map((s) => (s.id === summary.id ? summary : s));
-      }
-      return [summary, ...prev];
-    });
-  }
+  const applyPatchedSession = useCallback(
+    (detail: SessionSummary): void => {
+      applySummary(sanitizeSessionSummary(detail));
+    },
+    [applySummary],
+  );
 
   const handleSessionSaved = useCallback(
     (detail: SessionSummary): void => {
       applyPatchedSession(detail);
       if (sessionIdRef.current === detail.id) syncActiveSettings(detail);
     },
-    [syncActiveSettings],
+    [applyPatchedSession, syncActiveSettings],
   );
 
   /**
@@ -1024,19 +1074,18 @@ export function ChatView({
 
     void (async () => {
       try {
-        const res = await fetchJson<SessionsResponse>('/api/sessions');
+        const list = await refreshSessionIndex();
         if (cancelled) return;
-        setSessions(res.sessions);
-        sessionsRef.current = res.sessions;
+        if (list === null) throw new Error('无法读取会话列表');
         // 桌宠点“打开当前对话”时带 ?session=<id>；直接落到那一条会话。
         const requested =
           typeof window !== 'undefined'
             ? new URLSearchParams(window.location.search).get('session')
             : null;
         const requestedSession =
-          requested !== null ? res.sessions.find((s) => s.id === requested) : undefined;
+          requested !== null ? list.find((s) => s.id === requested) : undefined;
         const first =
-          requestedSession ?? res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
+          requestedSession ?? list.find((s) => s.messageCount > 0) ?? list[0];
         if (first !== undefined) {
           onBootState({ state: 'loading', phase: 'session' });
           const outcome = await loadSession(first.id);
@@ -1061,7 +1110,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [drainPetFocus, loadSession, onBootState]);
+  }, [drainPetFocus, loadSession, onBootState, refreshSessionIndex]);
 
   // 数据被替换（导入备份）→ 旧会话 id 已失效，重新读取
   useEffect(() => {
@@ -1073,14 +1122,13 @@ export function ChatView({
       setLiveTurns([]);
       setApprovals([]);
       try {
-        const res = await fetchJson<SessionsResponse>('/api/sessions');
-        setSessions(res.sessions);
-        sessionsRef.current = res.sessions;
-        const first = res.sessions.find((s) => s.messageCount > 0) ?? res.sessions[0];
+        const list = await refreshSessionIndex();
+        if (list === null) throw new Error('无法读取会话列表');
+        const first = list.find((s) => s.messageCount > 0) ?? list[0];
         if (first !== undefined) {
           await loadSession(first.id);
         } else {
-          setSessionId(null);
+          setCurrentId(null);
           sessionIdRef.current = null;
           setMessages([]);
           setCancellations([]);
@@ -1098,7 +1146,7 @@ export function ChatView({
         setSessionError(errorMessage(err));
       }
     })();
-  }, [dataResetNonce, loadSession, updateStreaming]);
+  }, [dataResetNonce, loadSession, refreshSessionIndex, setCurrentId, updateStreaming]);
 
   // 流式执行结束（或被用户停止）后，再应用排队中的桌宠聚焦，避免打断当前轮。
   useEffect(() => {
@@ -1189,9 +1237,9 @@ export function ChatView({
     if (sessionId !== null) return sessionId;
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
-      setSessions((prev) => [res.session, ...prev.filter((s) => s.id !== res.session.id)]);
+      applySummary(res.session);
       sessionIdRef.current = res.session.id;
-      setSessionId(res.session.id);
+      setCurrentId(res.session.id);
       return res.session.id;
     } catch (err) {
       notify(errorMessage(err), 'danger');
@@ -1210,6 +1258,7 @@ export function ChatView({
 
     const outgoing = attachments.map((a) => a.url);
     const sendingDraft = isDraftSession || sessionId === null;
+    const firstTurn = sendingDraft || (currentSession?.turnCount ?? 0) === 0;
     forceScrollRef.current = true;
     atBottomRef.current = true;
     if (sendingDraft) clearDraftText();
@@ -1270,8 +1319,10 @@ export function ChatView({
 
     const handle = (ev: SseEvent): void => {
       if (ev.type === 'session') {
-        setSessionId((current) => (current === ev.sessionId ? current : ev.sessionId));
-        sessionIdRef.current = ev.sessionId;
+        if (sessionIdRef.current !== ev.sessionId) {
+          sessionIdRef.current = ev.sessionId;
+          setCurrentId(ev.sessionId);
+        }
         return;
       }
 
@@ -1391,7 +1442,13 @@ export function ChatView({
       flushQueue();
       if (abortRef.current === controller) abortRef.current = null;
       updateStreaming(false);
-      void refreshSessions();
+      void (async () => {
+        const list = await refreshSessions();
+        // 新会话第一轮结束后异步补一次标题；不阻塞聊天，失败也不重试。
+        if (firstTurn && list !== null && sessionIdRef.current === id) {
+          requestSessionTitle(id);
+        }
+      })();
       onRefreshOverview();
       setApprovals((prev) => prev.filter((a) => a.receivedAt + a.timeoutMs > Date.now()));
     }
@@ -1672,17 +1729,6 @@ export function ChatView({
       </p>
       <header className="chat-head">
         <div className="chat-head-main">
-          <button
-            type="button"
-            className="icon-btn chat-history-btn"
-            onClick={() => {
-              setHistoryOpen(true);
-              void refreshSessions();
-            }}
-            aria-label="打开对话记录"
-          >
-            <Icon name="history" size={18} />
-          </button>
           <div className="chat-head-title">
             <h1 title={derivedTitle}>{derivedTitle}</h1>
             <p>{subtitle}</p>
@@ -1698,9 +1744,6 @@ export function ChatView({
             title={reviewOpen ? '关闭审查' : lastReviewable === null ? '还没有可审查的完成轮次' : '打开审查'}
           >
             <Icon name="eye" size={15} /> 审查
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setHistoryOpen(true); void refreshSessions(); }}>
-            <Icon name="history" size={15} /> 记录
           </button>
           <button type="button" className="btn btn-primary btn-sm" onClick={() => void createNewChat()}>
             <Icon name="plus" size={15} /> 新对话
@@ -2177,44 +2220,7 @@ export function ChatView({
         </div>
       </div>
 
-      <Modal
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        title="对话记录"
-        description="按最近更新排序。切换会话不会删除任何东西。"
-        variant="sheet"
-        footer={
-          <div className="sheet-footer">
-            <span className="sheet-foot-note">共 {formatNumber(historySessions.length)} 段对话</span>
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => void createNewChat()}>
-              <Icon name="plus" size={15} /> 新建对话
-            </button>
-          </div>
-        }
-      >
-        <div className="session-list">
-          {historySessions.length === 0 && (
-            <EmptyState compact icon="history" title="还没有对话" description="第一次开口之后，这里会出现历史。" />
-          )}
-          {historySessions.map((s) => (
-            <HistorySessionRow
-              key={s.id}
-              session={s}
-              active={s.id === sessionId}
-              now={now}
-              onOpen={() => {
-                setHistoryOpen(false);
-                void loadSession(s.id);
-              }}
-              onOpenSettings={() => {
-                setHistoryOpen(false);
-                setSettingsTargetId(s.id);
-              }}
-            />
-          ))}
-        </div>
-      </Modal>
-
+      {/* 历史只在侧栏；这里不再保留抽屉，也不重复加载会话列表。 */}
       <SessionSettingsSheet
         open={settingsTargetId !== null && settingsTarget !== null}
         session={settingsTarget}
