@@ -89,6 +89,14 @@ class PetApp:
         self._session_id = self.state.get('sessionId')
         if not isinstance(self._session_id, str) or not self._session_id:
             self._session_id = None
+        # 桌面和 Web 悬浮桌宠共用服务端固定的宠物会话。
+        # 旧主应用没有这个端点时保持本地 state，不影响启动。
+        if not self.demo:
+            server_session = self.api.pet_session()
+            if server_session:
+                self._session_id = server_session
+                self.state['sessionId'] = server_session
+                save_state(self.paths, self.state)
         self._badge_font: Any = None
         self._photo: ImageTk.PhotoImage | None = None
         self._sprite: Image.Image | None = None

@@ -23,15 +23,18 @@ import { Badge, InlineError, SectionHeading, Skeleton } from '../components/Comm
 import { Switch } from '../components/Switch';
 import { errorMessage, fetchJson } from '../lib/api.js';
 import { formatClock } from '../lib/format.js';
+import { publishPetConfig } from '../pet/usePetConfig.js';
 import type {
   ModelChoicesResponse,
   PetAssetView,
   PetConfigResponse,
   PetConfigView,
+  PetDisplayMode,
   PetModelChoice,
   PetRuntimeView,
   PetStartResponse,
   PetStatusResponse,
+  PetStopResponse,
   PetThinkingLevel,
   ToastMessage,
 } from '../lib/types.js';
@@ -65,6 +68,7 @@ interface SpriteChoice {
 
 interface PetFormState {
   readonly enabled: boolean;
+  readonly displayMode: PetDisplayMode;
   readonly autoStart: boolean;
   readonly size: number;
   readonly sprite: string;
@@ -101,6 +105,7 @@ function sameRuntime(prev: PetRuntimeView | null, next: PetRuntimeView): boolean
 function formFromConfig(config: PetConfigView): PetFormState {
   return {
     enabled: config.enabled,
+    displayMode: config.displayMode,
     autoStart: config.autoStart,
     size: clampSize(config.size),
     sprite: config.sprite,
@@ -167,6 +172,10 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
   const [dirty, setDirty] = useState(false);
   const [brokenSprite, setBrokenSprite] = useState<string | null>(null);
 
+  /** 显示位置是即时生效的独立动作：与“保存偏好”互不覆盖。 */
+  const [modeSaving, setModeSaving] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
+
   const [runtime, setRuntime] = useState<PetRuntimeView | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -184,6 +193,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
   const load = useCallback(async (): Promise<void> => {
     setError(null);
     setSaveError(null);
+    setModeError(null);
     setModelsError(null);
     try {
       const [petRes, modelRes] = await Promise.all([
@@ -281,7 +291,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
   }, [form, models, savedConfig]);
 
   const save = async (): Promise<void> => {
-    if (form === null || saving) return;
+    if (form === null || saving || modeSaving) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -290,6 +300,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           enabled: form.enabled,
+          displayMode: form.displayMode,
           autoStart: form.autoStart,
           size: clampSize(form.size),
           sprite: form.sprite,
@@ -305,6 +316,8 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
       setForm(formFromConfig(res.config));
       setDirty(false);
       setSavedAt(Date.now());
+      // enabled / displayMode 也可能在这一步变化；通知页面里的 WebPet。
+      publishPetConfig(res.config);
       notify('桌宠设置已保存', 'success');
     } catch (err) {
       if (!mountedRef.current) return;
@@ -315,10 +328,82 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
   };
 
   /**
+   * 切换显示位置 —— 立即生效，不等“保存偏好”。
+   *
+   * ★ 切到 Web 前必须先结束桌面进程：
+   *   否则两个界面会同时说话，而用户以为只切了一个显示位置。
+   *   stop 失败/进程仍存活时不写配置，并明确报错 —— 不能假装成功。
+   *
+   * ★ 只 PUT displayMode，不提交表单里其它未保存的修改。
+   */
+  const changeDisplayMode = async (next: PetDisplayMode): Promise<void> => {
+    if (form === null || saving || modeSaving) return;
+    if (form.displayMode === next) return;
+    const previous = form.displayMode;
+    let stoppedDesktop = false;
+    setModeError(null);
+    setStartError(null);
+    setModeSaving(true);
+    setForm((prev) => (prev === null ? prev : { ...prev, displayMode: next }));
+
+    try {
+      if (next === 'web') {
+        const status = await fetchJson<PetStatusResponse>('/api/pet/status');
+        if (!mountedRef.current) return;
+        setRuntime(status);
+        setRuntimeError(null);
+        if (status.running) {
+          const stopped = await fetchJson<PetStopResponse>('/api/pet/stop', { method: 'POST' });
+          if (!mountedRef.current) return;
+          setRuntime(stopped.status);
+          if (stopped.status.running) {
+            throw new Error('桌面桌宠进程没有停下，仍占用显示；请先手动结束后再切换。');
+          }
+          stoppedDesktop = true;
+        }
+      }
+
+      const res = await fetchJson<PetConfigResponse>('/api/pet/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayMode: next }),
+      });
+      if (!mountedRef.current) return;
+      setSavedConfig(res.config);
+      setAssets(res.assets);
+      setForm((prev) =>
+        prev === null ? prev : { ...prev, displayMode: res.config.displayMode },
+      );
+      publishPetConfig(res.config);
+      notify(
+        next === 'web' ? '已切换为 Web 界面显示' : '已切换为桌面显示',
+        'success',
+      );
+      void refreshRuntime();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setForm((prev) => (prev === null ? prev : { ...prev, displayMode: previous }));
+      const message = errorMessage(err);
+      setModeError(
+        stoppedDesktop
+          ? `桌面桌宠已停止，但保存显示位置失败：${message}`
+          : message,
+      );
+    } finally {
+      if (mountedRef.current) setModeSaving(false);
+    }
+  };
+
+  /**
    * 启动由服务端执行固定的 scripts/desktop_pet.py，前端只发一个空 POST。
    * 启动按钮与保存按钮互不依赖：不需要先保存偏好。
    */
   const startPet = async (): Promise<void> => {
+    if (form === null) return;
+    if (form.displayMode === 'web') {
+      setStartError('当前由 Web 页面显示；切回桌面显示后才能打开独立桌宠。');
+      return;
+    }
     if (starting || (runtime !== null && runtime.running)) return;
     setStarting(true);
     setStartError(null);
@@ -367,22 +452,25 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
       : '';
 
   const runtimeRunning = runtime !== null && runtime.running;
+  const webMode = form.displayMode === 'web';
   const opening = starting && !runtimeRunning;
-  const startDisabled = opening || runtimeRunning;
-  const startLabel = runtimeRunning
-    ? '桌宠正在运行'
-    : opening
-      ? '正在打开…'
-      : everRunning
-        ? '重新打开桌宠'
-        : '打开桌宠';
+  const startDisabled = opening || runtimeRunning || webMode;
+  const startLabel = webMode
+    ? 'Web 页面显示中'
+    : runtimeRunning
+      ? '桌宠正在运行'
+      : opening
+        ? '正在打开…'
+        : everRunning
+          ? '重新打开桌宠'
+          : '打开桌宠';
 
   return (
     <>
       <section className="panel settings-panel" aria-label="桌面宠物设置">
         <SectionHeading
           title="桌宠偏好"
-          description="这些偏好由独立的桌宠进程读取；保存偏好与启动进程是两件独立的事。"
+          description="形象与人格两个界面共用；显示位置决定它出现在桌面窗口还是 Web 页面里。"
           actions={
             <Badge tone={form.enabled ? 'accent' : 'neutral'}>
               {form.enabled ? '已启用' : '未启用'}
@@ -397,12 +485,64 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
         )}
 
         <div className="settings-rows">
+          <div className="settings-row pet-mode-row">
+            <span className="settings-key">显示位置</span>
+            <span className="settings-val pet-mode-val">
+              <div className="pet-mode-choices" role="radiogroup" aria-label="桌宠显示位置">
+                <label
+                  className={`pet-mode-option${form.displayMode === 'desktop' ? ' is-active' : ''}`}
+                >
+                  <input
+                    type="radio"
+                    name="pet-display-mode"
+                    value="desktop"
+                    checked={form.displayMode === 'desktop'}
+                    disabled={saving || modeSaving}
+                    onChange={() => void changeDisplayMode('desktop')}
+                  />
+                  <span className="pet-mode-text">
+                    <span className="pet-mode-title">桌面显示</span>
+                    <span className="pet-mode-desc">
+                      独立桌面窗口：可置顶、贴边、托盘与系统语音；不会内嵌在 Web 页面里。
+                    </span>
+                  </span>
+                </label>
+                <label
+                  className={`pet-mode-option${form.displayMode === 'web' ? ' is-active' : ''}`}
+                >
+                  <input
+                    type="radio"
+                    name="pet-display-mode"
+                    value="web"
+                    checked={form.displayMode === 'web'}
+                    disabled={saving || modeSaving}
+                    onChange={() => void changeDisplayMode('web')}
+                  />
+                  <span className="pet-mode-text">
+                    <span className="pet-mode-title">Web 界面显示</span>
+                    <span className="pet-mode-desc">
+                      悬浮在页面右下角：没有系统托盘、窗口置顶、贴边和系统语音；关闭标签页即不显示。
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <span className="settings-muted">
+                {modeSaving
+                  ? '正在切换显示位置…'
+                  : webMode
+                    ? '当前由 Web 页面显示；要打开独立桌宠，请先切回桌面显示。'
+                    : '切换会立即保存；切到 Web 前会先停止正在运行的桌面桌宠。'}
+              </span>
+              {modeError !== null && <InlineError message={modeError} />}
+            </span>
+          </div>
+
           <div className="settings-row pet-toggle-row">
             <span className="settings-key">启用桌宠</span>
             <span className="settings-val">
               <Switch
                 checked={form.enabled}
-                disabled={saving}
+                disabled={saving || modeSaving}
                 label="启用桌宠"
                 onChange={(next) => patch({ enabled: next })}
               />
@@ -417,12 +557,14 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
             <span className="settings-val">
               <Switch
                 checked={form.autoStart}
-                disabled={saving}
+                disabled={saving || modeSaving || webMode}
                 label="应用启动时自动打开桌宠"
                 onChange={(next) => patch({ autoStart: next })}
               />
               <span className="settings-muted">
-                应用启动时自动打开桌宠；第一版由启动器接入，目前只保存偏好。
+                {webMode
+                  ? 'Web 模式不启动桌面进程，自动打开只对桌面显示生效。'
+                  : '应用启动时自动打开桌宠；第一版由启动器接入，目前只保存偏好。'}
               </span>
             </span>
           </div>
@@ -437,7 +579,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 step={10}
                 value={clampSize(form.size)}
                 aria-label="桌宠显示大小"
-                disabled={saving}
+                disabled={saving || modeSaving}
                 onChange={(e) => patch({ size: Number(e.target.value) })}
               />
               <input
@@ -448,7 +590,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 value={form.size}
                 aria-label="桌宠显示大小（像素）"
                 className="pet-size-number"
-                disabled={saving}
+                disabled={saving || modeSaving}
                 onChange={(e) => {
                   const next = e.target.valueAsNumber;
                   if (Number.isFinite(next)) patch({ size: Math.round(next) });
@@ -456,7 +598,9 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 onBlur={() => patch({ size: clampSize(form.size) })}
               />
               <span className="pet-size-unit">px</span>
-              <span className="settings-muted">120–480，默认 220。</span>
+              <span className="settings-muted">
+                120–480，默认 220；Web 模式也使用这个高度（窄屏会按视口收一点）。
+              </span>
             </span>
           </div>
 
@@ -483,7 +627,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 className="pet-select"
                 aria-label="人物形象"
                 value={form.sprite}
-                disabled={saving || spriteChoices.length === 0}
+                disabled={saving || modeSaving || spriteChoices.length === 0}
                 onChange={(e) => {
                   setBrokenSprite(null);
                   patch({ sprite: e.target.value });
@@ -509,11 +653,15 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
             <span className="settings-val">
               <Switch
                 checked={form.alwaysOnTop}
-                disabled={saving}
+                disabled={saving || modeSaving || webMode}
                 label="始终置顶"
                 onChange={(next) => patch({ alwaysOnTop: next })}
               />
-              <span className="settings-muted">由桌宠窗口自己实现；这里只写偏好。</span>
+              <span className="settings-muted">
+                {webMode
+                  ? 'Web 界面显示没有系统窗口置顶；切回桌面显示后生效。'
+                  : '由桌宠窗口自己实现；这里只写偏好。'}
+              </span>
             </span>
           </div>
         </div>
@@ -526,7 +674,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
             <select
               className="pet-select"
               value={form.modelKey}
-              disabled={saving}
+              disabled={saving || modeSaving}
               onChange={(e) => patch({ modelKey: e.target.value })}
             >
               <option value="">未指定（使用主界面最近使用的模型）</option>
@@ -540,7 +688,9 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
               {modelsError ??
                 (models.length === 0
                   ? '还没有配置对话模型；可以到「模型接入」里添加。'
-                  : '留空 = 使用主界面最近使用的对话模型。')}
+                  : webMode
+                    ? 'Web 界面显示时以桌宠输入框右下角的会话设置为准；这里留给桌面桌宠。'
+                    : '留空 = 使用主界面最近使用的对话模型。')}
             </small>
           </label>
 
@@ -549,7 +699,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
             <select
               className="pet-select"
               value={form.thinkingLevel}
-              disabled={saving}
+              disabled={saving || modeSaving}
               onChange={(e) => patch({ thinkingLevel: e.target.value as PetThinkingLevel })}
             >
               {THINKING_OPTIONS.map((option) => (
@@ -558,7 +708,11 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 </option>
               ))}
             </select>
-            <small>桌宠右键切换思考强度会同步到当前对话；这里保存的是桌宠偏好。</small>
+            <small>
+              {webMode
+                ? 'Web 界面显示时以桌宠右下角的会话设置为准；这里留给桌面桌宠。'
+                : '桌宠右键切换思考强度会同步到当前对话；这里保存的是桌宠偏好。'}
+            </small>
           </label>
 
           <label className="pet-field">
@@ -569,7 +723,7 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
               maxLength={PERSONA_MAX}
               value={form.persona}
               placeholder="留空 = 默认管家。可以写它怎么称呼你、说话的分寸和忌讳。"
-              disabled={saving}
+              disabled={saving || modeSaving}
               onChange={(e) => patch({ persona: e.target.value.slice(0, PERSONA_MAX) })}
             />
             <span className="pet-persona-meta">
@@ -594,7 +748,12 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
           >
             {statusText}
           </span>
-          <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void save()}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={saving || modeSaving}
+            onClick={() => void save()}
+          >
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
@@ -603,24 +762,32 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
       <section className="panel settings-panel pet-launch" aria-label="启动桌宠">
         <SectionHeading
           title="启动桌宠"
-          description="桌宠是独立的桌面进程，需要主应用正在运行。"
+          description={
+            webMode
+              ? '当前由 Web 页面显示，不会启动独立桌面进程。'
+              : '桌宠是独立的桌面进程，需要主应用正在运行。'
+          }
         />
 
         <div className="pet-launch-status" role="status" aria-live="polite">
           <span
-            className={`pet-launch-dot${runtimeRunning ? ' is-running' : ''}`}
+            className={`pet-launch-dot${webMode ? ' is-web' : runtimeRunning ? ' is-running' : ''}`}
             aria-hidden="true"
           />
           <span>
-            {runtime === null
-              ? runtimeError === null
-                ? '正在读取桌宠状态…'
-                : '桌宠状态未知'
-              : runtimeRunning
-                ? '桌宠正在运行'
-                : '桌宠未运行'}
+            {webMode
+              ? runtimeRunning
+                ? 'Web 界面显示中（检测到桌面进程仍在运行）'
+                : 'Web 界面显示中'
+              : runtime === null
+                ? runtimeError === null
+                  ? '正在读取桌宠状态…'
+                  : '桌宠状态未知'
+                : runtimeRunning
+                  ? '桌宠正在运行'
+                  : '桌宠未运行'}
           </span>
-          {runtime !== null && runtimeRunning && runtime.pid !== null && (
+          {!webMode && runtime !== null && runtimeRunning && runtime.pid !== null && (
             <span className="pet-launch-pid">PID {runtime.pid}</span>
           )}
         </div>
@@ -643,7 +810,11 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
           >
             {startLabel}
           </button>
-          <span className="pet-launch-hint">启动不需要先保存上方的偏好。</span>
+          <span className="pet-launch-hint">
+            {webMode
+              ? '切回“桌面显示”后会恢复启动按钮；不会自动启动。'
+              : '启动不需要先保存上方的偏好。'}
+          </span>
         </div>
 
         {startError !== null && (
@@ -652,16 +823,20 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
           </div>
         )}
 
-        <div className="pet-launch-cmds">
-          <p>
-            如果启动按钮没有反应，也可以在项目根目录运行：<code>pnpm pet</code>
-          </p>
-          <p>
-            或双击：<code>启动桌宠.bat</code>
-          </p>
-        </div>
+        {!webMode && (
+          <div className="pet-launch-cmds">
+            <p>
+              如果启动按钮没有反应，也可以在项目根目录运行：<code>pnpm pet</code>
+            </p>
+            <p>
+              或双击：<code>启动桌宠.bat</code>
+            </p>
+          </div>
+        )}
         <p className="pet-launch-note">
-          设置页可以启动或重新打开桌宠，但不会结束正在运行的桌宠。关闭设置页不会影响桌宠。
+          {webMode
+            ? 'Web 模式没有系统托盘、窗口置顶、贴边和系统语音；关闭这个标签页就不会显示桌宠。启动接口在 Web 模式下会被服务端拒绝，所以这里不提供启动按钮。'
+            : '桌面模式不会把桌宠内嵌到 Web 页面里；设置页可以启动或重新打开桌宠，但不会结束正在运行的桌宠。'}
         </p>
       </section>
     </>

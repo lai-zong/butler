@@ -415,7 +415,7 @@ export function SettingsView({
             <SettingsPageHead
               eyebrow="PET"
               title="桌面宠物"
-              description="桌宠是独立的桌面进程；这里保存它读取的形象、模型与人格偏好。"
+              description="桌宠可以显示在桌面窗口或 Web 页面里；这里保存它读取的形象、模型与人格偏好。"
             />
             <PetSettingsPanel notify={notify} />
           </div>

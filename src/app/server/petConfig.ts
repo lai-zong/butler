@@ -18,6 +18,7 @@ export const PET_CONFIG_FILE = 'pet-config.json';
 export const PET_STATE_FILE = 'pet-state.json';
 
 export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
+export type PetDisplayMode = 'desktop' | 'web';
 
 export interface PetModelChoice {
   readonly profileId: string;
@@ -29,6 +30,12 @@ export interface PetConfig {
   readonly version: 1;
   /** 安装配置存在；不代表进程正在运行。 */
   readonly enabled: boolean;
+  /**
+   * 显示位置：
+   * desktop = 独立桌面 Tk 进程
+   * web     = Web 页面内嵌悬浮桌宠（不启动 Tk）
+   */
+  readonly displayMode: PetDisplayMode;
   /** 主应用启动时是否尝试拉起桌宠（第一版只记录，启动器后续接入）。 */
   readonly autoStart: boolean;
   /** 人物显示高度，120–480。 */
@@ -41,6 +48,12 @@ export interface PetConfig {
   readonly thinkingLevel: PetThinkingLevel;
   /** 只在桌宠会话使用的额外人格说明；空 = 默认管家。 */
   readonly persona: string;
+  /**
+   * 服务端固定的宠物会话 id。
+   * 桌宠和 Web 悬浮桌宠共用这一条；为空时由 /api/pet/session 创建。
+   * 不由设置页直接编辑。
+   */
+  readonly sessionId: string | null;
   readonly updatedAt: number;
 }
 
@@ -58,6 +71,7 @@ export interface PetConfigPayload {
 
 export interface PetConfigUpdate {
   readonly enabled?: boolean;
+  readonly displayMode?: PetDisplayMode;
   readonly autoStart?: boolean;
   readonly size?: number;
   readonly sprite?: string;
@@ -65,6 +79,8 @@ export interface PetConfigUpdate {
   readonly model?: PetModelChoice | null;
   readonly thinkingLevel?: PetThinkingLevel;
   readonly persona?: string;
+  /** 仅供服务端宠物会话端点使用；设置页不提交。 */
+  readonly sessionId?: string | null;
 }
 
 const MAX_PERSONA = 4000;
@@ -92,6 +108,7 @@ export function defaultPetConfig(now = Date.now()): PetConfig {
   return {
     version: 1,
     enabled: true,
+    displayMode: 'desktop',
     autoStart: false,
     size: 220,
     sprite: 'butler',
@@ -99,6 +116,7 @@ export function defaultPetConfig(now = Date.now()): PetConfig {
     model: null,
     thinkingLevel: 'default',
     persona: '',
+    sessionId: null,
     updatedAt: now,
   };
 }
@@ -132,6 +150,17 @@ function normalizeThinking(value: unknown, fallback: PetThinkingLevel): PetThink
     : fallback;
 }
 
+function normalizeDisplayMode(value: unknown, fallback: PetDisplayMode): PetDisplayMode {
+  return value === 'desktop' || value === 'web' ? value : fallback;
+}
+
+function normalizeSessionId(value: unknown, fallback: string | null): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 200) : null;
+}
+
 function normalize(raw: unknown, fallback: PetConfig, now: number): PetConfig {
   const v = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
   const persona = typeof v['persona'] === 'string' ? v['persona'].slice(0, MAX_PERSONA) : fallback.persona;
@@ -141,6 +170,7 @@ function normalize(raw: unknown, fallback: PetConfig, now: number): PetConfig {
   return {
     version: 1,
     enabled: bool(v['enabled'], fallback.enabled),
+    displayMode: normalizeDisplayMode(v['displayMode'], fallback.displayMode),
     autoStart: bool(v['autoStart'], fallback.autoStart),
     size: clampSize(v['size'], fallback.size),
     sprite,
@@ -148,6 +178,7 @@ function normalize(raw: unknown, fallback: PetConfig, now: number): PetConfig {
     model: normalizeModel(v['model']),
     thinkingLevel: normalizeThinking(v['thinkingLevel'], fallback.thinkingLevel),
     persona,
+    sessionId: normalizeSessionId(v['sessionId'], fallback.sessionId),
     updatedAt: now,
   };
 }
@@ -205,4 +236,8 @@ export async function listPetAssets(): Promise<readonly PetAssetView[]> {
 
 export function isPetThinkingLevel(value: unknown): value is PetThinkingLevel {
   return value === 'default' || value === 'low' || value === 'medium' || value === 'high';
+}
+
+export function isPetDisplayMode(value: unknown): value is PetDisplayMode {
+  return value === 'desktop' || value === 'web';
 }

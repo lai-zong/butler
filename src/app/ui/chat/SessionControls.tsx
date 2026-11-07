@@ -42,6 +42,8 @@ interface SessionControlsProps {
   readonly onOpenSettings?: () => void;
   /** 本轮开始时的快照档位（来自 SSE `settings` 事件）。 */
   readonly turnReasoning: ReasoningLevel | null;
+  /** 额外的浮层 class（例如放进 WebPet 时抬高 z-index）。 */
+  readonly popoverClassName?: string;
 }
 
 interface ModelOption {
@@ -95,6 +97,7 @@ export function SessionControls({
   onSelectReasoning,
   onOpenSettings,
   turnReasoning,
+  popoverClassName,
 }: SessionControlsProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -227,7 +230,9 @@ export function SessionControls({
     ? createPortal(
         <div
           ref={panelRef}
-          className={`session-controls-pop is-${position.placement}`}
+          className={`session-controls-pop is-${position.placement}${
+            popoverClassName !== undefined ? ` ${popoverClassName}` : ''
+          }`}
           role="dialog"
           aria-label="对话模型与思考强度"
           style={{ top: position.top, left: position.left, width: position.width }}

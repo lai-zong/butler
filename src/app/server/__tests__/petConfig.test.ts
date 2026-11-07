@@ -18,12 +18,14 @@ describe('桌宠配置', () => {
       expect(defaults).toMatchObject({
         version: 1,
         enabled: true,
+        displayMode: 'desktop',
         size: 220,
         sprite: 'butler',
         alwaysOnTop: true,
         model: null,
         thinkingLevel: 'default',
         persona: '',
+        sessionId: null,
       });
 
       const saved = await savePetConfig(
@@ -33,9 +35,11 @@ describe('桌宠配置', () => {
           persona: '像一位可靠但话不多的管家',
           thinkingLevel: 'high',
           alwaysOnTop: false,
+          displayMode: 'web',
         },
         dir,
       );
+      expect(saved.displayMode).toBe('web');
       expect(saved.size).toBe(480);
       expect(saved.sprite).toBe('not-yet-installed');
       expect(saved.persona).toContain('管家');
@@ -45,6 +49,7 @@ describe('桌宠配置', () => {
       const loaded = await loadPetConfig(dir);
       expect(loaded.persona).toContain('管家');
       expect(loaded.size).toBe(480);
+      expect(loaded.displayMode).toBe('web');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

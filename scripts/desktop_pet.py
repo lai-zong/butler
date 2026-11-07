@@ -80,9 +80,20 @@ def main() -> None:
     # 包目录在 scripts/ 下；直接跑脚本时 sys.path[0] 已经是 scripts/
     sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent))
 
-    from petapp.store import Paths, acquire_instance_lock, release_instance_lock
+    from petapp.store import Paths, acquire_instance_lock, load_config, release_instance_lock
 
     paths = Paths()
+    # 服务端设置页选择 Web 显示时，直接双击启动器也不应该再弹桌面进程。
+    # 配置读取失败时按桌面模式放行，避免配置损坏导致桌宠完全无法启动。
+    try:
+        if load_config(paths).get('displayMode') == 'web':
+            _stderr('当前设置为 Web 界面显示，桌面桌宠不启动')
+            raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
+
     lock = acquire_instance_lock(paths)
     if lock is None:
         _stderr('butler 桌宠已经在运行')

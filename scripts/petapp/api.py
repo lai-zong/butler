@@ -102,6 +102,17 @@ class ButlerApi:
         except Exception:
             return False
 
+    def pet_session(self) -> str | None:
+        """服务端固定的宠物会话；桌面和 Web 共用。旧服务 404 时返回 None。"""
+        try:
+            data = self.get('/api/pet/session', timeout=5)
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        session_id = data.get('sessionId')
+        return session_id if isinstance(session_id, str) and session_id else None
+
     def create_session(self) -> str:
         data = self.post('/api/sessions')
         session = data.get('session') if isinstance(data, dict) else None

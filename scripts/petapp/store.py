@@ -22,6 +22,7 @@ ASSET_DIR = ROOT_DIR / 'public' / 'pet'
 DEFAULT_CONFIG: dict[str, Any] = {
     'version': 1,
     'enabled': True,
+    'displayMode': 'desktop',
     'autoStart': False,
     'size': 220,
     'sprite': 'butler',
@@ -122,6 +123,8 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         cfg['sprite'] = 'butler'
     if cfg.get('thinkingLevel') not in THINKING_LEVELS:
         cfg['thinkingLevel'] = 'default'
+    if cfg.get('displayMode') not in ('desktop', 'web'):
+        cfg['displayMode'] = 'desktop'
     if cfg.get('model') is not None and not (
         isinstance(cfg['model'], dict)
         and isinstance(cfg['model'].get('profileId'), str)

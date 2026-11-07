@@ -1645,6 +1645,14 @@ export interface ModelChoicesResponse {
 
 export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
 
+/**
+ * 显示位置。
+ *
+ * - `desktop`：独立桌面 Tk 进程（有托盘/置顶/贴边/系统语音）
+ * - `web`：Web 页面内嵌悬浮桌宠（不启动 Tk，也没有系统级能力）
+ */
+export type PetDisplayMode = 'desktop' | 'web';
+
 /** 桌宠用的模型；null = 跟随主界面当前对话模型。 */
 export interface PetModelChoice {
   readonly profileId: string;
@@ -1656,6 +1664,8 @@ export interface PetConfigView {
   readonly version: 1;
   /** 配置存在，不代表进程正在运行。 */
   readonly enabled: boolean;
+  /** 显示位置；默认 desktop。 */
+  readonly displayMode: PetDisplayMode;
   /** 第一版只记录偏好，由启动器接入。 */
   readonly autoStart: boolean;
   /** 显示高度，120–480。 */
@@ -1697,5 +1707,20 @@ export interface PetStatusResponse extends PetRuntimeView {
 export interface PetStartResponse {
   readonly ok: boolean;
   readonly alreadyRunning: boolean;
+  readonly status: PetRuntimeView;
+}
+
+/**
+ * GET /api/pet/session：桌面 Tk 桌宠与 Web 悬浮桌宠共用的固定会话。
+ * 首次调用时由服务端创建并写回 pet-config。
+ */
+export interface PetSessionResponse {
+  readonly ok: boolean;
+  readonly sessionId: string;
+}
+
+/** POST /api/pet/stop：返回停止后的真实进程状态（可能仍存活）。 */
+export interface PetStopResponse {
+  readonly ok: boolean;
   readonly status: PetRuntimeView;
 }

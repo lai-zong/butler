@@ -27,6 +27,7 @@ import { TasksView } from './tasks/TasksView';
 import { DueReminderBanner } from './tasks/DueReminderBanner';
 import { ConsoleTransition } from './console/ConsoleTransition';
 import { computeConsoleBootStatus, type ConsoleBootMode } from './console/consoleBoot.js';
+import { WebPet } from './pet/WebPet';
 import { errorMessage, fetchJson } from './lib/api.js';
 import { computeBootStatus, type ChatBootState } from './lib/boot.js';
 import type {
@@ -568,6 +569,13 @@ export function ButlerApp(): JSX.Element {
             />
           </div>
         )}
+
+        {/*
+         * Web 悬浮桌宠：挂在主界面层，所有主界面（对话/设置/任务）都在，
+         * 进入控制台时传 active=false 隐藏；它自己读 pet-config 决定显示与否。
+         * 启动动画期间不挂载，避免桌宠从启动页背后露出来。
+         */}
+        {!booting && <WebPet active={surface === 'main'} />}
 
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
 

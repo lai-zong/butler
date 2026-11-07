@@ -9,6 +9,7 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import {
+  isPetDisplayMode,
   isPetThinkingLevel,
   listPetAssets,
   loadPetConfig,
@@ -39,6 +40,7 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
 
   const patch: PetConfigUpdate = {
     ...(typeof body['enabled'] === 'boolean' ? { enabled: body['enabled'] } : {}),
+    ...(isPetDisplayMode(body['displayMode']) ? { displayMode: body['displayMode'] } : {}),
     ...(typeof body['autoStart'] === 'boolean' ? { autoStart: body['autoStart'] } : {}),
     ...(typeof body['size'] === 'number' ? { size: body['size'] } : {}),
     ...(typeof body['sprite'] === 'string' ? { sprite: body['sprite'] } : {}),
