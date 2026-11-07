@@ -44,6 +44,8 @@ interface SessionControlsProps {
   readonly turnReasoning: ReasoningLevel | null;
   /** 额外的浮层 class（例如放进 WebPet 时抬高 z-index）。 */
   readonly popoverClassName?: string;
+  /** WebPet 的紧凑面板：不显示“仅当前对话”和静态新对话说明。 */
+  readonly hideScopeHint?: boolean;
 }
 
 interface ModelOption {
@@ -98,6 +100,7 @@ export function SessionControls({
   onOpenSettings,
   turnReasoning,
   popoverClassName,
+  hideScopeHint = false,
 }: SessionControlsProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -239,7 +242,7 @@ export function SessionControls({
         >
           <div className="session-controls-head">
             <strong>模型与思考</strong>
-            <span>仅当前对话</span>
+            {!hideScopeHint && <span>仅当前对话</span>}
           </div>
 
           <div className="session-controls-section">
@@ -364,15 +367,17 @@ export function SessionControls({
             </p>
           )}
 
-          <p className="session-controls-foot">
-            {differsFromTurn
-              ? `本轮仍按 ${turnReasoning} 执行（开始时的快照）；改动下一轮生效。`
-              : streaming
-                ? turnReasoning === null
-                  ? '当前轮的设置快照已固定；执行中修改只影响下一轮。'
-                  : `本轮快照：${turnReasoning}。执行中修改会在下一轮生效。`
-                : '只影响这段对话；新对话默认 high。'}
-          </p>
+          {(!hideScopeHint || differsFromTurn || streaming) && (
+            <p className="session-controls-foot">
+              {differsFromTurn
+                ? `本轮仍按 ${turnReasoning} 执行（开始时的快照）；改动下一轮生效。`
+                : streaming
+                  ? turnReasoning === null
+                    ? '当前轮的设置快照已固定；执行中修改只影响下一轮。'
+                    : `本轮快照：${turnReasoning}。执行中修改会在下一轮生效。`
+                  : '只影响这段对话；新对话默认 high。'}
+            </p>
+          )}
         </div>,
         document.body,
       )

@@ -448,10 +448,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   }, [menu]);
 
   useEffect(() => {
-    if (!open) setMenu(null);
-  }, [open]);
-
-  useEffect(() => {
     if (!open) return;
     const el = threadRef.current;
     if (el === null) return;
@@ -704,6 +700,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       suppressClickRef.current = false;
       return;
     }
+    setMenu(null);
     setOpen((prev) => !prev);
   };
 
@@ -983,7 +980,8 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       ref={widgetRef}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (!open) setOpen(true);
+        // 右键只打开菜单，不把左键桌板一起打开；桌板若已展开则先收起。
+        setOpen(false);
         setMenu({ x: event.clientX, y: event.clientY });
       }}
     >
@@ -1198,6 +1196,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
                   }}
                   turnReasoning={turnReasoning}
                   popoverClassName="webpet-session-pop"
+                  hideScopeHint
                 />
                 <div className="webpet-send-group">
                   {isRunning && (
@@ -1260,8 +1259,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
                       : 'Enter 发送 · 当前浏览器不支持语音')}
               </span>
             </div>
-
-            <p className="webpet-foot-note">不展示推理与工具细节 · 与桌面桌宠共用固定会话</p>
 
             <input
               ref={fileRef}

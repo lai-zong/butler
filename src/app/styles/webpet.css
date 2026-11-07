@@ -116,7 +116,7 @@
 .webpet-board {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 12px);
+  bottom: calc(100% + 4px);
   z-index: 2;
   display: flex;
   width: min(374px, calc(100vw - 28px));
@@ -135,7 +135,7 @@
 }
 
 .webpet-board.is-below {
-  top: calc(100% + 12px);
+  top: calc(100% + 4px);
   bottom: auto;
   transform-origin: 100% 0;
 }
