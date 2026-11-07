@@ -55,6 +55,10 @@ import { usePetConfig } from './usePetConfig.js';
 import '../../styles/webpet.css';
 
 const POSITION_KEY = 'butler.webpet.position';
+const BOARD_HEIGHT_KEY = 'butler.webpet.boardHeight';
+const DEFAULT_BOARD_HEIGHT = 360; // 540 的 2/3，长对话仍在内部滚动
+const MIN_BOARD_HEIGHT = 240;
+const MAX_BOARD_HEIGHT = 540;
 const MAX_IMAGES = 3;
 const MAX_DOCS = 3;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -96,6 +100,13 @@ interface DragState {
   readonly originX: number;
   readonly originY: number;
   moved: boolean;
+}
+
+interface ResizeState {
+  readonly pointerId: number;
+  readonly startY: number;
+  readonly startHeight: number;
+  readonly below: boolean;
 }
 
 // ── 语音识别：浏览器实现不一致，这里只声明用得到的部分 ──
@@ -141,6 +152,18 @@ function makeId(prefix: string): string {
   }
 }
 
+function readStoredBoardHeight(): number | null {
+  try {
+    const raw = window.localStorage.getItem(BOARD_HEIGHT_KEY);
+    if (raw === null) return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(MIN_BOARD_HEIGHT, Math.min(MAX_BOARD_HEIGHT, Math.round(n)));
+  } catch {
+    return null;
+  }
+}
+
 function readStoredPosition(): Position | null {
   try {
     const raw = window.localStorage.getItem(POSITION_KEY);
@@ -183,6 +206,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [menu, setMenu] = useState<{ readonly x: number; readonly y: number } | null>(null);
   const [hiddenByUser, setHiddenByUser] = useState(false);
   const [position, setPosition] = useState<Position | null>(null);
+  const [boardHeight, setBoardHeight] = useState(DEFAULT_BOARD_HEIGHT);
   const [dragging, setDragging] = useState(false);
   const [viewport, setViewport] = useState<Viewport>({ width: 0, height: 0 });
   const [imageBroken, setImageBroken] = useState(false);
@@ -222,6 +246,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const resizeRef = useRef<ResizeState | null>(null);
   const suppressClickRef = useRef(false);
   const historyLoadedRef = useRef<string | null>(null);
   const historyTouchedRef = useRef(false);
@@ -262,7 +287,17 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     storedProbedRef.current = true;
     const stored = readStoredPosition();
     if (stored !== null) setPosition(stored);
+    const storedHeight = readStoredBoardHeight();
+    if (storedHeight !== null) setBoardHeight(storedHeight);
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(BOARD_HEIGHT_KEY, String(boardHeight));
+    } catch {
+      // 隐私模式：本次会话仍可拖动，只是不记住
+    }
+  }, [boardHeight]);
 
   const petSize = useMemo(() => {
     if (config === null) return 180;
@@ -271,6 +306,20 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     const cap = Math.min(420, Math.round(source * ratio));
     return Math.max(96, Math.min(config.size, cap));
   }, [config, viewport]);
+
+  const maxBoardHeight = useMemo(
+    () => Math.max(MIN_BOARD_HEIGHT, Math.min(MAX_BOARD_HEIGHT, viewport.height - 120)),
+    [viewport.height],
+  );
+  const effectiveBoardHeight = Math.max(
+    MIN_BOARD_HEIGHT,
+    Math.min(boardHeight, maxBoardHeight),
+  );
+
+  useEffect(() => {
+    if (viewport.height === 0) return;
+    setBoardHeight((prev) => Math.min(prev, maxBoardHeight));
+  }, [maxBoardHeight, viewport.height]);
 
   const clampPosition = useCallback(
     (next: Position): Position => {
@@ -893,13 +942,54 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     viewport.height > 0 &&
     position.y < Math.min(380, viewport.height * 0.46);
 
-  const boardStyle = useMemo<CSSProperties | undefined>(() => {
-    if (position === null || viewport.width <= MOBILE_MAX_WIDTH) return undefined;
+  const handleResizeStart = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: effectiveBoardHeight,
+      below: boardBelow,
+    };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // 某些浏览器无法 capture；后续 move 仍会按 pointerId 判断
+    }
+  };
+
+  const handleResizeMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const state = resizeRef.current;
+    if (state === null || state.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const delta = event.clientY - state.startY;
+    const next = state.below
+      ? state.startHeight + delta
+      : state.startHeight - delta;
+    setBoardHeight(
+      Math.max(MIN_BOARD_HEIGHT, Math.min(maxBoardHeight, Math.round(next))),
+    );
+  };
+
+  const handleResizeEnd = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const state = resizeRef.current;
+    if (state === null || state.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // 已自动释放
+    }
+  };
+
+  const boardStyle = useMemo<CSSProperties>(() => {
+    const style: CSSProperties = { height: `${effectiveBoardHeight}px` };
+    if (position === null || viewport.width <= MOBILE_MAX_WIDTH) return style;
     const boardWidth = Math.min(374, viewport.width - 28);
     // 默认右对齐人物；只有右边放不下时才改为左对齐。
-    if (position.x + petSize - boardWidth >= 10) return undefined;
-    return { left: '0px', right: 'auto' };
-  }, [position, petSize, viewport]);
+    if (position.x + petSize - boardWidth >= 10) return style;
+    return { ...style, left: '0px', right: 'auto' };
+  }, [position, petSize, viewport, effectiveBoardHeight]);
 
   const widgetStyle = useMemo<CSSProperties | undefined>(
     () =>
@@ -1033,6 +1123,16 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
           aria-label="Web 桌宠对话"
           aria-modal={false}
         >
+          <div
+            className={`webpet-resize ${boardBelow ? 'is-bottom' : 'is-top'}`}
+            role="separator"
+            aria-label="拖动调整桌板高度"
+            aria-orientation="horizontal"
+            onPointerDown={handleResizeStart}
+            onPointerMove={handleResizeMove}
+            onPointerUp={handleResizeEnd}
+            onPointerCancel={handleResizeEnd}
+          />
           <header className="webpet-board-head">
             <div className="webpet-head-main">
               <span className={`webpet-dot is-${status}`} aria-hidden="true" />

@@ -135,9 +135,48 @@
 }
 
 .webpet-board.is-below {
-  top: calc(100% + 4px);
+  /* 图片底部有约 16% 透明留白；向人物盒内压 8px，
+     可见间距约为原来的二分之一。 */
+  top: calc(100% - 8px);
   bottom: auto;
   transform-origin: 100% 0;
+}
+
+.webpet-resize {
+  position: absolute;
+  left: 50%;
+  z-index: 4;
+  width: 46px;
+  height: 12px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.webpet-resize.is-top {
+  top: 0;
+}
+
+.webpet-resize.is-bottom {
+  bottom: 0;
+}
+
+.webpet-resize::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 22px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  content: '';
+  transform: translate(-50%, -50%);
+  opacity: 0.7;
+}
+
+.webpet-resize:hover::before {
+  background: var(--ink-4);
+  opacity: 1;
 }
 
 .webpet-board-head {
