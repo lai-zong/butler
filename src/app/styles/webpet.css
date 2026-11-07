@@ -717,6 +717,92 @@
 }
 
 /* ─────────────────────────────────────────────
+   Web 专用右键菜单 / 隐藏后的恢复入口
+   ───────────────────────────────────────────── */
+
+.webpet-menu {
+  position: fixed;
+  z-index: 3;
+  min-width: 168px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow:
+    0 18px 44px rgba(35, 31, 22, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.75) inset;
+  animation: webpetMenuIn 0.14s var(--ease-out) both;
+}
+
+.webpet-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-align: left;
+  transition:
+    background 0.14s var(--ease),
+    color 0.14s var(--ease);
+}
+
+.webpet-menu-item:hover:not(:disabled),
+.webpet-menu-item:focus-visible:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  outline: none;
+}
+
+.webpet-menu-item:disabled {
+  color: var(--ink-4);
+  cursor: default;
+}
+
+.webpet-restore {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 95;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 253, 249, 0.94);
+  color: var(--ink-3);
+  font-size: 10.5px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(8px);
+}
+
+.webpet-restore:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.webpet-restore-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+}
+
+@keyframes webpetMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────
    窄屏：桌板变成贴近底部的便签，避开底部导航
    ───────────────────────────────────────────── */
 
@@ -776,6 +862,11 @@
   }
 
   .webpet-muted {
+    right: 12px;
+    bottom: calc(78px + env(safe-area-inset-bottom));
+  }
+
+  .webpet-restore {
     right: 12px;
     bottom: calc(78px + env(safe-area-inset-bottom));
   }

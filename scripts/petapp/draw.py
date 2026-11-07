@@ -218,31 +218,42 @@ def icon_file(canvas, cx: float, cy: float, size: float, color: str, width: floa
 
 
 def icon_mic(canvas, cx: float, cy: float, size: float, color: str, width: float = 1.4, tag: str = '') -> None:
-    """线性麦克风：胶囊外框 + U 形托架 + 支杆 + 底座。"""
-    s = size
-    x, y = cx - s / 2, cy - s / 2
-    cap_w = s * 0.32
-    cap_top = y + s * 0.06
-    cap_bottom = y + s * 0.55
+    """线性麦克风：与 Web 的 mic 图标同一套 24×24 几何。
+
+    Web 图标路径（viewBox 24×24）：
+      rect x=9 y=3.5 w=6 h=11 rx=3
+      M5.5 11.5a6.5 6.5 0 0 0 13 0
+      M12 18v3
+      M8.5 21h7
+    """
+    u = size / 24.0
+
+    def px(value: float) -> float:
+        return cx + (value - 12.0) * u
+
+    def py(value: float) -> float:
+        return cy + (value - 12.0) * u
+
+    # 胶囊：x 9..15, y 3.5..14.5, r 3（Tk 的圆角多边形用椭圆四角拼）。
     canvas.create_polygon(
         rounded_points(
-            cx - cap_w / 2, cap_top, cx + cap_w / 2, cap_bottom,
-            cap_w / 2, cap_w / 2, cap_w / 2, cap_w / 2,
+            px(9.0), py(3.5), px(15.0), py(14.5),
+            3.0 * u, 3.0 * u,
         ),
         fill='', outline=color, width=width, tags=(tag, 'icon'),
     )
-    # 托架在胶囊下半部，不能抬到胶囊腰部 —— 否则远看像下载箭头。
+    # 托架：左端 5.5,11.5 到右端 18.5,11.5 的下半圆。
     canvas.create_arc(
-        x + s * 0.17, y + s * 0.33, x + s * 0.83, y + s * 0.8,
-        start=200, extent=140, style='arc', outline=color, width=width,
+        px(5.5), py(5.0), px(18.5), py(18.0),
+        start=180, extent=180, style='arc', outline=color, width=width,
         tags=(tag, 'icon'),
     )
     canvas.create_line(
-        cx, y + s * 0.73, cx, y + s * 0.93,
+        px(12.0), py(18.0), px(12.0), py(21.0),
         fill=color, width=width, capstyle='round', tags=(tag, 'icon'),
     )
     canvas.create_line(
-        cx - s * 0.22, y + s * 0.94, cx + s * 0.22, y + s * 0.94,
+        px(8.5), py(21.0), px(15.5), py(21.0),
         fill=color, width=width, capstyle='round', tags=(tag, 'icon'),
     )
 

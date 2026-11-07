@@ -305,6 +305,7 @@ export function SessionControls({
                           className={`session-controls-model${active ? ' is-active' : ''}`}
                           disabled={!option.available || saving}
                           onClick={() => {
+                            setOpen(false);
                             onSelectModel({ profileId: option.profileId, modelId: option.modelId });
                           }}
                         >
@@ -328,7 +329,6 @@ export function SessionControls({
           <div className="session-controls-section">
             <div className="session-controls-label">
               <span>思考强度</span>
-              <span className="session-controls-count">off / low / high / max</span>
             </div>
             <div className="session-controls-reasoning" role="radiogroup" aria-label="思考强度">
               {REASONING_OPTIONS.map((option) => {
@@ -342,7 +342,10 @@ export function SessionControls({
                     className={`session-controls-level${active ? ' is-active' : ''}`}
                     disabled={saving}
                     title={option.hint}
-                    onClick={() => onSelectReasoning(option.value)}
+                    onClick={() => {
+                      setOpen(false);
+                      onSelectReasoning(option.value);
+                    }}
                   >
                     <span className="session-controls-level-main">
                       <code>{option.label}</code>

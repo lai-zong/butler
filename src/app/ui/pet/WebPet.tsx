@@ -180,6 +180,8 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [leader, setLeader] = useState(false);
   const [leaderSettled, setLeaderSettled] = useState(false);
   const [open, setOpen] = useState(false);
+  const [menu, setMenu] = useState<{ readonly x: number; readonly y: number } | null>(null);
+  const [hiddenByUser, setHiddenByUser] = useState(false);
   const [position, setPosition] = useState<Position | null>(null);
   const [dragging, setDragging] = useState(false);
   const [viewport, setViewport] = useState<Viewport>({ width: 0, height: 0 });
@@ -211,6 +213,8 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [listening, setListening] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
+  const widgetRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sendingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
@@ -302,6 +306,12 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const webConfigured =
     config !== null && config.enabled && config.displayMode === 'web';
 
+  useEffect(() => {
+    if (webConfigured) return;
+    setHiddenByUser(false);
+    setMenu(null);
+  }, [webConfigured]);
+
   const loadModelCatalog = useCallback(async (): Promise<void> => {
     setCatalogLoading(true);
     setCatalogError(null);
@@ -391,10 +401,54 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') {
+        setOpen(false);
+        setMenu(null);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  // 点击桌板外的页面区域时收起桌板；模型/思考浮层是 portal，不能误关。
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (widgetRef.current?.contains(target) === true) return;
+      if (target.closest('.session-controls-pop') !== null) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [open]);
+
+  // 右键菜单点外部 / Esc 关闭；不关桌板。
+  useEffect(() => {
+    if (menu === null) return;
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menuRef.current?.contains(target) === true) return;
+      setMenu(null);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setMenu(null);
+      }
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey, true);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (!open) setMenu(null);
   }, [open]);
 
   useEffect(() => {
@@ -885,8 +939,94 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const canSend =
     !isRunning && (input.trim().length > 0 || images.length > 0 || docs.length > 0);
 
+  const openFullConversation = (): void => {
+    setMenu(null);
+    setOpen(false);
+    if (sessionId === null) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('session', sessionId);
+    url.hash = '#/chat';
+    window.location.assign(url.toString());
+  };
+
+  const openSettingsPage = (): void => {
+    setMenu(null);
+    setOpen(false);
+    window.location.hash = '#/settings';
+  };
+
+  const hidePet = (): void => {
+    setMenu(null);
+    setOpen(false);
+    setHiddenByUser(true);
+  };
+
+  if (hiddenByUser) {
+    return (
+      <button
+        type="button"
+        className="webpet-restore"
+        aria-label="显示桌宠"
+        title="显示桌宠"
+        onClick={() => setHiddenByUser(false)}
+      >
+        <span className="webpet-restore-dot" aria-hidden="true" />
+        显示桌宠
+      </button>
+    );
+  }
+
   return (
-    <div className={widgetClass} style={widgetStyle}>
+    <div
+      className={widgetClass}
+      style={widgetStyle}
+      ref={widgetRef}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        if (!open) setOpen(true);
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
+    >
+      {menu !== null && (
+        <div
+          ref={menuRef}
+          className="webpet-menu"
+          role="menu"
+          aria-label="桌宠菜单"
+          style={{
+            left: `${Math.max(8, Math.min(menu.x, Math.max(8, viewport.width - 176)))}px`,
+            top: `${Math.max(8, Math.min(menu.y, Math.max(8, viewport.height - 124)))}px`,
+          }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="webpet-menu-item"
+            disabled={sessionId === null}
+            onClick={openFullConversation}
+          >
+            打开完整对话
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="webpet-menu-item"
+            onClick={openSettingsPage}
+          >
+            设置
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="webpet-menu-item"
+            onClick={hidePet}
+          >
+            隐藏桌宠
+          </button>
+        </div>
+      )}
+
       {open && (
         <section
           className={`webpet-board${boardBelow ? ' is-below' : ''}`}
@@ -898,7 +1038,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
           <header className="webpet-board-head">
             <div className="webpet-head-main">
               <span className={`webpet-dot is-${status}`} aria-hidden="true" />
-              <span className="webpet-name">管家</span>
               <span className="webpet-status" role="status" aria-live="polite">
                 {statusText}
               </span>
