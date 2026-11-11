@@ -580,6 +580,37 @@ export async function keyInput(event: {
   );
 }
 
+/**
+ * 读取当前页面里用户选中的文字（给"复制"用）。
+ *
+ * ★ 为什么由后端读：页面在另一个进程里，前端拿不到 selection；
+ *   读回来之后由前端写系统剪贴板（那一步必须在用户点击手势内）。
+ */
+export async function readSelection(): Promise<string> {
+  const state = requireSession();
+  try {
+    const result = await state.cdp.send<{ result: { value?: unknown } }>(
+      'Runtime.evaluate',
+      {
+        expression: `(() => {
+          const el = document.activeElement;
+          if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+            const start = el.selectionStart ?? 0;
+            const end = el.selectionEnd ?? 0;
+            if (end > start) return String(el.value).slice(start, end);
+          }
+          return String(document.getSelection()?.toString() ?? '');
+        })()`,
+        returnByValue: true,
+      },
+      state.pageSessionId,
+    );
+    return String(result.result.value ?? '').slice(0, 20_000);
+  } catch (err) {
+    throw new BrowserError(`读取选区失败：${err instanceof Error ? err.message : String(err)}`, 'cdp_error');
+  }
+}
+
 /** 订阅画面帧；返回取消函数。 */
 export function subscribeFrames(cb: (frame: BrowserFrame) => void): () => void {
   const state = requireSession();

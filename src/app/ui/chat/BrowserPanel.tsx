@@ -918,6 +918,31 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   }
 
   /**
+   * 「复制」：把远端页面里选中的文字写进系统剪贴板。
+   *
+   * ★ 选区由后端读（页面在别的进程里），写剪贴板必须在前端、且在点击手势内。
+   *   没有选中时明确提示，而不是"复制成功"却什么都没进剪贴板。
+   */
+  async function copySelection(): Promise<void> {
+    setHint(null);
+    try {
+      const res = await fetchJson<{ text?: unknown }>('/api/browser/selection');
+      if (!aliveRef.current) return;
+      const text = typeof res.text === 'string' ? res.text : '';
+      if (text.length === 0) {
+        setHint('页面里没有选中的文字：先在画面上拖选一段');
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      if (!aliveRef.current) return;
+      setHint('已复制选中的文字');
+    } catch {
+      if (!aliveRef.current) return;
+      setHint('复制失败：浏览器不允许写入剪贴板');
+    }
+  }
+
+  /**
    * 拉一次下载列表。
    *
    * ★ 只在弹层打开时拉、不轮询：下载是低频动作，定时刷新不会让列表更快，
@@ -1397,6 +1422,16 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
             没人知道是粘贴；两个按钮加起来一百来像素，地址栏在最小分栏下仍够用。
           */}
           <div className="browser-tools" role="group" aria-label="页面输入与下载">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm browser-tool-icon"
+              onClick={() => void copySelection()}
+              disabled={!ready}
+              aria-label="复制页面里选中的文字"
+              title="复制页面里选中的文字"
+            >
+              <Icon name="copy" size={13} />
+            </button>
             <button
               type="button"
               className="btn btn-ghost btn-sm browser-tool-btn"

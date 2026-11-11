@@ -6078,6 +6078,10 @@ button.work-crumb:hover {
   gap: 4px;
 }
 
+.browser-tool-icon {
+  padding-inline: 8px;
+}
+
 .browser-tool-btn {
   flex: none;
   gap: 5px;
