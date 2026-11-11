@@ -27,28 +27,12 @@ import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import type { SessionPermission } from '@/core/chat/settings.js';
+import { pathFieldsOf, WRITE_TOOL_NAMES } from '@/core/tools/pathFields.js';
 import {
   isPathInside,
   resolveRealPathForGuard,
 } from './sessionWorkspace.js';
 
-const READ_PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  read_file: ['path'],
-  list_dir: ['path'],
-  stat_path: ['path'],
-  grep: ['path'],
-  glob: ['path'],
-};
-
-const WRITE_PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  write_file: ['path'],
-  file_op: ['path', 'from', 'to'],
-  apply_patch: ['path'],
-  desktop_office_convert: ['source', 'target'],
-  desktop_act: ['source', 'target'],
-};
-
-const WRITE_TOOLS = new Set(Object.keys(WRITE_PATH_FIELDS));
 
 export interface SessionPathGuardOptions {
   readonly workspace: string;
@@ -104,13 +88,6 @@ function readonlyReason(toolName: string): string {
   if (toolName === 'move_path') return '移动/重命名';
   if (toolName === 'make_dir') return '创建目录';
   return '修改文件';
-}
-
-function valueOf(record: Record<string, unknown>, field: string): string | null {
-  const value = record[field];
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -205,20 +182,23 @@ export async function sessionPathGuard(
 
     if (
       options.permission === 'read-only' &&
-      (WRITE_TOOLS.has(toolName) || toolName === 'run_command')
+      (WRITE_TOOL_NAMES.has(toolName) || toolName === 'run_command')
     ) {
       return `只读权限拒绝：当前对话不允许${readonlyReason(toolName)}。`;
     }
 
     if (typeof args !== 'object' || args === null) return null;
-    const record = args as Record<string, unknown>;
 
-    const fields = WRITE_PATH_FIELDS[toolName] ?? READ_PATH_FIELDS[toolName];
-    if (fields === undefined) return null;
+    /**
+     * ★ 用共享映射取"这次真正用到的路径"：
+     *   `desktop_act` 的点击/输入不碰文件，不该被当成写路径；
+     *   `file_op` 的 move 只看 from/to。旧表按整张表取，会误判。
+     */
+    const { reads, writes } = pathFieldsOf(toolName, args);
+    const values = [...writes, ...reads];
+    if (values.length === 0) return null;
 
-    for (const field of fields) {
-      const value = valueOf(record, field);
-      if (value === null) continue;
+    for (const value of values) {
       const literal = resolve(workspace, value);
       const real = await resolveRealPathForGuard(literal);
       const protectedDeny = deniedByProtected(literal, real, value);

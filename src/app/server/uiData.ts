@@ -48,6 +48,7 @@ export const EVENT_FAMILY_LABEL: Record<string, string> = {
   reflection: '反思与观察',
   diary: '日记',
   multimodal: '多模态',
+  workspace: '工作区',
   lifecycle: '生命周期与安全',
   chat: '会话',
   context: '上下文',
@@ -75,6 +76,7 @@ export const EVENT_LABEL: Record<string, string> = {
   'tool.call': '调用工具',
   'tool.result': '工具返回',
   'context.compacted': '上下文压缩',
+  'file.edited': '保存文件',
   // 执行
   'route.decided': '意图路由（历史）',
   'contract.written': '写下任务契约',

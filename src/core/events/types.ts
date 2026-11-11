@@ -60,6 +60,15 @@ export type EventType =
    */
   | 'context.compacted'
 
+  // ── 族 1.5 · 工作区（用户在工作区面板里保存文件）──
+  /**
+   * 用户在面板里保存了文件。
+   *
+   * ★ 为什么要落事件：AI 写文件有 `tool.call` 留痕，用户手改如果什么都不记，
+   *   事后就分不清"这个文件是谁改成这样的"。事件只记路径/大小/指纹，不记内容。
+   */
+  | 'file.edited'
+
   // ── 族 2 · 理解与契约（v8：只剩"写契约"，不再有"派发"）──
   /** @deprecated 历史值 —— 独立路由调用已在 v8 砍掉（置信度并入契约） */
   | 'route.decided'
@@ -395,6 +404,7 @@ export const EVENT_FAMILIES = {
    *    但它**既不在任何事件族、也不在历史清单**里 —— 是编译期护栏
    *    （`UnregisteredEventType`）把它抓出来的：能落盘、按族却查不到。
    */
+  workspace: ['file.edited'],
   context: ['context.compacted'],
   mcp: [
     'mcp.serverAdded',
