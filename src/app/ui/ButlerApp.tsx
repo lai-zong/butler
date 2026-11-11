@@ -28,6 +28,7 @@ import { DueReminderBanner } from './tasks/DueReminderBanner';
 import { ConsoleTransition } from './console/ConsoleTransition';
 import { computeConsoleBootStatus, type ConsoleBootMode } from './console/consoleBoot.js';
 import { WebPet } from './pet/WebPet';
+import { UsageReporter } from './usage/UsageReporter';
 import { errorMessage, fetchJson } from './lib/api.js';
 import { computeBootStatus, type ChatBootState } from './lib/boot.js';
 import { SessionIndexProvider } from './lib/sessionIndex.js';
@@ -38,6 +39,7 @@ import type {
   MemoryTarget,
   Overview,
   ToastMessage,
+  UsagePageId,
   ViewId,
 } from './lib/types.js';
 
@@ -57,9 +59,10 @@ const MAIN_TITLES: Record<MainView, string> = {
 const SECTION_TITLES: Record<ConsoleSection, string> = {
   memory: '记忆',
   growth: '演化',
+  usage: '使用节奏',
 };
 
-const CONSOLE_SECTIONS: readonly ConsoleSection[] = ['memory', 'growth'];
+const CONSOLE_SECTIONS: readonly ConsoleSection[] = ['memory', 'growth', 'usage'];
 
 interface Route {
   readonly surface: Surface;
@@ -85,7 +88,7 @@ function parseHash(): Route {
     return { surface: 'console', view: 'chat', section: 'memory' };
   }
 
-  if (raw === 'memory' || raw === 'growth') {
+  if (raw === 'memory' || raw === 'growth' || raw === 'usage') {
     return { surface: 'console', view: 'chat', section: raw };
   }
   // 审计页已删除；旧书签回到记忆，而不是落到主界面。
@@ -369,6 +372,18 @@ export function ButlerApp(): JSX.Element {
     timedOut: consoleTimedOut,
   });
 
+  /**
+   * 使用节奏只统计可映射到接口的页面。
+   * 控制台里的「使用节奏」页本身不可上报 —— 停在这一页时暂停心跳，
+   * 而不是把它冒充成记忆或演化。
+   */
+  const usagePage: UsagePageId | null =
+    surface === 'console'
+      ? consoleSection === 'usage'
+        ? null
+        : consoleSection
+      : view;
+
   // 就绪后至少展示完整动画（首次 1.2s / 二次约 0.5s），再淡出。
   // ★ 不能把 consoleTransitionLeaving 放进依赖：它一变成 true 会触发 cleanup，
   //   把负责卸载 overlay 的 finish 定时器清掉，overlay 就永远留在 DOM 里。
@@ -625,6 +640,9 @@ export function ButlerApp(): JSX.Element {
          * 启动动画期间不挂载，避免桌宠从启动页背后露出来。
          */}
         {!booting && <WebPet active={surface === 'main'} />}
+
+        {/* 使用节奏心跳：只在页面可见、窗口聚焦、应用就绪时打点。 */}
+        <UsageReporter page={usagePage} active={!booting} />
 
         <ToastStack toasts={toasts} onDismiss={dismissToast} />
 

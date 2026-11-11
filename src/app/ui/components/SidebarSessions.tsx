@@ -21,15 +21,12 @@ import type { SessionSummary } from '../lib/types.js';
 interface SidebarSessionsProps {
   /** 浮层形态（窄屏 / 图标栏）：需要遮罩与 Esc 关闭。 */
   readonly flyout: boolean;
-  /** 手机宽度：浮层从底部弹出，避开底部导航栏。 */
-  readonly mobile: boolean;
   readonly onClose: () => void;
   readonly onNavigateToChat: () => void;
 }
 
 export function SidebarSessions({
   flyout,
-  mobile,
   onClose,
   onNavigateToChat,
 }: SidebarSessionsProps): JSX.Element {
@@ -127,7 +124,7 @@ export function SidebarSessions({
         />
       )}
       <section
-        className={`side-sessions${flyout ? ' is-flyout' : ''}${mobile ? ' is-mobile' : ''}`}
+        className={`side-sessions${flyout ? ' is-flyout' : ''}`}
         id="side-sessions"
         aria-label="对话列表"
       >
@@ -206,7 +203,7 @@ export function SidebarSessions({
   );
 
   /**
-   * 窄屏浮层挂到 body：侧栏在手机上有 `backdrop-filter`，它会让 `position: fixed`
+   * 桌面窄窗口的浮层挂到 body：侧栏有 `backdrop-filter`，它会让 `position: fixed`
    * 的后代以侧栏为包含块 —— 不 portal 的话面板会错位、还可能被主区域的层盖住。
    */
   if (flyout && typeof document !== 'undefined') {

@@ -6,7 +6,7 @@
  * 设计要点（每一处都对应一个能力）：
  *   · 流式叙述：等待执行时先说思路，不让用户盯着转圈
  *   · 过程面板：思考 → 工具 → 再思考，全部可展开
- *   · 契约与复核：干前写了什么、干完逐条核对
+ *   · 契约与过程：干前写了什么、用了哪些工具、产出了什么
  *   · 反思回执：这一轮记录了什么试行记忆
  *   · 依据条：召回 / 注入 / 拦截与 seq 范围，直接留在这一轮下面
  *
@@ -15,10 +15,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import { Icon } from '../components/Icon';
-import { Modal } from '../components/Modal';
 import { Markdown } from '../components/Markdown';
 import { Badge, Collapse, InlineError, Skeleton } from '../components/Common';
 import { useAutoResize, useMounted, useNow } from '../lib/hooks.js';
@@ -26,8 +29,10 @@ import { ApiError, errorMessage, fetchJson, patchJson, postJson } from '../lib/a
 import {
   formatClock,
   formatDateFull,
+  formatDateTime,
   formatNumber,
   greeting,
+  plainText,
   relativeTime,
   truncate,
 } from '../lib/format.js';
@@ -38,6 +43,7 @@ import type {
   AgentTrace,
   AuditResponse,
   LiveAssistant,
+  LiveSteeringMessage,
   LiveTurn,
   LiveUsage,
   MessageDto,
@@ -52,11 +58,12 @@ import type {
   SessionSummary,
   SessionTitleResponse,
   SseEvent,
+  SteerResponse,
   ToastMessage,
   VerdictDto,
   MemoryTarget,
 } from '../lib/types.js';
-import { ModelPicker, type ModelChoice, type PickableProfile } from './ModelPicker';
+import { type ModelChoice, type PickableProfile } from './ModelPicker';
 import {
   parsePetFocusPayload,
   petFocusOriginChanged,
@@ -66,6 +73,24 @@ import {
 } from './petFocus.js';
 import { SessionControls } from './SessionControls';
 import { SessionSettingsSheet } from './SessionSettingsSheet';
+import { ApprovalCard } from './ApprovalCard';
+import {
+  approvalFromEvent,
+  currentApproval,
+  enqueueApproval,
+  removeApproval,
+  type ApprovalItem,
+} from './approvalQueue.js';
+import {
+  addPendingSteering,
+  approvalSteerBody,
+  confirmSteering,
+  isNoActiveTurnError,
+  recoverFromSteerFailure,
+  removePendingSteering,
+  runningSteerBody,
+  steeringStatusLabel,
+} from './steer.js';
 import {
   DEFAULT_REASONING,
   modelRefOf,
@@ -73,6 +98,25 @@ import {
   settingsOf,
 } from './sessionSettings.js';
 import { ProcessPanel, type ProcRound } from './Process';
+import { ReviewProcess } from './ReviewProcess';
+import {
+  applyReviewEvent,
+  emptyReviewProcess,
+  latestReviewText,
+  processFromTraces,
+  readReviewSse,
+  type ReviewFinding,
+  type ReviewFindingSeverity,
+  type ReviewHistoryResponse,
+  type ReviewProcessState,
+  type ReviewRunDto,
+  type ReviewRunReportDto,
+  type ReviewRunStatus,
+  type ReviewStreamEvent,
+  type ReviewTrace,
+  type ReviewUsage,
+  type ReviewVerdict,
+} from './reviewLive.js';
 import {
   AssumptionNotice,
   ContractCard,
@@ -80,7 +124,6 @@ import {
   MemoryRefs,
   ReflectionCard,
   ReportsPanel,
-  VerdictCard,
 } from './Cards';
 import { QuizSection } from './Quiz';
 
@@ -112,7 +155,6 @@ function clearDraftText(): void {
 interface ModelCatalogResponse {
   readonly profiles: readonly PickableProfile[];
   readonly lastChat: ModelChoice | null;
-  readonly lastReview: ModelChoice | null;
 }
 
 function fallbackModelChoice(profiles: readonly PickableProfile[]): ModelChoice | null {
@@ -183,39 +225,193 @@ interface ReviewTurn {
   readonly index: number;
   readonly user: MessageDto;
   readonly assistant: MessageDto | null;
-  readonly verdict: VerdictDto | undefined;
   readonly state: 'done' | 'failed' | 'interrupted' | 'running';
 }
 
+/** 面板里当前展示的一次审查（实时完成 / 历史恢复共用）。 */
 interface ReviewResult {
-  readonly turn: number;
+  readonly id: string | null;
+  readonly verdict: ReviewVerdict;
   readonly summary: string;
-  readonly criteria: number;
-  readonly error?: string;
+  readonly findings: readonly ReviewFinding[];
+  readonly unverified: readonly string[];
+  readonly markdown: string;
+  readonly legacy: boolean;
+  readonly traces: readonly ReviewTrace[];
+  readonly rounds: number | null;
+  readonly usage: ReviewUsage | null;
+  readonly turnIds: readonly string[];
+  readonly status: ReviewRunStatus;
+  readonly model: string | null;
+  readonly createdAt: number | null;
 }
 
-interface ReviewApiResponse {
-  readonly ok?: boolean;
-  readonly output?: {
-    readonly summary?: string;
-    readonly criteriaChecks?: readonly unknown[];
+interface ReviewScopeMapping {
+  /** 人话范围；没有可映射轮次时为空字符串。 */
+  readonly label: string;
+  /** 只有所有 turnIds 都能映射且连续时才给出可再次审查的范围。 */
+  readonly range: { readonly start: number; readonly end: number } | null;
+}
+
+/**
+ * turnIds → 当前会话轮次号。
+ *
+ * ★ turnIds 是 assistant message id；当前消息列表里找不到的轮次绝不能猜，
+ *   否则历史面板会伪造出一个不存在的范围。
+ */
+function mapReviewScope(
+  turnIds: readonly string[],
+  indexByMessageId: ReadonlyMap<string, number>,
+): ReviewScopeMapping {
+  const indices: number[] = [];
+  let missing = 0;
+  for (const id of turnIds) {
+    const index = indexByMessageId.get(id);
+    if (index === undefined) {
+      missing += 1;
+    } else if (!indices.includes(index)) {
+      indices.push(index);
+    }
+  }
+  indices.sort((a, b) => a - b);
+
+  if (indices.length === 0) {
+    return {
+      label: turnIds.length > 0 ? `${turnIds.length} 个轮次（当前会话不可定位）` : '',
+      range: null,
+    };
+  }
+
+  const nums = indices.map((index) => index + 1);
+  const contiguous = indices.every((value, i) => i === 0 || value === (indices[i - 1] ?? -1) + 1);
+  const label =
+    contiguous && indices.length > 1
+      ? `第 ${nums[0]}–${nums[nums.length - 1]} 轮`
+      : `第 ${nums.join('、')} 轮`;
+  const exactRange =
+    missing === 0 && contiguous
+      ? { start: indices[0] ?? 0, end: indices[indices.length - 1] ?? 0 }
+      : null;
+  return {
+    label:
+      missing > 0
+        ? `${label} · ${missing} 个轮次不在当前会话`
+        : label,
+    range: exactRange,
   };
-  readonly turns?: readonly {
-    readonly messageId: string;
-    readonly summary: string;
-    readonly criteria: number;
-  }[];
-  readonly error?: string;
 }
 
-interface ApprovalQueueItem {
-  readonly id: string;
-  readonly toolName: string;
-  readonly tier: string;
-  readonly summary: string;
-  readonly preview?: string;
-  readonly timeoutMs: number;
-  readonly receivedAt: number;
+function normalizeReviewUsage(value: unknown): ReviewUsage | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const rec = value as Record<string, unknown>;
+  const input = rec['inputTokens'];
+  const output = rec['outputTokens'];
+  if (typeof input !== 'number' || typeof output !== 'number') return null;
+  if (!Number.isFinite(input) || !Number.isFinite(output)) return null;
+  return { inputTokens: input, outputTokens: output };
+}
+
+function reviewRunStatus(run: ReviewRunDto): ReviewRunStatus {
+  if (run.status === 'completed' || run.status === 'failed' || run.status === 'aborted') {
+    return run.status;
+  }
+  return 'running';
+}
+
+function reviewRunSummary(run: ReviewRunDto): string {
+  const summary = typeof run.report?.summary === 'string' ? plainText(run.report.summary) : '';
+  if (summary.length > 0) return summary;
+  if (reviewRunStatus(run) === 'failed') {
+    return typeof run.error === 'string' && run.error.trim().length > 0
+      ? plainText(run.error)
+      : '审查失败';
+  }
+  if (reviewRunStatus(run) === 'aborted') return '审查已停止';
+  if (reviewRunStatus(run) === 'running') return '审查尚未结束';
+  return '没有文字结论';
+}
+
+function reviewStatusLabel(status: ReviewRunStatus): string {
+  if (status === 'completed') return '已完成';
+  if (status === 'failed') return '失败';
+  if (status === 'aborted') return '已停止';
+  return '进行中';
+}
+
+const REVIEW_VERDICT_LABEL: Record<ReviewVerdict, string> = {
+  pass: '通过',
+  fail: '不通过',
+  unknown: '未判定',
+};
+
+function isReviewVerdict(value: unknown): value is ReviewVerdict {
+  return value === 'pass' || value === 'fail' || value === 'unknown';
+}
+
+function isReviewSeverity(value: unknown): value is ReviewFindingSeverity {
+  return value === 'block' || value === 'warn' || value === 'info';
+}
+
+function reviewVerdictOf(report: ReviewRunReportDto | null | undefined): ReviewVerdict {
+  return isReviewVerdict(report?.verdict) ? report.verdict : 'unknown';
+}
+
+/**
+ * 只接受可以完整展示的 finding；旧记录缺 severity/evidence 时如实过滤，
+ * 不补造问题，也不把空白模板当结论。
+ */
+function reviewFindingsOf(
+  report: ReviewRunReportDto | null | undefined,
+): readonly ReviewFinding[] {
+  if (!Array.isArray(report?.findings)) return [];
+  const findings: ReviewFinding[] = [];
+  for (const raw of report.findings) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const rec = raw as unknown as Record<string, unknown>;
+    const severity = rec['severity'];
+    if (!isReviewSeverity(severity)) continue;
+    const problem = typeof rec['problem'] === 'string' ? rec['problem'].trim() : '';
+    const message = typeof rec['message'] === 'string' ? rec['message'].trim() : '';
+    const suggestion = typeof rec['suggestion'] === 'string' ? rec['suggestion'].trim() : '';
+    const evidence = Array.isArray(rec['evidence'])
+      ? rec['evidence'].filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
+      : [];
+    if (problem.length === 0 && message.length === 0) continue;
+    findings.push({
+      severity,
+      ...(problem.length > 0 ? { problem } : {}),
+      ...(message.length > 0 ? { message } : {}),
+      evidence,
+      ...(suggestion.length > 0 ? { suggestion } : {}),
+    });
+  }
+  return findings;
+}
+
+function reviewUnverifiedOf(report: ReviewRunReportDto | null | undefined): readonly string[] {
+  if (!Array.isArray(report?.unverified)) return [];
+  return report.unverified
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function reviewSummaryOf(report: ReviewRunReportDto | null | undefined): string {
+  return typeof report?.summary === 'string' ? report.summary.trim() : '';
+}
+
+/** 完整报告正文：report.markdown 优先，其次 completed.finalText，最后旧 summary。 */
+function reviewMarkdownOf(
+  report: ReviewRunReportDto | null | undefined,
+  finalText = '',
+): string {
+  const markdown = typeof report?.markdown === 'string' ? report.markdown.trim() : '';
+  if (markdown.length > 0) return markdown;
+  const body = finalText.trim();
+  if (body.length > 0) return body;
+  return reviewSummaryOf(report);
 }
 
 const SUGGESTIONS: readonly { readonly icon: 'memory' | 'calendar' | 'growth'; readonly text: string }[] = [
@@ -229,6 +425,47 @@ const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 
 /** 桌宠聚焦请求的一次性 TTL 很短（约 15s），2s 轮询能在过期前取走。 */
 const PET_FOCUS_POLL_MS = 2_000;
+
+/**
+ * 判定“已经贴底”的剩余距离。
+ *
+ * ★ 原来给 180px：长回答只要上滚不到 180px 就被当成还在底部，
+ *   下一批增量立刻把人拽回末尾，实际上根本没法回看。
+ *   只留 32px 容错（约一两行），几乎贴底才继续跟随。
+ */
+const BOTTOM_THRESHOLD_PX = 32;
+
+/**
+ * 草稿写盘的合并窗口。
+ *
+ * ★ 中文输入法会把一句话拆成很多次 input；每次按键都同步写 localStorage
+ *   会让候选窗卡顿。300ms 足够合并连续输入，又不会丢太多内容。
+ */
+const DRAFT_WRITE_DEBOUNCE_MS = 300;
+
+/**
+ * 「回到最新」浮标：只补定位与浮起，尺寸/字体沿用 btn btn-ghost btn-sm。
+ * 用内联样式而不是改 CSS 文件，避免为一个小按钮扩大改动面。
+ */
+const JUMP_LATEST_STYLE: CSSProperties = {
+  position: 'absolute',
+  left: '50%',
+  bottom: 18,
+  zIndex: 3,
+  transform: 'translateX(-50%)',
+  background: 'var(--surface)',
+  borderColor: 'var(--line-strong)',
+  boxShadow: 'var(--shadow-md)',
+};
+
+/**
+ * Markdown 的渲染成本主要在 react-markdown 每次 render 都重新 parse。
+ *
+ * ★ `components/Markdown` **自身已经用 memo 包裹**（见该文件顶部说明），
+ *   这里不再重复包一层：双重 memo 不会更快，只是多一层比较。
+ *   保留别名，是因为调用处读起来仍然要表达"这是被 memo 的 Markdown"。
+ */
+const MemoizedMarkdown = Markdown;
 
 /**
  * 把 ?session=<id> 写回地址栏，保留 hash（#/chat）。
@@ -255,6 +492,22 @@ function patchLast(turns: readonly LiveTurn[], fn: (a: LiveAssistant) => LiveAss
   if (current === undefined) return [...turns];
   const next = [...turns];
   next[index] = { ...current, assistant: fn(current.assistant) };
+  return next;
+}
+
+/** 只改最后一轮的 steering 消息列表；没有变化时返回原引用，避免重复渲染。 */
+function withLastSteering(
+  turns: readonly LiveTurn[],
+  fn: (messages: readonly LiveSteeringMessage[]) => readonly LiveSteeringMessage[],
+): readonly LiveTurn[] {
+  if (turns.length === 0) return turns;
+  const index = turns.length - 1;
+  const current = turns[index];
+  if (current === undefined) return turns;
+  const steering = fn(current.steering);
+  if (steering === current.steering) return turns;
+  const next = [...turns];
+  next[index] = { ...current, steering };
   return next;
 }
 
@@ -358,29 +611,54 @@ export function ChatView({
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsTargetId, setSettingsTargetId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  /**
+   * 是否贴底。ref 给滚动逻辑用（不触发渲染），state 只给「回到最新」浮标用；
+   * onScroll 只在跨过阈值时更新它，避免每个 scroll 事件都重渲染整棵对话树。
+   */
+  const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const [loadingSession, setLoadingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [approvals, setApprovals] = useState<readonly ApprovalQueueItem[]>([]);
+  const [approvals, setApprovals] = useState<readonly ApprovalItem[]>([]);
   const [answering, setAnswering] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [ttsSupported, setTtsSupported] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const [tick, setTick] = useState(() => Date.now());
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRange, setReviewRange] = useState<{ readonly start: number; readonly end: number } | null>(null);
   const [reviewAnchor, setReviewAnchor] = useState<number | null>(null);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
-  const [reviewModelOpen, setReviewModelOpen] = useState(false);
-  const [reviewModel, setReviewModel] = useState<ModelChoice | null>(null);
+  /** 时间轴上当前点中的轮次：只负责高亮和下方预览，不改变范围语义。 */
+  const [reviewFocus, setReviewFocus] = useState<number | null>(null);
   const [reviewRatio, setReviewRatio] = useState(0.5);
   const [navTurn, setNavTurn] = useState<number | null>(null);
+  /** 用户是否手动滚动过轮次轨道；上翻后不抢滚动。 */
+  const railTouchedRef = useRef(false);
+  /** 点击某轮时请求下一次自动滚入可见区。 */
+  const railScrollRequestRef = useRef(false);
+  /** 自定义窄滚动条的几何信息；原生滚动条隐藏，避免 44px 轨道抖动。 */
+  const [railThumb, setRailThumb] = useState<{
+    readonly track: number;
+    readonly height: number;
+    readonly top: number;
+  } | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
-  const [reviewResults, setReviewResults] = useState<readonly ReviewResult[]>([]);
+  const [reviewRun, setReviewRun] = useState<ReviewResult | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewStopped, setReviewStopped] = useState(false);
+  /** 实时审查过程；completed 后保留，历史 run 由 traces 重建工具部分。 */
+  const [reviewProcess, setReviewProcess] = useState<ReviewProcessState>(emptyReviewProcess);
+  const [reviewHistory, setReviewHistory] = useState<readonly ReviewRunDto[]>([]);
+  const [reviewHistoryLoading, setReviewHistoryLoading] = useState(false);
+  const [reviewHistoryError, setReviewHistoryError] = useState<string | null>(null);
+  const [reviewHistoryOpen, setReviewHistoryOpen] = useState(false);
+  /** 当前展示的历史 run id；实时审查完成后也用它高亮列表。 */
+  const [reviewActiveId, setReviewActiveId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
+  const turnDotsRef = useRef<HTMLDivElement | null>(null);
+  const reviewTimelineRef = useRef<HTMLDivElement | null>(null);
   const reviewRatioRestoredRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -392,14 +670,54 @@ export function ChatView({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const voiceBaseRef = useRef('');
   const reviewAbortRef = useRef<AbortController | null>(null);
+  /** 重新打开面板时，是否等历史加载完再恢复最近一条 completed。 */
+  const reviewAutoRestoreRef = useRef(false);
+  /** 防止旧会话的历史请求覆盖新会话列表。 */
+  const reviewHistorySeqRef = useRef(0);
+  /** 抽屉开关按钮 / 抽屉关闭按钮：用于打开时送入焦点、关闭后还回焦点。 */
+  const reviewHistoryToggleRef = useRef<HTMLButtonElement | null>(null);
+  const reviewHistoryCloseRef = useRef<HTMLButtonElement | null>(null);
   const atBottomRef = useRef(true);
+  /**
+   * 只在用户主动发送 / 打开会话时置 true：流式增量不能把正在回看的用户拽回底部。
+   * 消费它的 effect 会立刻复位，所以它表达的是“这一次变更必须贴底”。
+   */
   const forceScrollRef = useRef(true);
+  /** 草稿防抖定时器（window.setTimeout 的 id）；null 表示没有在等。 */
+  const draftTimerRef = useRef<number | null>(null);
+  /** 还没落盘的草稿；null 表示没有待写内容（空串仍要写，用来清掉旧草稿）。 */
+  const pendingDraftRef = useRef<string | null>(null);
+  /**
+   * 最新一轮的令牌。
+   *
+   * ★ 不能拿 abortRef 当判据：stop() 会先把 abortRef 置空，等旧流的 finally
+   *   跑到时已经对不上，用户主动停止的那一轮反而没人清理。独立令牌才能把
+   *   “旧轮收尾”和“新一轮状态”分开。
+   */
+  const turnTokenRef = useRef<object | null>(null);
+  /**
+   * 建会话 + 发首条消息期间的重复提交闸门。
+   *
+   * ★ 清空输入现在发生在 await 之后：这段时间输入框里还有字，用户连按 Enter
+   *   会创建两个会话、发出两条消息。旧顺序靠“先清空”顺带挡住了这个问题。
+   */
+  const sendPendingRef = useRef(false);
   const bootRef = useRef(false);
   const loadSeqRef = useRef(0);
   const sessionsRef = useRef<readonly SessionSummary[]>([]);
   /** 标题懒生成：每个会话在本次页面生命周期里最多请求一次，失败不重试。 */
   const titleAttemptRef = useRef<Set<string>>(new Set());
   const streamingRef = useRef(false);
+  /**
+   * steer 收到 409 后暂存文字：等本轮 SSE 收尾，再用普通 /api/chat 发出去。
+   * 不直接重发，避免旧流还没结束时把 streaming 状态和 abortRef 弄乱。
+   */
+  /** 分隔条拖动的收尾函数（卸载时必须调用，见 handleReviewSplitterPointerDown）。 */
+  const splitterCleanupRef = useRef<(() => void) | null>(null);
+
+  const resumingAfterTurnRef = useRef<{ readonly sessionId: string; readonly text: string } | null>(
+    null,
+  );
   const bootDoneRef = useRef(false);
   const pendingPetFocusRef = useRef<PendingPetFocus | null>(null);
   const petFocusSeqRef = useRef(0);
@@ -408,8 +726,45 @@ export function ChatView({
   const now = useNow(30_000);
   const mounted = useMounted();
   const hasContent = messages.length > 0 || liveTurns.length > 0;
-  const reviewTurns = useMemo(() => buildReviewTurns(messages, verdicts), [messages, verdicts]);
-  const reviewableTurns = reviewTurns.filter((t) => t.state === 'done' && t.assistant !== null);
+  const reviewTurns = useMemo(() => buildReviewTurns(messages), [messages]);
+  /**
+   * 当前轮：默认是最后一轮；点击某轮后固定到该轮。
+   * 状态不再用颜色区分，轨道只需要知道“哪一颗是当前”。
+   */
+  const currentTurnIndex =
+    navTurn !== null && navTurn < reviewTurns.length
+      ? navTurn
+      : reviewTurns.length > 0
+        ? reviewTurns.length - 1
+        : null;
+
+  /**
+   * 自定义滚动条：只用 4px 覆盖在轨道右侧，不占内容宽度、不撑开 44px。
+   * 原生滚动条隐藏（否则 Chromium 的 scrollbar-width 会吃掉 15px）。
+   */
+  const syncRailScrollbar = useCallback((): void => {
+    const el = turnDotsRef.current;
+    if (el === null) {
+      setRailThumb(null);
+      return;
+    }
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    if (scrollHeight <= clientHeight + 1) {
+      setRailThumb(null);
+      return;
+    }
+    const height = Math.max(30, Math.round((clientHeight / scrollHeight) * clientHeight));
+    const maxTop = Math.max(0, clientHeight - height);
+    const top = Math.round(
+      (scrollTop / Math.max(1, scrollHeight - clientHeight)) * maxTop,
+    );
+    setRailThumb((prev) =>
+      prev !== null && prev.track === clientHeight && prev.height === height && prev.top === top
+        ? prev
+        : { track: clientHeight, height, top },
+    );
+  }, []);
+  const reviewableTurns = reviewTurns.filter(isReviewableTurn);
   const lastReviewable = reviewableTurns[reviewableTurns.length - 1] ?? null;
   const reviewRangeText =
     reviewRange === null
@@ -417,6 +772,67 @@ export function ChatView({
       : reviewRange.start === reviewRange.end
         ? `第 ${reviewRange.start + 1} 轮`
         : `第 ${reviewRange.start + 1}–${reviewRange.end + 1} 轮`;
+  /** 范围里含中断轮时只给一句轻量说明：中断轮只审查已生成部分。 */
+  const reviewRangeHasInterrupted =
+    reviewRange !== null &&
+    reviewTurns.some(
+      (t) =>
+        t.index >= reviewRange.start &&
+        t.index <= reviewRange.end &&
+        t.state === 'interrupted',
+    );
+  /** 当前点中的轮次只用于高亮/预览；不可审查时回退到首个可选轮次做 Tab 落点。 */
+  const reviewFocusTurn = reviewFocus === null ? null : (reviewTurns[reviewFocus] ?? null);
+  const reviewPreviewTurn =
+    reviewFocusTurn !== null && isReviewableTurn(reviewFocusTurn) ? reviewFocusTurn : null;
+  const reviewTabStop = reviewPreviewTurn?.index ?? reviewableTurns[0]?.index ?? null;
+
+  /** assistant message id → 当前会话轮次号；历史 run 的范围只从这里来。 */
+  const reviewTurnIndexById = useMemo(() => {
+    const indexById = new Map<string, number>();
+    for (const turn of reviewTurns) {
+      if (turn.assistant !== null) indexById.set(turn.assistant.id, turn.index);
+    }
+    return indexById;
+  }, [reviewTurns]);
+
+  const reviewStreamText = latestReviewText(reviewProcess);
+  const reviewViewKind =
+    reviewBusy
+      ? 'running'
+      : reviewRun !== null
+        ? reviewRun.status === 'completed'
+          ? 'completed'
+          : reviewRun.status === 'aborted'
+            ? 'stopped'
+            : 'failed'
+        : reviewStopped
+          ? 'stopped'
+          : reviewError !== null
+            ? 'failed'
+            : 'idle';
+  const reviewResultScope =
+    reviewRun !== null
+      ? mapReviewScope(reviewRun.turnIds, reviewTurnIndexById).label || reviewRangeText
+      : reviewRangeText;
+  const reviewStatusText =
+    reviewViewKind === 'running'
+      ? '审查中'
+      : reviewViewKind === 'completed'
+        ? '已完成'
+        : reviewViewKind === 'failed'
+          ? '未完成'
+          : reviewViewKind === 'stopped'
+            ? '已停止'
+            : '待开始';
+  const reviewStatusClass =
+    reviewViewKind === 'running'
+      ? ' is-busy'
+      : reviewViewKind === 'failed' || reviewViewKind === 'stopped'
+        ? ' is-warn'
+        : reviewViewKind === 'completed'
+          ? ''
+          : ' is-idle';
 
   /**
    * streaming 同时写进 ref。
@@ -438,7 +854,6 @@ export function ChatView({
       const last = res.lastChat ?? fallbackModelChoice(res.profiles);
       setLastChatModel(last);
       setChatModel((previous) => previous ?? last);
-      setReviewModel((previous) => previous ?? res.lastReview ?? last);
     } catch (err) {
       setModelCatalogError(errorMessage(err));
     } finally {
@@ -449,6 +864,95 @@ export function ChatView({
   useEffect(() => {
     void loadModelCatalog();
   }, [loadModelCatalog]);
+
+  const loadReviewHistory = useCallback(async (id: string): Promise<void> => {
+    const seq = ++reviewHistorySeqRef.current;
+    setReviewHistoryLoading(true);
+    setReviewHistoryError(null);
+    try {
+      const res = await fetchJson<ReviewHistoryResponse>(
+        `/api/reviews?sessionId=${encodeURIComponent(id)}`,
+      );
+      if (seq !== reviewHistorySeqRef.current) return;
+      if (!Array.isArray(res.reviews)) throw new Error('审查历史格式不正确');
+      const sorted = [...res.reviews].sort(
+        (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+      );
+      setReviewHistory(sorted);
+    } catch (err) {
+      if (seq !== reviewHistorySeqRef.current) return;
+      setReviewHistoryError(errorMessage(err));
+    } finally {
+      if (seq === reviewHistorySeqRef.current) setReviewHistoryLoading(false);
+    }
+  }, []);
+
+  // 切会话 / 首屏加载时取一次历史；打开审查面板时再刷新一次。
+  useEffect(() => {
+    if (sessionId === null) {
+      reviewHistorySeqRef.current += 1;
+      setReviewHistory([]);
+      setReviewHistoryError(null);
+      setReviewHistoryLoading(false);
+      setReviewHistoryOpen(false);
+      return;
+    }
+    void loadReviewHistory(sessionId);
+  }, [loadReviewHistory, sessionId]);
+
+  useEffect(() => {
+    if (!reviewOpen || sessionId === null) return;
+    void loadReviewHistory(sessionId);
+  }, [loadReviewHistory, reviewOpen, sessionId]);
+
+  /**
+   * 历史抽屉打开时：焦点进入关闭按钮，Esc 关闭它并把焦点还给「历史」按钮。
+   *
+   * ★ 抽屉是非模态的（审查头部仍可点击），所以不做焦点陷阱，只处理进出两条路径。
+   */
+  useEffect(() => {
+    if (!reviewHistoryOpen) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      setReviewHistoryOpen(false);
+      reviewHistoryToggleRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const frame = window.requestAnimationFrame(() => {
+      reviewHistoryCloseRef.current?.focus();
+    });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.cancelAnimationFrame(frame);
+    };
+  }, [reviewHistoryOpen]);
+
+  // 关闭后重新打开：内存里没有结果时，恢复最近一条 completed。
+  useEffect(() => {
+    if (!reviewOpen || !reviewAutoRestoreRef.current) return;
+    if (reviewHistoryLoading) return;
+    reviewAutoRestoreRef.current = false;
+    if (
+      reviewRun !== null ||
+      reviewBusy ||
+      reviewStopped ||
+      reviewError !== null ||
+      reviewProcess.rounds.length > 0
+    ) {
+      return;
+    }
+    const latest = reviewHistory.find((run) => reviewRunStatus(run) === 'completed');
+    if (latest !== undefined) restoreReviewHistory(latest);
+  }, [
+    reviewOpen,
+    reviewHistoryLoading,
+    reviewHistory,
+    reviewRun,
+    reviewBusy,
+    reviewStopped,
+    reviewError,
+    reviewProcess,
+  ]);
 
   useEffect(() => {
     lastChatModelRef.current = lastChatModel;
@@ -541,9 +1045,58 @@ export function ChatView({
     requestSessionTitle(sessionId);
   }, [currentSession, loadingSession, requestSessionTitle, sessionId]);
 
+  /** 立刻把还没写盘的草稿落盘；beforeunload 与卸载各用一次。 */
+  const flushDraft = useCallback((): void => {
+    if (draftTimerRef.current !== null) {
+      window.clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    const pending = pendingDraftRef.current;
+    if (pending === null) return;
+    pendingDraftRef.current = null;
+    writeDraftText(pending);
+  }, []);
+
+  /**
+   * 丢弃待写草稿并清空存储。
+   *
+   * ★ 发送成功后必须连定时器一起取消：否则 300ms 后旧草稿会被重新写回，
+   *   下次打开空白会话又看见刚发出去的内容。
+   */
+  const discardDraft = useCallback((): void => {
+    if (draftTimerRef.current !== null) {
+      window.clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    pendingDraftRef.current = null;
+    clearDraftText();
+  }, []);
+
+  /**
+   * 草稿只在空白新会话里保存。
+   *
+   * ★ 300ms 合并写盘：中文输入法长句时，逐字符同步写 localStorage 会卡候选窗。
+   */
   useEffect(() => {
-    if (isDraftSession) writeDraftText(input);
-  }, [input, isDraftSession]);
+    if (!isDraftSession) return;
+    pendingDraftRef.current = input;
+    if (draftTimerRef.current !== null) window.clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = window.setTimeout(() => {
+      draftTimerRef.current = null;
+      flushDraft();
+    }, DRAFT_WRITE_DEBOUNCE_MS);
+  }, [flushDraft, input, isDraftSession]);
+
+  // 关页/刷新前把待写的那一份补上；卸载时同理，并清掉定时器避免悬空回调。
+  useEffect(() => {
+    const onBeforeUnload = (): void => flushDraft();
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      // 定时器一清就没有第二次机会：先把还没写盘的那份落下去，再收尾。
+      flushDraft();
+    };
+  }, [flushDraft]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -573,7 +1126,9 @@ export function ChatView({
   function jumpToTurn(index: number): void {
     const turn = reviewTurns[index];
     if (turn === undefined) return;
-    stopReview();
+    // 只是收起审查去看对话，不销毁已有结果/过程；重新打开还能继续看。
+    railTouchedRef.current = false;
+    railScrollRequestRef.current = true;
     setNavTurn(index);
     setReviewOpen(false);
     window.setTimeout(() => {
@@ -583,14 +1138,169 @@ export function ChatView({
     }, 40);
   }
 
+  // 当前轮变化时把它滚进轨道可见区；用户已经上翻轨道时不抢滚动。
+  useEffect(() => {
+    if (!active || currentTurnIndex === null) return;
+    const container = turnDotsRef.current;
+    if (container === null) return;
+    const dot = container.querySelector<HTMLElement>('.turn-dot.is-current');
+    if (dot === null) return;
+    if (railTouchedRef.current && !railScrollRequestRef.current) return;
+    railScrollRequestRef.current = false;
+    const box = container.getBoundingClientRect();
+    const target = dot.getBoundingClientRect();
+    const pad = 8;
+    if (target.top < box.top + pad) {
+      container.scrollTop -= box.top + pad - target.top;
+    } else if (target.bottom > box.bottom - pad) {
+      container.scrollTop += target.bottom - (box.bottom - pad);
+    }
+    syncRailScrollbar();
+  }, [active, currentTurnIndex, reviewTurns.length, syncRailScrollbar]);
+
+  // 内容/视口尺寸变化时重算自定义滚动条；原生滚动消失也不会抖动轨道。
+  useEffect(() => {
+    if (!active) return;
+    syncRailScrollbar();
+    const container = turnDotsRef.current;
+    let observer: ResizeObserver | null = null;
+    if (container !== null && typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => syncRailScrollbar());
+      observer.observe(container);
+    }
+    window.addEventListener('resize', syncRailScrollbar);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', syncRailScrollbar);
+    };
+  }, [active, reviewTurns.length, syncRailScrollbar]);
+
+  // 切会话时重置手动滚动标记，新会话默认贴到最新一轮。
+  useEffect(() => {
+    railTouchedRef.current = false;
+    railScrollRequestRef.current = false;
+  }, [sessionId]);
+
+  // 打开选择器时把当前点滚到轨道中间：15+ 轮时不会总是停在 01 或屏幕外。
+  useEffect(() => {
+    if (!reviewPickerOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (reviewFocus !== null) scrollReviewDotIntoView(reviewFocus, true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+    // 只在打开瞬间定位一次；后续点击/键盘由各自逻辑滚入。
+  }, [reviewPickerOpen]);
+
+  /*
+   * 横向时间轴：把纵向滚轮转成横向滚动（Shift/触控板原生 deltaX 同样处理），
+   * 键盘仍可用 ←/→；到边界时放行，避免把审查面板锁住无法上下滚动。
+   */
+  useEffect(() => {
+    if (!reviewPickerOpen) return;
+    const el = reviewTimelineRef.current;
+    if (el === null) return;
+    const onWheel = (event: WheelEvent): void => {
+      if (event.ctrlKey || event.metaKey) return;
+      const delta =
+        Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+      if (delta === 0) return;
+      const before = el.scrollLeft;
+      el.scrollLeft += delta;
+      if (el.scrollLeft !== before) event.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [reviewPickerOpen]);
+
+  /**
+   * 清空当前展示的审查（结果 / 过程 / 错误），并中止仍在进行的请求。
+   *
+   * ★ 历史列表不清空：它属于会话，不属于某一次展示。
+   * ★ 关闭面板不走这里；关闭只收起，重新打开还能看到原结果或继续看进度。
+   */
+  function resetReview(): void {
+    const controller = reviewAbortRef.current;
+    reviewAbortRef.current = null;
+    controller?.abort();
+    reviewAutoRestoreRef.current = false;
+    setReviewBusy(false);
+    setReviewRun(null);
+    setReviewError(null);
+    setReviewStopped(false);
+    setReviewProcess(emptyReviewProcess());
+    setReviewActiveId(null);
+    setReviewHistoryOpen(false);
+  }
+
+  /** 用一条持久化 run 恢复结论、traces、状态与可映射范围；不补造缺失字段。 */
+  function restoreReviewHistory(run: ReviewRunDto): void {
+    const status = reviewRunStatus(run);
+    const id = typeof run.id === 'string' && run.id.length > 0 ? run.id : null;
+    const report = run.report ?? null;
+    const traces = Array.isArray(run.traces) ? run.traces : [];
+    const usage = normalizeReviewUsage(run.usage);
+    const turnIds = Array.isArray(run.turnIds)
+      ? run.turnIds.filter((value): value is string => typeof value === 'string')
+      : [];
+    const model = typeof run.model === 'string' && run.model.length > 0 ? run.model : null;
+    const mapping = mapReviewScope(turnIds, reviewTurnIndexById);
+
+    setReviewRun({
+      id,
+      verdict: reviewVerdictOf(report),
+      summary: reviewSummaryOf(report),
+      findings: reviewFindingsOf(report),
+      unverified: reviewUnverifiedOf(report),
+      markdown: reviewMarkdownOf(report),
+      legacy: report?.legacy === true,
+      traces,
+      rounds: null,
+      usage,
+      turnIds,
+      status,
+      model,
+      createdAt: typeof run.createdAt === 'number' ? run.createdAt : null,
+    });
+    setReviewProcess({
+      ...emptyReviewProcess(),
+      rounds: processFromTraces(traces),
+      usage,
+      model,
+    });
+    setReviewActiveId(id);
+    setReviewBusy(false);
+    setReviewStopped(status === 'aborted');
+    setReviewError(
+      status === 'failed'
+        ? typeof run.error === 'string' && run.error.trim().length > 0
+          ? run.error
+          : '这次审查失败'
+        : status === 'running'
+          ? '这次审查记录还没有完成'
+          : null,
+    );
+    if (mapping.range !== null) {
+      setReviewRange(mapping.range);
+      setReviewAnchor(mapping.range.start);
+      setReviewFocus(mapping.range.start);
+    } else {
+      // 有轮次映射不上或范围不连续时，不把历史范围硬套到当前选择器上。
+      setReviewRange(null);
+      setReviewAnchor(null);
+      setReviewFocus(null);
+    }
+    setReviewPickerOpen(false);
+    setReviewHistoryOpen(false);
+    reviewAutoRestoreRef.current = false;
+  }
+
   function selectReviewTurn(index: number, shift: boolean): void {
     const turn = reviewTurns[index];
-    if (turn === undefined || turn.state !== 'done' || turn.assistant === null) return;
-    stopReview();
-    setReviewResults([]);
-    setReviewError(null);
-    setReviewModelOpen(false);
-    const extend = (shift || (reviewRange !== null && reviewRange.start === reviewRange.end)) && reviewAnchor !== null;
+    if (turn === undefined || !isReviewableTurn(turn)) return;
+    const extend =
+      (shift || (reviewRange !== null && reviewRange.start === reviewRange.end)) && reviewAnchor !== null;
+    resetReview();
+    setReviewFocus(index);
     if (extend) {
       setReviewRange({ start: Math.min(reviewAnchor, index), end: Math.max(reviewAnchor, index) });
     } else {
@@ -599,75 +1309,278 @@ export function ChatView({
     }
   }
 
+  /** 打开/收起轮次选择器；打开时把高亮定位到已选范围起点。 */
+  function toggleReviewPicker(): void {
+    if (reviewPickerOpen) {
+      setReviewPickerOpen(false);
+      return;
+    }
+    setReviewFocus(reviewRange?.start ?? lastReviewable?.index ?? null);
+    setReviewPickerOpen(true);
+  }
+
+  /** 把某个圆点滚进横向轨道；center=true 用于打开时居中。 */
+  function scrollReviewDotIntoView(index: number, center: boolean): void {
+    const container = reviewTimelineRef.current;
+    if (container === null) return;
+    const dot = container.querySelector<HTMLElement>(`[data-review-index="${index}"]`);
+    if (dot === null) return;
+    const box = container.getBoundingClientRect();
+    const target = dot.getBoundingClientRect();
+    if (center) {
+      container.scrollLeft += target.left + target.width / 2 - (box.left + box.width / 2);
+      return;
+    }
+    const pad = 18;
+    if (target.left < box.left + pad) {
+      container.scrollLeft -= box.left + pad - target.left;
+    } else if (target.right > box.right - pad) {
+      container.scrollLeft += target.right - (box.right - pad);
+    }
+  }
+
+  /** 找相邻的可选轮次，跳过失败/运行中。 */
+  function selectableReviewIndex(from: number, direction: 1 | -1): number | null {
+    for (let i = from + direction; i >= 0 && i < reviewTurns.length; i += direction) {
+      const turn = reviewTurns[i];
+      if (turn !== undefined && isReviewableTurn(turn)) return i;
+    }
+    return null;
+  }
+
+  function handleReviewTimelineKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (
+      event.key !== 'ArrowLeft' &&
+      event.key !== 'ArrowRight' &&
+      event.key !== 'Home' &&
+      event.key !== 'End'
+    ) {
+      return;
+    }
+    const from = reviewTabStop ?? 0;
+    let next: number | null = null;
+    if (event.key === 'ArrowLeft') next = selectableReviewIndex(from, -1);
+    else if (event.key === 'ArrowRight') next = selectableReviewIndex(from, 1);
+    else if (event.key === 'Home') next = reviewableTurns[0]?.index ?? null;
+    else next = reviewableTurns[reviewableTurns.length - 1]?.index ?? null;
+    if (next === null) return;
+    event.preventDefault();
+    setReviewFocus(next);
+    reviewTimelineRef.current
+      ?.querySelector<HTMLElement>(`[data-review-index="${next}"]`)
+      ?.focus({ preventScroll: true });
+    scrollReviewDotIntoView(next, false);
+  }
+
   async function startReview(range: { readonly start: number; readonly end: number }): Promise<void> {
     if (sessionId === null) return;
     const targets = reviewTurns.filter(
-      (t) => t.index >= range.start && t.index <= range.end && t.state === 'done' && t.assistant !== null,
+      (t) => t.index >= range.start && t.index <= range.end && isReviewableTurn(t),
     );
-    if (targets.length === 0) {
-      notify('选中的轮次里没有可审查的完成轮次', 'warning');
+    const messageIds = targets
+      .map((t) => t.assistant?.id)
+      .filter((id): id is string => id !== undefined);
+    if (messageIds.length === 0) {
+      notify('选中的轮次里没有可审查的完成或中断轮次', 'warning');
       return;
     }
 
     reviewAbortRef.current?.abort();
     const controller = new AbortController();
     reviewAbortRef.current = controller;
+    reviewAutoRestoreRef.current = false;
     setReviewRange(range);
     setReviewOpen(true);
     setReviewBusy(true);
-    setReviewResults([]);
+    setReviewRun(null);
     setReviewError(null);
+    setReviewStopped(false);
+    setReviewActiveId(null);
+    setReviewProcess(emptyReviewProcess());
     setReviewAnchor(range.start);
     setReviewPickerOpen(false);
-    setReviewModelOpen(false);
+    setReviewHistoryOpen(false);
+
+    /**
+     * reasoning / text / tool_call 可能非常密；按 48ms 批处理，避免每个 token
+     * 都触发整棵审查面板重渲染。completed / error 到达前先冲刷队列。
+     */
+    const queue: ReviewStreamEvent[] = [];
+    let flushTimer: number | null = null;
+    let sawTerminal = false;
+
+    const flushQueue = (): void => {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (queue.length === 0) return;
+      const batch = queue.splice(0, queue.length);
+      setReviewProcess((prev) => {
+        let next = prev;
+        for (const item of batch) next = applyReviewEvent(next, item);
+        return next;
+      });
+    };
+
+    const scheduleFlush = (): void => {
+      if (flushTimer === null) flushTimer = window.setTimeout(flushQueue, 48);
+    };
+
+    const handle = (event: ReviewStreamEvent): void => {
+      if (event.type === 'started') {
+        flushQueue();
+        setReviewProcess((prev) => applyReviewEvent(prev, event));
+        return;
+      }
+
+      if (event.type === 'completed') {
+        flushQueue();
+        sawTerminal = true;
+        const run = event.run;
+        const report = run.report ?? null;
+        const finalText = (
+          event.finalText.length > 0
+            ? event.finalText
+            : typeof run.report?.summary === 'string'
+              ? run.report.summary
+              : ''
+        ).trim();
+        const traces = event.traces.length > 0 ? event.traces : (run.traces ?? []);
+        const usage = event.usage ?? normalizeReviewUsage(run.usage);
+        const status = reviewRunStatus(run);
+        const id = typeof run.id === 'string' && run.id.length > 0 ? run.id : null;
+        const turnIds = Array.isArray(run.turnIds)
+          ? run.turnIds.filter((value): value is string => typeof value === 'string')
+          : messageIds;
+        const model = typeof run.model === 'string' && run.model.length > 0 ? run.model : null;
+        setReviewRun({
+          id,
+          verdict: reviewVerdictOf(report),
+          summary: reviewSummaryOf(report),
+          findings: reviewFindingsOf(report),
+          unverified: reviewUnverifiedOf(report),
+          markdown: reviewMarkdownOf(report, finalText),
+          legacy: report?.legacy === true,
+          traces,
+          rounds: Number.isFinite(event.rounds) ? event.rounds : null,
+          usage,
+          turnIds,
+          status,
+          model,
+          createdAt: typeof run.createdAt === 'number' ? run.createdAt : Date.now(),
+        });
+        setReviewActiveId(id);
+        setReviewStopped(status === 'aborted');
+        setReviewError(
+          status === 'failed'
+            ? typeof run.error === 'string' && run.error.trim().length > 0
+              ? run.error
+              : '审查失败'
+            : null,
+        );
+        setReviewProcess((prev) => {
+          const rounds = prev.rounds.length > 0 ? prev.rounds : processFromTraces(traces);
+          return {
+            ...prev,
+            rounds,
+            usage: usage ?? prev.usage,
+            finished: prev.finished ?? { rounds: event.rounds, reason: 'completed' },
+            model: prev.model ?? model,
+          };
+        });
+        void loadReviewHistory(sessionId);
+        return;
+      }
+
+      if (event.type === 'error') {
+        flushQueue();
+        sawTerminal = true;
+        if (event.aborted) {
+          setReviewStopped(true);
+          setReviewError(null);
+        } else {
+          setReviewStopped(false);
+          setReviewError(event.error.trim().length > 0 ? event.error : '审查失败');
+        }
+        if (event.runId !== undefined) void loadReviewHistory(sessionId);
+        return;
+      }
+
+      queue.push(event);
+      scheduleFlush();
+    };
 
     try {
-      const res = await postJson<ReviewApiResponse>(
-        '/api/reviews',
-        {
-          sessionId,
-          messageIds: targets.map((t) => t.assistant?.id).filter((id): id is string => id !== undefined),
-          ...(reviewModel !== null
-            ? { modelProfileId: reviewModel.profileId, modelId: reviewModel.modelId }
-            : {}),
-        },
-        { signal: controller.signal },
-      );
-      if (controller.signal.aborted) return;
-      const fallbackSummary = res.output?.summary?.trim() ?? '';
-      const results: ReviewResult[] =
-        res.turns !== undefined && res.turns.length > 0
-          ? res.turns.map((t, i) => ({
-              turn: targets[i]?.index !== undefined ? targets[i]!.index + 1 : i + 1,
-              summary: t.summary,
-              criteria: t.criteria,
-            }))
-          : [
-              {
-                turn: (targets[0]?.index ?? 0) + 1,
-                summary: fallbackSummary,
-                criteria: res.output?.criteriaChecks?.length ?? 0,
-              },
-            ];
-      setReviewResults(results);
+      const res = await fetch('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify({ sessionId, messageIds }),
+        signal: controller.signal,
+      });
+
+      // 预检失败仍是普通 JSON HTTP 400/404/503；先看 Content-Type 再决定怎么读。
+      const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+      if (!contentType.includes('text/event-stream')) {
+        let payload: unknown = null;
+        try {
+          payload = (await res.json()) as unknown;
+        } catch {
+          payload = null;
+        }
+        const record =
+          typeof payload === 'object' && payload !== null
+            ? (payload as Record<string, unknown>)
+            : null;
+        const message =
+          record !== null && typeof record['error'] === 'string' && record['error'].length > 0
+            ? record['error']
+            : `请求失败（HTTP ${res.status}）`;
+        throw new ApiError(message, res.status, payload);
+      }
+
+      if (!res.ok) {
+        throw new ApiError(`请求失败（HTTP ${res.status}）`, res.status, null);
+      }
+
+      await readReviewSse(res, handle);
+      flushQueue();
+      if (!sawTerminal && !controller.signal.aborted) {
+        // 连接结束但没有 completed / error：只报未完成，不把半截正文当结论。
+        setReviewError('审查连接已结束，但没有收到完成事件');
+        setReviewStopped(false);
+      }
     } catch (err) {
+      flushQueue();
+      if (sawTerminal) return;
       if (controller.signal.aborted) {
-        setReviewError('已停止审查');
-      } else {
+        if (reviewAbortRef.current === controller) {
+          setReviewStopped(true);
+          setReviewError(null);
+        }
+      } else if (reviewAbortRef.current === controller) {
         setReviewError(errorMessage(err));
+        setReviewStopped(false);
+        void loadReviewHistory(sessionId);
       }
     } finally {
-      if (reviewAbortRef.current === controller) reviewAbortRef.current = null;
-      setReviewBusy(false);
+      flushQueue();
+      if (reviewAbortRef.current === controller) {
+        reviewAbortRef.current = null;
+        setReviewBusy(false);
+      }
     }
   }
 
   function stopReview(): void {
-    if (reviewAbortRef.current === null) return;
-    reviewAbortRef.current.abort();
+    const controller = reviewAbortRef.current;
+    if (controller === null) return;
     reviewAbortRef.current = null;
+    controller.abort();
     setReviewBusy(false);
-    setReviewError('已停止审查');
+    setReviewStopped(true);
+    setReviewError(null);
+    // 不生成结论；已收到的过程（reasoning / 工具）保留给重新打开查看。
   }
 
   function clampReviewRatio(value: number): number {
@@ -689,12 +1602,24 @@ export function ChatView({
     const onMove = (moveEvent: PointerEvent): void => {
       resizeReviewTo(startRatio + (startX - moveEvent.clientX) / width);
     };
-    const onUp = (): void => {
+    /**
+     * ★ 收尾必须覆盖三种情况：正常松手、指针被系统取消（Alt+Tab、
+     *   触控笔离开范围）、以及组件在拖动中被卸载。
+     *
+     *   旧实现只监听 pointerup：拖动中切走窗口，监听器会一直留在 window 上，
+     *   之后每次鼠标移动都会改审查面板宽度，直到刷新页面。
+     *   这里用 pointercancel 兜住前者，用 cleanupRef 兜住卸载。
+     */
+    const cleanup = (): void => {
       window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+      splitterCleanupRef.current = null;
     };
+    splitterCleanupRef.current = cleanup;
     window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointerup', cleanup);
+    window.addEventListener('pointercancel', cleanup);
   }
 
   function handleReviewSplitterKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
@@ -704,26 +1629,46 @@ export function ChatView({
   }
 
   function openReview(): void {
-    if (lastReviewable === null) {
-      notify('还没有可审查的已完成轮次', 'warning');
-      return;
+    const hasReviewView =
+      reviewRun !== null ||
+      reviewBusy ||
+      reviewStopped ||
+      reviewError !== null ||
+      reviewProcess.rounds.length > 0;
+    if (!hasReviewView) {
+      if (lastReviewable === null && reviewHistory.length === 0) {
+        notify('还没有可审查的完成或中断轮次', 'warning');
+        return;
+      }
+      // 关闭再打开时优先显示内存里的结果；没有才从历史恢复最近一条 completed。
+      reviewAutoRestoreRef.current = true;
+      if (sessionId !== null) void loadReviewHistory(sessionId);
+      const target =
+        reviewRange ??
+        (lastReviewable !== null
+          ? { start: lastReviewable.index, end: lastReviewable.index }
+          : null);
+      if (target !== null) {
+        setReviewRange(target);
+        setReviewAnchor(null);
+      }
     }
-    const target = reviewRange ?? { start: lastReviewable.index, end: lastReviewable.index };
-    stopReview();
-    setReviewRange(target);
-    setReviewAnchor(null);
-    setReviewResults([]);
-    setReviewError(null);
     setReviewPickerOpen(false);
-    setReviewModelOpen(false);
     setReviewOpen(true);
   }
 
   function closeReview(): void {
-    stopReview();
+    // ★ 只收起面板：不清结果/过程/历史，也不 abort 仍在跑的审查。
+    reviewAutoRestoreRef.current = false;
     setReviewPickerOpen(false);
-    setReviewModelOpen(false);
+    setReviewHistoryOpen(false);
     setReviewOpen(false);
+  }
+
+  /** 收起历史抽屉，并把焦点还给入口按钮。 */
+  function closeReviewHistory(): void {
+    setReviewHistoryOpen(false);
+    reviewHistoryToggleRef.current?.focus();
   }
 
   function toggleReview(): void {
@@ -766,12 +1711,15 @@ export function ChatView({
     setReviewRange(null);
     setReviewAnchor(null);
     setReviewPickerOpen(false);
-    setReviewModelOpen(false);
     setNavTurn(null);
-    reviewAbortRef.current?.abort();
-    reviewAbortRef.current = null;
-    setReviewResults([]);
-    setReviewError(null);
+    resetReview();
+    // 历史属于会话：切走时立即作废旧列表，等新会话的 GET 回来再填。
+    reviewHistorySeqRef.current += 1;
+    setReviewHistory([]);
+    setReviewHistoryError(null);
+    setReviewHistoryLoading(false);
+    setReviewHistoryOpen(false);
+    reviewAutoRestoreRef.current = false;
     forceScrollRef.current = true;
 
     try {
@@ -783,6 +1731,8 @@ export function ChatView({
       setQuizzes(res.quizzes);
       // 详情接口带完整 settings；只取档位/模型，正文不进入列表或 composer。
       syncActiveSettings(res.session);
+      // 读草稿前先落盘：防抖窗口里的最后几个字还没写进 localStorage。
+      flushDraft();
       setInput(res.messages.length === 0 ? readDraftText() : '');
       return { ok: true, error: null };
     } catch (err) {
@@ -793,7 +1743,7 @@ export function ChatView({
     } finally {
       if (token === loadSeqRef.current) setLoadingSession(false);
     }
-  }, [syncActiveSettings, updateStreaming]);
+  }, [flushDraft, syncActiveSettings, updateStreaming]);
 
   /**
    * 把“打开会话 / 打开会话设置”注册给侧栏。
@@ -811,6 +1761,23 @@ export function ChatView({
     });
     return () => registerHandlers(null);
   }, [loadSession, registerHandlers]);
+
+  /**
+   * 桌宠“在完整对话中查看”的同页入口。
+   *
+   * 桌宠不再整页跳转，只发一个会话切换意图；这里复用 loadSession，
+   * 因此不会刷新页面，也不会丢掉当前桌板状态。
+   */
+  useEffect(() => {
+    const onOpenSession = (event: Event): void => {
+      const detail = (event as CustomEvent<{ readonly sessionId?: unknown }>).detail;
+      const id = typeof detail?.sessionId === 'string' ? detail.sessionId.trim() : '';
+      if (id.length === 0 || id === sessionIdRef.current) return;
+      void loadSession(id);
+    };
+    window.addEventListener('butler:open-session', onOpenSession);
+    return () => window.removeEventListener('butler:open-session', onOpenSession);
+  }, [loadSession]);
 
   /**
    * 应用一次桌宠聚焦请求（只在当前页跳转，不新开窗口）。
@@ -942,6 +1909,8 @@ export function ChatView({
       setSettingsError(null);
       setSettingsTargetId(null);
       setMessages([]);
+      // 新建空白会话会把草稿带回 composer：先落盘，别读到防抖窗口里的旧值。
+      flushDraft();
       setInput(readDraftText());
       setCancellations([]);
       setLocalCancel(null);
@@ -954,18 +1923,20 @@ export function ChatView({
       setReviewRange(null);
       setReviewAnchor(null);
       setReviewPickerOpen(false);
-      setReviewModelOpen(false);
       setNavTurn(null);
-      reviewAbortRef.current?.abort();
-      reviewAbortRef.current = null;
-      setReviewResults([]);
-      setReviewError(null);
+      resetReview();
+      reviewHistorySeqRef.current += 1;
+      setReviewHistory([]);
+      setReviewHistoryError(null);
+      setReviewHistoryLoading(false);
+      setReviewHistoryOpen(false);
+      reviewAutoRestoreRef.current = false;
       forceScrollRef.current = true;
       window.setTimeout(() => textareaRef.current?.focus(), 140);
     } catch (err) {
       notify(errorMessage(err), 'danger');
     }
-  }, [applySummary, notify, setCurrentId, syncActiveSettings, updateStreaming]);
+  }, [applySummary, flushDraft, notify, setCurrentId, syncActiveSettings, updateStreaming]);
 
   const applyPatchedSession = useCallback(
     (detail: SessionSummary): void => {
@@ -1075,8 +2046,12 @@ export function ChatView({
             : null;
         const requestedSession =
           requested !== null ? list.find((s) => s.id === requested) : undefined;
+        // 默认不把桌宠会话当成普通对话打开；只有显式 ?session= 才进入它。
         const first =
-          requestedSession ?? list.find((s) => s.messageCount > 0) ?? list[0];
+          requestedSession ??
+          list.find((s) => s.isPet !== true && s.messageCount > 0) ??
+          list.find((s) => s.isPet !== true) ??
+          list[0];
         if (first !== undefined) {
           onBootState({ state: 'loading', phase: 'session' });
           const outcome = await loadSession(first.id);
@@ -1196,7 +2171,11 @@ export function ChatView({
     if (el === null) return;
     if (forceScrollRef.current || atBottomRef.current) {
       forceScrollRef.current = false;
+      // 程序贴底 = 重新跟随：内容不够高、scrollTop 不变时不会触发 scroll 事件，
+      // 所以 ref 和浮标状态都要在这里一起复位。
+      atBottomRef.current = true;
       el.scrollTop = el.scrollHeight;
+      setPinnedToBottom(true);
     }
   }, [active, messages, liveTurns]);
 
@@ -1222,7 +2201,13 @@ export function ChatView({
     };
   }, []);
 
-  async function ensureSession(): Promise<string | null> {
+  /**
+   * 没有当前会话时先建一个。
+   *
+   * ★ 创建失败的提示由调用方给：发送路径要说明“消息没发出去、输入和附件还在”，
+   *   设置路径只需要原因；两条路径共用同一份创建流程，避免各写一遍。
+   */
+  async function ensureSession(failureNote?: string): Promise<string | null> {
     if (sessionId !== null) return sessionId;
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
@@ -1231,43 +2216,100 @@ export function ChatView({
       setCurrentId(res.session.id);
       return res.session.id;
     } catch (err) {
-      notify(errorMessage(err), 'danger');
+      const reason = errorMessage(err);
+      notify(failureNote === undefined ? reason : `${reason}；${failureNote}`, 'danger');
       return null;
     }
   }
 
+  /** 把一条用户补充消息挂到当前轮（服务端已持久化；这里只为本地即时可见）。 */
+  function addSteeringMessage(text: string): void {
+    setLiveTurns((prev) => withLastSteering(prev, (messages) => addPendingSteering(messages, text)));
+  }
+
+  /** SSE `steering` 确认 / 去重。 */
+  function confirmSteeringMessage(text: string): void {
+    setLiveTurns((prev) => withLastSteering(prev, (messages) => confirmSteering(messages, text)));
+  }
+
+  /** 请求失败：撤掉尚未被服务端确认的乐观消息。 */
+  function dropSteeringMessage(text: string): void {
+    setLiveTurns((prev) =>
+      withLastSteering(prev, (messages) => removePendingSteering(messages, text)),
+    );
+  }
+
   async function send(override?: string): Promise<void> {
-    if (streaming) return;
     const text = (override ?? input).trim();
+
+    /**
+     * 运行中发送 = steering：
+     * 消息立即进服务端历史，在当前工具返回后注入本轮；不新开 SSE 轮次。
+     */
+    if (streaming) {
+      await steerRunning(text);
+      return;
+    }
+
     if (text.length === 0 && attachments.length === 0) return;
     if (!canChat) {
       notify('还没有配置模型。请在设置里查看接入方式。', 'warning');
       return;
     }
+    // 等建会话期间输入框还留着原文，必须挡住第二次提交（见 sendPendingRef）。
+    if (sendPendingRef.current) return;
 
     const outgoing = attachments.map((a) => a.url);
+    // 这两个变量只回答“是不是首轮”（标题补生成用），与清空时机无关。
     const sendingDraft = isDraftSession || sessionId === null;
     const firstTurn = sendingDraft || (currentSession?.turnCount ?? 0) === 0;
+
+    /**
+     * 先建会话，成功之后再清输入。
+     *
+     * ★ 旧顺序先清再 await：创建会话失败时直接 return，用户刚打的字、附件、
+     *   草稿全没了，只能重打。失败提示必须说清“内容还在”，否则用户会以为丢了。
+     */
+    sendPendingRef.current = true;
+    let id: string | null = null;
+    try {
+      id = await ensureSession('消息没有发出去，输入内容和附件都还在输入框里');
+    } finally {
+      sendPendingRef.current = false;
+    }
+    if (id === null) return;
+
+    /**
+     * 真的发出去了才清空、才贴底。
+     *
+     * ★ 失败时不碰滚动：用户还停在原来的阅读位置，不能因为一次没成功的
+     *   发送把视图拽到末尾。
+     * ★ 贴底标记放在所有 setState 之前：滚动 effect 跟着 liveTurns 变化触发，
+     *   不能等它跑完再补。
+     */
     forceScrollRef.current = true;
     atBottomRef.current = true;
-    if (sendingDraft) clearDraftText();
+    setPinnedToBottom(true);
+    if (sendingDraft) discardDraft();
     setInput('');
     setAttachments([]);
-
-    const id = await ensureSession();
-    if (id === null) return;
 
     recognitionRef.current?.stop();
     setListening(false);
     setLiveTurns((prev) => [
       ...prev,
       {
+        startedAt: Date.now(),
         userText: text,
         images: outgoing,
+        steering: [],
         assistant: emptyAssistant(),
       },
     ]);
     setLocalCancel(null);
+    // 新一轮从这里接管；旧流的收尾会对照这个令牌，确认自己是否已被取代。
+    const turnToken: object = {};
+    turnTokenRef.current = turnToken;
     updateStreaming(true);
 
     const controller = new AbortController();
@@ -1318,19 +2360,14 @@ export function ChatView({
         return;
       }
 
+      if (ev.type === 'steering') {
+        // 服务端已接收：确认乐观消息；重复事件不会产生第二条。
+        confirmSteeringMessage(ev.text);
+        return;
+      }
+
       if (ev.type === 'approval') {
-        setApprovals((prev) => [
-          ...prev,
-          {
-            id: ev.id,
-            toolName: ev.toolName,
-            tier: ev.tier,
-            summary: ev.summary,
-            ...(ev.preview !== undefined ? { preview: ev.preview } : {}),
-            timeoutMs: ev.timeoutMs,
-            receivedAt: Date.now(),
-          },
-        ]);
+        setApprovals((prev) => enqueueApproval(prev, approvalFromEvent(ev)));
         notify('管家在等你确认一个动作', 'warning');
         return;
       }
@@ -1341,6 +2378,8 @@ export function ChatView({
       if (ev.type === 'audit') {
         void fetchJson<AuditResponse>(`/api/audit?from=${ev.range.fromSeq}&to=${ev.range.toSeq}`)
           .then((res) => {
+            // 审计是后取的：回来时这一轮可能已被新一轮取代，别再改最后一轮。
+            if (turnTokenRef.current !== turnToken) return;
             setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, audit: res.audit })));
           })
           .catch(() => undefined);
@@ -1411,18 +2450,52 @@ export function ChatView({
       if (buffer.trim().length > 0) flush(buffer);
       flushQueue();
     } catch (err) {
-      flushQueue();
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'aborted' })));
-      } else {
-        const msg = errorMessage(err);
-        setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'error', error: msg })));
-        notify(msg, 'danger');
+      /**
+       * 停止后立刻再发时，旧流的中断属于上一轮：只有它仍是最新轮才改状态、
+       * 才报错，否则会把新一轮刚建好的 assistant 标成中断/失败。
+       */
+      if (turnTokenRef.current === turnToken) {
+        flushQueue();
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'aborted' })));
+        } else {
+          const msg = errorMessage(err);
+          setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'error', error: msg })));
+          notify(msg, 'danger');
+        }
       }
     } finally {
-      flushQueue();
-      if (abortRef.current === controller) abortRef.current = null;
-      updateStreaming(false);
+      /**
+       * 先判定这一轮是否仍是最新轮，再做本轮专属的收尾。
+       *
+       * ★ 点“停止”后马上再发一条时，旧流若照旧执行下面的
+       *   updateStreaming(false) / setApprovals([])，会把新一轮的流式状态
+       *   关掉、把新一轮刚收到的审批卡清空。
+       * ★ 不在 finally 里早退：会话列表刷新、标题生成这类幂等操作照常执行。
+       */
+      const isCurrent = turnTokenRef.current === turnToken;
+      if (isCurrent) {
+        turnTokenRef.current = null;
+        flushQueue();
+        if (abortRef.current === controller) abortRef.current = null;
+        updateStreaming(false);
+        /**
+         * 流结束/取消后，后端已经 denyAll 本轮 pending。
+         * 前端必须同步清空，否则会留下一个点了只会收到 409 的假弹窗。
+         */
+        setApprovals([]);
+      } else {
+        // 旧流的残留增量不能再画到新一轮头上：连 48ms 的定时器一起取消。
+        if (flushTimer !== null) {
+          window.clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        queue.length = 0;
+      }
+      /**
+       * 会话列表刷新 / 标题生成是幂等的，任何一轮收尾都可以做；
+       * 标题仍用 sessionIdRef 确认还是同一个会话，不用旧 id 覆盖新会话。
+       */
       void (async () => {
         const list = await refreshSessions();
         // 新会话第一轮结束后异步补一次标题；不阻塞聊天，失败也不重试。
@@ -1431,9 +2504,94 @@ export function ChatView({
         }
       })();
       onRefreshOverview();
-      setApprovals((prev) => prev.filter((a) => a.receivedAt + a.timeoutMs > Date.now()));
     }
   }
+
+  /**
+   * 运行中发送消息：POST /api/chat/steer。
+   *
+   * 不新开 SSE 轮次，也不把消息伪装成新的 assistant turn；它属于当前轮，
+   * 显示在 LiveTurn 的 steering 列表里，等服务端 `steering` 事件确认。
+   */
+  async function steerRunning(text: string): Promise<void> {
+    if (text.length === 0) {
+      if (attachments.length > 0) {
+        notify('运行中暂时只能发送文字；附件请等这一轮结束后再发。', 'warning');
+      }
+      return;
+    }
+    if (!canChat) {
+      notify('还没有配置模型。请在设置里查看接入方式。', 'warning');
+      return;
+    }
+    const id = sessionIdRef.current;
+    if (id === null) {
+      notify('这一轮还在建立会话，请稍后再发。', 'warning');
+      return;
+    }
+
+    const cancelApprovals = approvals.length > 0;
+    const previousApprovals = approvals;
+    const body = runningSteerBody(id, text, cancelApprovals);
+
+    // 乐观展示：清输入、撤审批卡（服务端会在同一请求里取消全部 pending）。
+    forceScrollRef.current = true;
+    atBottomRef.current = true;
+    setInput('');
+    if (cancelApprovals) setApprovals([]);
+    addSteeringMessage(text);
+
+    try {
+      await postJson<SteerResponse>('/api/chat/steer', body);
+    } catch (err) {
+      // 等待期间用户切走了会话：不要把旧会话的文字/审批状态写进新页面。
+      if (sessionIdRef.current !== id) return;
+      const recovery = recoverFromSteerFailure(err, text);
+      setInput(recovery.input);
+      if (recovery.clearApprovals) {
+        // 本轮已经结束：服务端没有可保留的 pending，本地也全部清掉。
+        setApprovals([]);
+      } else if (cancelApprovals) {
+        // 请求没成功，审批并没有真的被取消：恢复卡片（保留期间新到的请求）。
+        setApprovals((prev) => {
+          const restored = previousApprovals.filter(
+            (item) => !prev.some((pending) => pending.id === item.id),
+          );
+          return [...restored, ...prev];
+        });
+      }
+      dropSteeringMessage(text);
+      if (recovery.resumeAfterTurn !== null) {
+        resumingAfterTurnRef.current = { sessionId: id, text: recovery.resumeAfterTurn };
+        notify('这一轮刚刚结束；内容已放回输入框，收尾后会自动按普通消息发送。', 'warning');
+      } else {
+        notify(errorMessage(err), 'warning');
+      }
+    }
+  }
+
+  /**
+   * 409 恢复的文字要等旧 SSE 真正收尾后再发。
+   *
+   * 直接在同一时刻调用 send 会和旧流的 finally 抢 streaming / abortRef；
+   * 这里由 streaming 变 false 触发，且只发“用户没有改过”的那段草稿。
+   */
+  // 卸载时确保分隔条监听不会残留
+  useEffect(() => {
+    return () => {
+      splitterCleanupRef.current?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (streaming) return;
+    const pending = resumingAfterTurnRef.current;
+    if (pending === null) return;
+    resumingAfterTurnRef.current = null;
+    if (sessionIdRef.current !== pending.sessionId) return;
+    if (input.trim() !== pending.text) return;
+    void send(pending.text);
+  }, [input, send, streaming]);
 
   function toggleVoice(): void {
     if (listening) {
@@ -1508,6 +2666,13 @@ export function ChatView({
   function stop(): void {
     const id = sessionId;
     const live = liveTurns[liveTurns.length - 1]?.assistant;
+    /**
+     * ★ 停止要顺手取消"等旧轮收尾后自动重发"的排队。
+     *
+     *   那个排队由 `streaming` 变 false 触发，而"点停止"同样会让 streaming 变 false——
+     *   不在这里清掉的话，用户点了停止，几毫秒后那条消息又自己发出去了。
+     */
+    resumingAfterTurnRef.current = null;
     const toolCalls =
       live?.rounds.reduce((n, r) => n + r.tools.length, 0) ?? 0;
     const toolResults =
@@ -1519,6 +2684,13 @@ export function ChatView({
     abortRef.current = null;
     updateStreaming(false);
     setLiveTurns((prev) => patchLast(prev, (a) => ({ ...a, status: 'aborted' })));
+    /**
+     * 停止即撤销本轮所有待确认：服务端已经 denyAll，本地也同步清掉。
+     *
+     * ★ 不能只靠流收尾去清：用户可能马上再发一条，旧流的 finally 会判定
+     *   自己已不是最新轮而跳过清理，旧审批卡就会挂到新一轮上（点了只会 409）。
+     */
+    setApprovals([]);
     setLocalCancel({
       id: `local_cancel_${Date.now()}`,
       reason: 'user_cancelled',
@@ -1587,16 +2759,63 @@ export function ChatView({
     }
   }
 
+  /**
+   * 审批按钮：走同一个 /api/chat/steer。
+   *
+   * · 输入框有文字时，审批决定 + 文字一起提交；
+   * · 成功后只 dequeue 当前卡，其他 pending 保持不动；
+   * · 失败时卡片留着，文字也留在输入框（没有静默吞掉任何一种）。
+   */
   async function answerApproval(allow: boolean): Promise<void> {
-    const current = approvals[0];
-    if (current === undefined || answering) return;
+    const current = currentApproval(approvals);
+    if (current === null || answering) return;
+    const id = sessionIdRef.current;
+    if (id === null) {
+      notify('会话还没准备好，请稍后再试。', 'warning');
+      return;
+    }
+
+    const text = input.trim();
+    const body = approvalSteerBody(id, current.id, allow, text);
+
     setAnswering(true);
-    setApprovals((prev) => prev.slice(1));
+    if (text.length > 0) {
+      setInput('');
+      addSteeringMessage(text);
+    }
+
     try {
-      await postJson('/api/approval', { id: current.id, allow });
+      await postJson<SteerResponse>('/api/chat/steer', body);
+      if (sessionIdRef.current !== id) return;
+      // 只移除刚答复的这张卡；期间新到的 pending 保持不动。
+      setApprovals((prev) => removeApproval(prev, current.id));
       notify(allow ? '已允许这一次操作' : '已拒绝这一次操作', allow ? 'success' : 'default');
     } catch (err) {
-      notify(errorMessage(err), 'warning');
+      // 等待期间用户切走了会话：旧会话的审批状态不写进新页面。
+      if (sessionIdRef.current !== id) return;
+      if (text.length > 0) {
+        setInput(text);
+        dropSteeringMessage(text);
+      }
+      if (isNoActiveTurnError(err)) {
+        // 本轮在服务端已结束：所有 pending 都失效，文字放回输入框。
+        setApprovals([]);
+        notify(
+          text.length > 0
+            ? '这一轮已经结束，审批已失效；你的文字已放回输入框。'
+            : '这一轮已经结束，审批已失效。',
+          'warning',
+        );
+      } else if (err instanceof ApiError && err.status === 409) {
+        // 单条审批失效（可能已在别处答复）：只移除当前卡。
+        setApprovals((prev) => removeApproval(prev, current.id));
+        notify(
+          text.length > 0 ? '这个确认已经失效；你的文字已放回输入框。' : '这个确认已经失效。',
+          'warning',
+        );
+      } else {
+        notify(errorMessage(err), 'warning');
+      }
     } finally {
       setAnswering(false);
     }
@@ -1614,7 +2833,26 @@ export function ChatView({
   function onScroll(): void {
     const el = scrollRef.current;
     if (el === null) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 180;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD_PX;
+    atBottomRef.current = atBottom;
+    // 同值时返回上一个 state：滚动事件很密，浮标不能把整棵对话树每帧重渲染。
+    setPinnedToBottom((prev) => (prev === atBottom ? prev : atBottom));
+  }
+
+  /**
+   * 「回到最新」：用户主动要求回到底部，并恢复自动贴底。
+   *
+   * ★ 直接贴底、不做平滑动画：动画途中会连续触发 scroll，按阈值会把
+   *   “还在路上”误判成“用户上翻”，浮标重新弹出；流式增量也会让动画目标
+   *   瞬间过期。这里没有新增动画，也就不需要额外的 prefers-reduced-motion 分支。
+   */
+  function jumpToLatest(): void {
+    const el = scrollRef.current;
+    if (el === null) return;
+    atBottomRef.current = true;
+    forceScrollRef.current = false;
+    setPinnedToBottom(true);
+    el.scrollTop = el.scrollHeight;
   }
 
   const liveTitle = liveTurns[0] !== undefined ? truncate(liveTurns[0].userText, 24) : null;
@@ -1627,31 +2865,7 @@ export function ChatView({
       ? `${currentSession.turnCount} 次对话 · ${relativeTime(currentSession.updatedAt, now)}`
       : '一段新的上下文';
 
-  const activeApproval = approvals[0] ?? null;
-  const effectiveNow =
-    activeApproval !== null ? Math.max(tick, activeApproval.receivedAt) : tick;
-  const remainingMs =
-    activeApproval !== null
-      ? Math.max(0, activeApproval.receivedAt + activeApproval.timeoutMs - effectiveNow)
-      : 0;
-  const remainingSec = Math.ceil(remainingMs / 1000);
-
-  useEffect(() => {
-    if (activeApproval !== null) setTick(Date.now());
-  }, [activeApproval]);
-
-  useEffect(() => {
-    if (activeApproval === null) return;
-    const timer = window.setInterval(() => setTick(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [activeApproval]);
-
-  useEffect(() => {
-    if (activeApproval === null) return;
-    if (remainingMs > 0) return;
-    setApprovals((prev) => prev.slice(1));
-    notify('确认请求已超时，已自动拒绝', 'warning');
-  }, [remainingMs, activeApproval, notify]);
+  const activeApproval = currentApproval(approvals);
 
   const suggestionNodes = useMemo(
     () =>
@@ -1718,11 +2932,25 @@ export function ChatView({
         <div className="chat-head-actions">
           <button
             type="button"
-            className={`btn btn-ghost btn-sm${reviewOpen ? ' is-review-toggle' : ''}`}
-            disabled={!reviewOpen && lastReviewable === null}
+            className={`btn btn-ghost btn-sm is-review-toggle${reviewOpen ? ' is-active' : ''}`}
+            disabled={
+              !reviewOpen &&
+              lastReviewable === null &&
+              reviewHistory.length === 0 &&
+              reviewRun === null &&
+              !reviewBusy &&
+              !reviewStopped &&
+              reviewError === null
+            }
             onClick={toggleReview}
             aria-pressed={reviewOpen}
-            title={reviewOpen ? '关闭审查' : lastReviewable === null ? '还没有可审查的完成轮次' : '打开审查'}
+            title={
+              reviewOpen
+                ? '关闭审查'
+                : lastReviewable === null && reviewHistory.length === 0
+                  ? '还没有可审查的完成或中断轮次'
+                  : '打开审查'
+            }
           >
             <Icon name="eye" size={15} /> 审查
           </button>
@@ -1758,7 +2986,7 @@ export function ChatView({
                 ，今天想做点什么？
               </h1>
               <p className="hero-sub">
-                它记得你，也替你办事。每一轮都会先写下任务契约，结束后由监督员逐条复核。
+                它记得你，也替你办事。需要动手时先理清目标，过程与产出都留在这轮下面。
               </p>
 
               <div className="hero-memory-line">
@@ -1854,6 +3082,23 @@ export function ChatView({
         </div>
       </div>
 
+      {/*
+        不在底部时的回底入口：长回答读到这里可以一键回到最新，
+        不用手动滚到贴底再让下一批增量接着跟随。
+        审查模式是左右分栏，浮标会压到分栏线上，所以只在普通对话里出现。
+      */}
+      {!reviewOpen && !pinnedToBottom && hasContent && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          style={JUMP_LATEST_STYLE}
+          aria-label="回到最新消息"
+          onClick={jumpToLatest}
+        >
+          <Icon name="chevronDown" size={14} /> 回到最新
+        </button>
+      )}
+
       {reviewOpen && (
         <>
           <div
@@ -1869,95 +3114,205 @@ export function ChatView({
             onKeyDown={handleReviewSplitterKeyDown}
           />
           <section className="review-pane" aria-label="审查">
-            {reviewBusy || reviewResults.length > 0 || reviewError !== null ? (
-              <div className="review-report review-report--simple">
-                <div className="review-report-head">
-                  <div>
-                    <p className="review-overline">本次审查</p>
-                    <h3>{reviewBusy ? '正在审查' : '审查结果'}</h3>
-                  </div>
-                  <span className={`review-status${reviewBusy ? ' is-busy' : reviewError !== null ? ' is-warn' : ''}`}>
-                    {reviewBusy ? '审查中' : reviewError !== null ? '未完成' : '已完成'}
-                  </span>
-                </div>
-                {reviewBusy ? (
-                  <p className="review-placeholder">正在读取快照并核对判据…</p>
-                ) : (
-                  reviewResults.map((r) => (
-                    <div className="review-result" key={r.turn}>
-                      <div className="review-result-head">
-                        第 {r.turn} 轮 <span>{r.criteria} 条判据</span>
-                      </div>
-                      {r.error !== undefined ? (
-                        <p className="review-error">{r.error}</p>
-                      ) : r.summary.length > 0 ? (
-                        <Markdown text={r.summary} />
-                      ) : (
-                        <p className="review-empty">监督员没有返回可展示的结论。</p>
-                      )}
+            <header className="review-head">
+              <div className="review-head-main">
+                <h2>审查</h2>
+              </div>
+              <div className="review-head-actions">
+                <span className={`review-status${reviewStatusClass}`}>{reviewStatusText}</span>
+                <button
+                  ref={reviewHistoryToggleRef}
+                  type="button"
+                  className={`review-history-toggle${reviewHistoryOpen ? ' is-active' : ''}`}
+                  aria-expanded={reviewHistoryOpen}
+                  aria-haspopup="dialog"
+                  onClick={() => setReviewHistoryOpen((open) => !open)}
+                  title="历史审查"
+                >
+                  <Icon name="history" size={13} />
+                  <span>历史</span>
+                  {reviewHistoryLoading && reviewHistory.length === 0 ? (
+                    <b className="review-history-badge">…</b>
+                  ) : reviewHistory.length > 0 ? (
+                    <b className="review-history-badge">{reviewHistory.length}</b>
+                  ) : null}
+                </button>
+                <button type="button" className="review-close" aria-label="关闭审查" onClick={closeReview}>
+                  <Icon name="close" size={14} />
+                </button>
+              </div>
+            </header>
+
+            <div className="review-body">
+
+              {reviewBusy ? (
+                <div className="review-report" aria-busy="true">
+                  <div className="review-report-head">
+                    <div>
+                      <p className="review-overline">审查范围 · {reviewRangeText}</p>
+                      <h3>审查中</h3>
                     </div>
-                  ))
-                )}
-                {reviewError !== null && <p className="review-error">{reviewError}</p>}
-                <div className="review-foot">
-                  <button
-                    type="button"
-                    className="review-back"
-                    onClick={() => {
-                      stopReview();
-                      setReviewResults([]);
-                      setReviewError(null);
-                    }}
-                  >
-                    重新选择
-                  </button>
-                  {reviewBusy && (
+                    <span className="review-live-note">过程实时更新</span>
+                  </div>
+                  <div className="review-running" role="status" aria-live="polite">
+                    <span className="review-spinner" aria-hidden="true" />
+                    <div className="review-running-copy">
+                      <p>正在读取上下文、调用只读工具取证…</p>
+                      <small>
+                        {reviewRangeText}
+                        {reviewProcess.model !== null ? ` · ${reviewProcess.model}` : ''} · 只读工具
+                      </small>
+                    </div>
                     <button type="button" className="review-stop" onClick={stopReview}>
                       停止
                     </button>
+                  </div>
+                  <ReviewProcess state={reviewProcess} streaming />
+                  {reviewStreamText.length > 0 && (
+                    <div className="review-output is-streaming">
+                      <MemoizedMarkdown text={reviewStreamText} streaming />
+                    </div>
                   )}
                 </div>
-              </div>
-            ) : (
-              <div className="review-min">
-                <div className="review-min-hero">
-                  <h2>想要审查些什么</h2>
-                  <div className="review-composer">
+              ) : reviewRun !== null ? (
+                <div className="review-report">
+                  <div className="review-report-head">
+                    <div>
+                      <p className="review-overline">审查范围 · {reviewResultScope}</p>
+                      {reviewViewKind !== 'completed' && (
+                        <h3>{reviewViewKind === 'stopped' ? '审查已停止' : '审查未完成'}</h3>
+                      )}
+                    </div>
+                    {reviewRun.createdAt !== null && (
+                      <time
+                        className="review-report-time"
+                        dateTime={new Date(reviewRun.createdAt).toISOString()}
+                        title="审查执行时间"
+                      >
+                        {formatDateTime(reviewRun.createdAt)}
+                      </time>
+                    )}
+                  </div>
+
+                  {reviewViewKind === 'completed' && (
+                    <section className="review-full-report" aria-label="完整报告">
+                      <div className="review-section-head">
+                        <h4>完整报告</h4>
+                      </div>
+                      {reviewRun.markdown.length > 0 ? (
+                        <div className="review-output">
+                          <MemoizedMarkdown text={reviewRun.markdown} />
+                        </div>
+                      ) : (
+                        <p className="review-note">这次审查没有留下文字结论。</p>
+                      )}
+                    </section>
+                  )}
+                  {reviewViewKind === 'failed' && (
+                    <p className="review-error" role="alert">
+                      {reviewError ?? '这次审查失败'}
+                    </p>
+                  )}
+                  {reviewViewKind === 'stopped' && (
+                    <p className="review-note">本次审查已停止，没有生成结论。</p>
+                  )}
+
+                  <ReviewProcess state={reviewProcess} streaming={false} />
+
+                  <div className="review-foot">
+                    <button type="button" className="review-back" onClick={resetReview}>
+                      重新选择
+                    </button>
                     <button
                       type="button"
-                      className="review-composer-control"
+                      className="review-again"
+                      disabled={reviewRange === null}
+                      title={
+                        reviewRange === null
+                          ? '这条历史记录无法映射到当前轮次，请重新选择范围'
+                          : '再次审查当前范围'
+                      }
+                      onClick={() => {
+                        if (reviewRange !== null) void startReview(reviewRange);
+                      }}
+                    >
+                      {reviewViewKind === 'completed' ? '再次审查' : '重新审查'}
+                    </button>
+                  </div>
+                </div>
+              ) : reviewStopped ? (
+                <div className="review-report">
+                  <div className="review-report-head">
+                    <div>
+                      <p className="review-overline">审查范围 · {reviewRangeText}</p>
+                      <h3>审查已停止</h3>
+                    </div>
+                  </div>
+                  <p className="review-note">本次审查已取消，没有生成结论。</p>
+                  <ReviewProcess state={reviewProcess} streaming={false} />
+                  <div className="review-foot">
+                    <button type="button" className="review-back" onClick={resetReview}>
+                      重新选择
+                    </button>
+                    <button
+                      type="button"
+                      className="review-again"
+                      disabled={reviewRange === null}
+                      onClick={() => {
+                        if (reviewRange !== null) void startReview(reviewRange);
+                      }}
+                    >
+                      重新审查
+                    </button>
+                  </div>
+                </div>
+              ) : reviewError !== null ? (
+                <div className="review-report">
+                  <div className="review-report-head">
+                    <div>
+                      <p className="review-overline">审查范围 · {reviewRangeText}</p>
+                      <h3>审查失败</h3>
+                    </div>
+                  </div>
+                  <p className="review-error" role="alert">
+                    {reviewError}
+                  </p>
+                  <ReviewProcess state={reviewProcess} streaming={false} />
+                  <div className="review-foot">
+                    <button type="button" className="review-back" onClick={resetReview}>
+                      重新选择
+                    </button>
+                    <button
+                      type="button"
+                      className="review-again"
+                      disabled={reviewRange === null}
+                      onClick={() => {
+                        if (reviewRange !== null) void startReview(reviewRange);
+                      }}
+                    >
+                      重新审查
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="review-idle">
+                  <div className="review-scope-row">
+                    <button
+                      type="button"
+                      className="review-range"
                       aria-expanded={reviewPickerOpen}
                       aria-haspopup="dialog"
-                      onClick={() => {
-                        setReviewModelOpen(false);
-                        setReviewPickerOpen((open) => !open);
-                      }}
+                      onClick={toggleReviewPicker}
                     >
                       {reviewRangeText} <span>▾</span>
                     </button>
-                    <span className="review-composer-spacer" />
-                    <div className="review-model-wrap">
-                      <ModelPicker
-                        profiles={modelCatalog}
-                        value={reviewModel}
-                        onSelect={(choice) => {
-                          setReviewModel(choice);
-                          setReviewModelOpen(false);
-                        }}
-                        open={reviewModelOpen}
-                        onOpenChange={(open) => {
-                          setReviewPickerOpen(false);
-                          setReviewModelOpen(open);
-                        }}
-                        disabled={reviewBusy}
-                        label="选择审查模型"
-                        note="默认沿用最近一次审查使用的模型；只影响本次审查。"
-                      />
-                    </div>
+                    {reviewRangeHasInterrupted && (
+                      <span className="review-interrupt-note">含中断轮次，只审查已生成部分</span>
+                    )}
                     <button
                       type="button"
                       className="review-start"
-                      disabled={reviewRange === null || reviewModel === null}
+                      disabled={reviewRange === null}
                       onClick={() => {
                         if (reviewRange !== null) void startReview(reviewRange);
                       }}
@@ -1965,83 +3320,250 @@ export function ChatView({
                       开始审查
                     </button>
                   </div>
-                </div>
 
-                {reviewPickerOpen && (
-                  <div className="review-picker" role="dialog" aria-label="选择审查轮次">
-                    <div className="review-pop-head">
-                      选择审查轮次 <span>仅终态</span>
+                  {reviewPickerOpen && (
+                    <div className="review-picker" role="dialog" aria-label="选择审查轮次">
+                      <div className="review-pop-head">
+                        选择审查轮次
+                      </div>
+                      <p className="review-picker-hint">
+                        点击起点，再点终点；Shift + 点击扩展范围；滚轮或 ← → 横向浏览
+                      </p>
+                      <div
+                        className="review-timeline"
+                        ref={reviewTimelineRef}
+                        role="group"
+                        aria-label="审查轮次时间轴"
+                        onKeyDown={handleReviewTimelineKeyDown}
+                      >
+                        <ol className="review-timeline-list">
+                          {reviewTurns.map((t) => {
+                            const selectable = isReviewableTurn(t);
+                            const inRange =
+                              reviewRange !== null && t.index >= reviewRange.start && t.index <= reviewRange.end;
+                            const isStart = reviewRange !== null && t.index === reviewRange.start;
+                            const isEnd = reviewRange !== null && t.index === reviewRange.end;
+                            const isFocused = reviewFocus === t.index;
+                            const stateLabel = reviewTurnStateLabel(t.state);
+                            return (
+                              <li
+                                key={t.user.id}
+                                className={`review-step${inRange ? ' is-selected' : ''}${isStart ? ' is-start' : ''}${isEnd ? ' is-end' : ''}${selectable ? '' : ' is-disabled'}${t.state === 'interrupted' ? ' is-interrupted' : ''}${isFocused ? ' is-focused' : ''}`}
+                              >
+                                <button
+                                  type="button"
+                                  className="review-step-dot"
+                                  data-review-index={t.index}
+                                  disabled={!selectable}
+                                  tabIndex={reviewTabStop === t.index ? 0 : -1}
+                                  aria-pressed={inRange}
+                                  aria-label={`第 ${t.index + 1} 轮，${stateLabel}${inRange ? '，已选范围内' : ''}${selectable ? '' : '，不可选'}`}
+                                  title={`第 ${t.index + 1} 轮 · ${stateLabel}${selectable ? '' : '（不可选）'}`}
+                                  onClick={(e) => selectReviewTurn(t.index, e.shiftKey)}
+                                  onFocus={() => setReviewFocus(t.index)}
+                                >
+                                  {String(t.index + 1).padStart(2, '0')}
+                                </button>
+                                {isStart && reviewRange !== null && (
+                                  <span className="review-step-mark" aria-hidden="true">
+                                    {reviewRange.start === reviewRange.end ? '单轮' : '起点'}
+                                  </span>
+                                )}
+                                {isEnd && reviewRange !== null && reviewRange.start !== reviewRange.end && (
+                                  <span className="review-step-mark" aria-hidden="true">
+                                    终点
+                                  </span>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </div>
+                      {reviewPreviewTurn !== null && (
+                        <div className="review-preview" key={reviewPreviewTurn.index} aria-live="polite">
+                          <span className="review-preview-label">第 {reviewPreviewTurn.index + 1} 轮预览</span>
+                          <p className="review-preview-text">{reviewPreviewText(reviewPreviewTurn.user.text)}</p>
+                        </div>
+                      )}
+                      <div className="review-picker-foot">
+                        <span>已选 <b>{reviewRangeText}</b></span>
+                        <button type="button" className="review-apply" onClick={() => setReviewPickerOpen(false)}>
+                          应用
+                        </button>
+                      </div>
                     </div>
-                    <p className="review-picker-hint">点击起点，再点终点；Shift + 点击选择连续范围</p>
-                    <div className="review-picker-list">
-                      {reviewTurns.map((t) => {
-                        const selectable = t.state === 'done' && t.assistant !== null;
-                        const inRange =
-                          reviewRange !== null && t.index >= reviewRange.start && t.index <= reviewRange.end;
-                        const isStart = reviewRange !== null && t.index === reviewRange.start;
-                        const isEnd = reviewRange !== null && t.index === reviewRange.end;
-                        return (
-                          <button
-                            key={t.user.id}
-                            type="button"
-                            className={`review-picker-row${inRange ? ' is-selected' : ''}${!selectable ? ' is-disabled' : ''}`}
-                            disabled={!selectable}
-                            onClick={(e) => selectReviewTurn(t.index, e.shiftKey)}
-                          >
-                            <span className="review-picker-num">{String(t.index + 1).padStart(2, '0')}</span>
-                            <span className="review-picker-copy">
-                              <strong>{truncate(t.user.text, 34)}</strong>
-                              <small>
-                                第 {t.index + 1} 轮 ·{' '}
-                                {t.state === 'done' ? '完成' : t.state === 'interrupted' ? '中断' : t.state === 'failed' ? '失败' : '运行中'}
-                              </small>
-                            </span>
-                            {isStart && <span className="review-picker-mark">起点</span>}
-                            {isEnd && reviewRange !== null && reviewRange.start !== reviewRange.end && (
-                              <span className="review-picker-mark">终点</span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="review-picker-foot">
-                      <span>已选 <b>{reviewRangeText}</b></span>
-                      <button type="button" className="review-apply" onClick={() => setReviewPickerOpen(false)}>
-                        应用
+                  )}
+                </div>
+              )}
+
+              {reviewHistoryOpen && (
+                <>
+                  <button
+                    type="button"
+                    className="review-history-scrim"
+                    aria-label="关闭历史审查"
+                    tabIndex={-1}
+                    onClick={closeReviewHistory}
+                  />
+                  <section className="review-history" role="dialog" aria-label="历史审查">
+                    <div className="review-history-head">
+                      <span className="review-history-title">
+                        <Icon name="history" size={13} /> 历史审查
+                      </span>
+                      <span className="review-history-count">
+                        {reviewHistoryLoading ? '读取中…' : `${reviewHistory.length} 条`}
+                      </span>
+                      <button
+                        ref={reviewHistoryCloseRef}
+                        type="button"
+                        className="review-history-close"
+                        aria-label="关闭历史审查"
+                        onClick={closeReviewHistory}
+                      >
+                        <Icon name="close" size={14} />
                       </button>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
+                    <div className="review-history-list">
+                      {reviewHistoryError !== null ? (
+                        <div className="review-history-error">
+                          <p>{reviewHistoryError}</p>
+                          <button
+                            type="button"
+                            className="text-btn"
+                            onClick={() => {
+                              if (sessionId !== null) void loadReviewHistory(sessionId);
+                            }}
+                          >
+                            重试
+                          </button>
+                        </div>
+                      ) : reviewHistoryLoading && reviewHistory.length === 0 ? (
+                        <p className="review-history-empty">正在读取历史…</p>
+                      ) : reviewHistory.length === 0 ? (
+                        <p className="review-history-empty">还没有审查记录</p>
+                      ) : (
+                        reviewHistory.map((run, index) => {
+                          const status = reviewRunStatus(run);
+                          const report = run.report ?? null;
+                          const verdict = reviewVerdictOf(report);
+                          const legacy = report?.legacy === true;
+                          const showVerdict =
+                            report !== null && (status === 'completed' || report.verdict !== undefined);
+                          const turnIds = Array.isArray(run.turnIds)
+                            ? run.turnIds.filter(
+                                (value): value is string => typeof value === 'string',
+                              )
+                            : [];
+                          const scope = mapReviewScope(turnIds, reviewTurnIndexById).label;
+                          const createdAt =
+                            typeof run.createdAt === 'number' ? run.createdAt : null;
+                          const traceCount = Array.isArray(run.traces) ? run.traces.length : 0;
+                          const active = run.id !== undefined && run.id === reviewActiveId;
+                          return (
+                            <button
+                              key={run.id ?? `review-history-${index}`}
+                              type="button"
+                              className={`review-history-item${active ? ' is-active' : ''}`}
+                              disabled={reviewBusy}
+                              title={reviewBusy ? '审查进行中，结束后可恢复历史' : '恢复这次审查'}
+                              onClick={() => {
+                                restoreReviewHistory(run);
+                                reviewHistoryToggleRef.current?.focus();
+                              }}
+                            >
+                              <span className="review-history-top">
+                                <span className="review-history-time">
+                                  {createdAt !== null ? formatDateTime(createdAt) : '时间未知'}
+                                </span>
+                                {showVerdict && (
+                                  <span
+                                    className={`review-verdict review-verdict--small is-${verdict}`}
+                                    data-verdict={verdict}
+                                    title={`结论：${REVIEW_VERDICT_LABEL[verdict]}`}
+                                  >
+                                    {REVIEW_VERDICT_LABEL[verdict]}
+                                  </span>
+                                )}
+                                {legacy && (
+                                  <span className="review-legacy review-legacy--small">旧记录</span>
+                                )}
+                                <span className={`review-history-state is-${status}`}>
+                                  {reviewStatusLabel(status)}
+                                </span>
+                              </span>
+                              <span className="review-history-scope">
+                                {scope.length > 0
+                                  ? scope
+                                  : turnIds.length > 0
+                                    ? `${turnIds.length} 个轮次`
+                                    : '轮次未知'}
+                                {` · ${traceCount > 0 ? `${traceCount} 次工具调用` : '无工具轨迹'}`}
+                              </span>
+                              <span className="review-history-summary">{reviewRunSummary(run)}</span>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
+                </>
+              )}
+            </div>
           </section>
         </>
       )}
 
       <aside className="turn-rail" aria-label="轮次导航">
-        <div className="turn-dots">
-          {reviewTurns.map((t) => (
-            <button
-              key={t.user.id}
-              type="button"
-              className={`turn-dot is-${t.state}${navTurn === t.index ? ' is-current' : ''}`}
-              title={`跳转到第 ${t.index + 1} 轮 · ${
-                t.state === 'done'
-                  ? '已完成'
-                  : t.state === 'failed'
-                    ? '失败'
-                    : t.state === 'interrupted'
-                      ? '中断'
-                      : '运行中'
-              }`}
-              aria-label={`跳转到第 ${t.index + 1} 轮`}
-              onClick={() => jumpToTurn(t.index)}
-            />
-          ))}
+        <div
+          className="turn-dots"
+          ref={turnDotsRef}
+          onWheel={() => {
+            railTouchedRef.current = true;
+          }}
+          onPointerDown={() => {
+            railTouchedRef.current = true;
+          }}
+          onTouchStart={() => {
+            railTouchedRef.current = true;
+          }}
+          onKeyDown={() => {
+            railTouchedRef.current = true;
+          }}
+          onScroll={syncRailScrollbar}
+        >
+          {reviewTurns.map((t) => {
+            const label = turnDotLabel(t.index, t.user.text);
+            return (
+              <button
+                key={t.user.id}
+                type="button"
+                className={`turn-dot${currentTurnIndex === t.index ? ' is-current' : ''}`}
+                title={label}
+                aria-label={label}
+                aria-current={currentTurnIndex === t.index ? 'true' : undefined}
+                onClick={() => jumpToTurn(t.index)}
+              />
+            );
+          })}
           {liveTurns.length > 0 && (
-            <span className="turn-dot is-running" title="运行中" aria-hidden="true" />
+            <span className="turn-dot is-running" aria-hidden="true" />
           )}
         </div>
+        {railThumb !== null && (
+          <div
+            className="turn-rail-scroll"
+            aria-hidden="true"
+            style={{ height: `${railThumb.track}px` }}
+          >
+            <span
+              className="turn-rail-thumb"
+              style={{
+                height: `${railThumb.height}px`,
+                transform: `translateY(${railThumb.top}px)`,
+              }}
+            />
+          </div>
+        )}
       </aside>
       </div>
 
@@ -2081,12 +3603,27 @@ export function ChatView({
             </div>
           )}
 
+          {activeApproval !== null && (
+            <ApprovalCard
+              approval={activeApproval}
+              pendingCount={approvals.length}
+              answering={answering}
+              onAnswer={(allow) => void answerApproval(allow)}
+            />
+          )}
+
           <div className={`composer ${streaming ? 'is-busy' : ''}`}>
             <textarea
               ref={textareaRef}
               value={input}
               rows={1}
-              placeholder={canChat ? '说说你想办的事…（Enter 发送，Shift+Enter 换行）' : '未配置模型，暂不能对话'}
+              placeholder={
+                canChat
+                  ? streaming
+                    ? '运行中也能补充；Enter 中途发送，Shift+Enter 换行'
+                    : '说说你想办的事…（Enter 发送，Shift+Enter 换行）'
+                  : '未配置模型，暂不能对话'
+              }
               aria-label="输入消息"
               onChange={(e) => setInput(e.target.value)}
               onPaste={(e) => {
@@ -2165,9 +3702,22 @@ export function ChatView({
                 onOpenSettings={onOpenSettings}
               />
               {streaming ? (
-                <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
-                  <Icon name="stop" size={16} />
-                </button>
+                <>
+                  {input.trim().length > 0 && (
+                    <button
+                      type="button"
+                      className="send-btn send-btn--steer"
+                      onClick={() => void send()}
+                      title="发送给正在执行的这一轮"
+                      aria-label="中途发送"
+                    >
+                      <Icon name="arrowUp" size={17} />
+                    </button>
+                  )}
+                  <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
+                    <Icon name="stop" size={16} />
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
@@ -2204,76 +3754,6 @@ export function ChatView({
         onClose={() => setSettingsTargetId(null)}
         onSaved={handleSessionSaved}
       />
-
-      <Modal
-        open={active && activeApproval !== null}
-        onClose={() => undefined}
-        title="需要你确认一个动作"
-        description="允许只对这一次生效。若超时不答复，会自动拒绝。"
-        variant="dialog"
-        hideClose
-        closeOnBackdrop={false}
-        footer={
-          activeApproval !== null ? (
-            <div className="approval-foot">
-              <button
-                type="button"
-                className="btn btn-ghost"
-                disabled={answering}
-                onClick={() => void answerApproval(false)}
-              >
-                拒绝
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={answering}
-                onClick={() => void answerApproval(true)}
-              >
-                <Icon name="check" size={15} /> 允许一次
-              </button>
-            </div>
-          ) : undefined
-        }
-      >
-        {activeApproval !== null && (
-          <div className="approval-body">
-            <div className="approval-tool">
-              <span className="approval-tool-icon">
-                <Icon name="shield" size={18} />
-              </span>
-              <div>
-                <p className="approval-name mono">{activeApproval.toolName}</p>
-                <div className="approval-tags">
-                  <Badge tone={activeApproval.tier === 'highRisk' ? 'warn' : 'neutral'}>
-                    {activeApproval.tier === 'highRisk' ? '高风险' : activeApproval.tier === 'normal' ? '普通' : activeApproval.tier}
-                  </Badge>
-                  <Badge tone="outline">一次性授权</Badge>
-                </div>
-              </div>
-              <span className="approval-countdown mono">{remainingSec}s</span>
-            </div>
-
-            <p className="approval-summary">{activeApproval.summary}</p>
-
-            {activeApproval.preview !== undefined && activeApproval.preview.length > 0 && (
-              <pre className="code-block approval-preview">{activeApproval.preview}</pre>
-            )}
-
-            <div className="approval-progress" aria-hidden="true">
-              <span
-                style={{
-                  width: `${Math.min(100, (remainingMs / Math.max(1, activeApproval.timeoutMs)) * 100)}%`,
-                }}
-              />
-            </div>
-
-            {approvals.length > 1 && (
-              <p className="approval-queue">还有 {approvals.length - 1} 个请求在排队。</p>
-            )}
-          </div>
-        )}
-      </Modal>
 
     </div>
   );
@@ -2393,31 +3873,91 @@ function QuizInvite({
   );
 }
 
-function buildReviewTurns(
-  messages: readonly MessageDto[],
-  verdicts: readonly VerdictDto[],
-): readonly ReviewTurn[] {
+/**
+ * 轮次点的可读文案：只描述用户说了什么，不暴露轮次状态。
+ *
+ * · 换行/连续空白折叠为一个空格；
+ * · 严格取前 30 个字符（按 Unicode 码点，避免拆坏 emoji），超出加 `…`；
+ * · 用户只发了图片/文件、没有文字时显示「图片/文件」。
+ *   MessageDto 目前没有附件字段，所以这里不猜具体类型。
+ */
+function turnDotLabel(index: number, userText: string): string {
+  const compact = userText.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(compact);
+  const text =
+    chars.length === 0
+      ? '图片/文件'
+      : chars.length > 30
+        ? `${chars.slice(0, 30).join('')}…`
+        : compact;
+  return `第 ${index + 1} 轮 · ${text}`;
+}
+
+function reviewTurnStateLabel(state: ReviewTurn['state']): string {
+  if (state === 'done') return '完成';
+  if (state === 'interrupted') return '中断（可审查）';
+  if (state === 'failed') return '失败';
+  return '运行中';
+}
+
+/**
+ * 时间轴预览：只取用户消息的第一段文本。
+ * 换行/连续空白折叠为空格，按 Unicode 码点截 80 字；没有文字时显示「图片/文件」。
+ * （MessageDto 没有附件字段，和 turnDotLabel 保持同一判定。）
+ */
+function reviewPreviewText(userText: string): string {
+  const compact = userText.replace(/\s+/g, ' ').trim();
+  const chars = Array.from(compact);
+  if (chars.length === 0) return '图片/文件';
+  return chars.length > 80 ? `${chars.slice(0, 80).join('')}…` : compact;
+}
+
+/**
+ * 审查可选：终态且有助手回复。
+ *
+ * · done        —— 完整回复，整轮可审；
+ * · interrupted —— 中断但保留了已生成部分，只审这部分；
+ * · failed / running 仍不可选。
+ */
+function isReviewableTurn(turn: ReviewTurn): boolean {
+  return (turn.state === 'done' || turn.state === 'interrupted') && turn.assistant !== null;
+}
+
+/**
+ * 哪些消息算作一轮的“助手回复”。
+ *
+ * ★ 当前角色是 butler；早期会话历史里是 servant。
+ *   servant 这里只用于识别旧轮次，不改变任何当前角色判断。
+ */
+function isReviewAssistantMessage(message: MessageDto): boolean {
+  return message.role === 'butler' || message.role === 'servant';
+}
+
+/** 助手消息状态 → 审查轮状态；streaming 还没写完，按运行中处理。 */
+function reviewTurnStateOf(assistant: MessageDto | null): ReviewTurn['state'] {
+  if (assistant === null) return 'running';
+  if (assistant.status === 'done') return 'done';
+  if (assistant.status === 'interrupted') return 'interrupted';
+  if (assistant.status === 'failed') return 'failed';
+  return 'running';
+}
+
+function buildReviewTurns(messages: readonly MessageDto[]): readonly ReviewTurn[] {
   const turns: ReviewTurn[] = [];
   let pendingUser: MessageDto | null = null;
   let pendingAssistant: MessageDto | null = null;
 
+  /**
+   * 一个用户回合结束：保留该用户消息之后、下一条用户消息之前的**最后一条**
+   * 助手回复。多助手消息时后到的覆盖先到的，等下一个 user 再落盘。
+   */
   const flush = (): void => {
     if (pendingUser === null) return;
-    const assistant = pendingAssistant;
-    const state: ReviewTurn['state'] =
-      assistant === null
-        ? 'running'
-        : assistant.status === 'done'
-          ? 'done'
-          : assistant.status === 'failed'
-            ? 'failed'
-            : 'interrupted';
     turns.push({
       index: turns.length,
       user: pendingUser,
-      assistant,
-      verdict: verdicts.find((v) => v.forMessageId === pendingUser?.id),
-      state,
+      assistant: pendingAssistant,
+      state: reviewTurnStateOf(pendingAssistant),
     });
     pendingUser = null;
     pendingAssistant = null;
@@ -2427,9 +3967,8 @@ function buildReviewTurns(
     if (m.role === 'user') {
       flush();
       pendingUser = m;
-    } else if (m.role === 'butler' && pendingUser !== null && pendingAssistant === null) {
+    } else if (pendingUser !== null && isReviewAssistantMessage(m)) {
       pendingAssistant = m;
-      flush();
     }
   }
   flush();
@@ -2518,10 +4057,8 @@ function ServerMessage({
       />
 
       <div className="msg-body">
-        <Markdown text={message.text} />
+        <MemoizedMarkdown text={message.text} />
       </div>
-
-      {verdict !== undefined && <VerdictCard verdict={verdict} />}
 
       {message.servantReports !== null && <ReportsPanel reports={message.servantReports} />}
       {message.memoryRefs.length > 0 && <MemoryRefs refs={message.memoryRefs} />}
@@ -2585,9 +4122,31 @@ function LiveTurnView({
           {turn.userText.length > 0 && turn.userText}
         </div>
         <div className="msg-meta">
-          <span>刚刚</span>
+          {/*
+            * 这里的「now」直接取 Date.now()：实时轮在流式期间每 48ms 就会重渲染，
+            * 时间自然跟着走；流结束后组件不再刷新，显示的停在那次渲染，
+            * 这正是我们要的（结束时刻）。
+            */}
+          <span>{relativeTime(turn.startedAt, Date.now())}</span>
         </div>
       </div>
+
+      {turn.steering.length > 0 && (
+        <div className="steering-stack" role="group" aria-label="运行中补充的消息">
+          {turn.steering.map((message) => (
+            <div className="msg msg--user msg--steering" key={`steering-${message.seq}`}>
+              <div className="user-bubble">{message.text}</div>
+              <div className="msg-meta">
+                <span
+                  className={message.delivered || !streaming ? 'steering-sent' : undefined}
+                >
+                  {steeringStatusLabel(message.delivered, !streaming)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <article className={`msg msg--butler ${streaming ? 'is-streaming' : ''}`}>
         <header className="msg-head">
@@ -2632,10 +4191,10 @@ function LiveTurnView({
               <p className="live-narration-label">
                 <span className="live-dot" /> 先说思路 · 方案随后
               </p>
-              <Markdown text={a.narration} streaming={streaming} />
+              <MemoizedMarkdown text={a.narration} streaming={streaming} />
             </div>
           ) : a.text.length > 0 ? (
-            <Markdown text={a.text} />
+            <MemoizedMarkdown text={a.text} />
           ) : a.status === 'waiting' ? (
             <div className="live-waiting">
               <span className="typing-dots" aria-hidden="true">
@@ -2662,8 +4221,6 @@ function LiveTurnView({
             </div>
           )}
         </div>
-
-        {a.verdict !== null && <VerdictCard verdict={a.verdict} />}
 
         {a.reflection !== null && (
           <ReflectionCard reflection={a.reflection} onOpenMemory={() => onOpenMemory({ pending: true })} />

@@ -6,9 +6,10 @@
  * ★ 它是「可审计」在对话现场的第一落点：
  *   用户不需要相信管家的自述，展开就能看到它调了什么、结果是什么。
  *
- * ★ v10.3：改成 DSH 式的一行一条。
+ * ★ v10.4：过程头只留「过程 · 本次总用量 · 折叠箭头」。
  *   · 执行中：每来一行就展示一行（思考显示部分内容，工具显示动作与目标）；
- *   · 完成：自动收起为摘要（思考次数 / 工具次数 / 构成 / 用时 / 结果与异常）；
+ *   · 完成：自动收起；不再显示思考/工具/耗时/构成/被拒/失败等摘要统计；
+ *   · 用量只取本次执行（turnInputTokens + turnOutputTokens），不混入会话累计；
  *   · 不再出现“轮次 / 上限”这类内部执行约束的措辞。
  *
  * 两种数据源共用同一套渲染：
@@ -20,7 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Badge, Collapse } from '../components/Common';
 import { Icon } from '../components/Icon';
-import { formatDuration, formatTokens } from '../lib/format.js';
+import { formatTokens } from '../lib/format.js';
 import type { InjectedConstraintView, LiveUsage } from '../lib/types.js';
 import {
   buildProcessView,
@@ -30,7 +31,6 @@ import {
   type ProcLine,
   type ProcRound,
   type ProcTool,
-  type ProcessStats,
 } from './processView';
 
 export type { ProcFinished, ProcRound, ProcTool } from './processView';
@@ -47,7 +47,7 @@ interface ProcessPanelProps {
   readonly defaultOpen?: boolean;
   readonly durationMs?: number | null;
   readonly injectedConstraints?: readonly InjectedConstraintView[];
-  /** 本轮/会话累计 token 用量；旧消息没有该数据时为 null。 */
+  /** 本轮 token 用量；头部只展示 turnInputTokens + turnOutputTokens。旧消息没有该数据时为 null。 */
   readonly usage?: LiveUsage | null;
 }
 
@@ -79,7 +79,7 @@ export function ProcessPanel({
 
   useEffect(() => {
     if (streaming) setOpen(true);
-    // 执行完成、开始输出结果时收起过程；用户想回看再点摘要。
+    // 执行完成、开始输出结果时收起过程；用户想回看再点过程条。
     else if (wasStreaming.current) {
       setOpen(false);
       setExpanded(null);
@@ -88,7 +88,9 @@ export function ProcessPanel({
   }, [streaming]);
 
   const view = buildProcessView({ rounds, finished, durationMs, streaming });
-  const { stats, lines } = view;
+  const { lines } = view;
+  const turnTokens =
+    usage === null ? 0 : usage.turnInputTokens + usage.turnOutputTokens;
 
   const hasAny =
     lines.length > 0 ||
@@ -114,46 +116,9 @@ export function ProcessPanel({
           过程
         </span>
 
-        <span className="process-summary">
-          {streaming ? (
-            <>
-              <span className="proc-live">执行中</span>
-              <StatChip label="思考" value={stats.thinkingCount} />
-              <StatChip label="工具" value={stats.toolCount} />
-            </>
-          ) : (
-            <>
-              <StatChip label="思考" value={stats.thinkingCount} />
-              <StatChip label="工具" value={stats.toolCount} />
-              {stats.durationMs !== null && stats.durationMs > 0 && (
-                <span className="proc-chip mono">{formatDuration(stats.durationMs)}</span>
-              )}
-              {stats.composition.map((c) => (
-                <span className="proc-chip proc-chip--muted" key={c.label}>
-                  {c.label} {c.count}
-                </span>
-              ))}
-              {finished !== null && <OutcomeChip stats={stats} />}
-              {stats.denied > 0 && (
-                <span className="proc-chip proc-chip--warn">被拒 {stats.denied}</span>
-              )}
-              {stats.failed > 0 && (
-                <span className="proc-chip proc-chip--danger">失败 {stats.failed}</span>
-              )}
-            </>
-          )}
-        </span>
-
-        {usage !== null && (
-          <span className="proc-usage" title="本轮 / 本会话累计 token 用量">
-            <span>
-              本轮 <b>{formatTokens(usage.turnInputTokens)}</b> in /{' '}
-              <b>{formatTokens(usage.turnOutputTokens)}</b> out
-            </span>
-            <span>
-              累计 <b>{formatTokens(usage.sessionInputTokens)}</b> in /{' '}
-              <b>{formatTokens(usage.sessionOutputTokens)}</b> out
-            </span>
+        {turnTokens > 0 && (
+          <span className="proc-usage" title="本次执行总用量">
+            总用量 <b>{formatTokens(turnTokens)}</b> token
           </span>
         )}
 
@@ -229,19 +194,6 @@ export function ProcessPanel({
   );
 }
 
-function StatChip({ label, value }: { readonly label: string; readonly value: number }): JSX.Element {
-  return (
-    <span className="proc-chip">
-      {label} <b>{value}</b>
-    </span>
-  );
-}
-
-function OutcomeChip({ stats }: { readonly stats: ProcessStats }): JSX.Element {
-  const tone = stats.failed > 0 || stats.outcome.includes('未完成') ? 'warn' : 'ok';
-  return <span className={`proc-outcome proc-outcome--${tone}`}>{stats.outcome}</span>;
-}
-
 function ProcessLine({
   line,
   expanded,
@@ -307,24 +259,25 @@ function ProcessLine({
   return (
     <li className={`flow-item flow-item--tool is-${tool.status}`}>
       <button type="button" className="flow-line" onClick={onToggle} aria-expanded={isOpen}>
-        <span className={`flow-icon flow-icon--${display.category}`}>
+        <span className={`flow-icon flow-icon--${display.action}`}>
           <Icon name={display.icon} size={14} />
         </span>
         <span className="flow-main">
-          <span className="flow-label">{display.label}</span>
+          <span className="flow-label flow-tool-name">{display.label}</span>
           {target.length > 0 && <span className="flow-target mono">{target}</span>}
           <span className="sr-only">{TOOL_STATUS_LABEL[tool.status]}</span>
         </span>
         <span className="flow-meta">
-          {tool.durationMs !== null && tool.durationMs > 0 && (
-            <span className="mono">{formatDuration(tool.durationMs)}</span>
-          )}
           <span className={`flow-dot flow-dot--${tool.status}`} aria-hidden="true" />
           <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={13} />
         </span>
       </button>
       <Collapse open={isOpen}>
         <div className="flow-detail">
+          <div>
+            <p className="flow-detail-label">工具</p>
+            <code className="flow-tool-code">{tool.name.length > 0 ? tool.name : '工具'}</code>
+          </div>
           {tool.argsText.length > 0 && (
             <div>
               <p className="flow-detail-label">参数</p>

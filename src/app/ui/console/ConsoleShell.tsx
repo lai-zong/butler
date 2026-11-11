@@ -17,6 +17,7 @@ import { Icon, type IconName } from '../components/Icon';
 import { useNow } from '../lib/hooks.js';
 import { MemoryView } from '../memory/MemoryView';
 import { GrowthView } from '../growth/GrowthView';
+import { UsageView } from '../usage/UsageView';
 import type {
   ConsoleSection,
   MemoryPreset,
@@ -29,13 +30,17 @@ import type {
 interface SectionDef {
   readonly id: ConsoleSection;
   readonly code: string;
+  /** 机架上的短标签（86px 宽，放得下两个字） */
   readonly label: string;
+  /** 无障碍名称与悬停提示 */
+  readonly title: string;
   readonly icon: IconName;
 }
 
 const SECTIONS: readonly SectionDef[] = [
-  { id: 'memory', code: '01', label: '记忆', icon: 'memory' },
-  { id: 'growth', code: '02', label: '演化', icon: 'growth' },
+  { id: 'memory', code: '01', label: '记忆', title: '记忆', icon: 'memory' },
+  { id: 'growth', code: '02', label: '演化', title: '演化', icon: 'growth' },
+  { id: 'usage', code: '03', label: '节奏', title: '使用节奏', icon: 'pulse' },
 ];
 
 interface ConsoleShellProps {
@@ -87,6 +92,16 @@ export function ConsoleShell({
     scrollRef.current?.scrollTo({ top: 0 });
   }, [section]);
 
+  // 控制台是常驻覆盖层：关掉再打开时仍停在旧滚动位置会让人以为“没加载”。
+  // 退场结束（leaving 回落）时把内容滚回顶部；分区切换由上面的 effect 负责。
+  const wasLeavingRef = useRef(leaving);
+  useEffect(() => {
+    if (wasLeavingRef.current && !leaving) {
+      scrollRef.current?.scrollTo({ top: 0 });
+    }
+    wasLeavingRef.current = leaving;
+  }, [leaving]);
+
   return (
     <section
       className={`console-layer ${leaving ? 'is-leaving' : ''}`}
@@ -113,8 +128,8 @@ export function ConsoleShell({
                 type="button"
                 className={`cr-item ${active ? 'is-active' : ''}`}
                 aria-current={active ? 'page' : undefined}
-                aria-label={s.label}
-                title={s.label}
+                aria-label={s.title}
+                title={s.title}
                 onClick={() => onSection(s.id)}
               >
                 <span className="cr-icon">
@@ -163,6 +178,12 @@ export function ConsoleShell({
                 <GrowthView
                   onOpenMemory={onOpenMemory}
                   onRefreshOverview={onRefreshOverview}
+                  {...(id === section && onViewReady !== undefined ? { onFirstReady: onViewReady } : {})}
+                />
+              )}
+              {id === 'usage' && (
+                <UsageView
+                  notify={notify}
                   {...(id === section && onViewReady !== undefined ? { onFirstReady: onViewReady } : {})}
                 />
               )}

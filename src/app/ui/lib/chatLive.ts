@@ -258,5 +258,76 @@ export function asSseEvent(value: unknown): SseEvent | null {
   if (typeof value !== 'object' || value === null) return null;
   const rec = value as Record<string, unknown>;
   if (typeof rec['type'] !== 'string') return null;
-  return value as SseEvent;
+
+  /**
+   * ★ 按类型做字段级收窄，而不是"只查 type 就强转"。
+   *
+   *   旧实现 `return value as SseEvent` 只保证 type 是字符串；一条缺字段的
+   *   `{"type":"progress"}` 会让 `applyEvent` 在 `e.event.label.trim()` 上抛
+   *   TypeError（实测），而这个异常发生在流式渲染路径里 ——
+   *   整页会被 error boundary 替换，正在输出的内容一起消失。
+   *
+   *   这里对**会解引用字段的类型**逐条校验；校验失败返回 null，调用方会跳过
+   *   这一条坏事件，本轮其余内容继续渲染。未知类型保持原行为（放过），
+   *   避免前端比后端"更早知道"新事件类型而把它们全丢掉。
+   */
+  const str = (v: unknown): v is string => typeof v === 'string';
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const obj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null;
+
+  switch (rec['type']) {
+    case 'progress': {
+      const event = rec['event'];
+      if (!obj(event) || !str(event['label']) || !str(event['stage'])) return null;
+      return value as SseEvent;
+    }
+    case 'narration':
+      return str(rec['answer']) && str(rec['reasoning']) ? (value as SseEvent) : null;
+    case 'agent': {
+      const kind = rec['kind'];
+      if (!str(kind) || !num(rec['round'])) return null;
+      if (kind === 'reasoning' || kind === 'text') {
+        return str(rec['accumulated']) ? (value as SseEvent) : null;
+      }
+      if (kind === 'toolCall') {
+        return str(rec['callId']) && str(rec['name']) && str(rec['argsDelta'])
+          ? (value as SseEvent)
+          : null;
+      }
+      if (kind === 'toolStarted') {
+        return str(rec['callId']) && str(rec['name']) ? (value as SseEvent) : null;
+      }
+      if (kind === 'toolResult') {
+        return str(rec['callId']) && str(rec['name']) && str(rec['output'])
+          ? (value as SseEvent)
+          : null;
+      }
+      if (kind === 'finished') return str(rec['reason']) ? (value as SseEvent) : null;
+      return value as SseEvent;
+    }
+    case 'usage':
+      return num(rec['totalInputTokens']) &&
+        num(rec['totalOutputTokens']) &&
+        num(rec['sessionInputTokens']) &&
+        num(rec['sessionOutputTokens'])
+        ? (value as SseEvent)
+        : null;
+    case 'reply':
+      return str(rec['text']) ? (value as SseEvent) : null;
+    case 'error':
+      return str(rec['message']) ? (value as SseEvent) : null;
+    case 'approval':
+      return str(rec['id']) && str(rec['toolName']) ? (value as SseEvent) : null;
+    case 'contract':
+      return obj(rec['contract']) || rec['contract'] === null
+        ? Array.isArray(rec['injectedConstraints'])
+          ? (value as SseEvent)
+          : null
+        : null;
+    case 'reports':
+      return Array.isArray(rec['reports']) ? (value as SseEvent) : null;
+    default:
+      return value as SseEvent;
+  }
 }

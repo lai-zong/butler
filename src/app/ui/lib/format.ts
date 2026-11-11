@@ -5,7 +5,7 @@
  *   如果每个组件各写一份“几分钟前”，同一个界面里会出现三种说法。
  */
 
-import type { MemoryClass, MemoryKind, MemoryLifecycle, VerdictSeverity } from './types.js';
+import type { MemoryClass, MemoryKind, MemoryLifecycle } from './types.js';
 
 export const KIND_LABEL: Record<MemoryKind, string> = {
   fact: '事实',
@@ -35,12 +35,6 @@ export const DOMAIN_LABEL: Record<string, string> = {
   work: '办公',
   code: '代码',
   butler: '管家',
-};
-
-export const SEVERITY_LABEL: Record<VerdictSeverity, string> = {
-  blocking: '阻断',
-  advisory: '提醒',
-  info: '信息',
 };
 
 export const TIER_LABEL: Record<string, string> = {

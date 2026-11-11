@@ -79,14 +79,16 @@ export interface TimePartition {
  *   它有自己的“桌宠”分区（放在普通列表之后），避免一条固定会话打断时间线。
  * ★ 普通列表内部规则不变：置顶优先，置顶内按 updatedAt，其余按 updatedAt。
  */
+function isPetSession(session: SessionSummary, petSessionId: string | null): boolean {
+  return session.isPet === true || (petSessionId !== null && session.id === petSessionId);
+}
+
 export function partitionByTime(
   sessions: readonly SessionSummary[],
   petSessionId: string | null,
 ): TimePartition {
-  const pet =
-    petSessionId === null ? [] : sessions.filter((session) => session.id === petSessionId);
-  const normal =
-    petSessionId === null ? [...sessions] : sessions.filter((session) => session.id !== petSessionId);
+  const pet = sessions.filter((session) => isPetSession(session, petSessionId));
+  const normal = sessions.filter((session) => !isPetSession(session, petSessionId));
   return {
     rows: sortByTime(normal),
     pet: sortByTime(pet),
@@ -199,7 +201,7 @@ export function groupByWorkspace(
   const drafts = new Map<string, GroupDraft>();
 
   for (const session of sessions) {
-    const isPet = petSessionId !== null && session.id === petSessionId;
+    const isPet = isPetSession(session, petSessionId);
     const key = isPet ? PET_GROUP_KEY : session.effectiveWorkspace.trim();
     const existing = drafts.get(key);
     if (existing !== undefined) {

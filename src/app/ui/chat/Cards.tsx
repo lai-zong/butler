@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * 对话里的“结论卡片” —— 契约、复核、反思、产出
+ * 对话里的“结论卡片” —— 契约、反思、产出
  *
  * ★ 这几张卡是产品与普通聊天界面的分界：
- *   普通聊天只给答案；这里还告诉你**答应做什么、做得对不对、学到了什么**。
+ *   普通聊天只给答案；这里还告诉你**答应做什么、学到了什么、产出了什么**。
  *   但它们都必须在答案**之后**，且默认克制（折叠），不抢正文的注意力。
  */
 
@@ -12,15 +12,7 @@ import { useState } from 'react';
 
 import { Badge, Collapse } from '../components/Common';
 import { Icon } from '../components/Icon';
-import {
-  CLASS_LABEL,
-  DOMAIN_LABEL,
-  SEVERITY_LABEL,
-  formatDuration,
-  formatPercent,
-  formatTokens,
-  truncate,
-} from '../lib/format.js';
+import { CLASS_LABEL, DOMAIN_LABEL, formatPercent, truncate } from '../lib/format.js';
 import type {
   AssumptionView,
   ContractView,
@@ -28,7 +20,6 @@ import type {
   MemoryRef,
   ReflectionView,
   TurnAudit,
-  VerdictDto,
 } from '../lib/types.js';
 
 // ═══════════════════════════════════════════════════════════
@@ -129,109 +120,6 @@ export function ContractCard({ contract }: { readonly contract: ContractView }):
               <em>{contract.clarifyingQuestion}</em>
             </div>
           )}
-        </div>
-      </Collapse>
-    </section>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════
-// 复核结论
-// ═══════════════════════════════════════════════════════════
-
-export function VerdictCard({
-  verdict,
-}: {
-  readonly verdict: VerdictDto;
-}): JSX.Element {
-  const rejected = verdict.outcome === 'rejected';
-  const [open, setOpen] = useState(rejected);
-  const met = verdict.criteriaChecks.filter((c) => c.met).length;
-  const total = verdict.criteriaChecks.length;
-
-  return (
-    <section className={`verdict ${rejected ? 'verdict--rejected' : 'verdict--accepted'}`}>
-      <button type="button" className="verdict-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className="verdict-icon">
-          <Icon name={rejected ? 'alert' : 'checkCircle'} size={17} />
-        </span>
-        <span className="verdict-title">
-          <strong>{rejected ? '已打回' : '复核通过'}</strong>
-          <span className="verdict-summary">{verdict.summary}</span>
-        </span>
-        <span className="verdict-facts">
-          {total > 0 && (
-            <span className="mono">
-              {met}/{total} 判据
-            </span>
-          )}
-          {verdict.issues.length > 0 && (
-            <span className="verdict-issue-count">{verdict.issues.length} 个问题</span>
-          )}
-          <Icon name={open ? 'chevronDown' : 'chevronRight'} size={15} />
-        </span>
-      </button>
-
-      <Collapse open={open}>
-        <div className="verdict-body">
-          {total > 0 ? (
-            <div className="verdict-block">
-              <p className="mini-label">判据核对 · {met}/{total}</p>
-              <ul className="criteria-check">
-                {verdict.criteriaChecks.map((c, i) => (
-                  <li key={`${c.criterion}-${i}`} className={c.met ? 'is-met' : 'is-missing'}>
-                    <span className="check-icon">
-                      <Icon name={c.met ? 'check' : 'close'} size={13} />
-                    </span>
-                    <span className="check-text">
-                      {c.criterion}
-                      {c.note !== undefined && c.note.length > 0 && <small>{c.note}</small>}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : (
-            <p className="verdict-muted">这条结论来自较早的记录，没有留下判据核对。</p>
-          )}
-
-          {verdict.issues.length > 0 && (
-            <div className="verdict-block">
-              <p className="mini-label">发现的问题</p>
-              <ul className="issue-list">
-                {verdict.issues.map((issue, i) => (
-                  <li key={`${issue.statement}-${i}`}>
-                    <div className="issue-top">
-                      <Badge tone={issue.severity === 'blocking' ? 'danger' : issue.severity === 'advisory' ? 'warn' : 'neutral'}>
-                        {SEVERITY_LABEL[issue.severity]}
-                      </Badge>
-                      <span>{issue.statement}</span>
-                    </div>
-                    {issue.memoryContent !== undefined && (
-                      <p className="issue-memory">关联记忆：{issue.memoryContent}</p>
-                    )}
-                    {issue.suggestion !== undefined && <p className="issue-suggestion">建议：{issue.suggestion}</p>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div className="verdict-meta">
-            <span>
-              <Icon name="clock" size={13} /> {formatDuration(verdict.durationMs)}
-            </span>
-            <span className="mono">
-              本轮 {formatTokens(verdict.usage.inputTokens)} in · {formatTokens(verdict.usage.outputTokens)} out
-              {verdict.sessionUsage !== undefined && (
-                <>
-                  {' · '}会话 {formatTokens(verdict.sessionUsage.inputTokens)} in ·{' '}
-                  {formatTokens(verdict.sessionUsage.outputTokens)} out
-                </>
-              )}
-            </span>
-            {verdict.artifactIds.length > 0 && <span>{verdict.artifactIds.length} 个产出物</span>}
-          </div>
         </div>
       </Collapse>
     </section>

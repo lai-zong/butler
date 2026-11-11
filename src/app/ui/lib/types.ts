@@ -11,8 +11,8 @@ export type ViewId = 'chat' | 'tasks' | 'memory' | 'growth' | 'settings';
 /** 主界面：对话、定时任务、设置；治理视图移入控制台。 */
 export type MainView = 'chat' | 'tasks' | 'settings';
 
-/** 控制台只保留记忆与演化两个分区。 */
-export type ConsoleSection = 'memory' | 'growth';
+/** 控制台分区：记忆、演化，以及本程序自己的使用节奏。 */
+export type ConsoleSection = 'memory' | 'growth' | 'usage';
 
 /** 跳到记忆页时可携带的意图。 */
 export interface MemoryTarget {
@@ -355,6 +355,8 @@ export interface SessionSummary {
   readonly effectivePermission: SessionPermission;
   readonly modelProfileId?: string;
   readonly modelId?: string;
+  /** 桌宠专用会话：侧栏单独分区，默认不自动选中。 */
+  readonly isPet?: boolean;
 }
 
 /** 详情接口比列表多一份完整人格正文（类型上收窄成 string）。 */
@@ -776,45 +778,71 @@ export interface Diagnostics {
   readonly hasModel: boolean;
 }
 
-export interface ActivityDetailResponse {
+// ═══════════════════════════════════════════════════════════
+// 使用节奏（GET / DELETE /api/usage，POST /api/usage/ping，
+//           GET / PUT /api/usage/settings）
+//
+// ★ 只描述“用户如何使用本项目 Web 界面”：页面、时间、是否在操作。
+//   没有工具、任务、消息、记忆或审查内容 —— 这些字段**永远不该**
+//   出现在这里，接口也不接受它们。
+//
+// ★ 时长与习惯全部由服务端聚合（见 core/usage/aggregate.ts）：
+//   界面只负责上报心跳和展示结果，不在客户端另算一套口径。
+// ═══════════════════════════════════════════════════════════
+
+/** 可上报的页面；控制台里的「使用节奏」页本身不参与统计。 */
+export type UsagePageId = 'chat' | 'tasks' | 'settings' | 'memory' | 'growth';
+
+export interface UsageDailyPoint {
+  /** 本地日期，YYYY-MM-DD */
+  readonly date: string;
+  readonly minutes: number;
+  readonly sessions: number;
+}
+
+export interface UsagePageStat {
+  readonly id: UsagePageId;
+  readonly label: string;
+  readonly visits: number;
+  readonly minutes: number;
+}
+
+export interface UsageHabit {
+  readonly id: string;
+  readonly text: string;
+  /** 0–1 */
+  readonly confidence: number;
+  readonly observedDays: number;
+}
+
+export interface UsageResponse {
   readonly ok: boolean;
-  readonly now: number;
-  readonly consent: {
-    readonly granted: boolean;
-    readonly enabled: boolean;
-    readonly grantedAt: number | null;
-    readonly retentionDays: number;
-  };
-  readonly raw: readonly {
-    readonly id: string;
-    readonly app: string;
-    readonly category: string;
-    readonly categoryLabel: string;
-    readonly startedAt: number;
-    readonly endedAt: number;
-    readonly durationMs: number;
-    readonly hadInput: boolean;
-    readonly source: 'sample' | 'session' | 'demo';
-  }[];
-  readonly aggregates: readonly {
-    readonly id: string;
-    readonly userId: string;
-    readonly bucket: string;
-    readonly category: string;
-    readonly minutes: number;
-    readonly topApps: readonly string[];
-  }[];
-  readonly patterns: readonly {
-    readonly id: string;
-    readonly userId: string;
-    readonly kind: 'routine' | 'preference' | 'availability';
-    readonly pattern: string;
-    readonly confidence: number;
-    readonly evidence: readonly string[];
-    readonly observedDays: number;
-    readonly appliesTo: 'weekday' | 'weekend' | 'all';
-    readonly createdAt: number;
-  }[];
+  readonly enabled: boolean;
+  readonly days: number;
+  /** 活跃分钟：页面可见、聚焦且最近有操作。 */
+  readonly totalMinutes: number;
+  /** 可见分钟：页面只是开着的时间也算。 */
+  readonly visibleMinutes: number;
+  readonly activeDays: number;
+  readonly sessionCount: number;
+  readonly avgSessionMinutes: number;
+  readonly daily: readonly UsageDailyPoint[];
+  readonly pages: readonly UsagePageStat[];
+  readonly habits: readonly UsageHabit[];
+  /** 当前区间内最早一次心跳；从未记录时为 null。 */
+  readonly trackingSince: number | null;
+}
+
+/** POST /api/usage/ping 的响应；`recorded=false` 表示记录已关闭。 */
+export interface UsagePingResponse {
+  readonly ok: boolean;
+  readonly recorded: boolean;
+  readonly reason?: string;
+}
+
+export interface UsageSettingsResponse {
+  readonly ok: boolean;
+  readonly enabled: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1211,7 +1239,13 @@ export interface ApprovalRequest {
   readonly tier: string;
   readonly summary: string;
   readonly preview?: string;
-  readonly timeoutMs: number;
+}
+
+/** POST /api/chat/steer 的响应。 */
+export interface SteerResponse {
+  readonly ok: boolean;
+  readonly queued: boolean;
+  readonly cancelled: number;
 }
 
 export type SseEvent =
@@ -1285,8 +1319,12 @@ export type SseEvent =
       readonly tier: string;
       readonly summary: string;
       readonly preview?: string;
-      readonly timeoutMs: number;
     }
+  /**
+   * 服务端已接收一条运行中途消息。
+   * 前端用它确认乐观展示的那条用户消息，避免重复渲染。
+   */
+  | { readonly type: 'steering'; readonly text: string }
   | { readonly type: 'user'; readonly messageId: string }
   | {
       readonly type: 'contract';
@@ -1377,9 +1415,26 @@ export interface LiveAssistant {
   firstChunkMs: number | null;
 }
 
+export interface LiveSteeringMessage {
+  /** 本轮内的稳定序号，用作 React key（服务端不提供消息 id）。 */
+  readonly seq: number;
+  readonly text: string;
+  /** 服务端已经通过 `steering` SSE 事件确认；false 只表示本地乐观展示。 */
+  readonly delivered: boolean;
+}
+
 export interface LiveTurn {
+  /**
+   * 本轮开始时间。
+   *
+   * ★ 之前实时轮的时间戳是写死的「刚刚」，流跑几分钟也还是「刚刚」——
+   *   用户没法判断这一轮到底开始了多久。这里记下真实起点。
+   */
+  startedAt: number;
   userText: string;
   images: readonly string[];
+  /** 本轮运行中用户补充的消息；刷新后由历史消息提供，不再从这里重复。 */
+  steering: readonly LiveSteeringMessage[];
   assistant: LiveAssistant;
 }
 
@@ -1672,6 +1727,18 @@ export interface ModelChoicesResponse {
 
 export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
 
+/** 主动说话的频率上限；具体规则由服务端决定，界面只展示“少 / 正常 / 多”。 */
+export type PetProactiveFrequency = 'rare' | 'normal' | 'often';
+
+/** 服务端判定命中的主动场景。 */
+export type PetProactiveTrigger = 'late_night' | 'long_session' | 'return';
+
+export interface PetProactiveScenarios {
+  readonly lateNight: boolean;
+  readonly longSession: boolean;
+  readonly return: boolean;
+}
+
 /**
  * 显示位置。
  *
@@ -1703,6 +1770,15 @@ export interface PetConfigView {
   readonly thinkingLevel: PetThinkingLevel;
   /** 空字符串 = 默认管家；前端不回填默认提示词。 */
   readonly persona: string;
+  /** 允许桌宠主动说话；默认关闭，由用户在桌宠设置里打开。 */
+  readonly proactiveEnabled: boolean;
+  /** 主动说话的频率上限；只控制能不能说，不改变人格措辞。 */
+  readonly proactiveFrequency: PetProactiveFrequency;
+  /** 安静时段（本地时间，HH:mm）；跨午夜同样有效。 */
+  readonly quietStart: string;
+  readonly quietEnd: string;
+  /** 允许主动开口的场景；开关由服务端判定。 */
+  readonly proactiveScenarios: PetProactiveScenarios;
   readonly updatedAt: number;
 }
 
@@ -1750,4 +1826,25 @@ export interface PetSessionResponse {
 export interface PetStopResponse {
   readonly ok: boolean;
   readonly status: PetRuntimeView;
+}
+
+/**
+ * POST /api/pet/proactive/claim：
+ * 服务端按开关、频率、安静时段与场景决定要不要说话。
+ * `text` 是平稳兜底句；人格只影响界面措辞，不影响这个决定。
+ */
+export interface PetProactiveClaimResponse {
+  readonly ok: boolean;
+  readonly shouldSpeak: boolean;
+  readonly trigger?: PetProactiveTrigger;
+  readonly text?: string;
+  readonly cooldownUntil?: number | null;
+  readonly reason?: string;
+}
+
+/** POST /api/pet/proactive/feedback：dismiss / snooze / mute。 */
+export interface PetProactiveFeedbackResponse {
+  readonly ok: boolean;
+  readonly proactiveEnabled?: boolean;
+  readonly snoozedUntil?: number;
 }

@@ -1,38 +1,35 @@
 'use client';
 
 /**
- * 设置空间 —— 模型、知识、隐私、数据迁移
+ * 设置空间 —— 模型、知识、数据迁移
  *
- * ★ 这里的每一项都必须**真的能用**：
- *   隐私开关调用 /api/observation，导出调用 /api/transfer/export，
- *   导入会替换事件流并重建运行时。不放“看起来像设置”的摆设。
+ * ★ 这里不再有“整机行为观察”，也不放使用节奏：后者只属于控制台。
+ *   设置页只保留真正需要配置的东西，不做使用数据的第二个入口。
+ *
+ * ★ 每一项都必须**真的能用**：
+ *   导入导出调用 /api/transfer/*，MCP 面板调用 /api/mcp，
+ *   不放“看起来像设置”的摆设。
+ *
+ * ★ 分区按需挂载：除模型接入外，面板只在被选中时渲染。
+ *   以前七个分区用 hidden 常驻，进设置页就同时打出模型 / MCP / 文档 / 桌宠 /
+ *   权限五个请求，桌宠面板还会在后台每 5 秒轮询 /api/pet/status——用户看不见，
+ *   机器却一直在干活。请求都发在面板自己的 useEffect 里，不渲染就不发。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import {
-  Badge,
-  InlineError,
-  Kbd,
-  PageHeader,
-  SectionHeading,
-  Skeleton,
-} from '../components/Common';
+import { PageHeader, SectionHeading } from '../components/Common';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
-import { Switch } from '../components/Switch';
 import { AutomationPanel } from './AutomationPanel';
 import { PetSettingsPanel } from './PetSettingsPanel';
 import { PermissionsPanel } from './PermissionsPanel';
-import { ActivityDetail } from './ActivityDetail';
 import { McpPanel } from './McpPanel';
-import { ToolsPanel } from './ToolsPanel';
 import { DocumentsPanel } from './DocumentsPanel';
-import { CredentialsPanel } from './CredentialsPanel';
 import { ModelProviderPanel } from './ModelProviderPanel';
-import { errorMessage, fetchJson, postJson } from '../lib/api.js';
-import { formatDateTime, formatNumber } from '../lib/format.js';
-import type { ObservationState, ToastMessage } from '../lib/types.js';
+import { errorMessage, fetchJson } from '../lib/api.js';
+import { formatNumber } from '../lib/format.js';
+import type { ToastMessage } from '../lib/types.js';
 
 interface SettingsViewProps {
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
@@ -46,10 +43,8 @@ type SettingsPage =
   | 'pet'
   | 'security'
   | 'knowledge'
-  | 'privacy'
   | 'transfer'
-  | 'mcp'
-  | 'about';
+  | 'mcp';
 
 const SETTINGS_NAV: readonly {
   readonly label: string;
@@ -66,18 +61,14 @@ const SETTINGS_NAV: readonly {
   {
     label: '治理',
     items: [
-      { id: 'security', label: '权限与工具' },
+      { id: 'security', label: '权限与自主' },
       { id: 'knowledge', label: '知识库' },
-      { id: 'privacy', label: '隐私与观察' },
       { id: 'transfer', label: '数据迁移' },
     ],
   },
   {
     label: '系统',
-    items: [
-      { id: 'mcp', label: 'MCP 扩展' },
-      { id: 'about', label: '关于' },
-    ],
+    items: [{ id: 'mcp', label: 'MCP 扩展' }],
   },
 ];
 
@@ -140,13 +131,6 @@ interface ImportResponse {
   readonly historicalEvents: number;
 }
 
-const RETENTION: readonly { readonly value: number; readonly label: string }[] = [
-  { value: 7, label: '保留 7 天' },
-  { value: 14, label: '保留 14 天' },
-  { value: 30, label: '保留 30 天' },
-  { value: 0, label: '不保留原始记录' },
-];
-
 export function SettingsView({
   notify,
   onRefreshOverview,
@@ -155,39 +139,12 @@ export function SettingsView({
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('model');
   const settingsPageRef = useRef<HTMLDivElement | null>(null);
   const settingsPageMountedRef = useRef(false);
-  const [obs, setObs] = useState<ObservationState | null>(null);
-  const [obsLoading, setObsLoading] = useState(true);
-  const [obsError, setObsError] = useState<string | null>(null);
-  const [obsBusy, setObsBusy] = useState(false);
-
-  const [consentOpen, setConsentOpen] = useState(false);
-  const [consentChecked, setConsentChecked] = useState(false);
-  const [revokeOpen, setRevokeOpen] = useState(false);
-
-  const [demoProfile, setDemoProfile] = useState<'office-dev' | 'student'>('office-dev');
-  const [demoDays, setDemoDays] = useState(30);
-  const [demoBusy, setDemoBusy] = useState(false);
-  const [demoError, setDemoError] = useState<string | null>(null);
-  const [activityNonce, setActivityNonce] = useState(0);
 
   const [exporting, setExporting] = useState(false);
   const [pendingImport, setPendingImport] = useState<{ name: string; size: number; text: string } | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportedSummary | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-
-  const loadObservation = useCallback(async (): Promise<void> => {
-    setObsLoading(true);
-    setObsError(null);
-    try {
-      const res = await fetchJson<ObservationState>('/api/observation');
-      setObs(res);
-    } catch (err) {
-      setObsError(errorMessage(err));
-    } finally {
-      setObsLoading(false);
-    }
-  }, []);
 
   useEffect(() => {
     if (!settingsPageMountedRef.current) {
@@ -196,83 +153,6 @@ export function SettingsView({
     }
     settingsPageRef.current?.scrollIntoView({ block: 'start', behavior: 'auto' });
   }, [settingsPage]);
-
-  useEffect(() => {
-    void loadObservation();
-  }, [loadObservation]);
-
-  const consent = obs;
-
-  async function updateObservation(body: Record<string, unknown>, successText: string): Promise<void> {
-    setObsBusy(true);
-    try {
-      const res = await fetchJson<ObservationState>('/api/observation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      setObs(res);
-      notify(successText, 'success');
-      onRefreshOverview();
-    } catch (err) {
-      notify(errorMessage(err), 'danger');
-    } finally {
-      setObsBusy(false);
-    }
-  }
-
-  async function toggleObservation(next: boolean): Promise<void> {
-    if (consent === null) return;
-    if (!consent.granted && next) {
-      setConsentChecked(false);
-      setConsentOpen(true);
-      return;
-    }
-    await updateObservation({ enabled: next }, next ? '行为观察已开启' : '行为观察已暂停，已有数据保留');
-  }
-
-  async function grantConsent(): Promise<void> {
-    setConsentOpen(false);
-    await updateObservation({ granted: true }, '已同意并开启行为观察');
-  }
-
-  async function revokeConsent(): Promise<void> {
-    setRevokeOpen(false);
-    await updateObservation({ granted: false }, '已撤回同意，采集数据已清除');
-  }
-
-  async function changeRetention(days: number): Promise<void> {
-    await updateObservation({ retentionDays: days }, `原始记录${days === 0 ? '不再保留' : `保留 ${days} 天`}`);
-  }
-
-  async function importDemoData(): Promise<void> {
-    if (demoBusy) return;
-    if (consent === null || !consent.granted || !consent.enabled) {
-      setDemoError('需要先同意并开启行为观察，才能导入演示数据。');
-      return;
-    }
-    if (!Number.isInteger(demoDays) || demoDays < 1 || demoDays > 90) {
-      setDemoError('天数必须是 1–90 的整数。');
-      return;
-    }
-    setDemoBusy(true);
-    setDemoError(null);
-    try {
-      const res = await postJson<{
-        readonly generated: number;
-        readonly recorded: number;
-        readonly disclaimer: string;
-      }>('/api/activity/demo', { profile: demoProfile, days: demoDays });
-      notify(`已导入 ${res.recorded}/${res.generated} 条演示记录；聚合与规律走真实代码。`, 'success');
-      setActivityNonce((n) => n + 1);
-      await loadObservation();
-      onRefreshOverview();
-    } catch (err) {
-      setDemoError(errorMessage(err));
-    } finally {
-      setDemoBusy(false);
-    }
-  }
 
   async function exportData(): Promise<void> {
     if (exporting) return;
@@ -361,7 +241,6 @@ export function SettingsView({
       setPendingImport(null);
       onRefreshOverview();
       onDataReset();
-      await loadObservation();
     } catch (err) {
       notify(errorMessage(err), 'danger');
     } finally {
@@ -398,6 +277,11 @@ export function SettingsView({
         </nav>
 
         <div className="settings-content">
+          {/* ★ 模型接入是唯一保留常驻的分区：面板内部是一张跨步骤的连接编辑表，
+              从选预设、填 Base URL / API Key 到勾选模型都在组件自己的 state 里。
+              切走再切回如果重新挂载，用户填了一半的草稿会静默消失（Key 还要重贴）；
+              而它又是设置页的默认分区，进设置本来就要请求 /api/model，
+              常驻不会多出请求，面板内也没有轮询。 */}
           <div className="settings-page-view" hidden={settingsPage !== 'model'}>
             <SettingsPageHead
               title="模型接入"
@@ -406,403 +290,132 @@ export function SettingsView({
             <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
           </div>
 
-          <div className="settings-page-view" hidden={settingsPage !== 'automation'}>
-            <AutomationPanel />
-          </div>
+          {settingsPage === 'automation' && (
+            <div className="settings-page-view">
+              <AutomationPanel />
+            </div>
+          )}
 
           {/* ── 桌面宠物 ── */}
-          <div className="settings-page-view" hidden={settingsPage !== 'pet'}>
-            <SettingsPageHead
-              eyebrow="PET"
-              title="桌面宠物"
-              description="桌宠可以显示在桌面窗口或 Web 页面里；这里保存它读取的形象、模型与人格偏好。"
-            />
-            <PetSettingsPanel notify={notify} />
-          </div>
-
-          <div className="settings-page-view" hidden={settingsPage !== 'security'}>
-            <SettingsPageHead
-              eyebrow="ACCESS"
-              title="权限与工具"
-              description="权限档位、凭证与工具分级都集中在这里；默认最小授权。"
-            />
-            <PermissionsPanel notify={notify} />
-            <CredentialsPanel notify={notify} />
-            <ToolsPanel />
-          </div>
-
-          <div className="settings-page-view" hidden={settingsPage !== 'knowledge'}>
-            <SettingsPageHead
-              eyebrow="KNOWLEDGE"
-              title="知识库"
-              description="上传文档用于检索；检索模式、嵌入模型与索引在文档库的「检索设置」里管理。"
-            />
-            <DocumentsPanel notify={notify} />
-          </div>
-
-          {/* ── 隐私 ── */}
-          <div className="settings-page-view" hidden={settingsPage !== 'privacy'}>
-            <SettingsPageHead
-              eyebrow="PRIVACY"
-              title="隐私与观察"
-              description="默认关闭。只有你显式同意之后，才可能产生任何采样。"
-              actions={
-                <span className="privacy-pill">
-                  <Icon name="lock" size={13} /> 本地存储
-                </span>
-              }
-            />
-            <section className="panel settings-panel">
-              <SectionHeading
-                title="行为观察"
-                description="采样开关、保留期限与活动记录。"
+          {settingsPage === 'pet' && (
+            <div className="settings-page-view">
+              <SettingsPageHead
+                eyebrow="PET"
+                title="桌面宠物"
+                description="桌宠可以显示在桌面窗口或 Web 页面里；这里保存它读取的形象、模型与人格偏好。"
               />
-
-          {obsError !== null && <InlineError message={obsError} onRetry={() => void loadObservation()} />}
-          {obsLoading && obs === null && <Skeleton rows={3} height={14} />}
-
-          {consent !== null && (
-            <>
-              <div className={`consent-card ${consent.granted ? 'is-granted' : ''}`}>
-                <div className="consent-main">
-                  <span className={`consent-icon ${consent.granted ? 'is-on' : ''}`}>
-                    <Icon name={consent.granted ? 'eye' : 'eyeOff'} size={18} />
-                  </span>
-                  <div>
-                    <strong>
-                      {consent.granted ? (consent.enabled ? '正在采样' : '已同意 · 当前暂停') : '行为观察未开启'}
-                    </strong>
-                    <p>
-                      {consent.granted
-                        ? `每 5 分钟抽样一次前台应用名。已记录 ${formatNumber(consent.recordedBlocks)} 个采样块，聚合 ${formatNumber(
-                            consent.aggregates,
-                          )} 条。`
-                        : '不采样、不读取前台窗口、不产生任何活动记录。'}
-                    </p>
-                  </div>
-                </div>
-                <Switch
-                  checked={consent.granted && consent.enabled}
-                  disabled={obsBusy}
-                  label="行为观察开关"
-                  onChange={(next) => void toggleObservation(next)}
-                />
-              </div>
-
-              <div className="demo-card">
-                <div className="demo-head">
-                  <div>
-                    <strong>导入演示数据</strong>
-                    <p>用真实聚合、规律与画像代码展示“积累一个月”的效果。</p>
-                  </div>
-                  <span className="privacy-pill">模拟</span>
-                </div>
-                <div className="demo-controls">
-                  <div className="demo-seg" role="group" aria-label="演示画像">
-                    <button
-                      type="button"
-                      className={demoProfile === 'office-dev' ? 'is-on' : ''}
-                      onClick={() => setDemoProfile('office-dev')}
-                      disabled={demoBusy}
-                    >
-                      办公开发型
-                    </button>
-                    <button
-                      type="button"
-                      className={demoProfile === 'student' ? 'is-on' : ''}
-                      onClick={() => setDemoProfile('student')}
-                      disabled={demoBusy}
-                    >
-                      学习沟通型
-                    </button>
-                  </div>
-                  <label className="demo-days">
-                    <span>天数</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={90}
-                      value={demoDays}
-                      disabled={demoBusy}
-                      onChange={(e) => setDemoDays(Number(e.target.value))}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    disabled={demoBusy || consent === null || !consent.granted || !consent.enabled}
-                    onClick={() => void importDemoData()}
-                  >
-                    {demoBusy ? '导入中…' : '导入演示数据'}
-                  </button>
-                </div>
-                {demoError !== null && <p className="demo-error">{demoError}</p>}
-                <p className="demo-note">
-                  <strong>这是模拟数据。</strong>只生成带 <code>source=demo</code> 标记的原始记录；聚合、规律与画像仍走真实代码。可在下方逐条删除。
-                </p>
-              </div>
-
-              <ul className="privacy-list">
-                <li>
-                  <Icon name="check" size={13} />
-                  只记录<strong>应用名</strong>与是否有输入，不记录窗口标题、内容或按键。
-                </li>
-                <li>
-                  <Icon name="check" size={13} />
-                  采样不是持续监听：固定间隔抽样，不做键盘记录。
-                </li>
-                <li>
-                  <Icon name="check" size={13} />
-                  撤回同意会同时清除已采集的原始记录与聚合。
-                </li>
-              </ul>
-
-              <div className="settings-rows">
-                <div className="settings-row">
-                  <span className="settings-key">原始记录保留</span>
-                  <span className="settings-val retention-row">
-                    <span className="select-wrap">
-                      <select
-                        value={consent.retentionDays}
-                        aria-label="原始记录保留天数"
-                        disabled={!consent.granted || obsBusy}
-                        onChange={(e) => void changeRetention(Number(e.target.value))}
-                      >
-                        {RETENTION.map((r) => (
-                          <option key={r.value} value={r.value}>
-                            {r.label}
-                          </option>
-                        ))}
-                      </select>
-                      <Icon name="chevronDown" size={13} className="select-chevron" />
-                    </span>
-                    <span className="settings-muted">到期自动清除，只保留聚合</span>
-                  </span>
-                </div>
-                {consent.granted && consent.grantedAt !== null && (
-                  <div className="settings-row">
-                    <span className="settings-key">同意时间</span>
-                    <span className="settings-val mono">{formatDateTime(consent.grantedAt)}</span>
-                  </div>
-                )}
-              </div>
-
-              {consent.granted && (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm btn-ghost-danger"
-                  disabled={obsBusy}
-                  onClick={() => setRevokeOpen(true)}
-                >
-                  <Icon name="trash" size={14} /> 撤回同意并清除采集数据
-                </button>
-              )}
-            </>
+              <PetSettingsPanel notify={notify} />
+            </div>
           )}
 
-              <ActivityDetail key={activityNonce} notify={notify} />
-            </section>
-          </div>
+          {settingsPage === 'security' && (
+            <div className="settings-page-view">
+              <SettingsPageHead
+                eyebrow="ACCESS"
+                title="权限与自主"
+                description="决定 butler 能在本机做到哪一层；切换立即生效并持久化。"
+              />
+              <PermissionsPanel notify={notify} />
+            </div>
+          )}
+
+          {settingsPage === 'knowledge' && (
+            <div className="settings-page-view">
+              <SettingsPageHead
+                eyebrow="KNOWLEDGE"
+                title="知识库"
+                description="上传文档用于检索；检索模式、嵌入模型与索引在文档库的「检索设置」里管理。"
+              />
+              <DocumentsPanel notify={notify} />
+            </div>
+          )}
 
           {/* ── 数据 ── */}
-          <div className="settings-page-view" hidden={settingsPage !== 'transfer'}>
-            <SettingsPageHead
-              eyebrow="TRANSFER"
-              title="数据迁移"
-              description="导出是单文件 JSON；导入会用文件里的历史替换当前事件流。"
-            />
-            <section className="panel settings-panel">
-              <SectionHeading
-                title="备份与恢复"
-                description="迁移前先备份；导入是原子替换。"
+          {settingsPage === 'transfer' && (
+            <div className="settings-page-view">
+              <SettingsPageHead
+                eyebrow="TRANSFER"
+                title="数据迁移"
+                description="导出是单文件 JSON；导入会用文件里的历史替换当前事件流。"
               />
+              <section className="panel settings-panel">
+                <SectionHeading
+                  title="备份与恢复"
+                  description="迁移前先备份；导入是原子替换。"
+                />
 
-          <div className="transfer-grid">
-            <div className="transfer-card">
-              <span className="transfer-icon">
-                <Icon name="download" size={18} />
-              </span>
-              <div className="transfer-text">
-                <strong>导出全部</strong>
-                <p>事件、记忆、对话与产出物打包成一个 JSON。凭证会自动脱敏并在文件里列出位置；个人信息会保留并标记。</p>
-              </div>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => void exportData()} disabled={exporting}>
-                {exporting ? '准备中…' : '导出'}
-              </button>
-            </div>
+                <div className="transfer-grid">
+                  <div className="transfer-card">
+                    <span className="transfer-icon">
+                      <Icon name="download" size={18} />
+                    </span>
+                    <div className="transfer-text">
+                      <strong>导出全部</strong>
+                      <p>事件、记忆、对话与产出物打包成一个 JSON。凭证会自动脱敏并在文件里列出位置；个人信息会保留并标记。</p>
+                    </div>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void exportData()} disabled={exporting}>
+                      {exporting ? '准备中…' : '导出'}
+                    </button>
+                  </div>
 
-            <div className="transfer-card">
-              <span className="transfer-icon">
-                <Icon name="upload" size={18} />
-              </span>
-              <div className="transfer-text">
-                <strong>从备份导入</strong>
-                <p>导入前服务端会先备份现有事件文件；随后原子替换并重建运行时。</p>
-              </div>
-              <input
-                ref={fileRef}
-                type="file"
-                accept="application/json,.json"
-                hidden
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file !== undefined) void pickImport(file);
-                  e.target.value = '';
-                }}
-              />
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()}>
-                选择文件
-              </button>
-            </div>
-          </div>
+                  <div className="transfer-card">
+                    <span className="transfer-icon">
+                      <Icon name="upload" size={18} />
+                    </span>
+                    <div className="transfer-text">
+                      <strong>从备份导入</strong>
+                      <p>导入前服务端会先备份现有事件文件；随后原子替换并重建运行时。</p>
+                    </div>
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      accept="application/json,.json"
+                      hidden
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file !== undefined) void pickImport(file);
+                        e.target.value = '';
+                      }}
+                    />
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()}>
+                      选择文件
+                    </button>
+                  </div>
+                </div>
 
-          {importResult !== null && (
-            <div className="import-result">
-              <span className="import-result-icon">
-                <Icon name="checkCircle" size={17} />
-              </span>
-              <div>
-                <strong>导入完成</strong>
-                <p className="mono">
-                  {formatNumber(importResult.events)} 条事件 · lastSeq {importResult.lastSeq} · 导出时间{' '}
-                  {importResult.exportedAt}
-                </p>
-                {importResult.restored !== null && (
-                  <p>
-                    重建出 {importResult.restored.memories} 条记忆 · {importResult.restored.chatSessions} 段对话 ·{' '}
-                    {importResult.restored.artifacts} 个产出物
-                  </p>
+                {importResult !== null && (
+                  <div className="import-result">
+                    <span className="import-result-icon">
+                      <Icon name="checkCircle" size={17} />
+                    </span>
+                    <div>
+                      <strong>导入完成</strong>
+                      <p className="mono">
+                        {formatNumber(importResult.events)} 条事件 · lastSeq {importResult.lastSeq} · 导出时间{' '}
+                        {importResult.exportedAt}
+                      </p>
+                      {importResult.restored !== null && (
+                        <p>
+                          重建出 {importResult.restored.memories} 条记忆 · {importResult.restored.chatSessions} 段对话 ·{' '}
+                          {importResult.restored.artifacts} 个产出物
+                        </p>
+                      )}
+                      {importResult.backup !== null && <p className="mono import-backup">备份：{importResult.backup}</p>}
+                    </div>
+                  </div>
                 )}
-                {importResult.backup !== null && <p className="mono import-backup">备份：{importResult.backup}</p>}
-              </div>
+              </section>
             </div>
           )}
-            </section>
-          </div>
 
           {/* ── MCP 扩展 ── */}
-          <div className="settings-page-view" hidden={settingsPage !== 'mcp'}>
-            <McpPanel notify={notify} />
-          </div>
-
-          {/* ── 关于 ── */}
-          <div className="settings-page-view" hidden={settingsPage !== 'about'}>
-            <SettingsPageHead
-              eyebrow="ABOUT"
-              title="关于"
-              description="管家式 AI · 可审计的记忆治理与自进化系统。"
-              actions={<Badge tone="outline">v8 · 本地运行</Badge>}
-            />
-            <section className="panel settings-panel">
-              <SectionHeading
-                title="版本与架构"
-                description="分层反思、效果跟踪、契约复核与渐进演化。"
-              />
-
-          <div className="about-layers">
-            <div>
-              <span className="mono">01</span>
-              <strong>分层反思</strong>
-              <p>学得对。领域反思的输入里不含其它领域的内容。</p>
+          {settingsPage === 'mcp' && (
+            <div className="settings-page-view">
+              <McpPanel notify={notify} />
             </div>
-            <div>
-              <span className="mono">02</span>
-              <strong>效果跟踪</strong>
-              <p>学得可验证。原则记录应用与奏效，效果差会自动降权。</p>
-            </div>
-            <div>
-              <span className="mono">03</span>
-              <strong>契约与复核</strong>
-              <p>学得不矛盾。干前写判据，干完逐条核对。</p>
-            </div>
-            <div>
-              <span className="mono">04</span>
-              <strong>渐进演化</strong>
-              <p>学得久而不乱。休眠、归档但不删除，命中可唤醒。</p>
-            </div>
-          </div>
-
-          <div className="shortcuts">
-            <p className="mini-label">快捷键</p>
-            <div className="shortcut-row">
-              <span><Kbd>Enter</Kbd></span>
-              <span>发送消息</span>
-            </div>
-            <div className="shortcut-row">
-              <span><Kbd>Shift</Kbd> + <Kbd>Enter</Kbd></span>
-              <span>换行</span>
-            </div>
-            <div className="shortcut-row">
-              <span><Kbd>Esc</Kbd></span>
-              <span>关闭浮层</span>
-            </div>
-          </div>
-
-              <p className="about-stack">
-                Next.js · React · TypeScript · Node.js · 事件溯源（JSONL）· 本地优先
-              </p>
-            </section>
-          </div>
+          )}
         </div>
       </div>
-
-      {/* 同意 */}
-      <Modal
-        open={consentOpen}
-        onClose={() => setConsentOpen(false)}
-        title="同意行为观察？"
-        description="这是可撤回的本地采集。默认关闭，只有你点同意之后才会开始。"
-        footer={
-          <div className="modal-actions">
-            <button type="button" className="btn btn-ghost" onClick={() => setConsentOpen(false)}>
-              取消
-            </button>
-            <button type="button" className="btn btn-primary" disabled={!consentChecked || obsBusy} onClick={() => void grantConsent()}>
-              同意并开启
-            </button>
-          </div>
-        }
-      >
-        <div className="consent-modal">
-          <ul>
-            <li>采集内容：前台<strong>应用名</strong>、该时刻是否有输入。不采集窗口标题、内容、截图或按键。</li>
-            <li>采集方式：每 5 分钟抽样一次，不是持续监听。</li>
-            <li>存储位置：仅本机数据目录；原始记录按保留期限自动清除。</li>
-            <li>你的控制：随时可以暂停或撤回；撤回会同时清除已采集的数据。</li>
-          </ul>
-          <label className="consent-check">
-            <input
-              type="checkbox"
-              checked={consentChecked}
-              onChange={(e) => setConsentChecked(e.target.checked)}
-            />
-            <span>我已了解上述内容，并同意在本机进行行为观察。</span>
-          </label>
-        </div>
-      </Modal>
-
-      {/* 撤回 */}
-      <Modal
-        open={revokeOpen}
-        onClose={() => setRevokeOpen(false)}
-        title="撤回同意并清除数据？"
-        description="这会停止采样，并删除已采集的原始记录与聚合。"
-        footer={
-          <div className="modal-actions">
-            <button type="button" className="btn btn-ghost" onClick={() => setRevokeOpen(false)}>
-              取消
-            </button>
-            <button type="button" className="btn btn-danger" disabled={obsBusy} onClick={() => void revokeConsent()}>
-              撤回并清除
-            </button>
-          </div>
-        }
-      >
-        <p className="revoke-note">
-          撤回之后不会再产生任何活动记录。已聚合出的规律也会一并清除；这条撤回动作本身会留在事件流里，
-          作为“你确实撤回过的证据”。
-        </p>
-      </Modal>
 
       {/* 导入确认 */}
       <Modal
@@ -840,4 +453,3 @@ export function SettingsView({
     </div>
   );
 }
-

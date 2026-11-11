@@ -529,7 +529,7 @@
 }
 
 /* ─────────────────────────────────────────────
-   窄屏：会话列表变成浮层（不挤进图标栏 / 底部导航）
+   桌面窄窗口：会话列表变成浮层（不挤进图标栏）
    ───────────────────────────────────────────── */
 
 .side-sessions-backdrop {
@@ -553,16 +553,6 @@
   background: var(--surface);
   box-shadow: var(--shadow-md);
   animation: sideSessionsIn 0.18s var(--ease-out) both;
-}
-
-.side-sessions.is-flyout.is-mobile {
-  top: auto;
-  right: 10px;
-  bottom: calc(66px + env(safe-area-inset-bottom));
-  left: 10px;
-  width: auto;
-  max-height: min(62vh, 520px);
-  border-radius: 16px;
 }
 
 .side-sessions.is-flyout .side-sessions-scroll {
@@ -831,111 +821,6 @@
   .page-head-actions {
     padding-bottom: 0;
   }
-}
-
-@media (max-width: 760px) {
-  .app-shell {
-    flex-direction: column;
-  }
-
-  .app-main {
-    order: 1;
-    flex: 1;
-    height: auto;
-  }
-
-  .sidebar {
-    order: 2;
-    flex: 0 0 auto;
-    flex-direction: row;
-    align-items: center;
-    width: 100%;
-    height: auto;
-    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--line);
-    border-right: 0;
-    background: rgba(245, 243, 238, 0.94);
-    backdrop-filter: blur(14px);
-    z-index: 80;
-  }
-
-  /* 品牌区在底部导航里没有位置；折叠通过窄屏浮层解决，不依赖它。 */
-  .brand,
-  .side-caption {
-    display: none;
-  }
-
-  .side-nav {
-    flex: 1;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-around;
-    gap: 2px;
-  }
-
-  /* 设置不再藏在收起的底栏里：它就是导航里的最后一项。 */
-  .side-nav-bottom {
-    display: contents;
-  }
-
-  .nav-item {
-    flex-direction: column;
-    gap: 2px;
-    padding: 5px 9px;
-    border-radius: 9px;
-  }
-
-  .nav-item.is-active {
-    border-color: transparent;
-    background: var(--accent-soft);
-    box-shadow: none;
-  }
-
-  .nav-icon {
-    width: 25px;
-    height: 25px;
-    background: transparent !important;
-  }
-
-  .nav-text {
-    display: flex;
-    align-items: center;
-  }
-
-  .nav-text strong {
-    font-size: 11px;
-    font-weight: 500;
-    line-height: 1.2;
-  }
-
-  .nav-badge {
-    top: 1px;
-    right: 2px;
-    min-width: 13px;
-    height: 13px;
-    font-size: 11px;
-  }
-
-  .nav-indicator {
-    display: none;
-  }
-
-  .global-banner {
-    top: 8px;
-    font-size: 11px;
-  }
-
-  .toast-stack {
-    right: 12px;
-    bottom: 78px;
-    left: 12px;
-    align-items: stretch;
-  }
-
-  .toast {
-    max-width: none;
-  }
-
 }
 
 @media (max-width: 640px) {

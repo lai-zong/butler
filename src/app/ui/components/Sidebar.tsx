@@ -62,7 +62,6 @@ export function Sidebar({
 }: SidebarProps): JSX.Element {
   // 窄屏（≤1100）侧栏变成图标栏：会话列表改成从侧栏旁边弹出的浮层，不挤在 78px 里。
   const narrow = useMediaQuery('(max-width: 1100px)');
-  const mobile = useMediaQuery('(max-width: 760px)');
   const showSessions = sessionsOpen && (narrow || !collapsed);
 
   function renderNavItem(item: NavItem): JSX.Element {
@@ -155,7 +154,6 @@ export function Sidebar({
         {showSessions && (
           <SidebarSessions
             flyout={narrow}
-            mobile={mobile}
             onClose={onCloseSessions}
             onNavigateToChat={onNavigateToChat}
           />
