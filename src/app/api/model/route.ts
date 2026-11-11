@@ -16,6 +16,8 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
+import { discoverAllowedHostsFromEnv, discoverHostAllowed } from '@/app/server/discoverGuard.js';
+
 import { DATA_DIR, getRuntime, resetRuntime } from '@/app/runtime';
 import { DeepSeekModel } from '@/adapters/model/deepseek.js';
 import { OpenAICompatibleModel } from '@/adapters/model/openaiCompatible.js';
@@ -144,8 +146,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (action === 'discover') {
     const presetId = typeof body.presetId === 'string' ? body.presetId : '';
     const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : '';
-    if (presetById(presetId) === undefined) {
+    const preset = presetById(presetId);
+    if (preset === undefined) {
       return NextResponse.json({ error: '未知的模型预设' }, { status: 400 });
+    }
+    /**
+     * ⚠️ 只允许预设同源 / 本机 / 显式白名单（见 discoverHostAllowed）。
+     *    自定义网关请设 `MODEL_DISCOVER_ALLOWED_HOSTS=your-gateway.example.com`。
+     */
+    if (!discoverHostAllowed({ baseUrl, presetBaseUrl: preset.baseUrl, allowedHosts: discoverAllowedHostsFromEnv() })) {
+      return NextResponse.json(
+        {
+          error:
+            '这个地址不在允许探测的范围内。只允许与预设同源的地址、本机地址' +
+            '（127.0.0.1 / localhost），或由 MODEL_DISCOVER_ALLOWED_HOSTS 显式放行的主机。',
+        },
+        { status: 400 },
+      );
     }
     try {
       const models = await discoverModels({

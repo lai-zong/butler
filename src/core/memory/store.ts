@@ -18,8 +18,6 @@ import { snapshotOf } from './snapshot.js';
 import type { ClockPort } from '../ports/clock.js';
 import {
   isButlerWriteOnly,
-  isForceVisible,
-  isSearchableByAll,
   type MemoryClass,
   type MemoryEntry,
   type MemoryGrant,
@@ -226,13 +224,11 @@ export class MemoryStore {
     }
 
     // 管家对其余三类有读取权
+    //
+    // ⚠️ 这里原本还有 isForceVisible / isSearchableByAll 两个分支，但**不可达**：
+    //    走到这行时 actor 只可能是 butler（user 已返回、sensitive 已拦），
+    //    上一行已经 return。删掉是为了避免"看起来还有一层检查"的错觉。
     if (actor.kind === 'butler') return null;
-
-    // 全局硬约束：对所有角色强制可见
-    if (isForceVisible(entry.memClass)) return null;
-
-    // 全局共享：可按需检索
-    if (isSearchableByAll(entry.memClass)) return null;
 
     return null;
   }

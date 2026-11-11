@@ -147,3 +147,31 @@ export function findMemoryContent(
   }
   return undefined;
 }
+
+
+/**
+ * 行为观察的保留期清理：把**超过保留期**的原始采样载荷抹成占位符。
+ *
+ * ★ 为什么必须在事件层做：
+ *   只清内存 `records` 时，重启后 `replayFromLog()` 会从 `activity.sampled`
+ *   把原始记录（应用名、时间、是否有输入）重新装回来 ——
+ *   "保留 7 天"的承诺就只活到下一次启动。
+ *
+ * ⚠️ 只处理"原始采样"（带 `app` 字段）；同意/撤回/删除类事件保留，
+ *    否则审计里看不出"曾经开过采集"。
+ */
+export function scrubActivityBefore(event: SessionEvent, cutoff: number): SessionEvent | null {
+  if (event.type !== 'activity.sampled') return null;
+  const p = event.payload as Record<string, unknown> | null;
+  if (p === null || typeof p['app'] !== 'string') return null;
+
+  const endedAt =
+    typeof p['endedAt'] === 'number'
+      ? p['endedAt']
+      : typeof p['startedAt'] === 'number'
+        ? p['startedAt']
+        : event.createdAt;
+  if (endedAt >= cutoff) return null;
+
+  return { ...event, payload: { purged: true, reason: 'retention' } };
+}

@@ -406,11 +406,20 @@ export class ActivityObserver {
     if (this.consent.retentionDays === 0) {
       const n = this.records.length;
       this.records = [];
+      // ★ 磁盘同样要清：否则重启后 replayFromLog 会把原始记录装回来
+      this.log.purgeActivityBefore(Number.POSITIVE_INFINITY);
       return { purged: n };
     }
     const cutoff = t - this.consent.retentionDays * 24 * 60 * 60 * 1000;
     const before = this.records.length;
     this.records = this.records.filter((r) => r.endedAt >= cutoff);
+    /**
+     * ★ 关键一步：内存清完，还要把**事件流里的原文**抹掉。
+     *
+     *   旧实现只清内存：重启后 `replayFromLog()` 从 `activity.sampled`
+     *   把应用名/时间/是否有输入重新装回来，于是"保留 7 天"只活到下次启动。
+     */
+    this.log.purgeActivityBefore(cutoff);
     return { purged: before - this.records.length };
   }
 

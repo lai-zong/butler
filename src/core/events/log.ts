@@ -14,7 +14,7 @@ import {
   type RollbackTarget,
   type SessionEvent,
 } from './types.js';
-import { scrubEventForMemory } from './scrub.js';
+import { scrubActivityBefore, scrubEventForMemory } from './scrub.js';
 
 export interface AppendInput<T extends EventType = EventType, P = unknown> {
   readonly type: T;
@@ -170,6 +170,37 @@ export class EventLog {
      * 这里不 await —— 调用方（forget 路由）随后会 `flushPersistence()`，
      * 那一步会等这个 Promise 完成，因此"删除已落盘"仍有保证。
      */
+    const port = this.persistence;
+    if (port.rewrite !== undefined) {
+      this.pendingRewrite = (this.pendingRewrite ?? Promise.resolve())
+        .then(() => port.rewrite?.(() => this.events))
+        .catch(() => undefined);
+    }
+    this.pendingPersist = 0;
+    return changed;
+  }
+
+  /**
+   * 行为观察：抹除早于 `cutoff` 的原始采样载荷（保留事件骨架与计数）。
+   *
+   * ★ 与 `scrubForMemory` 同一套机制：先改内存、再排队整体重写磁盘。
+   *   不抹的话，重启后 `ActivityObserver.replayFromLog()` 会把原始记录装回来。
+   */
+  purgeActivityBefore(cutoff: number): number {
+    let changed = 0;
+    const next: SessionEvent[] = [];
+    for (const e of this.events) {
+      const hit = scrubActivityBefore(e, cutoff);
+      if (hit === null) {
+        next.push(e);
+        continue;
+      }
+      next.push(hit);
+      changed += 1;
+    }
+    if (changed === 0) return 0;
+
+    this.events = next;
     const port = this.persistence;
     if (port.rewrite !== undefined) {
       this.pendingRewrite = (this.pendingRewrite ?? Promise.resolve())

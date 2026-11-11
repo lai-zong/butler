@@ -793,6 +793,39 @@ function wrapToolOutput(args: {
 
   const wrapped = wrapUntrusted(content);
 
+  /**
+   * ★ block 级发现（明确的"覆盖指令/改写角色"）时，**不把原文送进上下文**。
+   *
+   *   旧行为：照常把可疑内容包进数据块交给模型，只在上层弹一个确认。
+   *   问题：用户点"允许"之后，那段指令性文本就完整进了模型上下文 ——
+   *   而 block 级发现的定义就是"这段内容在试图下指令"。
+   *   现在的取舍：内容整体扣下，只回一句说明；用户仍能看到告警。
+   */
+  if (wrapped.scan.blocked) {
+    args.log.append({
+      type: 'injection.detected',
+      actor: 'system',
+      payload: {
+        toolName: args.toolName,
+        taskId: args.taskId,
+        trust: args.trust,
+        blocked: true,
+        withheld: true,
+        strippedHiddenChars: wrapped.strippedCount > 0,
+        riskScore: Number(wrapped.scan.riskScore.toFixed(3)),
+        findings: wrapped.scan.findings.map((f) => ({ kind: f.kind, severity: f.severity })),
+      },
+      createdAt: args.now,
+    });
+    const alert = buildAlert({ content, scan: wrapped.scan });
+    if (alert && args.onAlert) args.onAlert(alert);
+    return [
+      `【工具 ${args.toolName} 的输出已被拦截】`,
+      '内容里含明确的指令性文本（试图覆盖指令或改写角色），已整段扣下，未送入上下文。',
+      '如果确实需要这份内容，请让用户换一个来源，或把关键片段手动贴出来。',
+    ].join('\n');
+  }
+
   // 命中注入模式 → 落事件（可审计）+ 告警
   if (wrapped.scan.findings.length > 0) {
     args.log.append({
