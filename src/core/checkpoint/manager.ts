@@ -19,14 +19,13 @@ import type { EventLog } from '../events/log.js';
 import type { SessionEvent } from '../events/types.js';
 import type { ArtifactStore } from '../artifact/types.js';
 import type { ClockPort } from '../ports/clock.js';
-import { replay, stateHashOf } from './replay.js';
+import { ReplayAccumulator, replay, stateHashOf, type ReplayState } from './replay.js';
 import {
   RollbackError,
   type ArtifactImpact,
   type Checkpoint,
   type CheckpointKind,
   type CheckpointSnapshot,
-  type MemoryRef,
   type RollbackPlan,
   type RollbackResult,
 } from './types.js';
@@ -228,10 +227,34 @@ export class CheckpointManager {
     const existing = new Set(this.checkpoints.map((c) => c.seq));
     const pending: { readonly cp: Checkpoint; readonly sourceType: string }[] = [];
 
+    /**
+     * ★ 单次前向扫描，而不是"每个检查点重放一遍 1..seq"。
+     *
+     *   旧实现走 `snapshotAt(seq) → replay(range(1, seq))`，是 O(n²)，
+     *   而 `replay()` 内部还会对整段事件算一次哈希（纯字符串化）。
+     *   实测：本机 4,144 条事件 / 507 个检查点，启动 **24 秒**。
+     *
+     *   现在用一个累加器走一遍：单点快照从 O(n) 降到 O(1)，
+     *   `usage` 也一起累加，不再为每个检查点重新求和。
+     */
+    const acc = new ReplayAccumulator();
+    let inputTokens = 0;
+    let outputTokens = 0;
+
     for (const e of this.log.all()) {
+      acc.apply(e);
+
+      const usage = (e.payload as { usage?: { inputTokens?: number; outputTokens?: number } } | null)
+        ?.usage;
+      if (usage) {
+        inputTokens += usage.inputTokens ?? 0;
+        outputTokens += usage.outputTokens ?? 0;
+      }
+
       if (existing.has(e.seq)) continue;
       if (!isCheckpointWorthy(e)) continue;
-      const cp = this.build(e);
+
+      const cp = this.buildWith(e, acc.state(), { inputTokens, outputTokens });
       this.checkpoints.push(cp);
       existing.add(e.seq);
       pending.push({ cp, sourceType: e.type });
@@ -427,21 +450,34 @@ export class CheckpointManager {
     const plan = this.planRollback(targetId);
     const fromSeq = this.log.length;
 
-    // 状态哈希：回退前先记下当前哈希，便于之后验证重放一致性
+    /**
+     * ★ 一致性自检必须在**截断之前**做。
+     *
+     *   旧顺序是「先 truncateTo，再 replay + 比哈希」——
+     *   一旦自检抛错，日志已经截断，而 `session.rollback` 事件还没落：
+     *   磁盘上的历史没了，审计里也查不到"曾经回退过"。
+     *
+     *   ⚠️ 这个检查本身是**哨兵**，不是"状态与检查点快照比对"：
+     *      `replay()` 内部的 stateHash 就是 `stateHashOf(events)`，
+     *      所以正常情况下两者恒等。它存在的意义是——将来谁给 replay
+     *      加了不确定性（读 Date.now、随机），这里会立刻炸出来。
+     *      真正的语义校验由 `planRollback` 的产出物/记忆影响面负责。
+     */
+    const remaining = this.log.all().filter((e) => e.seq <= plan.toSeq);
+    const replayed = replay(remaining);
+    const expectedHash = stateHashOf(remaining);
+    if (replayed.stateHash !== expectedHash) {
+      throw new RollbackError(
+        '重放状态哈希不一致，核心层可能混入了不确定因素（已中止，事件流未被截断）',
+        'not_a_checkpoint_seq',
+      );
+    }
+
     const discardedEvents = this.log.truncateTo({
       sessionId: this.log.sessionId,
       seq: plan.toSeq,
       reason: `回退至检查点「${plan.target.label}」`,
     });
-
-    // 回退后重放，确认状态与检查点记录一致 —— 一致性自检
-    const replayed = replay(this.log.all());
-    const expectedHash = stateHashOf(this.log.all());
-    if (replayed.stateHash !== expectedHash) {
-      // 理论上不可达：replay 内部用同一个哈希函数。
-      // 留这个检查是为了将来有人给 replay 加了不确定逻辑时能被发现。
-      throw new RollbackError('重放状态哈希不一致，核心层可能混入了不确定因素', 'not_a_checkpoint_seq');
-    }
 
     const superseded = plan.artifactImpact
       .filter((a) => a.action === 'supersede')
@@ -539,7 +575,11 @@ export class CheckpointManager {
 
   // ── 内部 ──
 
-  private build(event: SessionEvent): Checkpoint {
+  private buildWith(
+    event: SessionEvent,
+    state: ReplayState,
+    usage: { readonly inputTokens: number; readonly outputTokens: number },
+  ): Checkpoint {
     const { kind, label } = labelFor(event);
     return {
       id: `ckpt_${event.seq}_${++this.counter}`,
@@ -548,8 +588,24 @@ export class CheckpointManager {
       kind,
       label,
       detail: describeEvent(event),
-      snapshot: this.snapshotAt(event.seq),
+      snapshot: this.snapshotFrom(state, usage),
       createdAt: event.createdAt,
+    };
+  }
+
+  /** 把一份重放状态压成检查点快照（只存引用，不存内容）。 */
+  private snapshotFrom(
+    state: ReplayState,
+    usage: { readonly inputTokens: number; readonly outputTokens: number },
+  ): CheckpointSnapshot {
+    return {
+      completedSteps: state.completedSteps,
+      pendingSteps: state.pendingSteps,
+      failedSteps: state.failedSteps,
+      artifacts: state.artifactIds.map((id) => ({ artifactId: id, version: 1 })),
+      memories: state.memoryIds.map((id) => ({ memoryId: id, version: 1 })),
+      memoryCount: state.memoryIds.length,
+      usage,
     };
   }
 
@@ -573,17 +629,8 @@ export class CheckpointManager {
       }
     }
 
-    const memories: MemoryRef[] = r.state.memoryIds.map((id, i) => ({ memoryId: id, version: 1 + i * 0 }));
-
-    return {
-      completedSteps: r.state.completedSteps,
-      pendingSteps: r.state.pendingSteps,
-      failedSteps: r.state.failedSteps,
-      artifacts: r.state.artifactIds.map((id) => ({ artifactId: id, version: 1 })),
-      memories,
-      memoryCount: r.state.memoryIds.length,
-      usage: { inputTokens: input, outputTokens: output },
-    };
+    // 只存引用（id + version）：内容由 replay 从事件流算出来，不会漂移。
+    return this.snapshotFrom(r.state, { inputTokens: input, outputTokens: output });
   }
 }
 

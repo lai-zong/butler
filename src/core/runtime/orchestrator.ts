@@ -10,7 +10,7 @@
 import { writeContract } from '../butler/contract.js';
 import { runButler } from '../butler/execute.js';
 import { verifyHardConstraints, type HardConstraintReport } from '../butler/hardConstraints.js';
-import { supervise, type NormalizedSupervisionOutput, type SupervisionResult } from '../butler/supervisor.js';
+import type { NormalizedSupervisionOutput, SupervisionResult } from '../butler/supervisor.js';
 import { EventLog } from '../events/log.js';
 import { domainName } from '../domain/types.js';
 import type { GlobalAgentsSnapshot } from '../prompts/globalAgents.js';
@@ -42,6 +42,14 @@ export interface RunSessionArgs {
   readonly clock: ClockPort;
   readonly sessionId: string;
   readonly userGoal: string;
+  /**
+   * Web 聊天：把任务契约改成由模型调用 plan_task 按需产生。
+   *
+   * 默认 false，保持定时任务/验证脚本等旧调用方的行为。开启后不再在
+   * 回合开始时强制调用写契约模型；闲聊可直接回答，有副作用的工具由
+   * ToolFramework 的 planGuard 拦住，直到模型调用 plan_task。
+   */
+  readonly optionalPlan?: boolean;
   /**
    * 调用方附加的人格说明（桌宠设置）。
    *
@@ -361,20 +369,49 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   //
   //   ★ 但保留了 `decompose` 里真正有价值的部分：
   //     按相关性筛选要注入的约束（管家自己干同样需要知道哪些约束相关）。
-  stage('contract', '写任务契约');
-  const written = await writeContract({
-    model: args.model,
-    log,
-    sessionId: args.sessionId,
-    userGoal: args.userGoal,
-    recalled: args.recalled,
-    now: args.clock.now(),
-    ...(args.history !== undefined ? { history: args.history } : {}),
-    ...(globalAgents !== undefined ? { globalAgents } : {}),
-  });
-  inputTokens += written.usage.inputTokens;
-  outputTokens += written.usage.outputTokens;
-  const contract = written.contract;
+  let contract: TaskContract;
+  let injectedConstraints: readonly InjectedConstraint[] = [];
+
+  if (args.optionalPlan === true) {
+    // 不预先调用写契约模型：先给执行层一个不含正式判据的目标壳。
+    // 真正的契约由模型在需要副作用操作时调用 plan_task 产生，并写入本轮 planState。
+    const provisionalRaw = {
+      deliverable: args.userGoal.slice(0, 200),
+      criteria: [] as string[],
+      mustObey: [] as string[],
+      domains: [] as DomainId[],
+      confidence: 0.8,
+    };
+    contract = {
+      deliverable: provisionalRaw.deliverable,
+      criteria: provisionalRaw.criteria,
+      mustObey: provisionalRaw.mustObey,
+      domains: [],
+      confidence: provisionalRaw.confidence,
+      raw: provisionalRaw,
+    };
+  } else {
+    stage('contract', '写任务契约');
+    const written = await writeContract({
+      model: args.model,
+      log,
+      sessionId: args.sessionId,
+      userGoal: args.userGoal,
+      recalled: args.recalled,
+      now: args.clock.now(),
+      ...(args.history !== undefined ? { history: args.history } : {}),
+      ...(globalAgents !== undefined ? { globalAgents } : {}),
+    });
+    inputTokens += written.usage.inputTokens;
+    outputTokens += written.usage.outputTokens;
+    contract = written.contract;
+    injectedConstraints = written.constraints.map((c) => ({
+      memoryId: c.memoryId,
+      content: c.content,
+      source: c.source,
+      negotiable: c.negotiable,
+    }));
+  }
 
   /**
    * ── ★ 低置信度：记录假设，**但不阻断**（v7 · D-4；v8 批次C 改为读契约）──
@@ -465,13 +502,6 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
   //    已改为通用 `stage` —— 单执行者架构没有「步骤」。
   progress({ kind: 'stage', stage: 'execute', label: `开始执行：${contract.deliverable.slice(0, 24)}` });
 
-  const injectedConstraints = written.constraints.map((c) => ({
-    memoryId: c.memoryId,
-    content: c.content,
-    source: c.source,
-    negotiable: c.negotiable,
-  }));
-
   let run: Awaited<ReturnType<typeof runButler>>;
   try {
     run = await runButler({
@@ -492,7 +522,9 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
       ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
       // ★ 询问通道（C6）继续往下传
       ...(args.asker !== undefined ? { asker: args.asker } : {}),
-      ...(args.domainHistory !== undefined ? { history: args.domainHistory } : {}),
+      // 单执行者就是管家本人：执行时也要看到前几轮对话，
+      // 否则每轮只会看到“本轮原话”，人格会重新编一遍当前状态。
+      ...(args.history !== undefined ? { history: args.history } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
       ...(args.onAgentProgress !== undefined ? { onAgentProgress: args.onAgentProgress } : {}),
@@ -570,102 +602,20 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     now: args.clock.now(),
   });
 
-  // ── ⑦ 管家监督（v7 · D-7 三视角：契约 / 领域 / 全局）──
-  let sup: SupervisionResult;
-  if (args.supervisionMode === 'manual') {
-    // D-35：主回合不自动调用监督员；用户从轮次条手动发起。
-    // 这里给出一份“未审查”的诚实结果，不能伪装成通过。
-    sup = {
-      output: {
-        criteriaChecks: [],
-        findings: [],
-        summary: '未自动审查（可在轮次条按需发起）',
-        reviewed: false,
-      },
-      usage: { inputTokens: 0, outputTokens: 0 },
-      promptVersion: 'manual.unreviewed',
-    };
-  } else {
-    stage('supervise', '监督与审查');
-    try {
-      /**
-       * 监督员的“全局记忆快照”只包含全局层：
-       *   - global_constraint / global_shared（含原则）
-       *   - 排除 sensitive 与 domain，避免审查越权读取；
-       * 这不是“所有记忆”，但足以核对全局视角，且不泄漏领域/敏感内容。
-       */
-      const memorySnapshot = (args.store?.all() ?? [])
-        .filter(
-          (e) =>
-            e.lifecycle === 'active' &&
-            (e.memClass === 'global_constraint' || e.memClass === 'global_shared'),
-        )
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 24)
-        .map((e) => ({
-          id: e.id,
-          memClass: e.memClass,
-          kind: e.kind,
-          content: e.content.slice(0, 240),
-        }));
-
-      sup = await supervise({
-        model: args.model,
-        log,
-        userGoal: args.userGoal,
-        // ★ 契约是核对的唯一标准 —— 没有它，监督员只能凭感觉评价
-        contract,
-        reports,
-        hardConstraints: hardConstraintMemories.map((x) => x.memory.content),
-        memorySnapshot,
-        now: args.clock.now(),
-      });
-    } catch (err) {
-      // 取消必须原样向上抛，不能伪装成“审查失败”
-      if (args.signal?.aborted === true || isAbortError(err)) throw err;
-
-      /**
-       * ★ D-39：审查失败只影响审查窗口，不拖垮主对话。
-       *   给出一份“未评估”的诚实结果，而不是让用户拿不到回答。
-       */
-      const reason = err instanceof Error ? err.message : String(err);
-      log.append({
-        type: 'supervisor.observe',
-        actor: 'supervisor',
-        payload: {
-          failed: true,
-          reason,
-          criteriaTotal: contract.criteria.length,
-        },
-        createdAt: args.clock.now(),
-      });
-      sup = {
-        output: {
-          criteriaChecks: contract.criteria.map((criterion) => ({
-            criterion,
-            met: false,
-            note: '监督员调用失败，未评估',
-          })),
-          findings: [
-            {
-              viewpoint: 'global',
-              severity: 'warn',
-              message: `监督员调用失败，审查未完成：${reason}`,
-              evidence: [],
-            },
-          ],
-          summary: '监督员调用失败，审查未完成；主回答仍已交付。',
-          reviewed: false,
-        },
-        usage: { inputTokens: 0, outputTokens: 0 },
-        promptVersion: 'supervisor.unavailable',
-      };
-    }
-  }
+  // 审查已完全改为用户主动发起的工具型审查；主回合不再自动调用监督员。
+  const sup: SupervisionResult = {
+    output: {
+      criteriaChecks: [],
+      findings: [],
+      summary: '',
+      reviewed: false,
+    },
+    usage: { inputTokens: 0, outputTokens: 0 },
+    promptVersion: 'manual.review.only',
+  };
   throwIfAborted(args.signal);
   inputTokens += sup.usage.inputTokens;
   outputTokens += sup.usage.outputTokens;
-
   // ── ⑦b 原则违背检测（方案 § 2.2③ 第三类检查）──
   //
   // ⚠️ 这是"效果验证"闭环的收尾：原则被注入了（applied +1），

@@ -20,13 +20,14 @@
  *      拖慢整个系统不可接受。
  */
 
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename } from 'node:fs/promises';
 import {
-  copyFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -53,6 +54,14 @@ export interface JsonlEventStoreOptions {
   readonly onError?: (err: Error) => void;
 }
 
+/** 读盘时发现的数据问题（不阻断启动，但**必须**能被看见）。 */
+export interface LoadIssue {
+  readonly kind: 'duplicateId' | 'seqRenumbered';
+  /** 受影响的事件条数 */
+  readonly count: number;
+  readonly detail: string;
+}
+
 export interface LoadResult {
   readonly events: readonly SessionEvent[];
   /** 损坏的行数（跳过） */
@@ -61,6 +70,14 @@ export interface LoadResult {
   readonly badLineNumbers: readonly number[];
   /** 是否存在（首次运行时为 false） */
   readonly existed: boolean;
+  /**
+   * 读盘时修正过的问题。
+   *
+   * ⚠️ 加这个字段的直接原因：旧实现遇到 seq 重号**静默取第一条**，
+   *    4,144 行历史被丢到只剩 2,458 条，而 `badLines` 仍然是 0 ——
+   *    界面看不出任何异常。**静默的丢数据比报错严重得多。**
+   */
+  readonly issues: readonly LoadIssue[];
 }
 
 /**
@@ -72,11 +89,11 @@ export interface LoadResult {
  */
 export async function loadEvents(file: string): Promise<LoadResult> {
   if (!existsSync(file)) {
-    return { events: [], badLines: 0, badLineNumbers: [], existed: false };
+    return { events: [], badLines: 0, badLineNumbers: [], existed: false, issues: [] };
   }
 
   const raw = await readFile(file, 'utf8');
-  const events: SessionEvent[] = [];
+  const parsed: SessionEvent[] = [];
   const badLineNumbers: number[] = [];
 
   const lines = raw.split('\n');
@@ -84,9 +101,9 @@ export async function loadEvents(file: string): Promise<LoadResult> {
     const text = (lines[i] ?? '').trim();
     if (text.length === 0) continue;
     try {
-      const parsed = JSON.parse(text) as unknown;
-      if (isSessionEvent(parsed)) {
-        events.push(parsed as SessionEvent);
+      const value = JSON.parse(text) as unknown;
+      if (isSessionEvent(value)) {
+        parsed.push(value as SessionEvent);
       } else {
         badLineNumbers.push(i + 1);
       }
@@ -95,20 +112,103 @@ export async function loadEvents(file: string): Promise<LoadResult> {
     }
   }
 
-  // ★ 按 seq 排序并去重 —— 追加写可能因为重试产生重复行。
-  //   去重保留**先出现的**那条（同一 seq 内容应当相同）。
-  const bySeq = new Map<number, SessionEvent>();
-  for (const e of events) {
-    if (!bySeq.has(e.seq)) bySeq.set(e.seq, e);
+  /**
+   * ★ 去重键是 **id**，不是 seq。
+   *
+   *   旧实现按 seq 去重（`if (!bySeq.has(e.seq))`）。问题在于 seq 是
+   *   **每次启动从 1 重新编号**的，于是两代数据里同一个 seq 承载的是
+   *   **两条不同的事件** —— "去重"实际是在丢历史。
+   *
+   *   实测（本机真实数据）：4,144 行 / 884 个 seq 重号 / 97 个会话，
+   *   加载后只剩 2,458 条，约 40% 的历史再也读不回来。
+   *
+   *   事件 id 是全局唯一的（实测 4,144 行 id 全不同），所以按 id 去重
+   *   才是"去掉真正的重复行"，而不是"去掉编号撞车的历史"。
+   */
+  const seenIds = new Set<string>();
+  const unique: SessionEvent[] = [];
+  let duplicateIds = 0;
+  for (const e of parsed) {
+    if (seenIds.has(e.id)) {
+      duplicateIds += 1;
+      continue;
+    }
+    seenIds.add(e.id);
+    unique.push(e);
   }
-  const sorted = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+
+  /**
+   * ★ 归一化：seq 恒等于它在文件里的位置（1 起）。
+   *
+   *   为什么必须重新编号，而不是原样保留：
+   *     · `EventLog.truncateTo` 用 `slice(target.seq)` 按下标截断，
+   *       它要求 seq 与数组下标严格一致；
+   *     · 历史文件里 seq 既有重号也有缺口（实测 884 个重号、64 个缺口），
+   *       原样保留会让回退切在错误的位置。
+   *
+   *   为什么重新编号不会改变因果顺序：
+   *     文件是 append-only，**文件顺序就是事件产生的顺序**。
+   *     按位置编号保留了这个顺序，只是把编号换成无空洞的连续值。
+   *
+   *   为什么这样做能止住丢数据：
+   *     下次启动读回同一份文件时，重新编号的结果完全相同（幂等），
+   *     新事件又总是从 `max(seq)+1` 往后接，不再与旧行撞号。
+   */
+  let renumbered = 0;
+  const normalized = unique.map((e, i) => {
+    const seq = i + 1;
+    if (e.seq !== seq) {
+      renumbered += 1;
+      return { ...e, seq } as SessionEvent;
+    }
+    return e;
+  });
+
+  const issues: LoadIssue[] = [];
+  if (duplicateIds > 0) {
+    issues.push({
+      kind: 'duplicateId',
+      count: duplicateIds,
+      detail: `${duplicateIds} 行事件的 id 重复（同一事件被写了两次），已各保留第一条`,
+    });
+  }
+  if (renumbered > 0) {
+    issues.push({
+      kind: 'seqRenumbered',
+      count: renumbered,
+      detail:
+        `${renumbered} 条事件的 seq 与文件位置不一致（历史上有重号/缺口），` +
+        '已按文件顺序重新编号为 1 起连续值；事件顺序与内容不变',
+    });
+  }
 
   return {
-    events: sorted,
+    events: normalized,
     badLines: badLineNumbers.length,
     badLineNumbers,
     existed: true,
+    issues,
   };
+}
+
+/**
+ * 把临时文件的内容真正刷到磁盘。
+ *
+ * ★ 为什么 rename 之前必须 fsync：
+ *   rename 只保证"文件名指向哪个 inode"，不保证 inode 的内容已经落盘。
+ *   断电后可能出现"新文件名 + 空内容/半截内容"—— 比没替换更糟。
+ *   先 fsync 临时文件，再 rename，才满足"要么旧文件完好、要么新文件完整"。
+ *
+ * ⚠️ 只在整体重写（抹除/回退）路径上调用：那是低频且破坏性的操作，
+ *    值得付这个代价。热路径的追加写仍是缓冲 + 批量刷盘，不做逐条 fsync。
+ */
+function fsyncFileSync(file: string): void {
+  const fd = openSync(file, 'r+');
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** 基本形状校验（不深究 payload）。 */
@@ -243,16 +343,26 @@ export class JsonlEventStore implements EventPersistencePort {
     const dir = dirname(this.file);
     mkdirSync(dir, { recursive: true });
 
-    // 留一份备份：抹除是破坏性操作，出问题时至少能人工回看。
-    if (existsSync(this.file)) {
-      copyFileSync(this.file, `${this.file}.bak`);
-    }
-
     const tmp = `${this.file}.tmp`;
     const text = events.map((e) => JSON.stringify(e)).join('\n') + (events.length > 0 ? '\n' : '');
+
+    /**
+     * ★ 原子替换：写临时文件 → fsync → rename 覆盖。
+     *
+     *   两处旧实现都是错的：
+     *
+     *   ① 先 `rmSync(this.file)` 再 `renameSync` —— 目标文件被删掉的那一刻，
+     *      真相源就不存在了。中间断电/进程被杀，重启后整个事件流消失。
+     *      Windows 的 rename 本来就能覆盖已存在文件（MoveFileEx +
+     *      MOVEFILE_REPLACE_EXISTING），那个 rm 纯属自找风险。
+     *
+     *   ② 抹除前 `copyFileSync(this.file, .bak)` —— 备份里是**抹除前**的
+     *      完整历史，等于把用户要求删掉的内容又留了一份，而且全代码库
+     *      没有任何地方清理它。实测：主文件已经变成 `[已遗忘]`，
+     *      `.bak` 里原文仍然完好。删除承诺因此不成立。
+     */
     writeFileSync(tmp, text, 'utf8');
-    // Windows 上 rename 到已存在文件会失败 —— 先删目标（与 onTruncate 同策略）。
-    rmSync(this.file, { force: true });
+    fsyncFileSync(tmp);
     renameSync(tmp, this.file);
     this.durableSeq = events.reduce((m, e) => Math.max(m, e.seq), 0);
   }
@@ -285,10 +395,15 @@ export class JsonlEventStore implements EventPersistencePort {
     const tmp = `${this.file}.tmp`;
     const text = kept.map((e) => JSON.stringify(e)).join('\n') + (kept.length > 0 ? '\n' : '');
     await mkdir(dirname(this.file), { recursive: true });
-    await writeFile(tmp, text, 'utf8');
-    // Windows 上 rename 到已存在的文件会失败 —— 先删目标
-    const { rm } = await import('node:fs/promises');
-    await rm(this.file, { force: true });
+    // ★ 与 writeAllSync 同一套纪律：写 tmp → fsync → rename 覆盖。
+    //   旧实现先 `rm(this.file)` 再 rename，同样制造了"目标已消失"的窗口。
+    const handle = await open(tmp, 'w');
+    try {
+      await handle.writeFile(text, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(tmp, this.file);
   }
 

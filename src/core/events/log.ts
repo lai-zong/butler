@@ -25,6 +25,14 @@ export interface AppendInput<T extends EventType = EventType, P = unknown> {
   readonly servantId?: string;
   readonly createdAt?: number;
   readonly id?: string;
+  /**
+   * 显式指定 seq（仅用于**灌入历史**）。
+   *
+   * ⚠️ 只能等于 `nextSeq()`。给一个更小的值会让 seq 与数组下标错位，
+   *    而 `truncateTo` 正是按下标截断的 —— 回退会切在错误的位置。
+   *    真正"保留历史 seq"的入口是 `hydrate()`，不是这里。
+   */
+  readonly seq?: number;
 }
 
 export type EventListener = (event: SessionEvent) => void;
@@ -103,6 +111,16 @@ export class EventLog {
   private pendingPersist = 0;
   /** 有待完成的"整体重写"（遗忘权抹除；flush 时一起等）。 */
   private pendingRewrite: Promise<void> | null = null;
+  /**
+   * 已用的最大 seq。
+   *
+   * ★ 旧实现是 `nextSeq() = this.events.length + 1` —— 它隐含假设
+   *   "数组下标 + 1 就是 seq"，一旦历史里有缺口就会算出**比已有最大 seq 还小**
+   *   的编号，新事件于是撞上磁盘里的旧行，下次加载被当成重复丢掉。
+   *
+   *   用游标记住真实的最大值，才让"新事件一定排在所有旧事件之后"成立。
+   */
+  private seqCursor = 0;
 
   constructor(readonly sessionId: string) {}
 
@@ -189,7 +207,51 @@ export class EventLog {
 
   /** 下一个可用的 seq（从 1 开始）。 */
   nextSeq(): number {
-    return this.events.length + 1;
+    return this.seqCursor + 1;
+  }
+
+  /**
+   * 灌入历史事件（只在启动时用）。
+   *
+   * ★ 与 `appendMany` 的区别：这里**保留**每条事件的 `id` 与 `seq`，
+   *   也不触发落盘通知 —— 历史已经在磁盘上，回写只会让文件翻倍。
+   *
+   * ★ 为什么需要它（实测事故）：
+   *   旧 bootstrap 用 `appendMany(historical.map(e => ({type, actor, payload, createdAt})))`
+   *   把 `id` 和 `seq` 全丢了，于是每次启动都把历史重新编号成 1..N。
+   *   而磁盘上还有上一代的高编号行，新产生的事件正好撞上去，
+   *   下次加载按 seq 去重 —— **每次重启静默丢掉一截历史**。
+   *
+   * ⚠️ seq 必须连续（`event.seq === 下标 + 1`）：`truncateTo` 按下标截断，
+   *    不连续会让回退切错位置。`loadEvents` 已经负责归一化。
+   */
+  hydrate(historical: readonly SessionEvent[]): void {
+    if (this.events.length > 0) {
+      throw new EventInvariantError(
+        '历史只能注入到空日志（注入前已有事件会让 seq 与顺序不一致）',
+        'SEQ_NOT_MONOTONIC',
+      );
+    }
+    const next: SessionEvent[] = [];
+    for (let i = 0; i < historical.length; i++) {
+      const e = historical[i];
+      if (e === undefined) continue;
+      if (e.seq !== i + 1) {
+        throw new EventInvariantError(
+          `历史事件 seq 不连续：第 ${i + 1} 条是 seq=${e.seq}（应先归一化为 1 起连续值）`,
+          'SEQ_GAP',
+        );
+      }
+      /**
+       * ⚠️ 会话归属重新落到当前 log 上：历史文件里有 97 个历史会话 id，
+       *    而本进程只有一个 log。保留原来的 sessionId 会让"本会话事件"
+       *    与"历史事件"混在同一个 log 里两套归属，`truncateTo` 的
+       *    跨会话校验也会误判。这里与旧行为保持一致。
+       */
+      next.push({ ...e, sessionId: this.sessionId });
+    }
+    this.events = next;
+    this.seqCursor = next.length === 0 ? 0 : (next[next.length - 1]?.seq ?? 0);
   }
 
   findById(id: string): SessionEvent | undefined {
@@ -215,7 +277,21 @@ export class EventLog {
    *   I4  actor === 'servant' 时 servantId 必填
    */
   append<T extends EventType, P>(input: AppendInput<T, P>): SessionEvent<T, P> {
-    const seq = this.nextSeq();
+    const expected = this.nextSeq();
+    const seq = input.seq ?? expected;
+
+    /**
+     * ⚠️ 显式 seq 只允许等于下一个可用值。
+     *
+     *    允许更小的值会破坏"seq === 下标 + 1"，而 `truncateTo` 按下标截断 ——
+     *    回退会切掉错的事件，而且**不会报错**。
+     */
+    if (seq !== expected) {
+      throw new EventInvariantError(
+        `seq 必须连续：期望 ${expected}，收到 ${seq}（seq 与数组下标必须一致）`,
+        'SEQ_NOT_MONOTONIC',
+      );
+    }
 
     if (input.parentEventId !== undefined) {
       const parent = this.findById(input.parentEventId);
@@ -259,6 +335,7 @@ export class EventLog {
     };
 
     this.events.push(event as SessionEvent);
+    this.seqCursor = seq;
     this.emit(event as SessionEvent);
 
     // ★ 落盘通知放在最后 —— 事件先在内存里成立，
@@ -276,6 +353,9 @@ export class EventLog {
    */
   appendMany(inputs: readonly AppendInput[]): readonly SessionEvent[] {
     const snapshot = this.events.length;
+    // ⚠️ 回滚必须同时恢复游标：只截数组不恢复游标，会留下"空数组 + 已有 seq"的错位状态，
+    //    后续 append 直接抛"seq 不连续"。
+    const cursor = this.seqCursor;
     try {
       /**
        * ⚠️ 逐条 append 会各自通知一次落盘。追加顺序本身没问题，
@@ -303,6 +383,7 @@ export class EventLog {
       return out;
     } catch (err) {
       this.events.length = snapshot;
+      this.seqCursor = cursor;
       throw err;
     }
   }
@@ -328,6 +409,9 @@ export class EventLog {
     }
     const discarded = this.events.slice(target.seq);
     this.events = this.events.slice(0, target.seq);
+    // ★ 截断后游标必须退回去，否则接下来 append 的 seq 会跳到截断前的值，
+    //   与磁盘重写后的 keepSeq 不一致。
+    this.seqCursor = target.seq;
 
     // ★ 通知落盘侧截断。
     //

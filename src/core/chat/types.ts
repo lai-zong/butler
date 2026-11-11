@@ -85,19 +85,44 @@ export interface ReviewSnapshot {
 
 export type ReviewRunStatus = 'running' | 'completed' | 'failed' | 'aborted';
 
+/** 一次审查 Agent 的工具调用记录（持久化用，独立于运行时 ToolCallTrace）。 */
+export interface ReviewTrace {
+  readonly round: number;
+  readonly toolName: string;
+  readonly args?: unknown;
+  readonly validated?: boolean;
+  readonly validationMessage?: string;
+  readonly output?: string;
+  readonly ok: boolean;
+  readonly denied?: boolean;
+  readonly durationMs: number;
+}
+
+/** 结构化审查发现；problem/message 兼容旧记录。 */
+export interface ReviewFinding {
+  readonly severity: 'info' | 'warn' | 'block';
+  readonly problem?: string;
+  readonly message?: string;
+  readonly evidence: readonly string[];
+  readonly suggestion?: string;
+}
+
 export interface ReviewRunReport {
-  readonly criteriaChecks: readonly {
+  /** 旧监督员记录仍可能有；新审查不再生成。 */
+  readonly criteriaChecks?: readonly {
     readonly criterion: string;
     readonly met: boolean;
     readonly note?: string | undefined;
   }[];
-  readonly findings: readonly {
-    readonly viewpoint: 'contract' | 'domain' | 'global';
-    readonly severity: 'info' | 'warn' | 'block';
-    readonly message: string;
-    readonly evidence: readonly string[];
-  }[];
+  readonly findings?: readonly ReviewFinding[];
+  /** 一句话摘要；旧记录可能是完整 Markdown。 */
   readonly summary: string;
+  readonly verdict?: 'pass' | 'fail' | 'unknown';
+  readonly unverified?: readonly string[];
+  /** 完整审查正文 Markdown。 */
+  readonly markdown?: string;
+  /** 读取时归一化的旧记录。 */
+  readonly legacy?: boolean;
 }
 
 export interface ReviewRun {
@@ -113,6 +138,8 @@ export interface ReviewRun {
   readonly snapshotHash: string;
   readonly stages: readonly { readonly name: string; readonly status: 'done' | 'failed' }[];
   readonly report: ReviewRunReport | null;
+  /** 工具轨迹；新审查持久化，旧记录没有。 */
+  readonly traces?: readonly ReviewTrace[];
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number };
   readonly error?: string;
   readonly createdAt: number;

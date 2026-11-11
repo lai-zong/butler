@@ -161,16 +161,17 @@ export function bootstrap(args: BootstrapArgs): BootstrapResult {
   //    每次启动事件文件翻倍，而且重放会看到重复引用。
   const log = new EventLog(args.sessionId);
   if (historical.length > 0) {
-    log.appendMany(
-      historical.map((e) => ({
-        type: e.type,
-        actor: e.actor,
-        payload: e.payload,
-        createdAt: e.createdAt,
-        ...(e.servantId !== undefined ? { servantId: e.servantId } : {}),
-        ...(e.parentEventId !== undefined ? { parentEventId: e.parentEventId } : {}),
-      })),
-    );
+    /**
+     * ★ 用 `hydrate` 而不是 `appendMany`：**原样保留 id 与 seq**。
+     *
+     *   旧写法只搬了 type/actor/payload/createdAt，`id` 与 `seq` 被丢弃，
+     *   于是每次启动都把历史重新编号成 1..N。磁盘上还留着上一代的高编号行，
+     *   新产生的首批事件正好和它们撞号；下次加载按 seq 去重 → **静默丢历史**。
+     *
+     *   实测（本机真实数据）：文件 4,144 行，加载后只有 2,458 条，
+     *   并且每追加 100 条、重启一次就再丢 64 条，`badLines` 始终为 0。
+     */
+    log.hydrate(historical);
   }
   if (args.persistence !== undefined) log.attachPersistence(args.persistence);
 

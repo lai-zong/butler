@@ -18,12 +18,13 @@
  * ⚠️ 审查的分级是本文件的重点，见 `buildVerdict`。
  */
 
-import type { ModelPort } from '../ports/model.js';
+import { msg, type ModelPort } from '../ports/model.js';
 import type { ClockPort, RandomPort } from '../ports/clock.js';
 import type { EventLog } from '../events/log.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ToolFramework } from '../tools/framework.js';
 import { recall, type ScoredMemory } from '../memory/recall.js';
+import { unlockSensitiveForTurn } from '../memory/autonomousAccess.js';
 import {
   reflectTurn,
   renderReflectSummary,
@@ -49,6 +50,7 @@ import {
 } from './types.js';
 import { buildHistoryMessages, buildDomainHistoryMessages } from './history.js';
 import { planHistory, summarizeOlder, pressureOf, historyBudgetForPressure, olderAfterCoverage } from './compaction.js';
+import { latestCompactionForChat } from './compactionScope.js';
 import { createTraceCollector } from './trace.js';
 import { toExecutionReportData } from './reports.js';
 import {
@@ -89,6 +91,17 @@ export interface RunTurnArgs {
    * @deprecated 新调用方请用 `settings.persona`；这里只做兼容回退。
    */
   readonly persona?: string;
+  /**
+   * 桌宠专用上下文（使用节奏）。
+   *
+   * 只有桌宠会话会传；普通任务对话不传，避免使用习惯污染任务上下文。
+   */
+  readonly petContext?: string;
+  /**
+   * Web 聊天使用可选契约：闲聊不写，任务由模型按需调用 plan_task。
+   * 定时任务/验证脚本不传，保持原有严格契约流程。
+   */
+  readonly optionalPlan?: boolean;
   /**
    * 本轮附带的图片（**只在当前这一轮有效**）。
    *
@@ -286,19 +299,12 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   let olderSummary: string | undefined;
   {
     const plan = planHistory(priorMessages, { excludeLast: true, budgetTokens: historyBudget });
-    const priorCompactions = args.log.byType('context.compacted');
-    const priorPayload =
-      priorCompactions.length > 0 &&
-      typeof priorCompactions[priorCompactions.length - 1]?.payload === 'object' &&
-      priorCompactions[priorCompactions.length - 1]?.payload !== null
-        ? (priorCompactions[priorCompactions.length - 1]!.payload as Record<string, unknown>)
-        : {};
-    const priorSummary =
-      typeof priorPayload['summaryText'] === 'string' ? priorPayload['summaryText'] : undefined;
-    const priorThrough =
-      typeof priorPayload['throughMessageId'] === 'string'
-        ? priorPayload['throughMessageId']
-        : undefined;
+    const priorPayload = latestCompactionForChat(
+      args.log.byType('context.compacted'),
+      sessionId,
+    );
+    const priorSummary = priorPayload.summaryText;
+    const priorThrough = priorPayload.throughMessageId;
 
     /**
      * ★ 增量压缩：
@@ -328,6 +334,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
         type: 'context.compacted',
         actor: 'butler',
         payload: {
+          chatSessionId: sessionId,
           compactedCount: compacted.compactedCount,
           beforeTokens: compacted.beforeTokens,
           afterTokens: compacted.afterTokens,
@@ -353,11 +360,17 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     }
   }
 
-  const history = buildHistoryMessages(priorMessages, {
-    excludeLast: true,
-    budgetTokens: historyBudget,
-    ...(olderSummary !== undefined ? { olderSummary } : {}),
-  });
+  const history = [
+    ...buildHistoryMessages(priorMessages, {
+      excludeLast: true,
+      budgetTokens: historyBudget,
+      ...(olderSummary !== undefined ? { olderSummary } : {}),
+    }),
+  ];
+  if (args.petContext !== undefined && args.petContext.trim().length > 0) {
+    // 只作为桌宠会话的附加 system 上下文；不写入对话历史。
+    history.push(msg.system(args.petContext));
+  }
   const domainHistory = buildDomainHistoryMessages(priorMessages);
 
   /**
@@ -423,25 +436,70 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     });
   }
 
+  // ── ①.5 敏感域自主授权 ──
+  //
+  // ★ 规则（2026-11-11 用户确认）：记忆完全由 AI 自主治理，用户不参与决定。
+  //   没有这一步时，敏感域记忆**永远读不回来**：`canRead` 要求有未过期的
+  //   任务授权，而手动授权入口在界面上从未被调用过。
+  //
+  // ⚠️ 不是"敏感域一律可见"：只在**本轮内容确实相关**时放开，且有名额上限
+  //    与短 TTL。相关性用语义分判断（没有嵌入模型时退回更严的字面门槛）。
+  //
+  // ⚠️ 这里只取副作用，不读返回值：每次签发都会由 `store.grant()` 落
+  //    `grant.requested` / `grant.approved` 事件，审计链已经在事件流里了。
+  const sensitivePool = args.store
+    .all()
+    .filter((e) => e.memClass === 'sensitive' && e.lifecycle !== 'archived');
+
+  // 语义分要覆盖"当前可见集 + 敏感池"，否则敏感域拿不到分、只能退回字面。
+  // 一次计算、两处复用（授权判定与召回打分用的是同一份分数）。
+  let semanticScores: ReadonlyMap<string, number> | undefined;
+  {
+    const probe =
+      sensitivePool.length > 0
+        ? [
+            ...args.store.visibleTo({
+              kind: 'butler',
+              userId: args.userId,
+              taskId: args.sessionId,
+            }),
+            ...sensitivePool,
+          ]
+        : args.store.visibleTo({
+            kind: 'butler',
+            userId: args.userId,
+            taskId: args.sessionId,
+          });
+    if (args.semantic !== undefined && probe.length > 0) {
+      try {
+        semanticScores = await args.semantic.scores(userText, probe);
+      } catch {
+        semanticScores = undefined;
+      }
+    }
+  }
+
+  unlockSensitiveForTurn({
+    store: args.store,
+    clock: args.clock,
+    userId: args.userId,
+    sessionId: args.sessionId,
+    query: userText,
+    ...(semanticScores !== undefined ? { scores: semanticScores } : {}),
+  });
+
   // ── ② 召回记忆 ──
   //
   // ⚠️ 可见集合**必须先经 `visibleTo` 过滤**再交给 recall ——
   //    不能"先全拿再筛"：那等于把不该看的（其他仆人的领域记忆、
   //    无授权的敏感域）也读进了内存，分权就成了摆设。
+  //
+  // ★ 这里必须在授权之后重新取一次：刚签发的授权就是在这一步生效的。
   const candidates = args.store.visibleTo({
     kind: 'butler',
     userId: args.userId,
     taskId: args.sessionId,
   });
-  // 语义向量在适配器层计算；模型不可用时静默回退字面召回，不阻断对话。
-  let semanticScores: ReadonlyMap<string, number> | undefined;
-  if (args.semantic !== undefined && candidates.length > 0) {
-    try {
-      semanticScores = await args.semantic.scores(userText, candidates);
-    } catch {
-      semanticScores = undefined;
-    }
-  }
   const recallBase = {
     query: userText,
     candidates,
@@ -505,6 +563,19 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   // ★ 会话级 off 已包含在快照里；环境变量 shadow/off 由路由层合并后传进来。
   const memoryMode: TurnMemoryMode = settings.memoryMode;
   const injected = memoryMode === 'on' ? recalled : [];
+
+  /**
+   * ★ 记录"授权被实际使用"。
+   *
+   *   ⚠️ 只在**真的注入上下文**之后记 —— shadow/off 模式下召回但不注入，
+   *     那种情况不该在审计里留下"读过敏感内容"的记录。
+   */
+  if (memoryMode === 'on') {
+    for (const r of injected) {
+      if (r.memory.memClass !== 'sensitive') continue;
+      args.store.noteGrantUsed(r.memory.id, args.sessionId, '本轮召回并注入上下文');
+    }
+  }
 
   // 召回即命中：记录 fitness 与唤醒（休眠/归档记忆被再次命中会回升）。
   // ⚠️ 只在实际进入本轮上下文后记录，不能把候选集全算成命中。
@@ -571,6 +642,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     userGoal: userText,
     // ★ 完整快照：契约/执行只从这一份读设置
     settings,
+    ...(args.optionalPlan === true ? { optionalPlan: true } : {}),
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),
     // ★ 本轮询问通道（C6）：需要确认的动作会真的停下来问

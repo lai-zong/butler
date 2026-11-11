@@ -21,6 +21,7 @@
 import type { EventLog } from '../events/log.js';
 import type { ClockPort } from '../ports/clock.js';
 import type { MemoryStore } from './store.js';
+import { snapshotOf } from './snapshot.js';
 import { similarity } from './sink.js';
 import type { MemoryEntry } from './types.js';
 
@@ -234,8 +235,13 @@ export function mergeMemories(args: {
   }
 
   // ★ 旧条目归档而非删除 —— 可追溯、可回滚（与"淘汰≠删除"同一立场）
-  args.store.setLifecycle(keep.id, 'archived', { archivedAt: now });
-  args.store.setLifecycle(absorb.id, 'archived', { archivedAt: now });
+  //
+  //   ⚠️ 必须走 `store.archive()`，不能用 `setLifecycle()`：
+  //     后者只改内存、不发事件，重放时看不到"这两条已经归档" ——
+  //     于是重启后 keep / absorb / 新合并条目**三条同时 active**，
+  //     近义记忆被重复召回（实测：合并后 1 条活跃，重启变 3 条）。
+  args.store.archive(keep.id, `合并进 ${id}`);
+  args.store.archive(absorb.id, `合并进 ${id}`);
 
   args.log.append({
     type: 'memory.merged',
@@ -250,6 +256,14 @@ export function mergeMemories(args: {
       fitnessAfter: Number(fitnessAfter.toFixed(3)),
       // 明确记录旧条目仍可查，不是删除
       absorbedRetained: true,
+      /**
+       * ★ 合并后的完整状态。
+       *
+       *   注意取的是 `store.get(id)` 而不是 `merged.entry`：
+       *   适应度、mergedFrom、原则细节、效果跟踪都是 create 之后才写进去的，
+       *   用 create 的返回值会漏掉这些字段（重放后合并条目"看起来像新的"）。
+       */
+      snapshot: snapshotOf(args.store.get(id)),
     },
     createdAt: now,
   });

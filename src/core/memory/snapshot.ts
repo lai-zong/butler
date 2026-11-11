@@ -64,5 +64,20 @@ export function snapshotOf(e: MemoryEntry | undefined): Record<string, unknown> 
      *    「重启后该字段还在」的测试**。三件事缺一不可，否则缺口是静默的。
      */
     domain: e.domain ?? null,
+    /**
+     * ★ 敏感域授权与凭证标记。
+     *
+     * ⚠️ 与 `domain` 同型的事故：`MemoryEntry` 早就有这两个字段，
+     *    `replay.ts` 也一直在解析它们，唯独 `snapshotOf` 没写 ——
+     *    于是
+     *      · 敏感域授权在任意一次状态事件（如演化日跑）后**丢失**；
+     *      · 凭证类记忆的「可用不可见」标记丢失，`hasCredential` 变 false。
+     *    和前一条一样：不报错、不告警，重放后字段静静消失。
+     *
+     *    维护约定不变：给 `MemoryEntry` 加可影响状态的字段时，
+     *    `snapshotOf` + `replay.parseEntry` + 「重启后还在」的测试，三件一起做。
+     */
+    grants: e.grants ?? null,
+    capability: e.capability ?? null,
   };
 }

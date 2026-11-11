@@ -833,6 +833,16 @@ export class MemoryStore {
       createdAt: now,
     });
 
+    /**
+     * ★ 授权本身也要进事件流（带快照）。
+     *
+     *   `grant.requested` / `grant.approved` 是**审计**事件，重放器不认它们
+     *   （`MEMORY_STATE_EVENTS` 里没有 grant.*）。不补这一条的话，
+     *   授权只活在内存里：重启后 grants 归空，敏感域又变回"永久读不到"。
+     *   实测：自主授权后重启，grants 从 1 条变 0 条。
+     */
+    this.emitStateChanged(args.memoryId, 'grants');
+
     return { ok: true, expiresAt: grant.expiresAt };
   }
 
@@ -867,8 +877,46 @@ export class MemoryStore {
         },
         createdAt: now,
       });
+      // 撤销也要进重放（否则重启后授权复活）
+      this.emitStateChanged(id, 'grants');
     }
     return removed;
+  }
+
+  /**
+   * 记一次"授权被实际使用"。
+   *
+   * ★ 与 `grant.requested/approved` 的区别：
+   *   那两个回答"谁批准了读哪条"，这个回答"**真的读了**"。
+   *   审计里两者都要有 —— 只有批准记录时，无法区分
+   *   "签了但没用"（可以放心的死授权）与"确实用到了"（该关心的访问）。
+   *
+   * ⚠️ 没有有效授权时**不记**：否则每一轮都会给无关记忆刷一条噪音事件，
+   *    审计流会被淹没，反而看不到真正发生的读取。
+   */
+  noteGrantUsed(memoryId: string, taskId: string, reason: string): boolean {
+    const entry = this.entries.get(memoryId);
+    if (entry === undefined || entry.memClass !== 'sensitive') return false;
+
+    const now = this.clock.now();
+    const grant = (entry.grants ?? []).find((g) => g.taskId === taskId && g.expiresAt > now);
+    if (grant === undefined) return false;
+
+    this.log.append({
+      type: 'grant.used',
+      actor: 'butler',
+      payload: {
+        memoryId,
+        to: grant.grantedTo,
+        toServant: grant.grantedTo,
+        taskId,
+        purpose: grant.purpose,
+        reason,
+        expiresAt: grant.expiresAt,
+      },
+      createdAt: now,
+    });
+    return true;
   }
 
   /** 清掉已过期的授权（定时任务调用）。 */
@@ -891,6 +939,8 @@ export class MemoryStore {
         },
         createdAt: now,
       });
+      // 过期清理同样要进重放
+      this.emitStateChanged(id, 'grants');
       n += grants.length - alive.length;
     }
     return n;

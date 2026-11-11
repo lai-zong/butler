@@ -48,7 +48,6 @@ import { SessionStore } from '../core/chat/types.js';
 import { runTurn } from '../core/chat/service.js';
 import { ToolFramework } from '../core/tools/framework.js';
 import { fileTools } from '../core/tools/builtin/file.js';
-import { submitReportTool } from '../core/tools/builtin/report.js';
 import { NodeFileSystem } from '../adapters/fs/node.js';
 import type { ActionTier, PermissionPolicy } from '../core/tools/types.js';
 import type { AgentProgressEvent } from '../core/tools/agentLoop.js';
@@ -112,7 +111,6 @@ async function main(): Promise<void> {
 
     const tools = new ToolFramework({ log, clock, policy: new AutoReadPolicy() });
     tools.registerAll(fileTools(new NodeFileSystem({ root: dir })));
-    tools.register(submitReportTool(), { overwrite: true });
 
     // ═══════════════════════════════════════════════════════
     hr('第一轮：陈述身份与安全约束 + 要求用工具读文件');

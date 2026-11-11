@@ -32,6 +32,9 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
 }
 
+/** 向量缓存上限（条）。按记忆条数算，几千条已足够覆盖日常召回。 */
+const SEMANTIC_CACHE_MAX = 4000;
+
 export class SemanticIndex {
   private readonly cache = new Map<string, { readonly key: string; readonly vector: readonly number[] }>();
 
@@ -55,7 +58,16 @@ export class SemanticIndex {
     const result = new Map<string, number>();
     for (const memory of candidates) {
       const vector = vectors.get(memory.id);
-      if (vector !== undefined) result.set(memory.id, cosine(queryVector, vector));
+      if (vector === undefined) continue;
+      /**
+       * ★ 维度必须一致。
+       *
+       *   `cosine` 内部按 `Math.min(a.length,b.length)` 截断，维度不同（换了
+       *   嵌入模型，768 → 1024）时会算出一个"看起来正常"的分数（实测 3 维 vs 5 维
+       *   得 1.0），检索质量静默下降。宁可这条不给分，也不要用错误的分数。
+       */
+      if (vector.length !== queryVector.length) continue;
+      result.set(memory.id, cosine(queryVector, vector));
     }
     return result;
   }
@@ -110,6 +122,16 @@ export class SemanticIndex {
         if (vector === undefined || item === undefined) continue;
         this.cache.set(item.id, { key: item.key, vector });
         vectors.set(item.id, vector);
+        /**
+         * ★ 缓存必须有上限。
+         *
+         *   旧实现只增不减（仅换模型时才 clear）：长期运行内存单调增长，
+         *   而且遗忘/归档的记忆向量也一直驻留。超出上限按**插入顺序**淘汰最旧的。
+         */
+        if (this.cache.size > SEMANTIC_CACHE_MAX) {
+          const oldest = this.cache.keys().next();
+          if (!oldest.done) this.cache.delete(oldest.value);
+        }
       }
     }
 

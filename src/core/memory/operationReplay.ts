@@ -68,9 +68,22 @@ export function replayOperations(events: readonly SessionEvent[]): ReplayOperati
     if (e.type !== 'fitness.updated') continue;
 
     const p = (e.payload ?? {}) as Record<string, unknown>;
-    // ⚠️ 必须先认领：记忆库的 fitness.updated 也走这个类型，
-    //    不筛选就会把它们当成操作记忆解析。
-    if (p['kind'] !== 'operation') continue;
+    /**
+     * ⚠️ 必须先认领：记忆库与"状态字段更新"的 `fitness.updated` 也走这个类型，
+     *    不筛选就会把它们当成操作记忆解析。
+     *
+     * ★ 认领范围**不止 operation**：
+     *   偏好（preference）与环境（environment）是另外两个 kind。
+     *   旧实现只认 `operation`，于是这两类记忆根本没进重放器 ——
+     *   重启后整体消失，`relevantGuidance()` 返回空（实测 2 条 → 0 条）。
+     *
+     *   注意：`operationMemoryId` 才是可靠的判据（记忆库的写法用 `memoryId`）。
+     */
+    const kind = p['kind'];
+    const isOperationLike =
+      typeof p['operationMemoryId'] === 'string' &&
+      (kind === 'operation' || kind === 'preference' || kind === 'environment');
+    if (!isOperationLike) continue;
     consumed += 1;
 
     const parsed = parseOperation(p['snapshot']);

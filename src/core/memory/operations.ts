@@ -429,7 +429,10 @@ export class OperationMemoryStore {
             : { lastFailure: args.failureReason ?? '未说明原因' }),
         },
         // 置信度随样本量增长，但有上限（不因做过 100 次就变成"绝对真理"）
-        confidence: Math.min(0.95, existing.confidence + (args.success ? 0.05 : -0.08)),
+        //
+        // ⚠️ 下限同样必须有：旧实现只封上界，连续失败 7 次后置信度变负
+        //    （实测 -0.08），导出/接口里出现负置信度。
+        confidence: Math.max(0, Math.min(0.95, existing.confidence + (args.success ? 0.05 : -0.08))),
         updatedAt: now,
         ...(args.evidence !== undefined
           ? { evidence: [...existing.evidence, args.evidence] }
@@ -452,6 +455,15 @@ export class OperationMemoryStore {
           successRate: Number((succeeded / attempts).toFixed(3)),
           durationMs: args.durationMs,
           failureReason: args.failureReason ?? null,
+          /**
+           * ★ 更新分支**同样**要带快照。
+           *
+           *   只有"首次记录"分支带快照时，第 2 次及以后的尝试在重放里
+           *   完全不可见 —— 重启后成功率、平均耗时、连续失败数全部退回首次值。
+           *   实测：4 次尝试 → 重放后只剩 1 次。
+           *   那等于"越做越快越准"这条主张只在单次进程内成立。
+           */
+          snapshot: operationSnapshotOf(next),
         },
         createdAt: now,
       });
@@ -561,6 +573,15 @@ export class OperationMemoryStore {
         kind,
         content: args.content,
         isNew: true,
+        /**
+         * ★ 偏好 / 环境也要带快照。
+         *
+         *   旧实现这两类写的是 `kind: 'preference' | 'environment'`，
+         *   而重放器只认 `kind === 'operation'` —— 它们**根本没进重放器**，
+         *   重启后整体消失（实测：2 条 → 0 条），`relevantGuidance()` 返回空。
+         *   所以重放器那侧也一起放宽（见 operationReplay.ts）。
+         */
+        snapshot: operationSnapshotOf(created),
       },
       createdAt: now,
     });

@@ -37,6 +37,7 @@ import type { ClockPort } from '../ports/clock.js';
 import type { MemoryStore } from './store.js';
 import type { MemoryCandidate } from '../reflection/reflect.js';
 import type { MemoryEntry } from './types.js';
+import { snapshotOf } from './snapshot.js';
 
 // ═══════════════════════════════════════════════════════════
 // 候选来源
@@ -297,6 +298,14 @@ export function revoke(args: {
       feedback: 'revokedByUser',
       confidence: entry.confidence,
       note: '用户撤销了一条已生效的记忆；该来源类型的自主准入门槛将提高',
+      /**
+       * ★ 必带快照，否则撤销活不过一次重启（实测过）。
+       *
+       *   `setLifecycle` 只改内存、不发事件，而重放只认 `snapshot` ——
+       *   没有这一行，重启后这条记忆会回到 `active` 继续被召回，
+       *   用户撤销三次、它复活三次。
+       */
+      snapshot: snapshotOf(args.store.get(args.id)),
     },
     createdAt: args.clock.now(),
   });

@@ -13,11 +13,12 @@ import { describe, expect, it } from 'vitest';
 
 import { runSession } from '../orchestrator.js';
 import { EventLog } from '../../events/log.js';
-import type {
-  ModelCall,
-  ModelPort,
-  StructuredCall,
-  StructuredResult,
+import {
+  msg,
+  type ModelCall,
+  type ModelPort,
+  type StructuredCall,
+  type StructuredResult,
 } from '../../ports/model.js';
 import type { GlobalAgentsSnapshot } from '../../prompts/globalAgents.js';
 
@@ -91,7 +92,7 @@ function model(captured: Array<{ name: string; call: ModelCall }>): ModelPort {
 }
 
 describe('runSession 的注入边界', () => {
-  it('全局规则进契约/执行，不进监督员；人格只进执行', async () => {
+  it('全局规则进契约/执行；主回合不再自动调用监督员', async () => {
     const captured: Array<{ name: string; call: ModelCall }> = [];
     const result = await runSession({
       model: model(captured),
@@ -113,20 +114,35 @@ describe('runSession 的注入边界', () => {
 
     expect(contract).toBeDefined();
     expect(execution).toBeDefined();
-    expect(supervision).toBeDefined();
+    expect(supervision).toBeUndefined();
 
     const contractText = JSON.stringify(contract!.messages);
     const executionText = JSON.stringify(execution!.messages);
-    const supervisionText = JSON.stringify(supervision!.messages);
 
-    // 全局规则：契约 ✓ 执行 ✓ 监督 ✗
+    // 全局规则：契约 ✓ 执行 ✓
     expect(contractText).toContain(GLOBAL_MARKER);
     expect(executionText).toContain(GLOBAL_MARKER);
-    expect(supervisionText).not.toContain(GLOBAL_MARKER);
 
-    // 人格：契约 ✗ 执行 ✓ 监督 ✗
+    // 人格：契约 ✗ 执行 ✓
     expect(contractText).not.toContain(PERSONA_MARKER);
     expect(executionText).toContain(PERSONA_MARKER);
-    expect(supervisionText).not.toContain(PERSONA_MARKER);
+  });
+
+  it('执行模型能看到前几轮历史，而不是只看本轮原话', async () => {
+    const captured: Array<{ name: string; call: ModelCall }> = [];
+    const marker = 'HISTORY_MARKER_上一轮';
+    await runSession({
+      model: model(captured),
+      clock,
+      sessionId: 's',
+      userGoal: '你刚才在做什么',
+      history: [msg.system(marker)],
+      recalled: [],
+      log: new EventLog('s'),
+    });
+
+    const execution = bySchema(captured, 'ExecutionReport');
+    expect(execution).toBeDefined();
+    expect(JSON.stringify(execution!.messages)).toContain(marker);
   });
 });

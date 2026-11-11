@@ -114,24 +114,36 @@ export interface ReplayResult {
   readonly eventCount: number;
 }
 
-/**
- * 从事件流重建状态。
- *
- * 这是"事件是唯一真相源"的直接体现 ——
- * 检查点不存这些内容，全部靠这个函数算出来。
- */
-export function replay(events: readonly SessionEvent[]): ReplayResult {
-  const completed = new Set<string>();
-  const pending = new Set<string>();
-  const failed = new Set<string>();
-  const artifacts = new Set<string>();
-  const memories = new Set<string>();
+/** 重放后的状态形状（供累加器与调用方共用同一个类型）。 */
+export type ReplayState = ReplayResult['state'];
 
-  for (const e of events) {
-    const p = e.payload as Record<string, unknown> | null;
+/**
+ * 可增量喂事件的累加器。
+ *
+ * ★ 为什么需要它（实测）：
+ *   检查点重建原来是"每个检查点重放一遍 1..seq" —— O(n²)。
+ *   本机 4,144 条事件、507 个检查点，启动要 **24 秒**。
+ *   而每次 `replay()` 还会对整段事件做一次哈希（纯字符串化），
+ *   在重建路径上完全用不到。
+ *
+ *   改成"一次前向扫描 + 每到检查点取一次当前状态"后，
+ *   单点快照成本从 O(n) 降到 O(1)。
+ *
+ * ⚠️ 语义必须与 `replay()` 完全一致：`state()` 返回的就是
+ *    "处理到当前事件为止"的状态（含当前事件）。
+ */
+export class ReplayAccumulator {
+  private readonly completed = new Set<string>();
+  private readonly pending = new Set<string>();
+  private readonly failed = new Set<string>();
+  private readonly artifacts = new Set<string>();
+  private readonly memories = new Set<string>();
+
+  apply(event: SessionEvent): void {
+    const p = event.payload as Record<string, unknown> | null;
     const stepId = typeof p?.['stepId'] === 'string' ? p['stepId'] : undefined;
 
-    switch (e.type) {
+    switch (event.type) {
       // ═══════════════════════════════════════════════════════
       // ⚠️ 历史分支（多执行者时代）—— 当前代码**不产生**这些事件
       //
@@ -149,34 +161,34 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
         if (Array.isArray(steps)) {
           for (const s of steps) {
             const id = (s as { stepId?: unknown }).stepId;
-            if (typeof id === 'string') pending.add(id);
+            if (typeof id === 'string') this.pending.add(id);
           }
         }
         break;
       }
       case 'dispatch.stepDone':
         if (stepId) {
-          pending.delete(stepId);
-          failed.delete(stepId);
-          completed.add(stepId);
+          this.pending.delete(stepId);
+          this.failed.delete(stepId);
+          this.completed.add(stepId);
         }
         break;
       case 'dispatch.stepFailed':
         if (stepId) {
-          pending.delete(stepId);
-          failed.add(stepId);
+          this.pending.delete(stepId);
+          this.failed.add(stepId);
         }
         break;
 
       case 'artifact.created':
       case 'artifact.revised': {
         const id = p?.['artifactId'];
-        if (typeof id === 'string') artifacts.add(id);
+        if (typeof id === 'string') this.artifacts.add(id);
         break;
       }
       case 'artifact.superseded': {
         const id = p?.['artifactId'];
-        if (typeof id === 'string') artifacts.delete(id);
+        if (typeof id === 'string') this.artifacts.delete(id);
         break;
       }
 
@@ -196,7 +208,7 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
 
       case 'constraint.injected': {
         const id = p?.['memoryId'];
-        if (typeof id === 'string') memories.add(id);
+        if (typeof id === 'string') this.memories.add(id);
         break;
       }
 
@@ -211,7 +223,7 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
       case 'servant.report': {
         const refs = p?.['memoryRefs'];
         if (Array.isArray(refs)) {
-          for (const r of refs) if (typeof r === 'string') memories.add(r);
+          for (const r of refs) if (typeof r === 'string') this.memories.add(r);
         }
         break;
       }
@@ -221,14 +233,29 @@ export function replay(events: readonly SessionEvent[]): ReplayResult {
     }
   }
 
+  state(): ReplayResult['state'] {
+    return {
+      completedSteps: [...this.completed].sort(),
+      pendingSteps: [...this.pending].sort(),
+      failedSteps: [...this.failed].sort(),
+      artifactIds: [...this.artifacts].sort(),
+      memoryIds: [...this.memories].sort(),
+    };
+  }
+}
+
+/**
+ * 从事件流重建状态。
+ *
+ * 这是"事件是唯一真相源"的直接体现 ——
+ * 检查点不存这些内容，全部靠这个函数算出来。
+ */
+export function replay(events: readonly SessionEvent[]): ReplayResult {
+  const acc = new ReplayAccumulator();
+  for (const e of events) acc.apply(e);
+
   return {
-    state: {
-      completedSteps: [...completed].sort(),
-      pendingSteps: [...pending].sort(),
-      failedSteps: [...failed].sort(),
-      artifactIds: [...artifacts].sort(),
-      memoryIds: [...memories].sort(),
-    },
+    state: acc.state(),
     stateHash: stateHashOf(events),
     eventCount: events.length,
   };

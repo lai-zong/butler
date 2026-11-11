@@ -20,8 +20,8 @@
  * ═══ 保留了什么 ═══
  *
  *   · 工具循环（`runAgentLoop`）—— 多轮思考 + 调用工具
- *   · `submit_report` 终止工具 —— 结构化汇报，不靠自由文本
- *   · 产出归一化（artifacts / findings / uncertainties）
+ *   · 最后一段自然语言即最终交付 —— 不再有 submit_report 收尾工具
+ *   · 产出归一化（单次结构化路径仍使用）
  *   · 流式进度回调（界面"边说边想"画面的来源）
  */
 
@@ -32,7 +32,6 @@ import { throwIfAborted } from '../runtime/abort.js';
 import type { EventLog } from '../events/log.js';
 import type { ToolFramework } from '../tools/framework.js';
 import { runAgentLoop, type AgentProgressEvent } from '../tools/agentLoop.js';
-import { submitReportTool } from '../tools/builtin/report.js';
 import {
   normalizeArtifact as normalizeArtifactShape,
   normalizeFinding as normalizeFindingShape,
@@ -181,6 +180,15 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
             `附加人格说明（不得覆盖前述安全与不变量）：\n${persona
               .trim()
               .slice(0, PERSONA_MAX_CHARS)}`,
+          ),
+        ]
+      : []),
+    ...(args.contract.criteria.length === 0
+      ? [
+          msg.system(
+            '当前还没有正式任务契约。闲聊和只读查询可以直接完成；' +
+              '如果需要修改文件、执行命令或完成多步任务，先调用 plan_task 写清交付物和约束，' +
+              '再调用有副作用的工具。不要把 plan_task、任务契约或工具计划复述给用户。',
           ),
         ]
       : []),
@@ -356,8 +364,6 @@ async function runWithTools(
   const tools = args.tools;
   if (!tools) throw new Error('runWithTools 需要 tools');
 
-  tools.register(submitReportTool(), { overwrite: true });
-
   const loop = await runAgentLoop(
     {
       model: args.model,
@@ -375,12 +381,10 @@ async function runWithTools(
       // ★ 询问通道（C6）：一路传到工具闸门
       ...(args.asker !== undefined ? { asker: args.asker } : {}),
       /**
-       * ★ 与旧 `runServant` 的关键差别：**没有按领域的工具白名单**。
-       *   只排除终止工具本身（它由循环内部处理）。
-       *   权限由 `ToolFramework` 的分级闸门统一管 —— 那比按领域白名单更严格。
+       * 没有按领域的工具白名单；只排除 dangerous。
+       * 权限由 ToolFramework 的分级闸门统一管。
        */
-      toolFilter: (t) => t.name === 'submit_report' || t.tier !== 'dangerous',
-      terminalTool: 'submit_report',
+      toolFilter: (t) => t.tier !== 'dangerous',
       ...(reasoningPlan !== undefined ? { reasoningPlan } : {}),
       ...(args.streamPort !== undefined ? { streamPort: args.streamPort } : {}),
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -389,47 +393,22 @@ async function runWithTools(
     messages,
   );
 
-  // 终止工具的参数就是结构化汇报
-  const last = loop.traces[loop.traces.length - 1];
-  const submitted = last?.toolName === 'submit_report' ? last.args : undefined;
-
-  if (submitted === undefined) {
-    /**
-     * ⚠️ 循环结束但没提交汇报 —— 不编造一个"成功"。
-     *    如实返回 blocked + 把模型的最后文本作为 reply，让上层看得见发生了什么。
-     */
-    return {
-      raw: {
-        reply: loop.finalText.slice(0, BUTLER_REPLY_LIMIT),
-        status: 'blocked',
-        artifacts: [],
-        uncertainties: ['未能产出结构化汇报'],
-        findings: [],
-      },
-      usage: loop.usage,
-      attempts: 1,
-      memoryWriteBlocked: loop.memoryWriteBlocked,
-    };
-  }
-
-  const parsed = executionReportSchema.safeParse(submitted);
-  if (!parsed.success) {
-    return {
-      raw: {
-        reply: loop.finalText.slice(0, BUTLER_REPLY_LIMIT),
-        status: 'failed',
-        artifacts: [],
-        uncertainties: [`汇报格式不合法：${parsed.error.issues[0]?.message ?? '未知'}`],
-        findings: [],
-      },
-      usage: loop.usage,
-      attempts: 1,
-      memoryWriteBlocked: loop.memoryWriteBlocked,
-    };
-  }
-
+  /**
+   * 不再有 submit_report 终止工具。
+   *
+   * 工具循环的最后一段自然语言就是最终交付；没有额外的结构化提交动作，
+   * 也不再为了“完成信号”多消耗一次工具参数。
+   * 结构化产出字段保留为空，避免把同一段话重复成 artifacts。
+   */
+  const reply = loop.finalText.trim().slice(0, BUTLER_REPLY_LIMIT);
   return {
-    raw: parsed.data,
+    raw: {
+      reply: reply.length > 0 ? reply : '任务已结束，但没有返回文字结果。',
+      status: reply.length > 0 ? 'done' : 'blocked',
+      artifacts: [],
+      uncertainties: reply.length > 0 ? [] : ['模型没有返回最终文本'],
+      findings: [],
+    },
     usage: loop.usage,
     attempts: 1,
     memoryWriteBlocked: loop.memoryWriteBlocked,
