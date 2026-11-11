@@ -170,6 +170,14 @@ export interface ChatMessage {
   /** 思考的增量译文（与 reasoning 同步增长） */
   readonly reasoningTranslated?: string;
   readonly status: MessageStatus;
+  /**
+   * 本轮为什么中断（仅 `status === 'interrupted' | 'failed'` 时有值）。
+   *
+   * ★ 为什么要存原因：用户看到的只是一条"断了"的消息，
+   *   分不清是自己点的停止、网络掉了、还是余额不足 ——
+   *   而这三件事的处置方式完全不同。
+   */
+  readonly interruptReason?: string;
   readonly createdAt: number;
   /** 这条回复引用了哪些记忆（界面上要能点开看「凭什么这么说」） */
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
@@ -469,6 +477,7 @@ export interface AppendMessageInput {
   readonly reasoning?: string;
   readonly reasoningTranslated?: string;
   readonly status?: MessageStatus;
+  readonly interruptReason?: string;
   readonly memoryRefs?: readonly { readonly id: string; readonly content: string }[];
   readonly agentTrace?: AgentTraceData;
   readonly servantReports?: readonly ExecutionReportData[];
@@ -660,6 +669,7 @@ export class SessionStore {
         ? { reasoningTranslated: input.reasoningTranslated }
         : {}),
       status: input.status ?? 'done',
+      ...(input.interruptReason !== undefined ? { interruptReason: input.interruptReason } : {}),
       createdAt: now,
       ...(input.memoryRefs !== undefined ? { memoryRefs: input.memoryRefs } : {}),
       /**
@@ -698,6 +708,7 @@ export class SessionStore {
         role: msg.role,
         text: msg.text.slice(0, 2000),
         status: msg.status,
+        ...(msg.interruptReason !== undefined ? { interruptReason: msg.interruptReason } : {}),
         hasReasoning: msg.reasoning !== undefined,
         memoryRefCount: msg.memoryRefs?.length ?? 0,
         /**
@@ -1078,6 +1089,7 @@ export function replaySessions(
         role: (typeof role === 'string' ? role : 'butler') as MessageRole,
         text: typeof p['text'] === 'string' ? p['text'] : '',
         status: (typeof p['status'] === 'string' ? p['status'] : 'done') as MessageStatus,
+        ...(typeof p['interruptReason'] === 'string' ? { interruptReason: p['interruptReason'] } : {}),
         createdAt: e.createdAt,
         ...(replayedTrace !== undefined ? { agentTrace: replayedTrace } : {}),
         ...(replayedReports !== undefined ? { servantReports: replayedReports } : {}),

@@ -443,6 +443,8 @@ export interface MessageDto {
   readonly reasoning: string | null;
   readonly reasoningTranslated: string | null;
   readonly status: ChatMessage['status'];
+  /** 仅中断/失败时非空：user_stopped / insufficient_balance / network / error */
+  readonly interruptReason: string | null;
   readonly createdAt: number;
   readonly memoryRefs: readonly { readonly id: string; readonly content: string }[];
   readonly agentTrace: ChatMessage['agentTrace'] | null;
@@ -477,6 +479,7 @@ export function toMessageDto(m: ChatMessage): MessageDto {
     reasoning: m.reasoning ?? null,
     reasoningTranslated: m.reasoningTranslated ?? null,
     status: m.status,
+    interruptReason: m.interruptReason ?? null,
     createdAt: m.createdAt,
     ...(m.auditRange !== undefined ? { auditRange: m.auditRange } : {}),
     memoryRefs: m.memoryRefs ?? [],

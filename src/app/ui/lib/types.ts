@@ -452,6 +452,8 @@ export interface MessageDto {
   readonly reasoning: string | null;
   readonly reasoningTranslated: string | null;
   readonly status: MessageStatus;
+  /** 仅中断/失败时有值：user_stopped / insufficient_balance / network / error */
+  readonly interruptReason?: string | null;
   readonly createdAt: number;
   /** 刷新后本轮“依据”的事件范围；旧消息没有。 */
   readonly auditRange?: { readonly fromSeq: number; readonly toSeq: number };

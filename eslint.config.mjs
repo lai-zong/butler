@@ -9,6 +9,11 @@ import tsPlugin from '@typescript-eslint/eslint-plugin';
  *   · 覆盖 `.ts` 与 `.tsx`（旧配置只有 `.ts`，8,700 行界面从未被检查）
  *   · 只开 `recommended` 中**不会要求大范围重写**的规则；格式交给 Prettier
  *   · 不开启 type-aware（需要 program，构建慢且会因生成文件抖动）
+ *
+ * ⚠️ CSS 不在检查范围：本项目没有引入 stylelint，配置只匹配 TypeScript 与 TSX。
+ *    所以 `eslint src/app/styles` 会因为"目录里没有任何可检查文件"而**退出码 2**
+ *    —— 这是 ESLint 9 的正常行为，不是配置坏了。
+ *    统一的门槛是 `pnpm lint`（`eslint .`），它只检查 TS/TSX。
  */
 export default [
   {

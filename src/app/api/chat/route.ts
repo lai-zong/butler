@@ -28,6 +28,8 @@ import { createChatToolScope } from '@/app/server/chatToolScope.js';
 import { getMarkedPetSessionId, latestNormalSessionOrCreate } from '@/app/server/petSession.js';
 import { buildPetUsageContext } from '@/app/server/petUsageContext.js';
 import { loadPetConfig } from '@/app/server/petConfig.js';
+import { classifyTurnFailure, interruptedNote } from '@/app/server/turnInterrupt.js';
+import { createTraceCollector } from '@/core/chat/trace.js';
 import { milestoneForTool } from '@/app/server/petMilestones.js';
 import { createTaskPlanState } from '@/core/tools/builtin/plan.js';
 import { getKnowledgeService } from '@/app/server/knowledge.js';
@@ -475,6 +477,14 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       // 取消事件需要知道“取消在哪一步”；只记阶段名，不记正文/参数。
       let lastStage = 'starting';
+      /**
+       * ★ 中断也要能审查：进程里已经发生过的工具调用要留住。
+       *
+       *   成功时 `runTurn` 会自己 build 一份 trace 落进消息；
+       *   但它在异常路径直接 throw，拿不到那份 trace。
+       *   这里顺手用同一个收集器接住进度事件 —— 中断消息因此也带轨迹。
+       */
+      const turnTrace = createTraceCollector();
       let lastMilestone = '';
       let milestoneCount = 0;
       const emitMilestone = (text: string | null): void => {
@@ -562,6 +572,8 @@ export async function POST(req: NextRequest): Promise<Response> {
            *      `accumulated` 已经截断在 agentLoop 里。
            */
           onAgentProgress: (e) => {
+            // 中断时靠这份轨迹说明"它已经做过什么"
+            turnTrace.onEvent(e);
             switch (e.kind) {
               case 'roundStarted':
                 send({ type: 'agent', kind: 'round', round: e.round });
@@ -733,7 +745,44 @@ export async function POST(req: NextRequest): Promise<Response> {
           range: { fromSeq, toSeq: rt.bootstrapped.log.length },
         });
       } catch (err) {
-        // 用户主动停止不是错误：界面已经标记“已断开接收”，不要再补一条报错。
+        /**
+         * ★ 中途停止（用户点停止 / 网络断 / 余额不足 / 内部错误）也要落一条消息。
+         *
+         *   旧行为：异常路径下什么都不写，于是历史里只剩用户那句话，
+         *   轮次轨道显示"运行中"，而且**不可审查**。
+         *
+         *   现在的取舍：
+         *   · status = 'interrupted'（界面已有"中断（可审查）"状态）；
+         *   · interruptReason 区分四种原因，处置方式完全不同；
+         *   · auditRange 指向本轮已经发生的事件区间，审查面板照样能展开；
+         *   · 不伪造模型没说过的正文，只写一句"发生了什么"。
+         */
+        const interruptedReason = abort.signal.aborted ? 'user_stopped' : classifyTurnFailure(err);
+        const toSeq = rt.bootstrapped.log.length;
+        const recentEvents = rt.bootstrapped.log.range(fromSeq, toSeq);
+        const toolCalls = recentEvents.filter((e) => e.type === 'tool.call').length;
+        const toolResults = recentEvents.filter((e) => e.type === 'tool.result').length;
+
+        const note = interruptedNote({
+          reason: interruptedReason,
+          toolCalls,
+          toolResults,
+          error: err,
+        });
+
+        try {
+          rt.bootstrapped.chat.appendMessage(session.id, {
+            role: 'butler',
+            text: note,
+            status: 'interrupted',
+            interruptReason: interruptedReason,
+            auditRange: { fromSeq, toSeq },
+            ...(turnTrace.hasContent() ? { agentTrace: turnTrace.build() } : {}),
+          });
+        } catch {
+          // 落消息失败不能掩盖原始错误
+        }
+
         if (abort.signal.aborted) {
           /**
            * ★ C8：取消也要可回放。
@@ -813,3 +862,5 @@ export async function POST(req: NextRequest): Promise<Response> {
     },
   });
 }
+
+

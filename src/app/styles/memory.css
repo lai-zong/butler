@@ -1960,6 +1960,22 @@
   }
 }
 
+/*
+ * 窄屏顶栏：标题行里除了标题/读数，还挤着「说明 / 模型设置 / 存档区」
+ * 三个按钮；单行排不下时会顶到右上角 .mm-headbar 的读数与视图切换上。
+ * 只在窄屏允许换行并收紧间距，宽屏的排版和字号保持原样。
+ */
+@media (max-width: 820px) {
+  .mm-head {
+    max-width: min(440px, 42vw);
+  }
+
+  .mm-head-row {
+    flex-wrap: wrap;
+    gap: 7px 10px;
+  }
+}
+
 @media (max-height: 680px) {
   .mm-legend {
     max-height: calc(100% - 190px);

@@ -127,29 +127,41 @@ import {
 } from './Cards';
 import { QuizSection } from './Quiz';
 
+/**
+ * 草稿 key 前缀。
+ *
+ * ★ 旧版本所有会话共用一个全局 key：在 A 里写的草稿会出现在 B 里。
+ *   现在按会话分 key；同一个前缀继续作为「还没有会话」时的兜底 key
+ *   （首屏没有会话、数据被清空），旧草稿也因此不会被直接丢掉。
+ */
 const DRAFT_STORAGE_KEY = 'butler.chat.draft';
 
-function readDraftText(): string {
+/** 会话 id → 草稿 key；null 表示还没有会话，用固定兜底 key。 */
+function draftStorageKey(sessionId: string | null): string {
+  return sessionId === null ? DRAFT_STORAGE_KEY : `${DRAFT_STORAGE_KEY}.${sessionId}`;
+}
+
+function readDraftText(key: string): string {
   if (typeof window === 'undefined') return '';
   try {
-    return window.localStorage.getItem(DRAFT_STORAGE_KEY) ?? '';
+    return window.localStorage.getItem(key) ?? '';
   } catch {
     return '';
   }
 }
 
-function writeDraftText(text: string): void {
+function writeDraftText(key: string, text: string): void {
   if (typeof window === 'undefined') return;
   try {
-    if (text.length === 0) window.localStorage.removeItem(DRAFT_STORAGE_KEY);
-    else window.localStorage.setItem(DRAFT_STORAGE_KEY, text);
+    if (text.length === 0) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, text);
   } catch {
     // localStorage 不可用时不阻塞输入。
   }
 }
 
-function clearDraftText(): void {
-  writeDraftText('');
+function clearDraftText(key: string): void {
+  writeDraftText(key, '');
 }
 
 interface ModelCatalogResponse {
@@ -421,7 +433,28 @@ const SUGGESTIONS: readonly { readonly icon: 'memory' | 'calendar' | 'growth'; r
 ];
 
 const MAX_IMAGES = 10;
+/** 原图上限：再大就不解码了，避免一张图直接把标签页内存打爆。 */
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+
+/**
+ * 发送前的图片压缩参数。
+ *
+ * ★ 32 MiB 的图转成 data URL 约 42 MiB，随 JSON 发出去会让请求体和主线程
+ *   一起卡死。实测长边 1568px、JPEG 0.85 对模型识别足够清晰，单张通常只有
+ *   几百 KB；0.7 是最后一级降质，仍超 2 MiB 就拒绝，不把大图塞给后端。
+ */
+const IMAGE_MAX_EDGE_PX = 1568;
+const IMAGE_JPEG_QUALITY = 0.85;
+const IMAGE_JPEG_QUALITY_RETRY = 0.7;
+const IMAGE_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 发送闸门的兜底超时。
+ *
+ * ★ 建会话的请求在异常网络/后端卡住时可能一直不返回，闸门不释放的话之后
+ *   所有发送都会被静默丢掉。到点自动放开；正常路径会提前释放并清掉定时器。
+ */
+const SEND_PENDING_TIMEOUT_MS = 20_000;
 
 /** 桌宠聚焦请求的一次性 TTL 很短（约 15s），2s 轮询能在过期前取走。 */
 const PET_FOCUS_POLL_MS = 2_000;
@@ -559,13 +592,136 @@ function usageOfMessage(
   };
 }
 
-async function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'));
-    reader.readAsDataURL(file);
+/** data URL 解码后的近似字节数；2 MiB 是阈值，不要求逐位精确。 */
+function dataUrlByteSize(url: string): number {
+  const comma = url.indexOf(',');
+  if (comma < 0) return 0;
+  const body = url.slice(comma + 1);
+  const padding = body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((body.length * 3) / 4) - padding);
+}
+
+/**
+ * 把用户选的图片压成可发送的 data URL。
+ *
+ * ★ 为什么在浏览器里压：后端协议收的就是 data URL，不能改；只能在上传前
+ *   把长边降到 {@link IMAGE_MAX_EDGE_PX}、转成 JPEG 0.85（透明图先铺白底，
+ *   否则 JPEG 的透明区域会变成黑色），必要时再降到 0.7。
+ * ★ 返回 null = 压到 0.7 仍超过 2 MiB；调用方提示换图，绝不发出去。
+ */
+async function compressImageToDataUrl(file: File): Promise<string | null> {
+  // createImageBitmap 能按图片方向解码，且不占额外 Image 元素。
+  const bitmap = await createImageBitmap(file);
+  try {
+    const longest = Math.max(bitmap.width, bitmap.height);
+    const scale = longest > IMAGE_MAX_EDGE_PX ? IMAGE_MAX_EDGE_PX / longest : 1;
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (ctx === null) throw new Error('浏览器不支持图片画布');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+
+    let url = canvas.toDataURL('image/jpeg', IMAGE_JPEG_QUALITY);
+    if (dataUrlByteSize(url) > IMAGE_MAX_OUTPUT_BYTES) {
+      url = canvas.toDataURL('image/jpeg', IMAGE_JPEG_QUALITY_RETRY);
+    }
+    return dataUrlByteSize(url) > IMAGE_MAX_OUTPUT_BYTES ? null : url;
+  } finally {
+    bitmap.close();
+  }
+}
+
+/**
+ * 把刚结束的一轮与 live 视图对齐。
+ *
+ * ★ 为什么不能直接 setMessages + 清空 liveTurns：
+ *   服务端只持久化**成功完成**的一轮；失败/停止时历史里只有用户消息。
+ *   无脑替换会把用户正看着的失败信息/已生成内容抹掉，或者让同一条用户
+ *   消息在历史和实时视图里各出现一次。
+ * ★ 这里按发送时刻把每一轮对到历史：
+ *   · 已经完整落盘的轮次交给历史渲染 —— 轮次轨道/审查因此立刻看得到它；
+ *   · 只有“最后一段还没落盘”的轮次继续留在 live 视图（live 永远渲染在
+ *     历史之后，中间夹一轮会导致时间顺序错乱），并从历史里藏掉对应的用户消息。
+ */
+function reconcileLiveTurns(
+  persisted: readonly MessageDto[],
+  liveTurns: readonly LiveTurn[],
+): { readonly messages: readonly MessageDto[]; readonly liveTurns: readonly LiveTurn[] } {
+  if (liveTurns.length === 0) return { messages: persisted, liveTurns };
+
+  // 第一遍：每一轮在历史里匹配哪条用户消息（-1 = 没匹配到）。
+  const claimed = new Set<number>();
+  const matchedIndices: number[] = [];
+  for (const turn of liveTurns) {
+    // 本机部署，前后端是同一个时钟；允许请求/写入的毫秒级偏差。
+    // 取时间最近的一条，避免把本轮中途补充的消息误认成这一轮的开头。
+    let matched = -1;
+    let bestGap = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < persisted.length; i += 1) {
+      const message = persisted[i];
+      if (message === undefined || message.role !== 'user' || claimed.has(i)) continue;
+      const gap = message.createdAt - turn.startedAt;
+      if (gap < -1_500 || gap > 120_000) continue;
+      if (gap < bestGap) {
+        bestGap = gap;
+        matched = i;
+      }
+    }
+    if (matched >= 0) claimed.add(matched);
+    matchedIndices.push(matched);
+  }
+
+  // 第二遍：这一轮是否已完整落盘。窗口止于下一轮的用户消息：
+  // 中途补充的消息也是 user，不能一见到 user 就认为本轮没有回复。
+  const persistedFlags = liveTurns.map((_turn, index) => {
+    const matched = matchedIndices[index] ?? -1;
+    if (matched < 0) return false;
+    let windowEnd = persisted.length;
+    for (let next = index + 1; next < matchedIndices.length; next += 1) {
+      const nextMatch = matchedIndices[next] ?? -1;
+      if (nextMatch >= 0) {
+        windowEnd = nextMatch;
+        break;
+      }
+    }
+    for (let i = matched + 1; i < windowEnd; i += 1) {
+      const message = persisted[i];
+      if (message !== undefined && isReviewAssistantMessage(message)) return true;
+    }
+    return false;
   });
+
+  /**
+   * 只保留末尾这段没落盘的轮次。
+   * 更早的失败/停止轮如果留在 live，会被渲染到它们后面的历史消息之后；
+   * 丢掉 live 后它的用户消息仍在历史里，和刷新页面看到的一致。
+   */
+  let suffixStart = liveTurns.length;
+  for (let i = liveTurns.length - 1; i >= 0; i -= 1) {
+    if (persistedFlags[i] === true) break;
+    suffixStart = i;
+  }
+
+  const keptLive = liveTurns.slice(suffixStart);
+  const hiddenMessageIds = new Set<string>();
+  for (let i = suffixStart; i < liveTurns.length; i += 1) {
+    const matched = matchedIndices[i] ?? -1;
+    if (matched < 0) continue;
+    const userMessage = persisted[matched];
+    if (userMessage !== undefined) hiddenMessageIds.add(userMessage.id);
+  }
+
+  if (hiddenMessageIds.size === 0) return { messages: persisted, liveTurns: keptLive };
+  return {
+    messages: persisted.filter((message) => !hiddenMessageIds.has(message.id)),
+    liveTurns: keptLive,
+  };
 }
 
 export function ChatView({
@@ -601,6 +757,8 @@ export function ChatView({
   const [liveTurns, setLiveTurns] = useState<readonly LiveTurn[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
+  /** 图片压缩中：按钮禁用、发送拦截，避免同一张图被重复处理/带着旧附件发出去。 */
+  const [imageProcessing, setImageProcessing] = useState(false);
   const [modelCatalog, setModelCatalog] = useState<readonly PickableProfile[]>([]);
   const [lastChatModel, setLastChatModel] = useState<ModelChoice | null>(null);
   const [chatModel, setChatModel] = useState<ModelChoice | null>(null);
@@ -685,8 +843,18 @@ export function ChatView({
   const forceScrollRef = useRef(true);
   /** 草稿防抖定时器（window.setTimeout 的 id）；null 表示没有在等。 */
   const draftTimerRef = useRef<number | null>(null);
-  /** 还没落盘的草稿；null 表示没有待写内容（空串仍要写，用来清掉旧草稿）。 */
-  const pendingDraftRef = useRef<string | null>(null);
+  /**
+   * 还没落盘的草稿；null 表示没有待写内容（空串仍要写，用来清掉旧草稿）。
+   *
+   * ★ 必须连 key 一起记：切换会话后 pending 仍属于上一个会话，
+   *   只按当前 sessionId 写盘会把旧会话的草稿写进新会话。
+   */
+  const pendingDraftRef = useRef<{ readonly key: string; readonly text: string } | null>(null);
+  /**
+   * 正在切换/新建会话的过渡期：此时 input 还属于旧会话，
+   * 禁止草稿 effect 按新 sessionId 写盘（会串 key）。
+   */
+  const draftSwitchRef = useRef(false);
   /**
    * 最新一轮的令牌。
    *
@@ -702,6 +870,15 @@ export function ChatView({
    *   会创建两个会话、发出两条消息。旧顺序靠“先清空”顺带挡住了这个问题。
    */
   const sendPendingRef = useRef(false);
+  /** 闸门令牌 / 兜底释放定时器：超时释放后，迟到的 finally 不能再动新一轮的闸门。 */
+  const sendPendingTokenRef = useRef<object | null>(null);
+  const sendPendingTimerRef = useRef<number | null>(null);
+  /** 图片压缩中（ref 给事件处理器用：连点/粘贴时 state 可能还没刷新）。 */
+  const imageProcessingRef = useRef(false);
+  /** liveTurns 的最新值：异步收尾刷新里读 state 闭包会拿到旧数组。 */
+  const liveTurnsRef = useRef<readonly LiveTurn[]>([]);
+  /** 收尾刷新的序号：只允许最后一次请求落盘，避免旧响应覆盖新会话。 */
+  const historyRefreshSeqRef = useRef(0);
   const bootRef = useRef(false);
   const loadSeqRef = useRef(0);
   const sessionsRef = useRef<readonly SessionSummary[]>([]);
@@ -970,6 +1147,10 @@ export function ChatView({
     sessionsRef.current = sessions;
   }, [sessions]);
 
+  useEffect(() => {
+    liveTurnsRef.current = liveTurns;
+  }, [liveTurns]);
+
   const availableChatModels = useMemo(
     () =>
       modelCatalog.some((profile) =>
@@ -1054,38 +1235,45 @@ export function ChatView({
     const pending = pendingDraftRef.current;
     if (pending === null) return;
     pendingDraftRef.current = null;
-    writeDraftText(pending);
+    writeDraftText(pending.key, pending.text);
   }, []);
 
   /**
-   * 丢弃待写草稿并清空存储。
+   * 丢弃指定会话的草稿并取消待写内容。
    *
    * ★ 发送成功后必须连定时器一起取消：否则 300ms 后旧草稿会被重新写回，
    *   下次打开空白会话又看见刚发出去的内容。
+   * ★ key 由调用方按“发送开始时的会话”算：ensureSession 之后当前会话可能
+   *   已经变成新建的那一个，用此刻的 sessionId 会清错 key。
    */
-  const discardDraft = useCallback((): void => {
+  const discardDraft = useCallback((key: string): void => {
     if (draftTimerRef.current !== null) {
       window.clearTimeout(draftTimerRef.current);
       draftTimerRef.current = null;
     }
     pendingDraftRef.current = null;
-    clearDraftText();
+    clearDraftText(key);
   }, []);
 
   /**
-   * 草稿只在空白新会话里保存。
+   * 草稿只在空白新会话（或还没有会话）里保存。
    *
    * ★ 300ms 合并写盘：中文输入法长句时，逐字符同步写 localStorage 会卡候选窗。
+   * ★ 切换会话期间不写：这时 input 还是旧会话的文字，按新 sessionId 写会
+   *   把 A 的草稿落到 B 的 key 下。
    */
   useEffect(() => {
-    if (!isDraftSession) return;
-    pendingDraftRef.current = input;
+    if (draftSwitchRef.current) return;
+    // 首屏还没决定落到哪个会话：此时 input 是空的，写盘会把兜底草稿清掉。
+    if (sessionId === null && !bootDoneRef.current) return;
+    if (sessionId !== null && !isDraftSession) return;
+    pendingDraftRef.current = { key: draftStorageKey(sessionId), text: input };
     if (draftTimerRef.current !== null) window.clearTimeout(draftTimerRef.current);
     draftTimerRef.current = window.setTimeout(() => {
       draftTimerRef.current = null;
       flushDraft();
     }, DRAFT_WRITE_DEBOUNCE_MS);
-  }, [flushDraft, input, isDraftSession]);
+  }, [flushDraft, input, isDraftSession, sessionId]);
 
   // 关页/刷新前把待写的那一份补上；卸载时同理，并清掉定时器避免悬空回调。
   useEffect(() => {
@@ -1702,6 +1890,9 @@ export function ChatView({
     setLocalCancel(null);
     setVerdicts([]);
     setQuizzes([]);
+    // 过渡期先关掉草稿写盘：此刻 input 还是上一个会话的文字。
+    // 等新会话的草稿读进 composer 之后再恢复（见下方 finally）。
+    draftSwitchRef.current = true;
     setCurrentId(id);
     sessionIdRef.current = id;
     setApprovals([]);
@@ -1733,7 +1924,9 @@ export function ChatView({
       syncActiveSettings(res.session);
       // 读草稿前先落盘：防抖窗口里的最后几个字还没写进 localStorage。
       flushDraft();
-      setInput(res.messages.length === 0 ? readDraftText() : '');
+      // 草稿按会话分开读；只在空白会话里恢复（沿用原有产品行为）。
+      draftSwitchRef.current = false;
+      setInput(res.messages.length === 0 ? readDraftText(draftStorageKey(id)) : '');
       return { ok: true, error: null };
     } catch (err) {
       if (token !== loadSeqRef.current) return { ok: false, error: null };
@@ -1741,7 +1934,10 @@ export function ChatView({
       setSessionError(message);
       return { ok: false, error: message };
     } finally {
-      if (token === loadSeqRef.current) setLoadingSession(false);
+      if (token === loadSeqRef.current) {
+        draftSwitchRef.current = false;
+        setLoadingSession(false);
+      }
     }
   }, [flushDraft, syncActiveSettings, updateStreaming]);
 
@@ -1895,6 +2091,8 @@ export function ChatView({
   }, []);
 
   const createNewChat = useCallback(async (): Promise<void> => {
+    // 记下出发点：从「还没有会话」新建时，兜底草稿要跟着搬进新会话。
+    const originSessionId = sessionIdRef.current;
     abortRef.current?.abort();
     abortRef.current = null;
     updateStreaming(false);
@@ -1902,6 +2100,8 @@ export function ChatView({
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
       applySummary(res.session);
+      // 过渡期禁止草稿写盘：旧会话的文字不能落到新会话的 key 下。
+      draftSwitchRef.current = true;
       setCurrentId(res.session.id);
       sessionIdRef.current = res.session.id;
       // 新对话默认 high / 记忆 on（由后端会话投影给出，不在前端另写一套）。
@@ -1911,7 +2111,18 @@ export function ChatView({
       setMessages([]);
       // 新建空白会话会把草稿带回 composer：先落盘，别读到防抖窗口里的旧值。
       flushDraft();
-      setInput(readDraftText());
+      draftSwitchRef.current = false;
+      /**
+       * 每个会话只读自己的草稿 key（不会再把上一个会话的草稿带进来）。
+       * 例外：从「还没有会话」新建时，兜底草稿本来就是这段输入的家，
+       * 把它搬进新会话并清掉兜底 key，否则刚打的字会从 composer 里消失。
+       */
+      const fallbackKey = draftStorageKey(null);
+      const carried = originSessionId === null ? readDraftText(fallbackKey) : '';
+      if (carried.length > 0) clearDraftText(fallbackKey);
+      setInput(
+        carried.length > 0 ? carried : readDraftText(draftStorageKey(res.session.id)),
+      );
       setCancellations([]);
       setLocalCancel(null);
       setVerdicts([]);
@@ -2060,6 +2271,9 @@ export function ChatView({
             onBootState({ state: 'error', error: outcome.error ?? '会话加载失败' });
             return;
           }
+        } else {
+          // 一个会话都没有：composer 属于「无会话」，恢复兜底草稿。
+          setInput(readDraftText(draftStorageKey(null)));
         }
         // 首屏会话落位之后才允许桌宠聚焦生效，否则会和首屏的 loadSession 抢同一个页面。
         bootDoneRef.current = true;
@@ -2198,22 +2412,100 @@ export function ChatView({
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      // 闸门定时器不能留到卸载之后：它会在已销毁的组件上继续持有 ref。
+      if (sendPendingTimerRef.current !== null) {
+        window.clearTimeout(sendPendingTimerRef.current);
+        sendPendingTimerRef.current = null;
+      }
     };
   }, []);
+
+  /**
+   * 拿发送闸门。
+   *
+   * ★ 建会话的请求可能因为网络/后端异常永远不返回：拿闸门时挂一个 20s 的
+   *   兜底定时器自动释放，否则之后再也发不出消息。
+   * ★ 用令牌而不是裸 boolean：超时释放后新一轮可能已经拿到闸门，迟到的
+   *   finally 不能再把新一轮的闸门放开。
+   */
+  function acquireSendPending(): object | null {
+    if (sendPendingRef.current) return null;
+    const token: object = {};
+    sendPendingRef.current = true;
+    sendPendingTokenRef.current = token;
+    sendPendingTimerRef.current = window.setTimeout(() => {
+      if (sendPendingTokenRef.current !== token) return;
+      sendPendingTokenRef.current = null;
+      sendPendingTimerRef.current = null;
+      sendPendingRef.current = false;
+    }, SEND_PENDING_TIMEOUT_MS);
+    return token;
+  }
+
+  /** 正常释放闸门（幂等）：只有当令牌仍是自己的时候才清定时器和标记。 */
+  function releaseSendPending(token: object): void {
+    if (sendPendingTokenRef.current !== token) return;
+    sendPendingTokenRef.current = null;
+    if (sendPendingTimerRef.current !== null) {
+      window.clearTimeout(sendPendingTimerRef.current);
+      sendPendingTimerRef.current = null;
+    }
+    sendPendingRef.current = false;
+  }
+
+  /**
+   * 一轮结束后把历史拉回来。
+   *
+   * ★ 「轮次轨道 / 审查」都从 messages 构建：live 轮结束后不刷新的话，刚完成
+   *   的这一轮要切会话再切回来才出现。
+   * ★ 成功/失败/停止都会调用；失败与停止时服务端只落了用户消息，
+   *   reconcileLiveTurns 会把同一轮留在 live 视图里，避免内容消失或重复。
+   * ★ 请求回来时若新一轮已经在跑、或用户切了会话，直接丢弃这份快照：
+   *   不能拿旧历史覆盖正在生成的视图。
+   */
+  async function refreshHistoryAfterTurn(id: string): Promise<void> {
+    const seq = ++historyRefreshSeqRef.current;
+    // loadSession 也有自己的 token：切走/重载后旧响应不得落盘。
+    const loadToken = loadSeqRef.current;
+    try {
+      const res = await fetchJson<SessionDetailResponse>(
+        `/api/sessions/${encodeURIComponent(id)}`,
+      );
+      if (seq !== historyRefreshSeqRef.current) return;
+      if (loadToken !== loadSeqRef.current) return;
+      if (sessionIdRef.current !== id) return;
+      if (turnTokenRef.current !== null || streamingRef.current) return;
+      const merged = reconcileLiveTurns(res.messages, liveTurnsRef.current);
+      setMessages(merged.messages);
+      setLiveTurns(merged.liveTurns);
+      setVerdicts(res.verdicts);
+      setQuizzes(res.quizzes);
+      setCancellations(res.cancellations ?? []);
+    } catch {
+      // 刷新只是收尾的补充：失败保留 live 视图，切会话仍能看到已落盘结果。
+    }
+  }
 
   /**
    * 没有当前会话时先建一个。
    *
    * ★ 创建失败的提示由调用方给：发送路径要说明“消息没发出去、输入和附件还在”，
    *   设置路径只需要原因；两条路径共用同一份创建流程，避免各写一遍。
+   * ★ autoSwitch=false 时不改当前会话：发送路径建会话期间用户可能已经切走，
+   *   硬切会把人家拽回来。返回值仍是新会话 id，消息照旧发到新会话。
    */
-  async function ensureSession(failureNote?: string): Promise<string | null> {
+  async function ensureSession(
+    failureNote?: string,
+    autoSwitch = true,
+  ): Promise<string | null> {
     if (sessionId !== null) return sessionId;
     try {
       const res = await postJson<SessionCreateResponse>('/api/sessions', {});
       applySummary(res.session);
-      sessionIdRef.current = res.session.id;
-      setCurrentId(res.session.id);
+      if (autoSwitch) {
+        sessionIdRef.current = res.session.id;
+        setCurrentId(res.session.id);
+      }
       return res.session.id;
     } catch (err) {
       const reason = errorMessage(err);
@@ -2252,32 +2544,60 @@ export function ChatView({
     }
 
     if (text.length === 0 && attachments.length === 0) return;
+    // 压缩还没结束就发送 = 把「没有图片的消息」发出去；宁可挡住并说明原因。
+    if (imageProcessingRef.current) {
+      notify('图片还在处理中，请稍候再发。', 'warning');
+      return;
+    }
     if (!canChat) {
       notify('还没有配置模型。请在设置里查看接入方式。', 'warning');
       return;
     }
-    // 等建会话期间输入框还留着原文，必须挡住第二次提交（见 sendPendingRef）。
-    if (sendPendingRef.current) return;
 
     const outgoing = attachments.map((a) => a.url);
     // 这两个变量只回答“是不是首轮”（标题补生成用），与清空时机无关。
     const sendingDraft = isDraftSession || sessionId === null;
     const firstTurn = sendingDraft || (currentSession?.turnCount ?? 0) === 0;
+    /**
+     * 发送开始时用户所在的会话（没有会话时是 null）。
+     *
+     * ★ 建会话要等一次请求；期间用户可能切到别的会话。这个快照用来判断
+     *   “用户还停在原处吗”，只有还停着才自动进入新会话。
+     * ★ 草稿 key 也按它算：ensureSession 之后当前会话可能已经变了。
+     */
+    const originSessionId = sessionIdRef.current;
 
     /**
      * 先建会话，成功之后再清输入。
      *
      * ★ 旧顺序先清再 await：创建会话失败时直接 return，用户刚打的字、附件、
      *   草稿全没了，只能重打。失败提示必须说清“内容还在”，否则用户会以为丢了。
+     * ★ 建会话期间输入框还留着原文，必须挡住第二次提交（见 sendPendingRef）。
      */
-    sendPendingRef.current = true;
+    const gate = acquireSendPending();
+    if (gate === null) return;
     let id: string | null = null;
+    let gateHeld = false;
     try {
-      id = await ensureSession('消息没有发出去，输入内容和附件都还在输入框里');
+      id = await ensureSession('消息没有发出去，输入内容和附件都还在输入框里', false);
     } finally {
-      sendPendingRef.current = false;
+      /**
+       * 超时兜底可能已经把闸门放开：这时即使会话建好了也不再发，
+       * 否则用户重试之后会收到两条一样的消息。
+       */
+      gateHeld = sendPendingTokenRef.current === gate;
+      releaseSendPending(gate);
     }
-    if (id === null) return;
+    if (id === null || !gateHeld) return;
+
+    /**
+     * 只有用户仍停在发送开始时那一屏（通常是还没有会话）才自动切到新会话；
+     * 否则保持用户现在的选择，消息仍然落到 id 对应的新会话里，不丢。
+     */
+    if (originSessionId === null && sessionIdRef.current === null) {
+      sessionIdRef.current = id;
+      setCurrentId(id);
+    }
 
     /**
      * 真的发出去了才清空、才贴底。
@@ -2290,7 +2610,7 @@ export function ChatView({
     forceScrollRef.current = true;
     atBottomRef.current = true;
     setPinnedToBottom(true);
-    if (sendingDraft) discardDraft();
+    if (sendingDraft) discardDraft(draftStorageKey(originSessionId));
     setInput('');
     setAttachments([]);
 
@@ -2348,7 +2668,13 @@ export function ChatView({
 
     const handle = (ev: SseEvent): void => {
       if (ev.type === 'session') {
-        if (sessionIdRef.current !== ev.sessionId) {
+        /**
+         * 只跟随“发送开始时还在原处”的用户。
+         *
+         * ★ 建会话期间用户可能已经切到别的会话：这时再按服务端事件切过去
+         *   会把人硬拽回来。消息仍然发在 ev.sessionId 里（id 不变）。
+         */
+        if (sessionIdRef.current === originSessionId && sessionIdRef.current !== ev.sessionId) {
           sessionIdRef.current = ev.sessionId;
           setCurrentId(ev.sessionId);
         }
@@ -2484,6 +2810,12 @@ export function ChatView({
          * 前端必须同步清空，否则会留下一个点了只会收到 409 的假弹窗。
          */
         setApprovals([]);
+        /**
+         * 把这一轮拉回历史：轮次轨道/审查只读 messages，
+         * 不刷新的话刚完成的一轮要切会话才会出现。
+         * 成功、失败、停止都会走到这里。
+         */
+        void refreshHistoryAfterTurn(id);
       } else {
         // 旧流的残留增量不能再画到新一轮头上：连 48ms 的定时器一起取消。
         if (flushTimer !== null) {
@@ -2711,23 +3043,42 @@ export function ChatView({
     const images = files.filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
     const docs = files.filter((f) => !/^image\//.test(f.type));
 
-    if (images.length > 0 && attachments.length + images.length > MAX_IMAGES) {
-      notify(`一次最多附 ${MAX_IMAGES} 张图片`, 'warning');
-    }
-
-    const room = Math.max(0, MAX_IMAGES - attachments.length);
-    const accepted = images.slice(0, room);
-    for (const file of accepted) {
-      if (file.size > MAX_IMAGE_BYTES) {
-        notify(`「${file.name}」超过 32 MiB，已跳过`, 'warning');
-        continue;
-      }
+    if (images.length > 0) {
+      /**
+       * 压缩要解码像素、跑 canvas，不是瞬时操作：连点按钮或重复粘贴时
+       * 上一批还没处理完，这里直接忽略新的一批，避免同一张图压两遍、
+       * 附件列表重复。ref 是同步的，state 要等下一次渲染才生效。
+       */
+      if (imageProcessingRef.current) return;
+      imageProcessingRef.current = true;
+      setImageProcessing(true);
       try {
-        const url = await readAsDataUrl(file);
-        if (url.length === 0) continue;
-        setAttachments((prev) => (prev.length >= MAX_IMAGES ? prev : [...prev, { name: file.name, url }]));
-      } catch {
-        notify(`「${file.name}」读取失败`, 'warning');
+        if (attachments.length + images.length > MAX_IMAGES) {
+          notify(`一次最多附 ${MAX_IMAGES} 张图片`, 'warning');
+        }
+        const room = Math.max(0, MAX_IMAGES - attachments.length);
+        for (const file of images.slice(0, room)) {
+          if (file.size > MAX_IMAGE_BYTES) {
+            notify(`「${file.name}」超过 32 MiB，已跳过`, 'warning');
+            continue;
+          }
+          try {
+            const url = await compressImageToDataUrl(file);
+            if (url === null) {
+              // 压到 0.7 仍超过 2 MiB：不把它放进附件，发送自然不会带上它。
+              notify(`「${file.name}」图片太大，请换一张`, 'warning');
+              continue;
+            }
+            setAttachments((prev) =>
+              prev.length >= MAX_IMAGES ? prev : [...prev, { name: file.name, url }],
+            );
+          } catch {
+            notify(`「${file.name}」图片处理失败，请换一张`, 'warning');
+          }
+        }
+      } finally {
+        imageProcessingRef.current = false;
+        setImageProcessing(false);
       }
     }
 
@@ -3657,7 +4008,8 @@ export function ChatView({
                   type="button"
                   className="icon-btn"
                   onClick={() => fileRef.current?.click()}
-                  title="添加图片或文档"
+                  disabled={imageProcessing}
+                  title={imageProcessing ? '图片处理中，请稍候' : '添加图片或文档'}
                   aria-label="添加图片或文档"
                 >
                   <Icon name="paperclip" size={18} />
@@ -3679,11 +4031,13 @@ export function ChatView({
                 >
                   <Icon name="mic" size={17} />
                 </button>
-                {(listening || attachments.length > 0) && (
-                  <span className="composer-hint">
+                {(listening || attachments.length > 0 || imageProcessing) && (
+                  <span className="composer-hint" aria-live="polite">
                     {listening
                       ? '正在听… 再点麦克风结束'
-                      : `${attachments.length} 张图片`}
+                      : imageProcessing
+                        ? '图片处理中…'
+                        : `${attachments.length} 张图片`}
                   </span>
                 )}
               </div>
@@ -3723,8 +4077,13 @@ export function ChatView({
                   type="button"
                   className="send-btn"
                   onClick={() => void send()}
-                  disabled={!canChat || (input.trim().length === 0 && attachments.length === 0)}
+                  disabled={
+                    !canChat ||
+                    imageProcessing ||
+                    (input.trim().length === 0 && attachments.length === 0)
+                  }
                   aria-label="发送"
+                  title={imageProcessing ? '图片处理中，请稍候' : undefined}
                 >
                   <Icon name="arrowUp" size={17} />
                 </button>
@@ -3893,6 +4252,14 @@ function turnDotLabel(index: number, userText: string): string {
   return `第 ${index + 1} 轮 · ${text}`;
 }
 
+/** 中断原因 → 用户话术（后端只给四个稳定值）。 */
+function interruptReasonLabel(reason: string | null | undefined): string {
+  if (reason === 'user_stopped') return '你点的停止';
+  if (reason === 'insufficient_balance') return '余额不足';
+  if (reason === 'network') return '网络断开';
+  return '出现错误';
+}
+
 function reviewTurnStateLabel(state: ReviewTurn['state']): string {
   if (state === 'done') return '完成';
   if (state === 'interrupted') return '中断（可审查）';
@@ -4045,6 +4412,11 @@ function ServerMessage({
           {relativeTime(message.createdAt, now)}
         </span>
         {message.status === 'failed' && <Badge tone="danger">未完成</Badge>}
+        {message.status === 'interrupted' && (
+          <Badge tone="warn" title="这一轮没有正常结束；已保留完成的部分，可以审查">
+            已中断 · {interruptReasonLabel(message.interruptReason)}
+          </Badge>
+        )}
       </header>
 
       <ProcessPanel
