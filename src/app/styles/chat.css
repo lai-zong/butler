@@ -5505,6 +5505,45 @@ button.work-crumb:hover {
   font-size: 10.5px;
 }
 
+/*
+ * 草稿恢复提示条。
+ * ★ 为什么用 info 而不是 warn：草稿没有出错，只是"看到的内容和磁盘不一样"；
+ *   黄色警告会让人以为文件坏了。
+ * ★ 为什么和 .work-alert 分开：那条是错误态（红/黄、需要立刻处理），
+ *   这条是"可以继续正常工作"的状态，只提示一句 + 一个退路。
+ */
+.work-draft-notice {
+  display: flex;
+  flex: none;
+  /* 右栏可以被拖窄：窄到放不下按钮时让它换到第二行，而不是把文字挤成一条缝。 */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #d6dfe9;
+  background: var(--info-soft);
+  color: var(--info);
+  font-size: 11px;
+  animation: fadeIn 0.18s var(--ease) both;
+}
+
+.work-draft-notice > svg {
+  flex: none;
+}
+
+.work-draft-notice > span {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.work-draft-notice .btn {
+  flex: none;
+  height: 26px;
+  padding: 0 9px;
+  font-size: 10.5px;
+}
+
 /* ── 编辑器 ───────────────────────────────────────────────── */
 
 .work-editor {
@@ -6401,6 +6440,13 @@ button.work-crumb:hover {
 }
 
 .browser-stage-note {
+  /*
+   * ★ 为什么要抬到画面帧上面：.browser-frame 是绝对定位（inset:0），
+   *   在绘制与命中测试里都排在普通流内容之后；不抬 z-index 的话，
+   *   透明帧会盖住这里，进程退出提示里的「重新启动」按钮点不到。
+   */
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -6426,6 +6472,22 @@ button.work-crumb:hover {
 .browser-stage-note .review-spinner {
   border-color: rgba(236, 231, 218, 0.2);
   border-top-color: var(--accent-bright);
+}
+
+/*
+ * 进程退出提示：深色舞台上唯一可做的事就是「重新启动」。
+ * ★ 为什么用主按钮：ghost 按钮的深色边框画在 code-bg 上几乎看不见，
+ *   用户会只看到一行字、找不到出口。
+ * ★ 图标用浅暖红而不是 --danger：#a4412f 在 #24231e 上对比度不足。
+ */
+.browser-stage-note.is-exited > svg {
+  color: #e0a99a;
+}
+
+.browser-stage-note .btn {
+  height: 30px;
+  margin-top: 2px;
+  font-size: 11px;
 }
 
 /* ── 启动失败 ────────────────────────────────────────────── */

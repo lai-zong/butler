@@ -3,14 +3,16 @@
 /**
  * 内嵌浏览器面板 —— 右栏「浏览器」页签
  *
- * 六块能力：
+ * 七块能力：
  *   · 画面：订阅 `/api/browser/stream` 的 SSE 帧，等比缩放到面板里；
  *   · 标签：工具栏最上面一行列出所有标签页，可新建 / 切换 / 关闭（/api/browser/tabs）；
  *   · 操作：地址栏、前进后退刷新、鼠标/滚轮/键盘都转发给服务端的 CDP 浏览器；
  *   · 输入：画面里藏一个看不见的 <textarea> 专门承接中文输入法，另有一个
  *     「粘贴」按钮把本地剪贴板读成 text 送进页面；
  *   · 下载：弹层列出 `<数据目录>/browser-downloads` 里的文件（GET /api/browser/downloads）；
- *   · 给 AI：读当前页正文与截图，整理成问题交给父组件**填进输入框**（不自动发送）。
+ *   · 给 AI：读当前页正文与截图，整理成问题交给父组件**填进输入框**（不自动发送）；
+ *   · 自愈：轮询发现浏览器进程被外部关掉时，收起画面、清空标签与地址栏，
+ *     等用户点「重新启动」——不自动拉起，因为可能是用户自己在别的程序里关的。
  *
  * ★ 为什么键盘要经过一个看不见的 <textarea>：
  *   Chromium 只给「可编辑元素」派发 composition 事件。画面容器是个 div，
@@ -124,6 +126,14 @@ interface ViewportPoint {
 type BootState =
   | { readonly status: 'starting' }
   | { readonly status: 'ready' }
+  /**
+   * 浏览器进程在启动成功之后被外部关掉了（轮询发现 running:false）。
+   *
+   * ★ 为什么和 failed 分开：failed 是「起不来」，要解释缺浏览器 / 启动报错；
+   *   exited 是「本来好好的、现在没了」，只需要一句提示和一个重启入口。
+   *   混用 failed 会让一个只是被关掉的进程看起来像环境坏了。
+   */
+  | { readonly status: 'exited' }
   | { readonly status: 'failed'; readonly message: string; readonly noBrowser: boolean };
 
 type ReadState =
@@ -448,6 +458,54 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   // ── 启动 ───────────────────────────────────────────────────────────
 
   /**
+   * 清掉画面上的当前帧。
+   *
+   * ★ 为什么连 src 一起删：hasFrame=false 只是用 CSS 把 <img> 藏起来，
+   *   元素里还攥着上一帧的 base64（1280×800 的 jpeg，几百 KB）。
+   *   重启后新帧到达之前它仍可能被重绘，用户第一眼看到的就是"上一帧旧画面"。
+   */
+  function clearFrame(): void {
+    setHasFrame(false);
+    const img = imgRef.current;
+    if (img !== null) img.removeAttribute('src');
+  }
+
+  /**
+   * 浏览器进程在启动成功后退出时的收尾。
+   *
+   * ★ 为什么必须立刻离开 ready：服务端已经在回 running:false，但面板如果停在 ready，
+   *   画面会永远停在最后一帧、按钮全部可点，用户只有点下去才会收到 409。
+   * ★ 为什么主动关 EventSource：进程没了，服务端那条流不会自己报错，
+   *   而 EventSource 断线后会自动重连 —— 留着就是一个每几秒打一次服务端的循环。
+   * ★ 为什么不自动重启：进程可能是用户自己在别的程序里关掉的。
+   *   悄悄再拉起一个，用户会以为"关不掉"；只提示，等用户点「重新启动」。
+   */
+  function markBrowserExited(): void {
+    streamRef.current?.close();
+    streamRef.current = null;
+    // 作废在途的状态 / 标签请求：它们描述的都是"退出前"的浏览器，
+    // 晚一步回来就会把刚清空的标签条和地址栏重新填满。
+    stateSeqRef.current += 1;
+    tabsSeqRef.current += 1;
+    bootStatusRef.current = 'exited';
+    setBoot({ status: 'exited' });
+    // 画面流此时已经不可信：留着"画面已断开"的横幅，会和「浏览器已退出」说两遍。
+    setStreamError(null);
+    setPageInfo(null);
+    setAddress('');
+    setTabs([]);
+    setActionError(null);
+    setHint(null);
+    // 在途操作可能永远不返回（进程都没了）：不在这里解锁的话，重启后标签条会一直点不动。
+    setBusy(false);
+    tabBusyRef.current = false;
+    setTabBusy(false);
+    dragRef.current = { active: false, button: 'left' };
+    lastMoveRef.current = null;
+    clearFrame();
+  }
+
+  /**
    * 启动浏览器并接上画面流。
    *
    * ★ 重试 / 重新连接也走这里：`/api/browser/start` 是幂等的（已启动会返回 reused），
@@ -459,7 +517,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     bootStatusRef.current = 'starting';
     setBoot({ status: 'starting' });
     setStreamError(null);
-    setHasFrame(false);
+    // ★ 先清掉上一帧再启动：新进程起来后第一帧到达前，画面不能停在旧内容上。
+    clearFrame();
     try {
       await postJson<OkResponse>('/api/browser/start', {});
       if (!aliveRef.current) return;
@@ -517,6 +576,18 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     try {
       const res = await fetchJson<BrowserStateResponse>('/api/browser/state');
       if (!aliveRef.current || seq !== stateSeqRef.current) return;
+      /**
+       * ★ 进程被杀掉时服务端回的是 200 + running:false，不是错误；
+       *   不把这里当成"退出事件"，面板就会一直停在 ready：画面停住、
+       *   按钮还能点，点了才 409。
+       */
+      if (res.running !== true) {
+        if (bootStatusRef.current === 'ready') markBrowserExited();
+        return;
+      }
+      // 退出 / 重启过程中旧的请求可能晚一步回来：那时画面已经清空，
+      // 不能再把上一轮浏览器的标题和 URL 写回面板。
+      if (bootStatusRef.current !== 'ready') return;
       const url = typeof res.url === 'string' ? res.url : '';
       setPageInfo({
         running: res.running === true,
@@ -546,6 +617,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     try {
       const res = await fetchJson<TabsResponse>('/api/browser/tabs');
       if (!aliveRef.current || seq !== tabsSeqRef.current) return;
+      // 退出时在途的标签请求也可能晚一步回来：不能在 exited 状态下把标签条重新填满。
+      if (bootStatusRef.current !== 'ready') return;
       setTabs(parseTabs(res.tabs));
     } catch {
       // 断线由画面流统一提示；这里每 2.5 秒再弹一次只会刷屏。
@@ -567,7 +640,9 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       // 导航会改页面标题，标签条要跟着变（服务端没有 title 变化的事件通道）。
       void refreshTabs();
     } catch (err) {
-      if (aliveRef.current) setActionError(errorMessage(err));
+      // 退出 / 重启期间不再弹 409：面板已经切到「浏览器已退出」，
+      // 这时补一条"浏览器还没启动"只会和退出提示互相打架。
+      if (aliveRef.current && bootStatusRef.current === 'ready') setActionError(errorMessage(err));
     } finally {
       if (aliveRef.current) setBusy(false);
     }
@@ -585,7 +660,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
         void refreshTabs();
       }
     } catch (err) {
-      if (aliveRef.current) setActionError(errorMessage(err));
+      if (aliveRef.current && bootStatusRef.current === 'ready') setActionError(errorMessage(err));
     } finally {
       if (aliveRef.current) setBusy(false);
     }
@@ -612,7 +687,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       void refreshTabs();
       void refreshState();
     } catch (err) {
-      if (aliveRef.current) setActionError(errorMessage(err));
+      if (aliveRef.current && bootStatusRef.current === 'ready') setActionError(errorMessage(err));
     } finally {
       // ★ 失败也必须解锁：否则一次 409 会让整条标签条从此点不动。
       tabBusyRef.current = false;
@@ -779,6 +854,12 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    /**
+     * ★ 舞台内部的本地控件（目前只有退出提示里的「重新启动」）不能吞按键：
+     *   下面会 preventDefault，而 <button> 的 Enter / Space 激活正是默认行为，
+     *   拦下来键盘用户就再也点不到那个重启入口。控件自己的键盘行为交给浏览器。
+     */
+    if (event.target instanceof Element && event.target.closest('button') !== null) return;
     // ★ Ctrl / Cmd / Alt 组合一律不转发：它们在本地是应用快捷键（保存、切换面板…），
     //   发到远端页面会同时触发页面里的同名快捷键，用户还不知道是哪边动的。
     if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -1136,7 +1217,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
    */
   const tabsLocked = !ready || tabBusy;
   const dotClass =
-    boot.status === 'failed' || streamError !== null
+    boot.status === 'failed' || boot.status === 'exited' || streamError !== null
       ? 'is-error'
       : boot.status === 'starting' || !hasFrame
         ? 'is-busy'
@@ -1144,21 +1225,28 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const statusTitle =
     boot.status === 'starting'
       ? '启动中…'
-      : boot.status === 'failed'
-        ? '浏览器未启动'
-        : pageInfo === null
-          ? '正在连接…'
-          : pageInfo.title.length > 0
-            ? pageInfo.title
-            : pageInfo.running
-              ? '无标题页面'
-              : '浏览器未运行';
+      : boot.status === 'exited'
+        ? '浏览器已退出'
+        : boot.status === 'failed'
+          ? '浏览器未启动'
+          : pageInfo === null
+            ? '正在连接…'
+            : pageInfo.title.length > 0
+              ? pageInfo.title
+              : pageInfo.running
+                ? '无标题页面'
+                : '浏览器未运行';
   const stageNote =
-    streamError !== null
-      ? { title: '画面已断开', hint: '点上方「重新连接」重试' }
-      : boot.status === 'starting'
-        ? { title: '启动中…', hint: '首次启动 Chromium 需要几秒' }
-        : { title: '等待画面…', hint: '页面还没有产生新帧' };
+    boot.status === 'exited'
+      ? {
+          title: '浏览器已退出',
+          hint: '进程可能被其它程序关掉了。重新启动会拉起一个新的浏览器进程，之前打开的页面不会自动恢复。',
+        }
+      : streamError !== null
+        ? { title: '画面已断开', hint: '点上方「重新连接」重试' }
+        : boot.status === 'starting'
+          ? { title: '启动中…', hint: '首次启动 Chromium 需要几秒' }
+          : { title: '等待画面…', hint: '页面还没有产生新帧' };
 
   /**
    * 下载弹层的内容区。
@@ -1616,10 +1704,28 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
               </span>
             ) : null}
             {hasFrame ? null : (
-              <div className="browser-stage-note" aria-live="polite">
-                <span className="review-spinner" aria-hidden="true" />
+              <div
+                className={`browser-stage-note${boot.status === 'exited' ? ' is-exited' : ''}`}
+                // 进程退出是一次需要被听见的状态变化；等待画面只是过程，用 polite 就够。
+                role={boot.status === 'exited' ? 'status' : undefined}
+                aria-live="polite"
+              >
+                {boot.status === 'exited' ? (
+                  <Icon name="alert" size={22} />
+                ) : (
+                  <span className="review-spinner" aria-hidden="true" />
+                )}
                 <p>{stageNote.title}</p>
                 <small>{stageNote.hint}</small>
+                {boot.status === 'exited' ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void bootBrowser()}
+                  >
+                    重新启动
+                  </button>
+                ) : null}
               </div>
             )}
           </div>

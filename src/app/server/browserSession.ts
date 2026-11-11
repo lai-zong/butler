@@ -191,20 +191,37 @@ interface BrowserSessionState {
 
 let session: BrowserSessionState | null = null;
 
-async function waitForDevToolsPort(profileDir: string, timeoutMs = 20_000): Promise<number> {
+/**
+ * 等浏览器写出调试端点，并确认它**真的能连上**。
+ *
+ * ★ 必须验证：进程被杀后会留下上一次的 DevToolsActivePort，
+ *   直接读会连到死端口（表现为启动失败 fetch failed）。
+ */
+async function waitForBrowserEndpoint(profileDir: string, timeoutMs = 20_000): Promise<string> {
   const file = join(profileDir, 'DevToolsActivePort');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const text = await readFile(file, 'utf8');
       const port = Number(text.split('\n')[0]);
-      if (Number.isInteger(port) && port > 0) return port;
+      if (Number.isInteger(port) && port > 0) {
+        try {
+          const version = await fetchJson<{ webSocketDebuggerUrl?: string }>(
+            `http://127.0.0.1:${port}/json/version`,
+          );
+          if (typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl.length > 0) {
+            return version.webSocketDebuggerUrl;
+          }
+        } catch {
+          // 端口还没起来（或残留端口已死），继续等
+        }
+      }
     } catch {
-      // 还没写出来
+      // 文件还没写出来
     }
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 200));
   }
-  throw new BrowserError('浏览器启动超时（没有写出调试端口）', 'timeout');
+  throw new BrowserError('浏览器启动超时（调试端点不可用）', 'timeout');
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -235,7 +252,7 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
   const profileDir = join(dataDir, 'browser-profile');
   await mkdir(profileDir, { recursive: true });
   // 上次异常退出可能留下锁：删掉再启动（只影响我们的专用 profile）
-  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile']) {
+  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile', 'DevToolsActivePort']) {
     await rm(join(profileDir, lock), { force: true }).catch(() => undefined);
   }
 
@@ -265,9 +282,8 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
   });
 
   try {
-    const port = await Promise.race([waitForDevToolsPort(profileDir), exited]);
-    const version = await fetchJson<{ webSocketDebuggerUrl: string }>(`http://127.0.0.1:${port}/json/version`);
-    const cdp = await CdpConnection.connect(version.webSocketDebuggerUrl);
+    const wsUrl = await Promise.race([waitForBrowserEndpoint(profileDir), exited]);
+    const cdp = await CdpConnection.connect(wsUrl);
 
     // 新建一个页面并附着（flatten 模式：事件里带 sessionId）
     const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
