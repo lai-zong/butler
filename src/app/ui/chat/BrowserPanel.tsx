@@ -74,6 +74,8 @@ interface BrowserStateResponse extends OkResponse {
   readonly title?: string;
   readonly canBack?: boolean;
   readonly canForward?: boolean;
+  /** 进程还在但这次读取失败（切页/卡顿），不是"已退出" */
+  readonly error?: string;
 }
 
 interface BrowserReadResponse extends OkResponse {
@@ -600,10 +602,16 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
        *   不把这里当成"退出事件"，面板就会一直停在 ready：画面停住、
        *   按钮还能点，点了才 409。
        */
-      if (res.running !== true) {
+      /**
+       * ★ 只有明确 `running === false` 才是退出；`running:true + error`
+       *   是单次 CDP 抖动（切页/页面卡住），下一轮轮询通常会自愈，
+       *   不能把标签和画面清掉。
+       */
+      if (res.running === false) {
         if (bootStatusRef.current === 'ready') markBrowserExited();
         return;
       }
+      if (typeof res.error === 'string' && res.error.length > 0) return;
       // 退出 / 重启过程中旧的请求可能晚一步回来：那时画面已经清空，
       // 不能再把上一轮浏览器的标题和 URL 写回面板。
       if (bootStatusRef.current !== 'ready') return;

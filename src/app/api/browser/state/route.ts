@@ -15,7 +15,17 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json({ ok: true, running: true, executable: status.executable, ...info });
   } catch (err) {
     if (err instanceof BrowserError) {
-      return NextResponse.json({ ok: true, running: false, executable: null, error: err.message });
+      /**
+       * ★ 进程还在，只是这一次 CDP 调用失败（切页/页面卡住）。
+       *   回 `running:true + error`，让前端等下一轮轮询；
+       *   回 running:false 会被前端当成"浏览器已退出"，把标签和画面全清掉。
+       */
+      return NextResponse.json({
+        ok: true,
+        running: true,
+        executable: status.executable,
+        error: err.message,
+      });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '读取页面状态失败' }, { status: 500 });
   }
