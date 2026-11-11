@@ -44,5 +44,13 @@ next-env.d.ts
 /mcp.json
 # 桌宠验收截图与 Python 缓存（不入库）
 __pycache__/
-/docs/ui-preview/desktop-pet*.png
-/docs/ui-preview/desktop-pet*.jpg
+# 截图 / 评审图片一律不入库（会显著撑大仓库，且属于过程证据而非交付物）
+# ⚠️ 应用运行时必需的静态资源在 public/ 下，单独放行
+*.png
+*.jpg
+*.jpeg
+*.webp
+!public/**/*.png
+!public/**/*.jpg
+!public/**/*.jpeg
+!public/**/*.webp
