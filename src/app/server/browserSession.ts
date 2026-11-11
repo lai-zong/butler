@@ -181,6 +181,9 @@ interface BrowserSessionState {
   targetId: string;
   readonly downloadDir: string;
   readonly dataDir: string;
+  /** 打开过的页面（targetId → CDP 页面会话）；顺序即标签顺序 */
+  readonly pages: Map<string, { targetId: string; sessionId: string }>;
+  readonly pageOrder: string[];
   frame: BrowserFrame | null;
   readonly frameSubscribers: Set<(frame: BrowserFrame) => void>;
   lastUsedAt: number;
@@ -288,6 +291,8 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
       targetId,
       downloadDir,
       dataDir,
+      pages: new Map([[targetId, { targetId, sessionId }]]),
+      pageOrder: [targetId],
       frame: null,
       frameSubscribers: new Set(),
       lastUsedAt: Date.now(),
@@ -334,6 +339,19 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
         info.targetId !== state.targetId
       ) {
         void switchToTarget(state, info.targetId);
+      }
+    });
+
+    // 页面自己关掉（window.close / 崩溃）时把标签表同步掉
+    cdp.on('Target.targetDestroyed', (params) => {
+      const id = params['targetId'];
+      if (typeof id !== 'string' || !state.pages.has(id)) return;
+      state.pages.delete(id);
+      const index = state.pageOrder.indexOf(id);
+      if (index >= 0) state.pageOrder.splice(index, 1);
+      if (state.targetId === id) {
+        const next = state.pageOrder[0];
+        if (next !== undefined) void switchToTarget(state, next);
       }
     });
 
@@ -597,24 +615,119 @@ async function setupPageSession(cdp: CdpConnection, sessionId: string): Promise<
   await cdp.send('Page.startScreencast', SCREENCAST, sessionId);
 }
 
-/** 把串流切到新打开的页面（弹窗）。 */
+/** 把串流切到某个标签页；不存在就先附着（弹窗场景会先注册）。 */
 async function switchToTarget(state: BrowserSessionState, targetId: string): Promise<void> {
   try {
+    let entry = state.pages.get(targetId);
+    if (entry === undefined) {
+      const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
+      await setupPageSession(state.cdp, sessionId);
+      entry = { targetId, sessionId };
+      state.pages.set(targetId, entry);
+      if (!state.pageOrder.includes(targetId)) state.pageOrder.push(targetId);
+    }
+
     const previousSession = state.pageSessionId;
-    const previousTarget = state.targetId;
-    const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
-      targetId,
-      flatten: true,
-    });
-    await setupPageSession(state.cdp, sessionId);
-    state.pageSessionId = sessionId;
+    // 先停掉旧页面的串流，避免两个页面同时推帧（弹窗里播视频时尤其明显）
+    await state.cdp.send('Page.stopScreencast', {}, previousSession).catch(() => undefined);
+
+    try {
+      await setupPageSession(state.cdp, entry.sessionId);
+    } catch {
+      /**
+       * 会话失效（比如页面被挂起后旧 session 不再接受命令）：
+       * 重新附着一个会话再初始化，而不是直接放弃切换。
+       */
+      const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
+        targetId: entry.targetId,
+        flatten: true,
+      });
+      entry = { targetId: entry.targetId, sessionId };
+      state.pages.set(targetId, entry);
+      await setupPageSession(state.cdp, sessionId);
+    }
+
+    state.pageSessionId = entry.sessionId;
     state.targetId = targetId;
     state.frame = null;
-    await state.cdp.send('Page.stopScreencast', {}, previousSession).catch(() => undefined);
-    // 原页面不再接收发现事件也能工作；保留 target 以便后退
-    void previousTarget;
   } catch {
-    // 弹窗已经关掉：保持当前页面不动
+    // 目标已经关掉：保持当前页面不动
+  }
+}
+
+/** 标签页列表（标题/URL 实时取，失败的给空串）。 */
+export interface BrowserTab {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+  readonly active: boolean;
+}
+
+export async function listTabs(): Promise<readonly BrowserTab[]> {
+  const state = requireSession();
+  const tabs: BrowserTab[] = [];
+  for (const targetId of state.pageOrder) {
+    if (!state.pages.has(targetId)) continue;
+    let title = '';
+    let url = '';
+    try {
+      const info = await state.cdp.send<{
+        targetInfo?: { title?: string; url?: string };
+      }>('Target.getTargetInfo', { targetId });
+      title = info.targetInfo?.title ?? '';
+      url = info.targetInfo?.url ?? '';
+    } catch {
+      // 目标已经关掉
+    }
+    tabs.push({ id: targetId, title, url, active: targetId === state.targetId });
+  }
+
+  return tabs;
+}
+
+/** 新建标签页并切过去。 */
+export async function newTab(): Promise<{ id: string }> {
+  const state = requireSession();
+  const { targetId } = await state.cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
+    targetId,
+    flatten: true,
+  });
+  await setupPageSession(state.cdp, sessionId);
+  state.pages.set(targetId, { targetId, sessionId });
+  state.pageOrder.push(targetId);
+  await switchToTarget(state, targetId);
+  return { id: targetId };
+}
+
+/** 切到某个标签页。 */
+export async function activateTab(id: string): Promise<boolean> {
+  const state = requireSession();
+  if (!state.pages.has(id)) return false;
+  if (id === state.targetId) return true;
+  await switchToTarget(state, id);
+  return true;
+}
+
+/** 关闭标签页；关的是当前页就切到相邻页（都关完了就新开一个）。 */
+export async function closeTab(id: string): Promise<void> {
+  const state = requireSession();
+  const entry = state.pages.get(id);
+  if (entry === undefined) return;
+  await state.cdp.send('Target.closeTarget', { targetId: entry.targetId }).catch(() => undefined);
+  state.pages.delete(id);
+  const index = state.pageOrder.indexOf(id);
+  if (index >= 0) state.pageOrder.splice(index, 1);
+
+  if (state.targetId !== id) return;
+  const next = state.pageOrder[Math.min(index, state.pageOrder.length - 1)];
+  if (next !== undefined) {
+    await switchToTarget(state, next);
+  } else {
+    await newTab();
   }
 }
 
