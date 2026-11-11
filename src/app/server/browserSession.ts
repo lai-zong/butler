@@ -176,8 +176,11 @@ interface BrowserSessionState {
   readonly executable: string;
   readonly child: ChildProcess;
   readonly cdp: CdpConnection;
-  readonly pageSessionId: string;
-  readonly targetId: string;
+  /** 当前正在串流的页面会话；弹窗打开时会切到新页面 */
+  pageSessionId: string;
+  targetId: string;
+  readonly downloadDir: string;
+  readonly dataDir: string;
   frame: BrowserFrame | null;
   readonly frameSubscribers: Set<(frame: BrowserFrame) => void>;
   lastUsedAt: number;
@@ -266,14 +269,16 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
     // 新建一个页面并附着（flatten 模式：事件里带 sessionId）
     const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
+    await setupPageSession(cdp, sessionId);
 
-    await cdp.send('Page.enable', {}, sessionId);
-    await cdp.send('Runtime.enable', {}, sessionId);
-    await cdp.send(
-      'Emulation.setDeviceMetricsOverride',
-      { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false },
-      sessionId,
-    );
+    // 下载：落到数据目录下的固定位置，避免散落在用户的"下载"文件夹里
+    const downloadDir = join(dataDir, 'browser-downloads');
+    await mkdir(downloadDir, { recursive: true });
+    await cdp.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloadDir,
+      eventsEnabled: true,
+    });
 
     const state: BrowserSessionState = {
       executable,
@@ -281,6 +286,8 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
       cdp,
       pageSessionId: sessionId,
       targetId,
+      downloadDir,
+      dataDir,
       frame: null,
       frameSubscribers: new Set(),
       lastUsedAt: Date.now(),
@@ -310,7 +317,26 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
       }
     });
 
-    await cdp.send('Page.startScreencast', SCREENCAST, sessionId);
+    /**
+     * ★ 弹窗/OAuth：登录页常在新页面打开。
+     *   不处理的话用户点了"用 Google 登录"就什么都不发生。
+     *   这里监听新页面，自动把串流切过去（原标签仍开着，后退可回）。
+     */
+    await cdp.send('Target.setDiscoverTargets', { discover: true });
+    cdp.on('Target.targetCreated', (params) => {
+      const info = params['targetInfo'] as
+        | { type?: string; targetId?: string; openerId?: string }
+        | undefined;
+      if (
+        info?.type === 'page' &&
+        typeof info.targetId === 'string' &&
+        info.openerId === state.targetId &&
+        info.targetId !== state.targetId
+      ) {
+        void switchToTarget(state, info.targetId);
+      }
+    });
+
     child.once('exit', () => {
       if (session === state) session = null;
     });
@@ -337,6 +363,7 @@ export async function navigate(input: string): Promise<{ url: string; kind: 'url
   const state = requireSession();
   const target = normalizeAddress(input);
   await state.cdp.send('Page.navigate', { url: target.url }, state.pageSessionId);
+  await grantClipboard(state.cdp, target.url);
   return { url: target.url, kind: target.kind };
 }
 
@@ -553,3 +580,81 @@ export function __resetBrowserForTest(): void {
 }
 
 export { VIEWPORT };
+
+/**
+ * 给一个页面会话装好：启用 Page/Runtime、固定视口、开始串流。
+ *
+ * ★ 抽出来是因为弹窗（OAuth 登录等）打开时要复用同一套初始化。
+ */
+async function setupPageSession(cdp: CdpConnection, sessionId: string): Promise<void> {
+  await cdp.send('Page.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
+  await cdp.send(
+    'Emulation.setDeviceMetricsOverride',
+    { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false },
+    sessionId,
+  );
+  await cdp.send('Page.startScreencast', SCREENCAST, sessionId);
+}
+
+/** 把串流切到新打开的页面（弹窗）。 */
+async function switchToTarget(state: BrowserSessionState, targetId: string): Promise<void> {
+  try {
+    const previousSession = state.pageSessionId;
+    const previousTarget = state.targetId;
+    const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
+      targetId,
+      flatten: true,
+    });
+    await setupPageSession(state.cdp, sessionId);
+    state.pageSessionId = sessionId;
+    state.targetId = targetId;
+    state.frame = null;
+    await state.cdp.send('Page.stopScreencast', {}, previousSession).catch(() => undefined);
+    // 原页面不再接收发现事件也能工作；保留 target 以便后退
+    void previousTarget;
+  } catch {
+    // 弹窗已经关掉：保持当前页面不动
+  }
+}
+
+/**
+ * 给当前站点授权剪贴板。
+ *
+ * ★ 无头浏览器默认拒绝剪贴板权限，不授权的话 Ctrl+V / 复制按钮都会静默失败。
+ *   只对 http(s) 站点授权；data:/about: 没有 origin。
+ */
+async function grantClipboard(cdp: CdpConnection, url: string): Promise<void> {
+  let origin: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+    origin = parsed.origin;
+  } catch {
+    return;
+  }
+  await cdp
+    .send('Browser.grantPermissions', {
+      origin,
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'],
+    })
+    .catch(() => undefined);
+}
+
+/** 数据目录里的下载文件。 */
+export async function listDownloads(): Promise<readonly { name: string; size: number; mtimeMs: number }[]> {
+  const state = requireSession();
+  const { readdir } = await import('node:fs/promises');
+  try {
+    const names = await readdir(state.downloadDir);
+    const out: { name: string; size: number; mtimeMs: number }[] = [];
+    for (const name of names) {
+      const { stat } = await import('node:fs/promises');
+      const info = await stat(join(state.downloadDir, name)).catch(() => null);
+      if (info !== null && info.isFile()) out.push({ name, size: info.size, mtimeMs: info.mtimeMs });
+    }
+    return out.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 50);
+  } catch {
+    return [];
+  }
+}
