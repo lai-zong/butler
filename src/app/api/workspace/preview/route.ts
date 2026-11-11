@@ -45,7 +45,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           ? 404
           : err.code === 'protected' || err.code === 'outside_workspace'
             ? 403
-            : 400;
+            : err.code === 'too_large'
+              ? 413
+              : 400;
       return NextResponse.json({ error: err.message, code: err.code }, { status });
     }
     if (err instanceof OfficePreviewError) {
