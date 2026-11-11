@@ -23,21 +23,31 @@
 import type { NextRequest } from 'next/server';
 
 import { DATA_DIR, getRuntime } from '@/app/runtime';
-import { trackActiveTurn } from '@/app/server/activeTurns.js';
+import { acquireSessionTurn, trackActiveTurn } from '@/app/server/activeTurns.js';
 import { createChatToolScope } from '@/app/server/chatToolScope.js';
+import { getMarkedPetSessionId, latestNormalSessionOrCreate } from '@/app/server/petSession.js';
+import { buildPetUsageContext } from '@/app/server/petUsageContext.js';
+import { loadPetConfig } from '@/app/server/petConfig.js';
+import { milestoneForTool } from '@/app/server/petMilestones.js';
+import { createTaskPlanState } from '@/core/tools/builtin/plan.js';
 import { getKnowledgeService } from '@/app/server/knowledge.js';
 import { dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import { supervisionConfig } from '@/core/config/env.js';
 import { runTurn } from '@/core/chat/service.js';
 import type { ToolFramework } from '@/core/tools/framework.js';
+import { beginTurnSteering } from '@/core/tools/steering.js';
 import {
   createTurnSettings,
   turnSettingsEventPayload,
   type TurnMemoryMode,
 } from '@/core/chat/settings.js';
-import { detectReasoningProvider, type ReasoningProvider } from '@/core/model/reasoning.js';
+import {
+  detectReasoningProvider,
+  reasoningFromLegacyThinkingLevel,
+  type ReasoningProvider,
+} from '@/core/model/reasoning.js';
 import { loadGlobalAgents } from '@/app/server/globalAgents.js';
-import { denyAllPending, SseApprovals } from '@/core/tools/approval.js';
+import { SseApprovals } from '@/core/tools/approval.js';
 import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
 import { DeepSeekModel } from '@/adapters/model/deepseek.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
@@ -103,6 +113,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ error: '请求体不是合法 JSON' }, { status: 400 });
   }
 
+  /**
+   * ⚠️ 类型守卫必须在 `.trim()` 之前。
+   *
+   *    旧写法 `(body.text ?? '').trim()`：传 `{"text":123}` 时 `trim` 不存在，
+   *    TypeError 冒到外层直接 500（实测）。跨 HTTP 边界的数据是不可信输入。
+   */
+  if (body.text !== undefined && typeof body.text !== 'string') {
+    return Response.json({ error: 'text 必须是字符串' }, { status: 400 });
+  }
   const text = (body.text ?? '').trim();
   const imageCheck = normalizeRequestImages(body.images);
   if (!imageCheck.ok) {
@@ -118,7 +137,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   // 会话：没给就取最近的，还没有就新建
   const session = body.sessionId !== undefined
     ? (rt.bootstrapped.chat.getSession(body.sessionId) ?? rt.bootstrapped.chat.createSession())
-    : rt.bootstrapped.chat.latestOrCreate();
+    : await latestNormalSessionOrCreate(rt.bootstrapped.chat);
+
+  // 使用节奏只进入桌宠会话；普通任务对话不注入。
+  const markedPetId = await getMarkedPetSessionId();
+  const isPetSession = markedPetId !== null && markedPetId === session.id;
+  const petContext = isPetSession ? await buildPetUsageContext() : undefined;
+  // 桌宠设置里的模型/思考/人格只在桌宠会话生效。
+  const petConfig = isPetSession ? await loadPetConfig() : null;
 
   let model = rt.model;
   let streamModel = rt.streamModel;
@@ -163,11 +189,18 @@ export async function POST(req: NextRequest): Promise<Response> {
    *    否则桌宠旧请求会悄悄改掉 Web 会话选好的模型。
    *    桌宠右键切模型要 PATCH 对应 session（scripts/petapp）。
    */
-  const selection: { profileId: string; modelId: string } | null = sessionHasModel
-    ? { profileId: session.modelProfileId.trim(), modelId: session.modelId.trim() }
-    : bodyHasModel
-      ? { profileId: bodyProfileId, modelId: bodyModelId }
-      : profileStore.lastChat;
+  const petModel = petConfig?.model ?? null;
+  const petHasModel =
+    petModel !== null &&
+    petModel.profileId.trim().length > 0 &&
+    petModel.modelId.trim().length > 0;
+  const selection: { profileId: string; modelId: string } | null = petHasModel && petModel !== null
+    ? { profileId: petModel.profileId.trim(), modelId: petModel.modelId.trim() }
+    : sessionHasModel
+      ? { profileId: session.modelProfileId.trim(), modelId: session.modelId.trim() }
+      : bodyHasModel
+        ? { profileId: bodyProfileId, modelId: bodyModelId }
+        : profileStore.lastChat;
   let effectiveModelProfileId: string | undefined;
   let effectiveModelId: string | undefined;
   if (selection !== null) {
@@ -226,13 +259,25 @@ export async function POST(req: NextRequest): Promise<Response> {
    *   persona / reasoning / memoryMode / 模型都按这里的值走。
    */
   const currentSession = rt.bootstrapped.chat.getSession(session.id) ?? session;
+  /**
+   * 桌宠设置的人格/思考强度的真相源是 pet-config，而不是通用 session。
+   * 这里只在桌宠会话生效；普通对话仍使用自己的 session 设置。
+   */
+  const sessionForSettings =
+    petConfig !== null
+      ? {
+          ...currentSession,
+          persona: petConfig.persona,
+          reasoning: reasoningFromLegacyThinkingLevel(petConfig.thinkingLevel),
+        }
+      : currentSession;
   const globalAgents = await loadGlobalAgents();
   const envMemoryMode = process.env['BUTLER_MEMORY_MODE'];
   const memoryModeOverride: TurnMemoryMode | undefined =
     envMemoryMode === 'shadow' ? 'shadow' : envMemoryMode === 'off' ? 'off' : undefined;
   const scopeDefaults = scopeDefaultsOf(rt);
   const turnSettings = createTurnSettings({
-    session: currentSession,
+    session: sessionForSettings,
     requestPersona: typeof body.persona === 'string' ? body.persona : undefined,
     legacyThinkingLevel: body.thinkingLevel,
     ...(memoryModeOverride !== undefined ? { memoryModeOverride } : {}),
@@ -257,6 +302,7 @@ export async function POST(req: NextRequest): Promise<Response> {
    *
    * ★ 执行中 PATCH 只改 session；本轮已经拿走快照，下一轮才重建作用域。
    */
+  const taskPlan = createTaskPlanState();
   let chatTools: ToolFramework;
   try {
     const scope = await createChatToolScope({
@@ -269,6 +315,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       // 否则设置 BUTLER_WORKSPACE 后 config/AGENTS.md 会落到保护区之外。
       appRoot: process.cwd(),
       baseTools: rt.tools,
+      confirmActions: rt.permissionPolicy.confirmActions,
+      taskPlan,
       documentSearch: {
         search: async (query, limit) =>
           (await getKnowledgeService().search(query, limit)).hits,
@@ -301,6 +349,28 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (req.signal.aborted) abort.abort();
   else req.signal.addEventListener('abort', onRequestAbort, { once: true });
 
+  /**
+   * ★ 会话级互斥：同一个会话同时只能跑一轮。
+   *
+   *   没有它的时候，双击发送 / 前端重试 / 两个标签页会让同一 session
+   *   并行跑两轮 `runTurn`：事件交错写入、两个 ToolFramework 各一份熔断计数
+   *   （写次数上限失效）、模型被调两次（重复计费）。
+   *
+   * ⚠️ 锁必须在**流建立之前**拿：拿不到就直接回 409。
+   *    等进了流再报错就晚了 —— 那时已经回了 200，前端只能看到一条诡异的错误事件。
+   */
+  const releaseTurn = acquireSessionTurn(session.id);
+  if (releaseTurn === null) {
+    req.signal.removeEventListener('abort', onRequestAbort);
+    return Response.json(
+      {
+        error: '这个会话上一轮还在执行，等它结束（或点停止）后再发。',
+        code: 'turn_in_progress',
+      },
+      { status: 409 },
+    );
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -320,13 +390,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       /**
        * ★ C6 询问通道：**仅当调用方声明能处理时才启用**。
        *
-       * ⚠️ 无条件启用会造成真实回归：调用方还没做确认流程时，
-       *    "需要确认"的工具调用会挂满 120 秒才拒绝，
-       *    而改造前是**立刻拒绝**。
-       *    所以这里是能力协商：能处理才开，否则退回原行为。
+       * ⚠️ 能力协商：调用方能处理确认，且全局确认开关开启时才启用。
+       *    开关关闭时按权限模式直接执行；本轮不产生 approval 事件。
        */
       const approvals =
-        body.supportsApproval === true
+        body.supportsApproval === true && rt.permissionPolicy.confirmActions
           ? new SseApprovals({
               emit: (req) =>
                 send({
@@ -336,10 +404,18 @@ export async function POST(req: NextRequest): Promise<Response> {
                   tier: req.tier,
                   summary: req.summary,
                   ...(req.preview !== undefined ? { preview: req.preview } : {}),
-                  timeoutMs: req.timeoutMs,
                 }),
             })
           : undefined;
+
+      const endSteering = beginTurnSteering(session.id, {
+        cancelApprovals: () => approvals?.denyAll() ?? 0,
+        onMessage: (text) => {
+          // 中途消息立即进入会话历史；模型侧在下一个安全边界收到它。
+          rt.bootstrapped.chat.appendMessage(session.id, { role: 'user', text });
+          send({ type: 'steering', text });
+        },
+      });
 
       /**
        * ★ 记下这一轮的起始 seq —— 界面据此取「本轮依据」。
@@ -399,6 +475,14 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       // 取消事件需要知道“取消在哪一步”；只记阶段名，不记正文/参数。
       let lastStage = 'starting';
+      let lastMilestone = '';
+      let milestoneCount = 0;
+      const emitMilestone = (text: string | null): void => {
+        if (!isPetSession || text === null || text === lastMilestone || milestoneCount >= 6) return;
+        lastMilestone = text;
+        milestoneCount += 1;
+        send({ type: 'milestone', text });
+      };
       const endActiveTurn = trackActiveTurn({
         sessionId: session.id,
         startedAt: Date.now(),
@@ -410,9 +494,11 @@ export async function POST(req: NextRequest): Promise<Response> {
         const result = await runTurn({
           sessionId: session.id,
           userText: text,
+          optionalPlan: true,
           // ★ 本轮设置快照：persona / reasoning / memoryMode / global AGENTS
           //   全部来自这里，执行中 PATCH 不影响当前轮。
           settings: turnSettings,
+          ...(petContext !== undefined && petContext.length > 0 ? { petContext } : {}),
           // ★ 本轮图片（只这一次有效，不落历史）
           ...(images.length > 0 ? { images } : {}),
           // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"
@@ -528,6 +614,9 @@ export async function POST(req: NextRequest): Promise<Response> {
                   output: e.output,
                   durationMs: e.durationMs,
                 });
+                emitMilestone(
+                  milestoneForTool({ name: e.name, ok: e.ok, denied: e.denied }),
+                );
                 break;
               case 'usage':
                 send({
@@ -677,15 +766,23 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
       } finally {
         endActiveTurn();
+        /**
+         * ★ 释放会话锁。
+         *
+         *   正常结束、异常、用户中止都会走这里 —— 锁不释放的话，
+         *   这个会话会永久 409，只能重启进程才能恢复。
+         */
+        releaseTurn();
         rt.activeTurns = Math.max(0, rt.activeTurns - 1);
         req.signal.removeEventListener('abort', onRequestAbort);
         /**
-         * ★ 流结束 → 把所有还挂着的确认**全部拒绝**。
+         * ★ 流结束 → 只拒绝**本轮 asker** 还挂着的确认。
          *
-         * ⚠️ 不这么做的话，工具循环会一直等到超时（最长 2 分钟），
-         *    而实际上客户端已经结束了，没人会来点"允许"。
+         * ⚠️ 不能用全局 denyAllPending：并发会话会互相误伤。
+         *    没有超时后，这条清理是 pending 唯一的自动收敛路径。
          */
-        denyAllPending();
+        endSteering();
+        approvals?.denyAll();
 
         send({ type: 'done' });
         try {
@@ -699,6 +796,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     },
     cancel() {
       // 客户端断开连接时，ReadableStream 会走这里；与 request.signal 双保险。
+      //
+      // ⚠️ 这里也要释放会话锁：`start` 的 finally 在极端情况下可能还没跑
+      //    （流在启动阶段就被取消），不释放会把会话永久锁死。
+      releaseTurn();
       abort.abort();
     },
   });

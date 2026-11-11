@@ -32,4 +32,14 @@ describe('C5 三档权限', () => {
     expect(new WebPermissionPolicy().isTierEnabled('normal')).toBe(false);
     expect(new WebPermissionPolicy({ allowWrite: true }).isTierEnabled('normal')).toBe(true);
   });
+
+  it('关闭确认时按档位自动放行；dangerous 仍拒绝', async () => {
+    const full = new WebPermissionPolicy({ mode: 'full', confirmActions: false });
+    await expect(full.ask({ tier: 'normal' })).resolves.toBe('allow');
+    await expect(full.ask({ tier: 'highRisk' })).resolves.toBe('allow');
+    await expect(full.ask({ tier: 'dangerous' })).resolves.toBe('deny');
+
+    const workspace = new WebPermissionPolicy({ mode: 'workspace', confirmActions: false });
+    await expect(workspace.ask({ tier: 'highRisk' })).resolves.toBe('deny');
+  });
 });

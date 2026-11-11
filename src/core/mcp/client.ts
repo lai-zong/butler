@@ -285,6 +285,7 @@ export class McpClient {
           `协议版本不匹配：server 用 ${handshake.protocolVersion || '（未声明）'}，` +
           `本客户端支持 ${['2025-06-18', '2025-03-26', '2024-11-05'].join(' / ')}。` +
           '字段形状可能不同，已停止以免产生难查的解析错误。';
+        await this.dropPort(rt);
         rt.state = 'failed';
         rt.lastError = reason;
         this.log.append({
@@ -308,6 +309,7 @@ export class McpClient {
       );
       const listed = parseToolsList(unwrap(listRes));
       if (!listed.ok) {
+        await this.dropPort(rt);
         rt.state = 'failed';
         rt.lastError = listed.reason;
         this.log.append({
@@ -371,6 +373,7 @@ export class McpClient {
       return { ok: true };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      await this.dropPort(rt);
       rt.state = 'failed';
       rt.lastError = reason;
       this.log.append({
@@ -381,6 +384,19 @@ export class McpClient {
       });
       return { ok: false, reason };
     }
+  }
+
+  /**
+   * 关掉端口并清空引用（失败路径专用）。
+   *
+   * ⚠️ 为什么失败分支必须关端口：
+   *   stdio 传输背后是一个真实子进程。连接失败后如果不关，
+   *   子进程与管道就泄漏了；用户每点一次"重试"就堆一个孤儿进程，
+   *   长时间运行会累积成"任务管理器里一堆 node"。
+   */
+  private async dropPort(rt: McpServerRuntime): Promise<void> {
+    await rt.port?.close().catch(() => undefined);
+    delete rt.port;
   }
 
   /** 断开连接。 */
@@ -462,10 +478,26 @@ export class McpClient {
    *   所以它们自动获得分级判定、权限闸门、审计、注入防护。
    */
   toToolSpecs(): readonly ToolSpec[] {
+    return this.toToolSpecsOf(undefined);
+  }
+
+  /**
+   * 只取**指定服务器**的工具。
+   *
+   * ★ 为什么需要它（实测）：接线层原本在"每个 server 连上后"都调用一次
+   *   `toToolSpecs()`，而它返回的是**所有已连接 server** 的工具。
+   *   于是第 2 个 server 注册时，第 1 个 server 的工具已经注册过，
+   *   `register` 遇到重名直接抛错，整批注册失败，还被误报成"连接失败"。
+   *   结果：配两个以上 MCP server 时，第二个起一个工具都注册不上。
+   *
+   * @param serverId 省略时返回全部已连接服务器的工具
+   */
+  toToolSpecsOf(serverId: string | undefined): readonly ToolSpec[] {
     const out: ToolSpec[] = [];
 
     for (const rt of this.servers.values()) {
       if (rt.state !== 'connected') continue;
+      if (serverId !== undefined && rt.config.id !== serverId) continue;
 
       for (const tool of rt.tools) {
         // 被用户显式禁用的不注册 —— 连"看见"都不给模型

@@ -108,7 +108,7 @@ describe('★ 安全闸门 · 分级判定', () => {
     fs.seedFile('a.txt', 'x');
 
     await expect(
-      fw.execute({ toolName: 'remove_path', args: { path: 'a.txt' }, taskId: 't1' }),
+      fw.execute({ toolName: 'file_op', args: { action: 'remove', path: 'a.txt' }, taskId: 't1' }),
     ).rejects.toThrow(/默认禁用/);
 
     expect(await fs.exists('a.txt')).toBe(true); // 没删掉
@@ -120,7 +120,7 @@ describe('★ 安全闸门 · 分级判定', () => {
     fs.seedFile('a.txt', 'x');
     policy.enableTier('dangerous');
 
-    const r = await fw.execute({ toolName: 'remove_path', args: { path: 'a.txt' }, taskId: 't1' });
+    const r = await fw.execute({ toolName: 'file_op', args: { action: 'remove', path: 'a.txt' }, taskId: 't1' });
     expect(r.ok).toBe(true);
     expect(await fs.exists('a.txt')).toBe(false);
     expect(policy.asked).toHaveLength(1);
@@ -197,7 +197,7 @@ describe('只读预览 · 让用户能真正判断', () => {
     fs.seedFile('data/a.txt', '1');
     fs.seedFile('data/b.txt', '2');
 
-    await fw.execute({ toolName: 'remove_path', args: { path: 'data', recursive: true }, taskId: 't1' });
+    await fw.execute({ toolName: 'file_op', args: { action: 'remove', path: 'data', recursive: true }, taskId: 't1' });
 
     const preview = policy.asked[0]?.preview ?? '';
     expect(preview).toContain('将删除目录');
@@ -211,7 +211,7 @@ describe('只读预览 · 让用户能真正判断', () => {
     fs.seedFile('from.txt', '1');
     fs.seedFile('to.txt', '2');
 
-    await fw.execute({ toolName: 'move_path', args: { from: 'from.txt', to: 'to.txt' }, taskId: 't1' });
+    await fw.execute({ toolName: 'file_op', args: { action: 'move', from: 'from.txt', to: 'to.txt' }, taskId: 't1' });
     expect(policy.asked[0]?.preview).toContain('目标已存在');
   });
 
@@ -219,7 +219,7 @@ describe('只读预览 · 让用户能真正判断', () => {
     const { fw, policy } = setup();
     // remove 的 preview 内部会 stat 失败，但不应导致整个调用失败
     policy.enableTier('dangerous');
-    await fw.execute({ toolName: 'remove_path', args: { path: '不存在' }, taskId: 't1' });
+    await fw.execute({ toolName: 'file_op', args: { action: 'remove', path: '不存在' }, taskId: 't1' });
     expect(policy.asked).toHaveLength(1);
   });
 });
@@ -328,7 +328,11 @@ describe('注册纪律', () => {
   it('可按条件过滤工具（如只给只读工具）', async () => {
     const { fw } = setup();
     const readOnly = fw.toModelSpecs((t) => t.tier === 'readOnly');
-    expect(readOnly.every((t) => ['read_file', 'list_dir', 'stat_path'].includes(t.name))).toBe(true);
+    expect(
+      readOnly.every((t) =>
+        ['read_file', 'list_dir', 'stat_path', 'grep', 'glob'].includes(t.name),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -512,7 +516,7 @@ describe('文件工具 · 行为', () => {
     fs.seedDir('d');
     fs.seedFile('d/a.txt', 'x');
 
-    const r = await fw.execute({ toolName: 'remove_path', args: { path: 'd' }, taskId: 't' });
+    const r = await fw.execute({ toolName: 'file_op', args: { action: 'remove', path: 'd' }, taskId: 't' });
     expect(r.ok).toBe(false);
     expect(r.output).toContain('需显式递归');
     expect(await fs.exists('d/a.txt')).toBe(true);
@@ -536,7 +540,7 @@ describe('文件工具 · 行为', () => {
   it('移动文件后原路径消失', async () => {
     const { fw, fs } = setup();
     fs.seedFile('a.txt', 'x');
-    await fw.execute({ toolName: 'move_path', args: { from: 'a.txt', to: 'b.txt' }, taskId: 't' });
+    await fw.execute({ toolName: 'file_op', args: { action: 'move', from: 'a.txt', to: 'b.txt' }, taskId: 't' });
     expect(await fs.exists('a.txt')).toBe(false);
     expect(await fs.exists('b.txt')).toBe(true);
   });
@@ -544,7 +548,7 @@ describe('文件工具 · 行为', () => {
   it('★ 不允许删除根目录', async () => {
     const { fw, policy } = setup();
     policy.enableTier('dangerous');
-    const r = await fw.execute({ toolName: 'remove_path', args: { path: '/', recursive: true }, taskId: 't' });
+    const r = await fw.execute({ toolName: 'file_op', args: { action: 'remove', path: '/', recursive: true }, taskId: 't' });
     expect(r.ok).toBe(false);
   });
 });
@@ -667,7 +671,7 @@ describe('C5 三档模式 · 工具框架真实拦截', () => {
     const fw = new ToolFramework({ log, clock, policy });
     fw.registerAll(fileTools(fs));
     await expect(
-      fw.execute({ toolName: 'remove_path', args: { path: 'a.txt' }, taskId: 't1' }),
+      fw.execute({ toolName: 'file_op', args: { action: 'remove', path: 'a.txt' }, taskId: 't1' }),
     ).rejects.toThrow(/当前权限模式 full/);
     expect(await fs.exists('a.txt')).toBe(true);
   });

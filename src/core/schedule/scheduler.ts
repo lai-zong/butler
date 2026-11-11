@@ -179,6 +179,15 @@ export class Scheduler {
    * 后来的调用直接返回空结果（调用方负责如实显示“正在运行”）。
    */
   private active = false;
+  /**
+   * 仍在执行的 handler。
+   *
+   * ★ `Promise.race` 超时只是"不再等待"，**handler 还在跑**。
+   *   旧实现超时后立刻把 `active` 放回 false，下一个 tick 会再起一份 ——
+   *   实测：handler 累计启动 2 次、并发峰值 2（同一批记忆会被两个任务同时改）。
+   *   这里保留 in-flight 引用，直到它真正 settle 才允许下一轮。
+   */
+  private inFlight: Promise<unknown> | null = null;
 
   constructor(
     private readonly log: EventLog,
@@ -295,7 +304,7 @@ export class Scheduler {
    *   而不是把三天欠下的都补上（方案明确要求）。
    */
   async tick(now?: number): Promise<readonly ScheduledRun[]> {
-    if (this.active) return [];
+    if (this.active || this.inFlight !== null) return [];
     this.active = true;
     try {
       const t = now ?? this.clock.now();
@@ -323,7 +332,7 @@ export class Scheduler {
    *   演示不依赖等待，这一点方案写得很明确。
    */
   async runNow(kind: ScheduledTaskKind, now?: number): Promise<ScheduledRun | null> {
-    if (!this.tasks.has(kind) || this.active) return null;
+    if (!this.tasks.has(kind) || this.active || this.inFlight !== null) return null;
     this.active = true;
     try {
       const t = now ?? this.clock.now();
@@ -354,8 +363,18 @@ export class Scheduler {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new TaskTimeoutError(kind, this.taskTimeoutMs)), this.taskTimeoutMs);
     });
+    const work = handler(ctx);
+    // 记录"还在跑"的事实：超时后 race 结束，但 work 仍可能持续很久。
+    const tracked: Promise<unknown> = work
+      .finally(() => {
+        if (this.inFlight === tracked) this.inFlight = null;
+      })
+      // ⚠️ 必须吞掉这里的分支拒绝：`tracked` 只是一个"还在跑"的标记，
+      //    handler 的异常由 race 那一侧处理；不 catch 会变成 unhandledRejection。
+      .catch(() => undefined);
+    this.inFlight = tracked;
     try {
-      return await Promise.race([handler(ctx), timeout]);
+      return await Promise.race([work, timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }

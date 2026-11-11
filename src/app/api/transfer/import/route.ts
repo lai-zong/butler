@@ -56,6 +56,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
   const { doc, eventCount } = parsed.candidate;
 
+  /**
+   * ★ 导入会**整体覆盖事件文件**，必须在动手之前确认没有对话在跑。
+   *
+   *   否则：旧轮次还在往旧 EventLog 追加，文件已经被换成导入的那份，
+   *   随后 resetRuntime 让新实例从磁盘重读 —— 两套 seq 撞号，
+   *   正是 A 批修掉的那类"静默丢历史"。
+   *
+   *   ⚠️ 校验必须放在备份/写盘之前：忙的时候连备份都不该产生。
+   */
+  {
+    const rt = await getRuntime();
+    if (rt.activeTurns > 0) {
+      return NextResponse.json(
+        { error: '有对话正在执行，等这一轮结束后再导入。导入会整体替换事件流。' },
+        { status: 409 },
+      );
+    }
+  }
+
   // ── ③ 备份现有事件文件 ──
   const file = eventsFile(DATA_DIR);
   const backup = `${file}.before-import-${doc.exportedAt}`;

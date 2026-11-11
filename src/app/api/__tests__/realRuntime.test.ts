@@ -17,8 +17,6 @@ import { NextRequest } from 'next/server';
 
 let dir = '';
 let runtimeModule: typeof import('@/app/runtime');
-let observation: typeof import('@/app/api/observation/route.js');
-let demo: typeof import('@/app/api/activity/demo/route.js');
 let operations: typeof import('@/app/api/operations/route.js');
 let artifactDownload: typeof import('@/app/api/artifacts/[id]/download/route.js');
 let verdict: typeof import('@/app/api/memory/verdict/route.js');
@@ -37,8 +35,6 @@ beforeAll(async () => {
 
   vi.resetModules();
   runtimeModule = await import('@/app/runtime');
-  observation = await import('@/app/api/observation/route.js');
-  demo = await import('@/app/api/activity/demo/route.js');
   operations = await import('@/app/api/operations/route.js');
   artifactDownload = await import('@/app/api/artifacts/[id]/download/route.js');
   verdict = await import('@/app/api/memory/verdict/route.js');
@@ -72,29 +68,6 @@ function ctx(id: string): { params: Promise<{ id: string }> } {
 }
 
 describe('真实运行时 · 本地端点', () => {
-  it('默认未同意采集；显式同意后演示数据可导入并聚合', async () => {
-    const before = await observation.GET();
-    const beforeBody = (await before.json()) as { granted: boolean };
-    expect(beforeBody.granted).toBe(false);
-
-    const grant = await observation.POST(
-      jsonReq('http://localhost/api/observation', { granted: true }),
-    );
-    expect(grant.status).toBe(200);
-
-    const r = await demo.POST(
-      jsonReq('http://localhost/api/activity/demo', { profile: 'office-dev', days: 2 }),
-    );
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { recorded: number; generated: number };
-    expect(body.recorded).toBe(body.generated);
-    expect(body.recorded).toBeGreaterThan(0);
-
-    const activity = await (await import('@/app/api/activity/route.js')).GET();
-    const ab = (await activity.json()) as { raw: unknown[]; aggregates: unknown[] };
-    expect(ab.aggregates.length).toBeGreaterThan(0);
-  }, 30_000);
-
   it('显式偏好写入真实 OperationMemoryStore，可被 GET 读到', async () => {
     const r = await operations.POST(
       jsonReq('http://localhost/api/operations', {

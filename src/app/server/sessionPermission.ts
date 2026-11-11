@@ -21,10 +21,10 @@
  *   也不承诺“工作区内执行”却实际可逃逸。`full` 只影响文件工具的路径范围。
  *
  * ★ 逐次确认：
- *   · Web 调用方声明 `supportsApproval:true` 时，normal/highRisk 会弹确认；
- *   · 没有确认通道的客户端（桌宠、直接调用）拿不到 asker，框架回退到
- *     `policy.ask()`：normal 按会话档位授权（显式选择 workspace 即授权写），
- *     **highRisk 一律拒绝**（没有确认通道就不静默执行高风险动作）；
+ *   · confirmActions=true 且 Web 调用方声明 supportsApproval 时，normal/highRisk 弹确认；
+ *   · confirmActions=false 时，ask() 按会话档位直接放行 normal/highRisk；
+ *   · 没有确认通道且 confirmActions=true 的客户端回退到 ask()：
+ *     normal 按档位授权，highRisk 拒绝；
  *   · dangerous 在更早的 tier 门禁被拒，不会到达 ask。
  */
 
@@ -44,9 +44,11 @@ export class SessionPermissionPolicy implements PermissionPolicy {
   /** 供 ToolFramework 做档位拦截；与全局策略的 mode 同一套语义。 */
   readonly mode: PermissionMode;
   readonly permission: SessionPermission;
+  readonly confirmActions: boolean;
 
-  constructor(permission: SessionPermission) {
+  constructor(permission: SessionPermission, confirmActions = true) {
     this.permission = permission;
+    this.confirmActions = confirmActions;
     this.mode =
       permission === 'full' ? 'full' : permission === 'workspace' ? 'workspace' : 'view';
   }
@@ -79,6 +81,13 @@ export class SessionPermissionPolicy implements PermissionPolicy {
     readonly summary: string;
     readonly preview?: string;
   }): Promise<Exclude<Authorization, 'blocked'>> {
+    if (!this.isTierEnabled(request.tier)) return 'deny';
+    /**
+     * 关闭确认后，按当前会话档位的真实能力直接执行。
+     * 例如 full 下的 highRisk（移动/桌面操作）会放行；
+     * view/workspace 下未开启的 highRisk 仍被档位拒绝。
+     */
+    if (!this.confirmActions) return 'allow';
     if (request.tier === 'normal') return 'allow';
     return 'deny';
   }

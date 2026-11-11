@@ -13,7 +13,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { desktopTools } from '../builtin/desktop.js';
+import { desktopFacadeTools, desktopTools } from '../builtin/desktop.js';
 import type { DesktopBridgePort } from '../../desktop/port.js';
 import type { OperationMemoryStore } from '../../memory/operations.js';
 
@@ -762,5 +762,36 @@ describe('desktop_screenshot', () => {
     //   ① 说了"整个屏幕 / 所有窗口" ② 说了"私人/无关内容也会进来"
     expect(text).toMatch(/整个屏幕|所有窗口/);
     expect(text).toMatch(/私人|无关/);
+  });
+});
+
+describe('桌面工具收敛 · observe / act', () => {
+  it('把底层工具收敛成两个入口', () => {
+    const facade = desktopFacadeTools(desktopTools(fakeBridge(), ALL_CAPS));
+    expect(facade.map((s) => s.name)).toEqual(['desktop_observe', 'desktop_act']);
+  });
+
+  it('观察默认只读，截图是高风险', () => {
+    const facade = desktopFacadeTools(desktopTools(fakeBridge(), ALL_CAPS));
+    const observe = facade.find((s) => s.name === 'desktop_observe');
+    if (!observe?.tierForArgs) throw new Error('缺少分级');
+    expect(observe.tierForArgs({ action: 'list_windows' })).toBe('readOnly');
+    expect(observe.tierForArgs({ action: 'screenshot' })).toBe('highRisk');
+  });
+
+  it('操作分发到真实 UIA 工具', async () => {
+    const facade = desktopFacadeTools(desktopTools(fakeBridge(), ALL_CAPS));
+    const act = facade.find((s) => s.name === 'desktop_act');
+    if (!act) throw new Error('缺少 act');
+    const r = await act.execute(
+      {
+        action: 'invoke',
+        operation: 'invoke',
+        window: '记事本',
+        name: '保存',
+      },
+      {} as never,
+    );
+    expect(r.ok).toBe(true);
   });
 });

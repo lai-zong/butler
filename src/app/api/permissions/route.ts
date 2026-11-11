@@ -1,4 +1,4 @@
-/** C5 三档权限设置：读取与切换；切换立即持久化。 */
+/** C5 三档权限 + 确认开关：读取与切换；每次切换立即持久化。 */
 
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
@@ -14,6 +14,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json({
     ok: true,
     mode: rt.permissionPolicy.mode ?? null,
+    confirmActions: rt.permissionPolicy.confirmActions,
     legacy: rt.permissionPolicy.mode === undefined,
   });
 }
@@ -25,14 +26,42 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
   } catch {
     return NextResponse.json({ error: '请求体不是合法 JSON' }, { status: 400 });
   }
-  const mode = (body as { mode?: unknown } | null)?.mode;
-  if (!isPermissionMode(mode)) {
+
+  const record =
+    body !== null && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const modeRaw = record['mode'];
+  const confirmRaw = record['confirmActions'];
+
+  if (modeRaw === undefined && confirmRaw === undefined) {
+    return NextResponse.json(
+      { error: '至少提供 mode 或 confirmActions' },
+      { status: 400 },
+    );
+  }
+  if (modeRaw !== undefined && !isPermissionMode(modeRaw)) {
     return NextResponse.json(
       { error: 'mode 只能是 view / workspace / full' },
       { status: 400 },
     );
   }
+  if (confirmRaw !== undefined && typeof confirmRaw !== 'boolean') {
+    return NextResponse.json(
+      { error: 'confirmActions 必须是布尔值' },
+      { status: 400 },
+    );
+  }
+
   const rt = await getRuntime();
-  await rt.setPermissionMode(mode);
-  return NextResponse.json({ ok: true, mode });
+  await rt.setPermissionSettings({
+    ...(modeRaw !== undefined ? { mode: modeRaw } : {}),
+    ...(confirmRaw !== undefined ? { confirmActions: confirmRaw } : {}),
+  });
+
+  return NextResponse.json({
+    ok: true,
+    mode: rt.permissionPolicy.mode ?? null,
+    confirmActions: rt.permissionPolicy.confirmActions,
+  });
 }

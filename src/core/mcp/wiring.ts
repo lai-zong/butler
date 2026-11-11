@@ -277,7 +277,15 @@ export async function wireMcpServers(args: WireMcpArgs): Promise<WireMcpResult> 
 
     // ③ 取工具并注册（**这一步以前从未发生**）
     try {
-      const specs = args.mcp.toToolSpecs();
+      /**
+       * ⚠️ 只取**本次这个 server** 的工具。
+       *
+       *   这里原来调的是 `toToolSpecs()` —— 它返回所有已连接 server 的工具。
+       *   第 2 个 server 连接时，第 1 个的工具已在框架里注册过，
+       *   `register` 遇到重名直接抛错 → 整批注册失败 → 被记成"取工具失败"。
+       *   实测后果：配两个以上 MCP server 时，第二个起一个工具都注册不上。
+       */
+      const specs = args.mcp.toToolSpecsOf(cfg.id);
       if (specs.length > 0) {
         args.tools.registerAll(specs);
         toolsRegistered += specs.length;

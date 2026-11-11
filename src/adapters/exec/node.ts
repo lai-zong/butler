@@ -16,6 +16,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -24,6 +26,28 @@ import {
   type ExecRequest,
   type ExecResult,
 } from '../../core/ports/exec.js';
+
+/**
+ * `target` 是否真的在 `root` 之内（含 root 本身）。
+ *
+ * ⚠️ 旧实现是 `!req.cwd.startsWith(this.cwdRoot)`，两个洞：
+ *   ① 前缀比较不看目录边界：`…\butler-ai-evil` 与 `…\butler-ai` 前缀相同 → 放行；
+ *   ② 不做 `resolve`：`…\butler-ai\..\..\Windows\System32` 照样通过。
+ * 实测：兄弟目录与 `..` 回溯都能在"工作区"之外执行命令。
+ */
+function inside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+/** realpath 失败（路径不存在等）时退回原值 —— 判定仍由 resolve 后的路径完成。 */
+async function safeReal(p: string): Promise<string> {
+  try {
+    return await realpath(p);
+  } catch {
+    return p;
+  }
+}
 
 export interface NodeExecOptions {
   /**
@@ -39,7 +63,13 @@ export interface NodeExecOptions {
   readonly cwdRoot?: string;
 }
 
-const DEFAULT_ENV_WHITELIST: readonly string[] = [
+/**
+ * 子进程环境白名单 —— **只给系统必需项**。
+ *
+ * ⚠️ 任何 spawn 子进程的地方都应复用这份，而不是 `{ ...process.env }`：
+ *    后者会把 `DEEPSEEK_API_KEY` 等密钥一起交给子进程（以及被 exploit 的解析器）。
+ */
+export const DEFAULT_ENV_WHITELIST: readonly string[] = [
   'PATH',
   'Path',
   'PATHEXT',
@@ -74,8 +104,22 @@ export class NodeExec implements ExecPort {
     if (!req.cwd || req.cwd.trim().length === 0) {
       throw new ExecError('必须给出工作目录', 'INVALID_REQUEST');
     }
-    if (this.cwdRoot !== undefined && !req.cwd.startsWith(this.cwdRoot)) {
-      throw new ExecError(`工作目录必须在 ${this.cwdRoot} 之下`, 'INVALID_REQUEST');
+    if (this.cwdRoot !== undefined) {
+      const root = resolve(this.cwdRoot);
+      const target = resolve(req.cwd);
+      if (!inside(root, target)) {
+        throw new ExecError(`工作目录必须在 ${this.cwdRoot} 之下`, 'INVALID_REQUEST');
+      }
+      // ★ 再按真实路径判一次：工作区里放一个指向外部的符号链接/junction 时，
+      //   字面路径在内、真实路径在外 —— 只比字面等于没判。
+      const realRoot = await safeReal(root);
+      const realTarget = await safeReal(target);
+      if (!inside(realRoot, realTarget)) {
+        throw new ExecError(
+          `工作目录的真实路径 ${realTarget} 不在 ${realRoot} 之下（符号链接逃逸）`,
+          'INVALID_REQUEST',
+        );
+      }
     }
 
     const maxBytes = req.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -111,8 +155,18 @@ export class NodeExec implements ExecPort {
         return;
       }
 
-      let stdout = '';
-      let stderr = '';
+      /**
+       * ★ 输出按 **Buffer** 累积，最后一次性解码。
+       *
+       *   旧实现 `chunk.toString('utf8')` 逐块解码：一个 3 字节的汉字
+       *   被 chunk 边界切开时，两半都会解成 U+FFFD（实测 12 万字符里出现 6 个）。
+       *   而且上限比较用的是 `stdout.length`（字符数）对 `maxBytes`（字节数），
+       *   中文会被少截一半。改成按字节累积、结束再解码，两个问题一起消失。
+       */
+      const outChunks: Buffer[] = [];
+      const errChunks: Buffer[] = [];
+      let outBytes = 0;
+      let errBytes = 0;
       let truncated = false;
       let timedOut = false;
       let settled = false;
@@ -123,19 +177,20 @@ export class NodeExec implements ExecPort {
       }, req.timeoutMs);
 
       const collect = (chunk: Buffer, into: 'out' | 'err'): void => {
-        const text = chunk.toString('utf8');
-        if (into === 'out') {
-          if (stdout.length + text.length > maxBytes) {
-            stdout += text.slice(0, Math.max(0, maxBytes - stdout.length));
-            truncated = true;
-          } else {
-            stdout += text;
-          }
-        } else if (stderr.length + text.length > maxBytes) {
-          stderr += text.slice(0, Math.max(0, maxBytes - stderr.length));
+        const used = into === 'out' ? outBytes : errBytes;
+        const remaining = maxBytes - used;
+        if (remaining <= 0) {
           truncated = true;
+          return;
+        }
+        const slice = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
+        if (slice.length < chunk.length) truncated = true;
+        if (into === 'out') {
+          outChunks.push(slice);
+          outBytes += slice.length;
         } else {
-          stderr += text;
+          errChunks.push(slice);
+          errBytes += slice.length;
         }
       };
 
@@ -156,16 +211,23 @@ export class NodeExec implements ExecPort {
         resolveP({
           // 被信号杀死时 code 为 null，用 -1 表示
           exitCode: typeof code === 'number' ? code : -1,
-          stdout,
-          stderr,
+          stdout: Buffer.concat(outChunks).toString('utf8'),
+          stderr: Buffer.concat(errChunks).toString('utf8'),
           timedOut,
           truncated,
           durationMs: Date.now() - started,
         });
       });
 
-      if (req.stdin !== undefined && child.stdin) {
-        child.stdin.write(req.stdin);
+      /**
+       * ★ stdin 必须**无条件**关闭。
+       *
+       *   旧写法只在传了 `stdin` 时才 end：任何读 stdin 直到 EOF 的命令
+       *   （`node -e` 里监听 end、`cat`、`sort` …）会一直等下去，
+       *   直到 timeoutMs 被杀。实测：不传 stdin 时该命令 timedOut=true。
+       */
+      if (child.stdin) {
+        if (req.stdin !== undefined) child.stdin.write(req.stdin);
         child.stdin.end();
       }
     });

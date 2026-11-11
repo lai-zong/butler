@@ -42,6 +42,8 @@ export interface ScopeDefaults {
  */
 export interface RuntimeScopeSource {
   readonly workspaceRoot?: string | undefined;
+  /** 程序安装根（**不是**工作区）。受保护路径判定要用它。 */
+  readonly appRoot?: string | undefined;
   readonly dataDir?: string | undefined;
   readonly permissionPolicy?: { readonly mode?: PermissionMode | undefined } | undefined;
 }
@@ -93,6 +95,19 @@ export function scopeDefaultsOf(rt?: RuntimeScopeSource | null): ScopeDefaults {
       : appWorkspaceRoot();
   const mode = rt?.permissionPolicy?.mode;
   return { workspace, permission: sessionPermissionFromMode(mode) };
+}
+
+/**
+ * 程序安装根：优先用运行时的值，测试/独立脚本回退到 `process.cwd()`。
+ *
+ * ⚠️ 与 `scopeDefaultsOf().workspace` **不是一回事**：
+ *   工作区是用户可以改的默认目录，安装根是 `.env.local` / `config/` 所在处。
+ *   把两者混用会让受保护路径判定落在错误的前缀上（实测：PATCH 接受 `config/`）。
+ */
+export function appRootOf(rt?: RuntimeScopeSource | null): string {
+  return typeof rt?.appRoot === 'string' && rt.appRoot.trim().length > 0
+    ? resolve(rt.appRoot)
+    : appInstallRoot();
 }
 
 /** 应用数据目录：优先用运行时实际使用的值，测试/独立脚本回退到 env。 */

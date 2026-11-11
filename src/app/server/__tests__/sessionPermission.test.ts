@@ -46,6 +46,14 @@ describe('SessionPermissionPolicy（每个会话独立、不可变）', () => {
     await expect(ask(new SessionPermissionPolicy('read-only'), 'readOnly')).resolves.toBe('deny');
   });
 
+  it('关闭确认：按档位直接放行，dangerous 仍拒绝', async () => {
+    await expect(ask(new SessionPermissionPolicy('full', false), 'highRisk')).resolves.toBe('allow');
+    await expect(ask(new SessionPermissionPolicy('workspace', false), 'normal')).resolves.toBe('allow');
+    // highRisk 在 workspace 档仍被档位门禁挡住
+    await expect(ask(new SessionPermissionPolicy('workspace', false), 'highRisk')).resolves.toBe('deny');
+    await expect(ask(new SessionPermissionPolicy('read-only', false), 'normal')).resolves.toBe('deny');
+  });
+
   it('两个实例互不影响（不共享可变 mode）', () => {
     const a = new SessionPermissionPolicy('read-only');
     const b = new SessionPermissionPolicy('full');

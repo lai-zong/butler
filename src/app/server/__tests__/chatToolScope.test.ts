@@ -156,7 +156,7 @@ describe('② read-only：写 / 删 / 命令都不可用', () => {
       execute(scope, 'write_file', { path: 'new.txt', content: 'x' }),
     ).rejects.toThrow(/只读/);
     await expect(
-      execute(scope, 'remove_path', { path: 'keep.txt' }),
+      execute(scope, 'file_op', { action: 'remove', path: 'keep.txt' }),
     ).rejects.toThrow(/只读/);
     await expect(
       execute(scope, 'run_command', { command: 'node', args: ['--version'] }),
@@ -199,11 +199,11 @@ describe('③ workspace：普通读写成功，工作区外/受保护路径拒�
     ).rejects.toThrow(/工作区权限拒绝/);
   });
 
-  it('highRisk（move_path）在 workspace 档不开放', async () => {
+  it('highRisk（file_op move）在 workspace 档不开放', async () => {
     await writeFile(join(wsA, 'a.txt'), 'a', 'utf8');
     const scope = await scopeFor(wsA, 'workspace');
     await expect(
-      execute(scope, 'move_path', { from: 'a.txt', to: 'b.txt' }),
+      execute(scope, 'file_op', { action: 'move', from: 'a.txt', to: 'b.txt' }),
     ).rejects.toThrow(/未开启该档位|权限模式 workspace/);
   });
 
@@ -315,13 +315,15 @@ describe('④ full：工作区外可用，但受保护路径/高风险确认仍�
       }),
     ).rejects.toThrow(/受保护/);
     await expect(
-      execute(scope, 'move_path', {
+      execute(scope, 'file_op', {
+        action: 'move',
         from: 'move-me.txt',
         to: join(dataDir, 'stolen.txt'),
       }),
     ).rejects.toThrow(/受保护/);
     await expect(
-      execute(scope, 'move_path', {
+      execute(scope, 'file_op', {
+        action: 'move',
         from: 'move-me.txt',
         to: join(configDir, 'AGENTS.md'),
       }),
@@ -333,8 +335,8 @@ describe('④ full：工作区外可用，但受保护路径/高风险确认仍�
     const scope = await scopeFor(wsA, 'full');
     await expect(
       scope.tools.execute({
-        toolName: 'move_path',
-        args: { from: 'move-me.txt', to: 'moved.txt' },
+        toolName: 'file_op',
+        args: { action: 'move', from: 'move-me.txt', to: 'moved.txt' },
         taskId: 'task-1',
       }),
     ).rejects.toThrow(/用户拒绝/);
@@ -342,9 +344,9 @@ describe('④ full：工作区外可用，但受保护路径/高风险确认仍�
 
   it('危险档位在 full 下仍被拒绝', async () => {
     const scope = await scopeFor(wsA, 'full');
-    // remove_path 是 dangerous：ToolFramework 的硬底线，不随 full 放开
+    // file_op remove 是 dangerous：ToolFramework 的硬底线，不随 full 放开
     await expect(
-      execute(scope, 'remove_path', { path: 'anything.txt' }),
+      execute(scope, 'file_op', { action: 'remove', path: 'anything.txt' }),
     ).rejects.toThrow(/危险|禁用|档位/);
   });
 

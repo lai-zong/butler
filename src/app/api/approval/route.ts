@@ -9,7 +9,7 @@
  *   两者不在同一个闭包里，只能靠 `core/tools/approval.ts` 的按 id 登记表接上。
  *
  * ⚠️ 答复只对**当前挂着的那一条**有效：
- *   id 已经答复过、超时了、或流已经结束（被 `denyAllPending` 清掉）都会返回 404，
+ *   id 已经答复过，或本轮流已经结束（被本轮 asker 的 denyAll 清掉）都会返回 409，
  *   不会"补答"一个已经作废的请求。
  */
 
@@ -40,12 +40,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const accepted = resolveApproval(id, body.allow);
   if (!accepted) {
     /**
-     * ⚠️ 找不到 = 已经答复过 / 已超时 / 流已结束。
+     * ⚠️ 找不到 = 已经答复过 / 本轮流已结束。
      *    返回 409 而不是 200：让调用方知道"这一答复没有生效"，
      *    否则界面会以为成功，而工具那边其实已经按"拒绝"走了。
      */
     return NextResponse.json(
-      { error: '该确认请求已失效（可能已答复、已超时或本轮已结束）', pending: pendingApprovalCount() },
+      { error: '该确认请求已失效（可能已答复或本轮已结束）', pending: pendingApprovalCount() },
       { status: 409 },
     );
   }

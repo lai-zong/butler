@@ -5,4 +5,3 @@ export * from './validate.js';
 export * from './agentLoop.js';
 export * from './builtin/file.js';
 export * from './builtin/exec.js';
-export * from './builtin/report.js';

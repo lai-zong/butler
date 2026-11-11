@@ -191,6 +191,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       const active = activate && chatModel !== undefined
         ? { profileId: profile.id, modelId: chatModel.id }
         : store.active;
+      /**
+       * ★ 重建运行时之前必须确认没有对话在跑。
+       *
+       *   否则旧轮次会继续往**旧** EventLog 追加事件，而新实例从磁盘重读，
+       *   两套 seq 撞号 → 正是 A 批修掉的那类"静默丢历史"。
+       *   同文件里 clear-memory / set-memory / switch 早就有这道校验，这里补上。
+       */
+      if (activate) {
+        const rt = await getRuntime();
+        if (rt.activeTurns > 0) {
+          return NextResponse.json(
+            { error: '有对话正在执行，等这一轮结束后再启用新模型。' },
+            { status: 409 },
+          );
+        }
+      }
       await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat: store.lastChat, lastReview: store.lastReview, embedding: store.embedding });
       if (activate) await resetRuntime();
       return NextResponse.json({ ok: true, profile: await profileView(profile), active });
@@ -234,6 +250,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         profiles.some((p) => p.id === choice.profileId && p.models.some((m) => m.id === choice.modelId && m.kind === 'chat'));
       const lastChat = hasChat(store.lastChat) ? store.lastChat : active;
       const lastReview = hasChat(store.lastReview) ? store.lastReview : null;
+      /**
+       * ★ 这条分支最后会 `resetRuntime()`：先确认没有对话在跑。
+       *   否则旧轮次继续写旧 EventLog，与新实例的 seq 撞号（会静默丢事件）。
+       *   校验放在**写盘之前** —— 忙的时候不该留下半套配置。
+       */
+      {
+        const rt = await getRuntime();
+        if (rt.activeTurns > 0) {
+          return NextResponse.json(
+            { error: '有对话正在执行，等这一轮结束后再修改模型配置。' },
+            { status: 409 },
+          );
+        }
+      }
       await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding: store.embedding });
       const knowledge = await loadKnowledgeConfig(DATA_DIR);
       const embedding = knowledge.embedding;
@@ -274,7 +304,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (existing === undefined) {
       return NextResponse.json({ error: '找不到这个模型配置' }, { status: 404 });
     }
-    await deleteProfileSecret(existing);
     const profiles = store.profiles.filter((p) => p.id !== id);
     const firstChat = profiles
       .flatMap((p) => p.models.filter((m) => m.kind === 'chat').map((m) => ({ profileId: p.id, modelId: m.id })))[0] ?? null;
@@ -287,6 +316,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const embedding = store.embedding.kind === 'profile' && store.embedding.profileId === id
       ? DEFAULT_EMBEDDING_ROLE
       : store.embedding;
+    /**
+     * ★ 同 update-profile：这条分支结尾也会 resetRuntime，先确认空闲。
+     *   放在删密钥、写盘之前 —— 忙的时候连删除都不该发生。
+     */
+    {
+      const rt = await getRuntime();
+      if (rt.activeTurns > 0) {
+        return NextResponse.json(
+          { error: '有对话正在执行，等这一轮结束后再删除模型配置。' },
+          { status: 409 },
+        );
+      }
+    }
+    await deleteProfileSecret(existing);
     await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding });
     const roles = await loadModelRoles(DATA_DIR);
     if (roles.memory?.profileId === id || roles.rerank?.profileId === id) {

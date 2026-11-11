@@ -21,7 +21,11 @@ async function tempDir(): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(
+    dirs.splice(0).map((dir) =>
+      rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+    ),
+  );
 });
 
 describe('知识库检索配置', () => {
@@ -67,7 +71,12 @@ describe('知识库检索配置', () => {
 });
 
 describe('KnowledgeService 字面模式', () => {
-  it('不加载语义模型也能列出文档并检索', async () => {
+  /**
+   * 这条测试会触发一次本地语义模型探测：模型不存在时回退字面检索。
+   * 首次加载/探测在冷启动下可能超过 Vitest 默认的 5 秒；
+   * 给它单独 15 秒，不放大整个测试套件的超时阈值。
+   */
+  it('不加载语义模型也能列出文档并检索', { timeout: 15_000 }, async () => {
     const dir = await tempDir();
     const store = new DocumentStore(join(dir, 'documents'));
     await store.ingest({ name: '合同.txt', text: '付款条款：验收后三十天内付款。' });

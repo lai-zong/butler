@@ -2,8 +2,8 @@
  * 询问通道测试（C6）
  *
  * ★ 这一层的核心不是"能问"，而是**问不到时怎么走**：
- *   用户不响应、客户端关了、id 已作废 —— 三种情况都必须**拒绝**。
- *   任何一条走了"放行"，就是安全漏洞。
+ *   用户不响应不会自动放行，也不会自动拒绝；客户端关了必须拒绝。
+ *   任何一条走了"静默放行"，就是安全漏洞。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,19 +55,41 @@ describe('SseApprovals —— 正常答复', () => {
 });
 
 describe('★★★ 问不到的时候必须拒绝（fail-closed）', () => {
-  it('★★ 超时未答复 → 拒绝', async () => {
+  it('★★ 不设超时：时间过去仍等待，用户答复后才收敛', async () => {
     vi.useFakeTimers();
     try {
-      const asker = new SseApprovals({ emit: () => undefined, timeoutMs: 1000 });
+      const sent: ApprovalRequest[] = [];
+      const asker = new SseApprovals({ emit: (r) => sent.push(r) });
       const pending = asker.request(REQ);
       expect(pendingApprovalCount()).toBe(1);
 
-      vi.advanceTimersByTime(1001);
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+      expect(pendingApprovalCount()).toBe(1);
+
+      resolveApproval(sent[0]!.id, false);
       await expect(pending).resolves.toBe(false);
       expect(pendingApprovalCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('★★ 一个 asker 收尾不误伤另一个会话的 pending', async () => {
+    const aSent: ApprovalRequest[] = [];
+    const bSent: ApprovalRequest[] = [];
+    const a = new SseApprovals({ emit: (r) => aSent.push(r) });
+    const b = new SseApprovals({ emit: (r) => bSent.push(r) });
+    const pa = a.request(REQ);
+    const pb = b.request(REQ);
+    expect(pendingApprovalCount()).toBe(2);
+
+    expect(a.denyAll()).toBe(1);
+    await expect(pa).resolves.toBe(false);
+    expect(pendingApprovalCount()).toBe(1);
+
+    resolveApproval(bSent[0]!.id, true);
+    await expect(pb).resolves.toBe(true);
+    expect(pendingApprovalCount()).toBe(0);
   });
 
   it('★★ 流结束（denyAllPending）→ 全部拒绝', async () => {

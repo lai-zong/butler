@@ -140,7 +140,7 @@ describe('命令执行 · 分级为 highRisk', () => {
     fw.register(execTool(exec, '/work'));
 
     await expect(
-      fw.execute({ toolName: 'remove_path', args: { path: 'a.txt' }, taskId: 't' }),
+      fw.execute({ toolName: 'file_op', args: { action: 'remove', path: 'a.txt' }, taskId: 't' }),
     ).rejects.toThrow(/默认禁用/);
     expect(await fs.exists('a.txt')).toBe(true);
     expect(policy.asked).toHaveLength(0);

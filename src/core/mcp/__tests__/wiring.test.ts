@@ -41,16 +41,27 @@ function setup(opts?: { connectOk?: boolean; addOk?: boolean; tools?: readonly T
     calls.push(`connect:${id}`);
     return opts?.connectOk === false ? { ok: false, reason: '进程启动失败' } : { ok: true };
   });
+  /**
+   * ⚠️ 接线层现在调 `toToolSpecsOf(serverId)` 而不是 `toToolSpecs()`。
+   *
+   *   原因（实测 bug）：`toToolSpecs()` 返回**所有已连接** server 的工具，
+   *   第二个 server 注册时会与第一个的工具重名，register 直接抛错。
+   *   假客户端也要跟着区分，否则测的是已经不存在的调用方式。
+   */
   const toToolSpecs = vi.fn(() => {
     calls.push('toToolSpecs');
     return opts?.tools ?? [{ name: 'mcp__alpha__echo' } as unknown as ToolSpec];
   });
+  const toToolSpecsOf = vi.fn((serverId: string | undefined) => {
+    calls.push(`toToolSpecsOf:${serverId ?? 'all'}`);
+    return opts?.tools ?? [{ name: `mcp__${serverId ?? 'alpha'}__echo` } as unknown as ToolSpec];
+  });
 
-  const mcp = { registerTransport, addServer, connect, toToolSpecs } as unknown as McpClient;
+  const mcp = { registerTransport, addServer, connect, toToolSpecs, toToolSpecsOf } as unknown as McpClient;
   const registerAll = vi.fn();
   const tools = { registerAll };
 
-  return { log, clock, mcp, tools, calls, registerTransport, addServer, connect, toToolSpecs, registerAll };
+  return { log, clock, mcp, tools, calls, registerTransport, addServer, connect, toToolSpecs, toToolSpecsOf, registerAll };
 }
 
 function cfg(id: string, enabled = true): McpServerConfig {
@@ -76,7 +87,7 @@ describe('★★★ 接线真的会发生', () => {
     expect(s.registerTransport).toHaveBeenCalledTimes(1);
     expect(s.addServer).toHaveBeenCalledTimes(1);
     expect(s.connect).toHaveBeenCalledWith('alpha');
-    expect(s.toToolSpecs).toHaveBeenCalled();
+    expect(s.toToolSpecsOf).toHaveBeenCalledWith('alpha');
     // ★ 工具真的进了工具框架
     expect(s.registerAll).toHaveBeenCalledTimes(1);
     expect(r.toolsRegistered).toBe(1);
@@ -95,7 +106,7 @@ describe('★★★ 接线真的会发生', () => {
       'registerTransport:stdio',
       'addServer:alpha',
       'connect:alpha',
-      'toToolSpecs',
+      'toToolSpecsOf:alpha',
     ]);
   });
 
@@ -146,6 +157,34 @@ describe('★★ 失败隔离（外部进程挂掉是常态）', () => {
     });
     expect(r.connected).toEqual(['alpha']);
     expect(r.failed.map((f) => f.id)).toEqual(['beta']);
+  });
+
+  it('★★ 两个 server 都能注册上（旧实现第二个必失败）', async () => {
+    /**
+     * 旧实现每个 server 连上都调 `toToolSpecs()` —— 它返回**所有已连接** server 的工具。
+     * 第二个 server 注册时第一个的工具已存在，`register` 遇重名抛错，
+     * 整批注册失败，还被误记成"取工具失败"。
+     */
+    const s = setup();
+    const specOf = (id: string) => [{ name: `mcp__${id}__echo` } as unknown as ToolSpec];
+    (s.mcp as unknown as { toToolSpecsOf: (id?: string) => readonly ToolSpec[] }).toToolSpecsOf =
+      (id?: string) => (id === undefined ? [] : specOf(id));
+
+    const r = await wireMcpServers({
+      mcp: s.mcp,
+      tools: s.tools,
+      configs: [cfg('alpha'), cfg('beta')],
+    });
+
+    expect(r.connected).toEqual(['alpha', 'beta']);
+    expect(r.failed).toEqual([]);
+    expect(r.skipped).toEqual([]);
+    expect(r.toolsRegistered).toBe(2);
+    expect(s.registerAll).toHaveBeenCalledTimes(2);
+    expect(s.registerAll.mock.calls.map((c) => (c[0] as readonly ToolSpec[])[0]?.name)).toEqual([
+      'mcp__alpha__echo',
+      'mcp__beta__echo',
+    ]);
   });
 
   it('★ 禁用（enabled=false）的 server 不连接，计入 skipped', async () => {

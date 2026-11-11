@@ -769,3 +769,146 @@ export function desktopTools(
   out.push(experienceTool(ops));
   return out.map((s) => (s.rung !== undefined ? withMemory(s, ops) : s));
 }
+
+/**
+ * 把 8 个桌面工具收成两个用户可见入口：
+ *   desktop_observe —— 观察（窗口/控件/截图/等待/经验）
+ *   desktop_act     —— 操作（点击/设值/Office 转换）
+ *
+ * ⚠️ 底层 ToolSpec 仍各自保留：能力探测、rung、记忆装饰不变。
+ *    这里只做动作分发和参数级分级，不改变实际执行器。
+ */
+export function desktopFacadeTools(tools: readonly ToolSpec[]): readonly ToolSpec[] {
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  const observe: ToolSpec = {
+    name: 'desktop_observe',
+    description:
+      '观察桌面：list_windows 列窗口；read_ui 读控件树；screenshot 截图；' +
+      'wait_for 等待窗口/控件；experience 查历史操作经验。只读。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list_windows', 'read_ui', 'screenshot', 'wait_for', 'experience'],
+        },
+        window: { type: 'string', description: '窗口标题的一部分' },
+        name: { type: 'string', description: '控件名（精确匹配）' },
+        controlType: { type: 'string', description: '限定控件类型，用于消歧' },
+        limit: { type: 'number', description: 'list_windows 最多返回多少窗口' },
+        depth: { type: 'number', description: 'read_ui 导出树的最大深度' },
+        max: { type: 'number', description: 'read_ui 最多返回多少控件' },
+        path: { type: 'string', description: 'screenshot 的保存路径' },
+        timeoutMs: { type: 'number', description: 'wait_for 最长等待毫秒数' },
+        pollMs: { type: 'number', description: 'wait_for 轮询间隔毫秒数' },
+        task: { type: 'string', description: 'experience 要查的任务' },
+        app: { type: 'string', description: 'experience 的目标应用' },
+      },
+      required: ['action'],
+    },
+    tier: 'readOnly',
+    tierForArgs: (args) =>
+      (args as { action?: unknown } | null)?.action === 'screenshot' ? 'highRisk' : 'readOnly',
+    summarize: (args) => {
+      const a = args as { action?: unknown; window?: unknown; path?: unknown };
+      if (a.action === 'screenshot') return `截图 ${String(a.path ?? '')}`;
+      if (a.action === 'read_ui') return `读取界面 ${String(a.window ?? '')}`;
+      if (a.action === 'wait_for') return `等待窗口 ${String(a.window ?? '')}`;
+      if (a.action === 'experience') return '查桌面操作经验';
+      return '列出桌面窗口';
+    },
+    async execute(args, ctx) {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const action = String(a['action'] ?? '');
+      const map: Record<string, string> = {
+        list_windows: 'desktop_list_windows',
+        read_ui: 'desktop_uia_read',
+        screenshot: 'desktop_screenshot',
+        wait_for: 'desktop_wait_for',
+        experience: 'desktop_experience',
+      };
+      const name = map[action];
+      const target = name !== undefined ? byName.get(name) : undefined;
+      if (target === undefined) {
+        return { ok: false, output: `桌面观察动作不可用：${action}`, isError: true, durationMs: 0 };
+      }
+      const rest = { ...a };
+      delete rest['action'];
+      return target.execute(rest, ctx);
+    },
+  };
+
+  const act: ToolSpec = {
+    name: 'desktop_act',
+    description:
+      '操作桌面：invoke 点击/切换控件（operation=toggle/select/invoke/expand/collapse）；' +
+      'set_value 给输入框设值；convert_office 把 Word 转 PDF。高风险动作会要求确认。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['invoke', 'set_value', 'convert_office'] },
+        window: { type: 'string', description: '窗口标题的一部分' },
+        name: { type: 'string', description: '控件名（精确匹配）' },
+        operation: {
+          type: 'string',
+          enum: ['toggle', 'select', 'invoke', 'expand', 'collapse'],
+          description: 'invoke 的具体操作类型',
+        },
+        controlType: { type: 'string', description: '限定控件类型，用于消歧' },
+        value: { type: 'string', description: 'set_value 要填入的文本' },
+        source: { type: 'string', description: 'convert_office 源 .doc/.docx 路径' },
+        target: { type: 'string', description: 'convert_office 目标 .pdf 路径' },
+      },
+      required: ['action'],
+    },
+    tier: 'highRisk',
+    tierForArgs: (args) =>
+      (args as { action?: unknown } | null)?.action === 'convert_office' ? 'normal' : 'highRisk',
+    summarize: (args) => {
+      const a = args as {
+        action?: unknown;
+        window?: unknown;
+        name?: unknown;
+        source?: unknown;
+        target?: unknown;
+      };
+      if (a.action === 'convert_office') return `转换 Office ${String(a.source ?? '')}`;
+      if (a.action === 'set_value') return `设置 ${String(a.window ?? '')} / ${String(a.name ?? '')}`;
+      return `操作 ${String(a.window ?? '')} / ${String(a.name ?? '')}`;
+    },
+    async execute(args, ctx) {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const action = String(a['action'] ?? '');
+      const map: Record<string, string> = {
+        invoke: 'desktop_uia_invoke',
+        set_value: 'desktop_uia_set_value',
+        convert_office: 'desktop_office_convert',
+      };
+      const name = map[action];
+      const target = name !== undefined ? byName.get(name) : undefined;
+      if (target === undefined) {
+        return { ok: false, output: `桌面操作动作不可用：${action}`, isError: true, durationMs: 0 };
+      }
+      const rest = { ...a };
+      delete rest['action'];
+      if (action === 'invoke' && typeof rest['operation'] === 'string') {
+        rest['action'] = rest['operation'];
+      }
+      delete rest['operation'];
+      return target.execute(rest, ctx);
+    },
+  };
+
+  const out: ToolSpec[] = [];
+  if (byName.has('desktop_list_windows') || byName.has('desktop_uia_read') || byName.has('desktop_screenshot')) {
+    out.push(observe);
+  }
+  if (
+    byName.has('desktop_uia_invoke') ||
+    byName.has('desktop_uia_set_value') ||
+    byName.has('desktop_office_convert')
+  ) {
+    out.push(act);
+  }
+  return out;
+}

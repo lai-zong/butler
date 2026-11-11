@@ -54,6 +54,13 @@ export interface ToolFrameworkOptions {
     toolName: string,
     args: unknown,
   ) => string | null | Promise<string | null>;
+  /**
+   * 可选的任务计划门禁。
+   *
+   * 只对非只读工具生效；返回字符串则拒绝，并让模型先调用 plan_task。
+   * 这不是意图分类，而是“有副作用必须先有计划”的工具层约束。
+   */
+  readonly planGuard?: (toolName: string) => string | null;
 }
 
 export class ToolFramework {
@@ -65,6 +72,7 @@ export class ToolFramework {
   private readonly pathGuard:
     | ((toolName: string, args: unknown) => string | null | Promise<string | null>)
     | undefined;
+  private readonly planGuard: ((toolName: string) => string | null) | undefined;
   private readonly fuse: ToolFuse;
 
   /** 全量审计记录。事件日志是真相源，这里是便于查询的视图。 */
@@ -76,6 +84,7 @@ export class ToolFramework {
     this.policy = opts.policy;
     this.onAudit = opts.onAudit;
     this.pathGuard = opts.pathGuard;
+    this.planGuard = opts.planGuard;
     this.fuse = new ToolFuse(opts.fuse);
   }
 
@@ -158,9 +167,9 @@ export class ToolFramework {
     readonly asker?: ApprovalAsker;
   }): Promise<ToolResult> {
     const started = this.clock.now();
-    const spec = this.tools.get(args.toolName);
+    const baseSpec = this.tools.get(args.toolName);
 
-    if (!spec) {
+    if (!baseSpec) {
       this.finishAudit({
         toolName: args.toolName,
         tier: 'readOnly',
@@ -174,6 +183,15 @@ export class ToolFramework {
       this.emitDenied(args.toolName, args.taskId, 'unknown_tool');
       throw new ToolError(`未知工具：${args.toolName}`, 'unknown_tool');
     }
+
+    /**
+     * 同一个工具可能按参数走不同风险级别（如 file_op 的 mkdir/remove）。
+     * 在进入闸门之前解析，确保授权、审计、熔断看到的是本次动作的真实等级。
+     */
+    const spec: ToolSpec =
+      baseSpec.tierForArgs !== undefined
+        ? { ...baseSpec, tier: baseSpec.tierForArgs(args.args) }
+        : baseSpec;
 
     const guardError = (await this.pathGuard?.(spec.name, args.args)) ?? null;
     if (guardError !== null) {
@@ -189,6 +207,24 @@ export class ToolFramework {
       });
       this.emitDenied(spec.name, args.taskId, 'user_denied');
       throw new ToolError(guardError, 'user_denied');
+    }
+
+    // 副作用之前必须先有计划；只读工具与 plan_task 自己不受限制。
+    const planError: string | null =
+      spec.tier === 'readOnly' ? null : (this.planGuard?.(spec.name) ?? null);
+    if (planError !== null) {
+      this.finishAudit({
+        toolName: spec.name,
+        tier: spec.tier,
+        taskId: args.taskId,
+        argsSummary: redactArgs(args.args),
+        authorization: 'deny',
+        outcome: 'denied',
+        started,
+        outputSummary: planError,
+      });
+      this.emitDenied(spec.name, args.taskId, 'user_denied');
+      throw new ToolError(planError, 'user_denied');
     }
 
     // ① 分级是否已被用户开启

@@ -427,6 +427,8 @@ export interface SessionDto {
   readonly effectivePermission: SessionPermission;
   readonly modelProfileId?: string;
   readonly modelId?: string;
+  /** 是否为桌宠专用会话（侧栏单独分区，默认不自动选中）。 */
+  readonly isPet?: boolean;
 }
 
 export interface MessageDto {
@@ -520,6 +522,8 @@ export function toSessionDto(
     readonly scopeDefaults?: ScopeDefaults;
     /** sidecar 里的生成标题 / 置顶状态 */
     readonly display?: SessionDisplay;
+    /** 是否为桌宠专用会话。 */
+    readonly isPet?: boolean;
   } = {},
 ): SessionDto {
   const last = messages[messages.length - 1];
@@ -571,6 +575,7 @@ export function toSessionDto(
     effectivePermission,
     ...(session.modelProfileId !== undefined ? { modelProfileId: session.modelProfileId } : {}),
     ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+    ...(options.isPet === true ? { isPet: true } : {}),
   };
 }
 

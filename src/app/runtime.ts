@@ -46,6 +46,7 @@ import { loadModelRoles } from './server/modelRoles.js';
 import { limitsConfig, modelConfig } from '@/core/config/env.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
+import { webTools } from '@/core/tools/builtin/web.js';
 import { documentSearchTool } from '@/core/tools/builtin/documents.js';
 import { getKnowledgeService } from './server/knowledge.js';
 import { execTool } from '@/core/tools/builtin/exec.js';
@@ -53,9 +54,14 @@ import { NodeFileSystem } from '@/adapters/fs/node.js';
 import { NodeExec } from '@/adapters/exec/node.js';
 import { PythonDesktopBridge } from '@/adapters/desktop/pythonBridge.js';
 import { isDesktopPlatform } from '@/core/desktop/port.js';
-import { desktopTools } from '@/core/tools/builtin/desktop.js';
+import { desktopFacadeTools, desktopTools } from '@/core/tools/builtin/desktop.js';
 import { WebPermissionPolicy } from './server/permission.js';
-import { isPermissionMode, loadPermissionMode, savePermissionMode } from './server/permissionStore.js';
+import {
+  isPermissionMode,
+  loadPermissionSettings,
+  savePermissionSettings,
+  type PermissionSettings,
+} from './server/permissionStore.js';
 import { getCredentialVault } from './server/credentials.js';
 import { ActivityObserver, DEFAULT_CONSENT } from '@/core/activity/observe.js';
 import { EvolutionEngine } from '@/core/memory/evolution.js';
@@ -65,7 +71,6 @@ import type { RerankScorer } from '@/core/memory/rerank.js';
 import { LocalBgeEmbedding } from '@/adapters/embedding/localBge.js';
 import { LocalBgeReranker } from '@/adapters/rerank/localBgeReranker.js';
 import { OpenAIEmbedding } from '@/adapters/embedding/openaiEmbedding.js';
-import { replayConsent } from '@/core/activity/consent.js';
 import { reflectScheduled } from '@/core/reflection/scheduled.js';
 import { DiaryStore } from '@/core/diary/store.js';
 import { diarySummary, runDailyDiaries } from '@/core/diary/pipeline.js';
@@ -74,8 +79,6 @@ import { loadMcpConfigFile, wireMcpServers } from '@/core/mcp/wiring.js';
 import { stdioTransportFactory } from '@/adapters/mcp/stdio.js';
 import { httpTransportFactory } from '@/adapters/mcp/http.js';
 import { sseTransportFactory } from '@/adapters/mcp/sse.js';
-import type { ActivitySourcePort } from '@/core/activity/observe.js';
-import { desktopActivitySource } from '@/core/activity/desktopSource.js';
 import { createActivityRuntime, startActivityLoop, stopActivityLoop } from '@/core/activity/runtime.js';
 import type { ActivityRuntime } from '@/core/activity/runtime.js';
 import { DeepSeekStream } from '@/adapters/model/deepseekStream.js';
@@ -146,6 +149,8 @@ export interface ButlerRuntime {
   readonly dataDir: string;
   /** 应用默认工具工作区（与 `WORKSPACE_ROOT` 同源）。 */
   readonly workspaceRoot: string;
+  /** 程序安装根（与 `APP_ROOT` 同源）：`.env.local`、`config/` 在这里。 */
+  readonly appRoot: string;
   /** 主模型（文本 + 结构化 + 工具） */
   readonly model: ModelPort | null;
   /** 固定的记忆模型；不跟随对话模型切换。 */
@@ -167,6 +172,7 @@ export interface ButlerRuntime {
   readonly tools: ToolFramework;
   readonly permissionPolicy: WebPermissionPolicy;
   readonly setPermissionMode: (mode: 'view' | 'workspace' | 'full') => Promise<void>;
+  readonly setPermissionSettings: (settings: Partial<PermissionSettings>) => Promise<void>;
   /** 启动时间 */
   readonly startedAt: number;
   /** 启动摘要（供界面"已恢复 N 条记忆"展示） */
@@ -205,8 +211,28 @@ interface GlobalWithRuntime {
  */
 export function getRuntime(): Promise<ButlerRuntime> {
   const g = globalThis as GlobalWithRuntime;
-  g[GLOBAL_KEY] ??= initRuntime();
-  return g[GLOBAL_KEY];
+
+  const existing = g[GLOBAL_KEY];
+  if (existing !== undefined) return existing;
+
+  const created = initRuntime();
+  g[GLOBAL_KEY] = created;
+
+  /**
+   * ★ 初始化失败**不能**留在缓存里。
+   *
+   *   旧写法 `g[GLOBAL_KEY] ??= initRuntime()` 会把 rejected Promise 永久缓存：
+   *   第一次启动时磁盘刚好被占用 / 事件文件读失败，之后**每个请求**
+   *   都拿到同一个失败结果 —— 即使原因已经消失，进程也永远好不了，只能重启。
+   *
+   *   这里在 reject 时清掉缓存（只清自己那一个，避免误删并发重建的新实例），
+   *   下一个请求就会重试初始化。
+   */
+  created.catch(() => {
+    if (g[GLOBAL_KEY] === created) delete g[GLOBAL_KEY];
+  });
+
+  return created;
 }
 
 /** 仅供测试/重置使用。 */
@@ -216,11 +242,21 @@ export async function resetRuntime(): Promise<void> {
   stopActivityLoop();
   stopUserTaskLoop();
   const current = g[GLOBAL_KEY];
-  if (current) {
-    const rt = await current;
-    await rt.bootstrapped.log.flushPersistence();
+  try {
+    if (current) {
+      const rt = await current;
+      await rt.bootstrapped.log.flushPersistence();
+    }
+  } finally {
+    /**
+     * ★ `delete` 必须放在 finally 里。
+     *
+     *   旧写法的顺序是 `await current` 然后 `delete` —— 一旦那个 Promise 是
+     *   rejected（初始化失败过），await 会先把异常抛出去，`delete` 永远不执行，
+     *   失败的实例就被永久钉在缓存里。
+     */
+    delete g[GLOBAL_KEY];
   }
-  delete g[GLOBAL_KEY];
 }
 
 class UnavailableEmbedding {
@@ -449,17 +485,19 @@ async function initRuntime(): Promise<ButlerRuntime> {
    *   而界面从未装配过它 —— 所以**界面聊天时仆人根本不调工具**，
    *   那张「思考 → 工具 → 再思考」的画面也就无从出现。
    *
-   * ⚠️ 权限策略用 `WebPermissionPolicy`：只读放行、写操作**拒绝**。
-   *    理由见 `server/permission.ts`：SSE 响应没法中途停下来等用户确认，
-   *    而"静默放行写操作"会让安全闸门形同虚设。
-   *    被拒的调用会在界面上显示成明确的拒绝结果 —— 用户看得见「它想做什么」。
+   * 权限策略从 settings.json 恢复 mode 与 confirmActions：
+   *   · 开启确认：Web 会话通过 asker 逐次询问；
+   *   · 关闭确认：按 mode 直接执行 normal/highRisk；
+   *   · dangerous 永远由 isTierEnabled 拒绝。
    */
-  const persistedMode = await loadPermissionMode(DATA_DIR);
+  const persisted = await loadPermissionSettings(DATA_DIR);
   const configuredMode = process.env['BUTLER_PERMISSION_MODE'];
-  const initialMode = persistedMode ?? (isPermissionMode(configuredMode) ? configuredMode : undefined);
+  const initialMode =
+    persisted.mode ?? (isPermissionMode(configuredMode) ? configuredMode : undefined);
   const permissionPolicy = new WebPermissionPolicy({
     allowWrite: process.env['BUTLER_ALLOW_WRITE'] === '1',
     ...(initialMode !== undefined ? { mode: initialMode } : {}),
+    confirmActions: persisted.confirmActions,
   });
 
   const tools = new ToolFramework({
@@ -495,6 +533,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     protectedPaths: [DATA_DIR, join(APP_ROOT, '.env.local'), join(APP_ROOT, 'config')],
   });
   tools.registerAll(fileTools(fsPort));
+  tools.registerAll(webTools());
   tools.register(execTool(new NodeExec({ cwdRoot: WORKSPACE_ROOT }), WORKSPACE_ROOT));
   tools.register(documentSearchTool({
     search: async (query, limit) => (await getKnowledgeService().search(query, limit)).hits,
@@ -526,25 +565,12 @@ async function initRuntime(): Promise<ButlerRuntime> {
          *   下次同类任务就能给出"该走哪条路"的建议。
          */
         const specs = desktopTools(bridge, caps.capabilities, bootstrapped.operations);
-        if (specs.length === 0) {
+        const facade = desktopFacadeTools(specs);
+        if (facade.length === 0) {
           bridge.close();
           return;
         }
-        tools.registerAll(specs);
-
-        /**
-         * ★ 桥就绪 → 把真实的前台采样源接上（A10）。
-         *
-         * ⚠️ 这里**不判断同意开关**：同意是由 `observe.ts` 在**读窗口之前**
-         *    检查的（`sampleOnce` 已修过这个顺序）。两处重复判断容易不一致，
-         *    所以只在数据源里负责"怎么读"，不负责"该不该读"。
-         */
-        desktopSource = desktopActivitySource(bridge, {
-          onError: (err) => {
-            // 采样失败不该打扰用户，只在服务端日志留一行
-            console.warn('[activity] 前台采样失败：', err instanceof Error ? err.message : String(err));
-          },
-        });
+        tools.registerAll(facade);
       })
       .catch((err: unknown) => {
         // 仅记录，不抛 —— 桌面能力缺席是"降级"，不是启动失败
@@ -622,39 +648,13 @@ async function initRuntime(): Promise<ButlerRuntime> {
    *   ③ 定时循环用 `globalThis` 单例 + `unref()`，避免热重载重复注册、避免挂住进程
    */
   /**
-   * ★★ 同意状态**从事件流重建**（不再只看 env）。
+   * 旧的整机行为观察已停止采样。
    *
-   * ⚠️ 原来只读 `BEHAVIOR_OBSERVATION_ENABLED`：
-   *    用户在界面上点过"同意"之后，重启就变回"未同意"——
-   *    界面显示与事件流里的记录会互相矛盾。
-   *    现在以事件为真相源；env 只在**从未有过记录**时作为初始值。
+   * - 不再读取 `BEHAVIOR_OBSERVATION_ENABLED`，也不再把桌面桥接成采样源；
+   * - 观察器仍保留给周复盘读取历史事件，但没有 source，不会再产生新记录；
+   * - 使用习惯改由独立的 `/api/usage` 记录本程序页面节奏。
    */
-  const envConsent = process.env['BEHAVIOR_OBSERVATION_ENABLED'] === '1';
-  const replayedConsent = replayConsent(bootstrapped.log);
-  const initialConsent =
-    replayedConsent.granted || replayedConsent.enabled
-      ? replayedConsent
-      : envConsent
-        ? { ...DEFAULT_CONSENT, granted: true, grantedAt: clock.now(), enabled: true }
-        : DEFAULT_CONSENT;
-
-  const activityObserver = new ActivityObserver(bootstrapped.log, clock, DEFAULT_USER_ID, initialConsent);
-  // 原始记录/聚合也以事件为真相源；不回放的话重启后明细会变空。
-  activityObserver.replayFromLog(clock.now());
-  /**
-   * ★ 采样数据源的**延迟注入**：
-   *
-   *   桥是异步拉起的（`ping` 几百毫秒），而 activityRuntime 要在同一处同步创建。
-   *   所以先给一个**代理源**：桥没就绪时它返回 null（如实表示"没有数据源"），
-   *   就绪后由桌面那段把真实源填进来。
-   *
-   * ⚠️ 不用"等桥就绪再创建 activityRuntime"：那样会让运行时就绪时间
-   *    被 Python 启动时间拖住，而定时任务本身不依赖桥。
-   */
-  let desktopSource: ActivitySourcePort | null = null;
-  const lazySource: ActivitySourcePort = {
-    sample: async () => (desktopSource === null ? null : desktopSource.sample()),
-  };
+  const activityObserver = new ActivityObserver(bootstrapped.log, clock, DEFAULT_USER_ID, DEFAULT_CONSENT);
 
   const activityRuntime = createActivityRuntime({
     log: bootstrapped.log,
@@ -662,7 +662,6 @@ async function initRuntime(): Promise<ButlerRuntime> {
     store: bootstrapped.memory,
     userId: DEFAULT_USER_ID,
     observer: activityObserver,
-    source: lazySource,
     sessionCount: () => bootstrapped.chat.listSessions().length,
     evolve: () => evolution.runPass(),
     merge: () => {
@@ -832,12 +831,26 @@ async function initRuntime(): Promise<ButlerRuntime> {
     permissionPolicy,
     setPermissionMode: async (mode) => {
       permissionPolicy.setMode(mode);
-      await savePermissionMode(DATA_DIR, mode);
+      await savePermissionSettings(DATA_DIR, {
+        mode,
+        confirmActions: permissionPolicy.confirmActions,
+      });
+    },
+    setPermissionSettings: async (settings) => {
+      if (settings.mode !== undefined) permissionPolicy.setMode(settings.mode);
+      if (settings.confirmActions !== undefined) {
+        permissionPolicy.setConfirmActions(settings.confirmActions);
+      }
+      await savePermissionSettings(DATA_DIR, {
+        mode: permissionPolicy.mode,
+        confirmActions: permissionPolicy.confirmActions,
+      });
     },
     bootstrapped,
     clock,
     random,
     dataDir: DATA_DIR,
+    appRoot: APP_ROOT,
     workspaceRoot: WORKSPACE_ROOT,
     model,
     memoryModel,

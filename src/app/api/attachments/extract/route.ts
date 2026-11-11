@@ -6,6 +6,18 @@
  */
 
 import { execFile } from 'node:child_process';
+
+import { DEFAULT_ENV_WHITELIST } from '@/adapters/exec/node.js';
+
+/** 只带白名单变量 + 调用方显式追加的项。 */
+function childEnv(extra: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of DEFAULT_ENV_WHITELIST) {
+    const value = process.env[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return { ...out, ...extra };
+}
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
@@ -59,7 +71,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         maxBuffer: 4 * 1024 * 1024,
         encoding: 'utf8',
         windowsHide: true,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        /**
+         * ⚠️ 不能 `{ ...process.env }`：解析不可信 PDF/DOCX 的子进程
+         *    （以及被 exploit 的解析器代码）能读到 `DEEPSEEK_API_KEY`。
+         *    只给系统必需项 + Python 自己的两个变量。
+         */
+        env: childEnv({ PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }) as NodeJS.ProcessEnv,
       });
       stdout = result.stdout;
     } catch (err) {

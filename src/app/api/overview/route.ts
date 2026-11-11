@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server';
 
 import { DATA_DIR, DEFAULT_USER_ID, getRuntime, WORKSPACE_ROOT, eventsFile } from '@/app/runtime';
 import { scopeDefaultsOf } from '@/app/server/sessionScope.js';
+import { normalSessions } from '@/app/server/petSession.js';
 import {
   computeMemoryStats,
   toEventDto,
@@ -56,8 +57,7 @@ export async function GET(): Promise<NextResponse> {
   const memories = rt.bootstrapped.memory.all();
   const now = rt.clock.now();
 
-  const sessions: SessionDto[] = rt.bootstrapped.chat
-    .listSessions()
+  const sessions: SessionDto[] = (await normalSessions(rt.bootstrapped.chat))
     .map((s) =>
       toSessionDto(
         s,

@@ -178,7 +178,21 @@ export class NodeFileSystem implements FileSystemPort {
     try {
       // 上级目录不存在时自动创建 —— 这是用户期待的默认行为
       await fs.mkdir(dirname(abs), { recursive: true });
-      await fs.writeFile(abs, content, 'utf8');
+      /**
+       * ★ 先写临时文件再 rename（同目录、同盘）。
+       *
+       *   直接 `writeFile` 覆盖已有文件时，写到一半崩溃/磁盘满会把目标文件
+       *   截成半截 —— 旧内容也没了。rename 是原子的：要么旧文件完好，
+       *   要么新文件完整。与事件落盘（jsonlEvents）用同一套纪律。
+       */
+      const tmp = `${abs}.writing-${process.pid}-${Date.now().toString(36)}`;
+      try {
+        await fs.writeFile(tmp, content, 'utf8');
+        await fs.rename(tmp, abs);
+      } catch (err) {
+        await fs.rm(tmp, { force: true }).catch(() => undefined);
+        throw err;
+      }
       return Buffer.byteLength(content, 'utf8');
     } catch (err) {
       throw this.translate(err, path);
@@ -230,6 +244,19 @@ export class NodeFileSystem implements FileSystemPort {
   async remove(path: string, options?: { readonly recursive?: boolean }): Promise<void> {
     await this.checkProtected(path);
     const abs = this.resolve(path);
+    /**
+     * ★ 工作区根目录本身不可删除。
+     *
+     *   路径守卫把 `resolve(root, ".") === root` 视为"在工作区内"（这是对的，
+     *   否则连相对路径都没法用），于是 `remove_path {"path":".","recursive":true}`
+     *   会一路走到这里，把整个工作区目录删掉 —— 之后所有任务都报"工作区不存在"。
+     *   内存实现（`memory.ts`）本来就有这道保护，文件实现漏了。
+     *
+     *   注意：这里比的是**解析后的绝对路径**，`"./sub/.."` 这类写法也拦得住。
+     */
+    if (abs === resolve(this.root)) {
+      throw new FileSystemError('不能删除工作区根目录本身。', 'PERMISSION');
+    }
     try {
       const st = await fs.stat(abs);
       if (st.isDirectory()) {

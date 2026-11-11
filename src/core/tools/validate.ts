@@ -125,8 +125,16 @@ function validateObject(
   const out: Record<string, unknown> = {};
 
   // 必填检查
+  //
+  // ⚠️ 空字符串也算"缺"：`{"path": ""}` 能过旧检查，然后一路走到工具层才报错，
+  //    中间还白白消耗一轮工具调用。实测：`path:""` 通过校验。
   for (const key of required) {
-    if (obj[key] === undefined || obj[key] === null) {
+    const value = obj[key];
+    const missing =
+      value === undefined ||
+      value === null ||
+      (typeof value === 'string' && value.trim().length === 0);
+    if (missing) {
       issues.push({ path: path ? `${path}.${key}` : key, message: '缺少必填参数' });
     }
   }

@@ -30,6 +30,7 @@ import type { ClockPort } from '@/core/ports/clock.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { documentSearchTool } from '@/core/tools/builtin/documents.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
+import { planTaskTool, type TaskPlanState } from '@/core/tools/builtin/plan.js';
 import { NodeFileSystem } from '@/adapters/fs/node.js';
 import { SessionPermissionPolicy } from './sessionPermission.js';
 import { sessionPathGuard } from './sessionPathGuard.js';
@@ -58,6 +59,23 @@ export interface CreateChatToolScopeInput {
   readonly baseTools?: ToolFramework | undefined;
   /** 知识库检索；没有接入时如实不注册 `document_search`。 */
   readonly documentSearch?: ChatDocumentSearch | undefined;
+  /** 关闭时按档位直接执行 normal/highRisk；dangerous 仍禁用。默认 true。 */
+  readonly confirmActions?: boolean | undefined;
+  /**
+   * 本轮的任务计划状态。
+   *
+   * 提供时注册 plan_task，并给有副作用的工具加“必须先有计划”的门禁。
+   * 不提供时保持旧行为（定时任务 / 验证脚本）。
+   */
+  readonly taskPlan?: TaskPlanState | undefined;
+  /**
+   * 允许在哪个沙箱根里执行命令（可选）。
+   *
+   * ★ 只有审查作用域会传它：审查需要"在临时副本里跑测试"。
+   *   主对话一律不传 —— Web 会话没有 OS 沙箱，宁可不提供该工具。
+   *   权限、白名单与 cwd 校验都在 `sessionPathGuard` 里，这里只是透传。
+   */
+  readonly commandRoot?: string | undefined;
 }
 
 export interface ChatToolScope {
@@ -80,6 +98,7 @@ const OWNED_TOOL_NAMES: readonly string[] = [
   'stat_path',
   'run_command',
   'document_search',
+  'plan_task',
 ];
 
 /**
@@ -99,7 +118,7 @@ export async function createChatToolScope(
     appRoot: input.appRoot,
   });
 
-  const policy = new SessionPermissionPolicy(input.permission);
+  const policy = new SessionPermissionPolicy(input.permission, input.confirmActions ?? true);
   const fsPort = new NodeFileSystem({
     root: workspace,
     // ★ 受保护路径在任何权限档位下都生效，包括 full。
@@ -109,6 +128,7 @@ export async function createChatToolScope(
     workspace,
     permission: input.permission,
     protectedPaths,
+    ...(input.commandRoot !== undefined ? { commandRoot: input.commandRoot } : {}),
   });
   const tools = new ToolFramework({
     log: input.log,
@@ -119,9 +139,20 @@ export async function createChatToolScope(
       maxWrites: limitsConfig.toolFuseMaxWrites,
     },
     pathGuard,
+    ...(input.taskPlan !== undefined
+      ? {
+          planGuard: (): string | null =>
+            input.taskPlan?.contract === null
+              ? '需要先调用 plan_task，说明交付物和约束，之后才能执行有副作用的操作。'
+              : null,
+        }
+      : {}),
   });
 
   tools.registerAll(fileTools(fsPort));
+  if (input.taskPlan !== undefined) {
+    tools.register(planTaskTool(input.taskPlan));
+  }
   /**
    * ★ 不注册 `run_command`。
    *

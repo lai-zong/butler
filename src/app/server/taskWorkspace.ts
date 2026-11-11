@@ -29,7 +29,44 @@ const WRITE_PATH_TOOLS: Readonly<Record<string, readonly string[]>> = {
   move_path: ['from', 'to'],
   remove_path: ['path'],
   desktop_office_convert: ['source', 'target'],
+  /**
+   * ⚠️ 下面三条是补漏，每一条都能把文件写到工作区外：
+   *   · `apply_patch`    — 按 path 直接改任意文本文件（`.ssh\authorized_keys` 就是一条）
+   *   · `file_op`        — mkdir/move/remove 三种动作都带路径
+   *   · `desktop_act`    — `action: 'convert_office'` 带 source / target 两个路径，
+   *                        而且它是 `normal` 档，工作区权限下**允许执行**
+   *
+   * 旧表只列了五个工具，于是「工作区权限」在文档里写着"只能在工作区内写"，
+   * 实际这三条可以写到任意位置。
+   */
+  apply_patch: ['path'],
+  file_op: ['path', 'from', 'to'],
+  desktop_act: ['source', 'target'],
 };
+
+/**
+ * 某个工具在**这一次调用**里会被当作路径写入的字段。
+ *
+ * ★ 为什么是函数而不是查表：
+ *   `desktop_act` 只有 `convert_office` 动文件，`set_value`/`invoke` 不动 ——
+ *   一律按路径检查会把"往输入框里打字"误判成写文件。
+ */
+function writePathFields(toolName: string, args: unknown): readonly string[] | undefined {
+  const fields = WRITE_PATH_TOOLS[toolName];
+  if (fields === undefined) return undefined;
+  if (toolName === 'desktop_act') {
+    const action = (args as { action?: unknown } | null)?.action;
+    return action === 'convert_office' ? fields : undefined;
+  }
+  if (toolName === 'file_op') {
+    // 三种动作的字段组合不同：只看这次真正用到的，避免把缺省字段当路径。
+    const action = (args as { action?: unknown } | null)?.action;
+    if (action === 'move') return ['from', 'to'];
+    if (action === 'mkdir' || action === 'remove') return ['path'];
+    return undefined;
+  }
+  return fields;
+}
 
 export function resolveTaskWorkspace(raw: string | null): string {
   const root = raw !== null && raw.trim().length > 0 ? raw.trim() : defaultWorkspaceRoot();
@@ -55,7 +92,7 @@ function inside(root: string, target: string): boolean {
 
 export function workspacePathGuard(root: string): (toolName: string, args: unknown) => string | null {
   return (toolName, args) => {
-    const fields = WRITE_PATH_TOOLS[toolName];
+    const fields = writePathFields(toolName, args);
     if (fields === undefined || typeof args !== 'object' || args === null) return null;
     const record = args as Record<string, unknown>;
     for (const field of fields) {

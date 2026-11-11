@@ -39,12 +39,37 @@ function asString(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
+/**
+ * 关系图结果缓存。
+ *
+ * ★ 每次 GET 都做一遍 O(n²) 相似度（还可能触发本地嵌入模型），
+ *   而记忆集合在两次演化之间几乎不变。按「节点数 + 最大 updatedAt」
+ *   做 60 秒缓存：数据没变就复用，变了立刻重算。
+ */
+const GRAPH_CACHE_TTL_MS = 60_000;
+let graphCache: {
+  readonly key: string;
+  readonly at: number;
+  readonly payload: unknown;
+} | null = null;
+
 export async function GET(): Promise<NextResponse> {
   const rt = await getRuntime();
   const store = rt.bootstrapped.memory;
   const nodes = [...store.all()]
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, MAX_NODES);
+  /**
+   * ★ 缓存命中就直接返回：数据没变时不必重算 O(n²)。
+   *   key 用「节点数 + 最大 updatedAt + 是否带语义」——
+   *   演化/新增/编辑都会改变 updatedAt，因此不会拿到过期结果。
+   */
+  const cacheKey = `${nodes.length}:${nodes[0]?.updatedAt ?? 0}`;
+  const now = Date.now();
+  if (graphCache !== null && graphCache.key === cacheKey && now - graphCache.at < GRAPH_CACHE_TTL_MS) {
+    return NextResponse.json(graphCache.payload);
+  }
+
   const ids = new Set(nodes.map((n) => n.id));
   const edges: GraphEdge[] = [];
   const edgeKeys = new Set<string>();
@@ -196,7 +221,7 @@ export async function GET(): Promise<NextResponse> {
     degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
   }
 
-  return NextResponse.json({
+  const payload = {
     ok: true,
     nodes: nodes.map((n: MemoryEntry) => ({
       ...toMemoryDto(n),
@@ -208,5 +233,8 @@ export async function GET(): Promise<NextResponse> {
       semanticPairs !== null
         ? '语义边来自 embedding；同轮召回边只对带 batchId 的新召回事件生效。'
         : '当前嵌入模型不可用，内容边降级为确定性文本相似；同轮召回边只对带 batchId 的新召回事件生效。',
-  });
+  };
+
+  graphCache = { key: cacheKey, at: Date.now(), payload };
+  return NextResponse.json(payload);
 }

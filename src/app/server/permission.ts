@@ -1,31 +1,14 @@
 /**
- * Web 界面的权限策略 —— 把「需要用户确认」变成**可见的待办**，而不是挂住
+ * 全局 Web 权限策略。
  *
- * ★★ 这里要解决一个真实的架构矛盾：
+ * 实际的 Web 会话使用不可变的 SessionPermissionPolicy；本类负责：
+ *   · 从设置恢复 mode / confirmActions；
+ *   · 作为运行时全局工具框架的默认策略；
+ *   · 在没有 asker 且关闭确认时，按 mode 放行；
+ *   · dangerous 永远拒绝。
  *
- *   工具闸门的设计是「需要确认时**阻塞等待**用户回答」（`ask` 返回 Promise）。
- *   而 Web 界面走的是 **SSE 流式响应** —— 请求已经在流式传输中，
- *   **没法中途停下来等用户点确认**。
- *
- *   ⚠️ 若不处理这个矛盾，两种坏结果二选一：
- *     · 直接 `allow` → 写操作静默执行，安全闸门形同虚设
- *     · 直接挂住等确认 → 用户永远等不到，请求超时
- *
- * ★ 本策略的选择：**只读放行，其余拒绝并如实告知**。
- *
- *   实测依据（方案 § 6.1 的三层能力模型里，日常任务绝大多数是只读的）：
- *     · `read_file` / `list_dir` / `stat_path` / `search` → readOnly，放行
- *     · `write_file` / `exec` → normal/highRisk，**拒绝**
- *
- *   ⚠️ 拒绝不是"失败"：它会在界面上显示成一张**明确的拒绝结果**，
- *      用户看得见"它想做什么、被什么挡住了"。这比静默放行安全，
- *      也比挂住等确认可用。
- *
- * ★ 待做（这一步没做完，如实标注）：
- *   真正的方案是**把确认变成异步的**：工具调用挂起 → SSE 推一个确认请求
- *   → 用户在界面上点 → 另一个端点把答复送回 → 工具继续执行。
- *   那需要给 ToolFramework 加一个"可恢复的挂起"机制，
- *   属于独立的一步，不在这里草率实现。
+ * 需要弹窗确认时，聊天路由会注入 SseApprovals，框架优先走 asker；
+ * 不设超时，流结束时只 deny 本轮 asker 自己的 pending。
  */
 
 import type { ActionTier, PermissionMode, PermissionPolicy } from '@/core/tools/types.js';
@@ -43,16 +26,23 @@ export interface WebPolicyOptions {
   readonly allowWrite?: boolean;
   /** C5 三档模式；不填时保持旧的 allowWrite 行为。 */
   readonly mode?: PermissionMode;
+  /**
+   * true=需要确认时走弹窗；false=按权限模式直接执行。
+   * dangerous 仍由 isTierEnabled 永远拒绝。
+   */
+  readonly confirmActions?: boolean;
 }
 
 export class WebPermissionPolicy implements PermissionPolicy {
   private readonly remembered = new Set<string>();
   mode: PermissionMode | undefined;
+  confirmActions: boolean;
   private readonly allowWrite: boolean;
 
   constructor(opts?: WebPolicyOptions) {
     this.allowWrite = opts?.allowWrite ?? false;
     this.mode = opts?.mode;
+    this.confirmActions = opts?.confirmActions ?? true;
   }
 
   isRemembered(toolName: string): boolean {
@@ -87,8 +77,16 @@ export class WebPermissionPolicy implements PermissionPolicy {
    * ★ 拒绝会在界面上呈现为一张明确的拒绝结果，带工具名与参数 ——
    *   用户看得见"它想做什么"。这就是"可见"与"可控"的平衡点：
    *   **不放行，但也不隐瞒。**
+   *
+   * 关闭确认时，normal/highRisk 在权限模式允许的前提下直接放行；
+   * dangerous 已在 isTierEnabled 被拒，到不了这里。
    */
-  async ask(): Promise<'deny'> {
+  async ask(request: { readonly tier: ActionTier }): Promise<'allow' | 'deny'> {
+    if (!this.confirmActions && this.isTierEnabled(request.tier)) return 'allow';
     return 'deny';
+  }
+
+  setConfirmActions(value: boolean): void {
+    this.confirmActions = value;
   }
 }

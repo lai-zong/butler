@@ -24,7 +24,8 @@ import {
   trimHistory,
   type AgentProgressEvent,
 } from '../agentLoop.js';
-import type { ActionTier, Authorization, PermissionPolicy } from '../types.js';
+import type { ActionTier, Authorization, PermissionPolicy, ToolSpec } from '../types.js';
+import { beginTurnSteering, steerTurn } from '../steering.js';
 
 const T0 = 1_760_000_000_000;
 
@@ -136,6 +137,75 @@ describe('① 循环基本行为', () => {
     expect(r.finalText).toBe('不需要工具，答案是 42');
     expect(r.traces).toHaveLength(0);
     expect(r.rounds).toBe(1);
+  });
+
+  it('中途消息在模型调用前注入当前轮', async () => {
+    const s = setup([{ text: '收到补充要求' }]);
+    const cleanup = beginTurnSteering('t1');
+    try {
+      steerTurn('t1', '补充：只查 a.txt');
+      const r = await run(s);
+      expect(r.messages.filter((m) => m.role === 'user')).toHaveLength(2);
+      expect(r.finalText).toBe('收到补充要求');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('取消审批后跳过同轮剩余工具，并在下一轮注入消息', async () => {
+    let secondCalled = false;
+    const s = setup([
+      {
+        toolCalls: [
+          { name: 'first', args: {} },
+          { name: 'second', args: {} },
+        ],
+      },
+      { text: '收到取消后的新消息' },
+    ]);
+    const first: ToolSpec = {
+      name: 'first',
+      description: 'first',
+      parameters: { type: 'object', properties: {} },
+      tier: 'readOnly',
+      summarize: () => 'first',
+      execute: async () => {
+        steerTurn('t1', '先停一下', { cancelApprovals: true });
+        return { ok: true, output: 'first done', durationMs: 0 };
+      },
+    };
+    const second: ToolSpec = {
+      name: 'second',
+      description: 'second',
+      parameters: { type: 'object', properties: {} },
+      tier: 'readOnly',
+      summarize: () => 'second',
+      execute: async () => {
+        secondCalled = true;
+        return { ok: true, output: 'second done', durationMs: 0 };
+      },
+    };
+    s.tools.register(first);
+    s.tools.register(second);
+
+    const cleanup = beginTurnSteering('t1', { cancelApprovals: () => 1 });
+    try {
+      const r = await run(s);
+      expect(secondCalled).toBe(false);
+      expect(
+        r.messages.filter(
+          (m) => m.role === 'user' && m.content.some((p) => p.kind === 'text'),
+        ),
+      ).toHaveLength(2);
+      expect(
+        r.messages.some((m) =>
+          m.content.some((p) => p.kind === 'toolResult' && p.isError === true),
+        ),
+      ).toBe(true);
+      expect(r.finalText).toBe('收到取消后的新消息');
+    } finally {
+      cleanup();
+    }
   });
 
   it('每轮推送本轮累计用量', async () => {

@@ -36,14 +36,16 @@ const READ_PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
   read_file: ['path'],
   list_dir: ['path'],
   stat_path: ['path'],
+  grep: ['path'],
+  glob: ['path'],
 };
 
 const WRITE_PATH_FIELDS: Readonly<Record<string, readonly string[]>> = {
   write_file: ['path'],
-  make_dir: ['path'],
-  move_path: ['from', 'to'],
-  remove_path: ['path'],
+  file_op: ['path', 'from', 'to'],
+  apply_patch: ['path'],
   desktop_office_convert: ['source', 'target'],
+  desktop_act: ['source', 'target'],
 };
 
 const WRITE_TOOLS = new Set(Object.keys(WRITE_PATH_FIELDS));
@@ -52,7 +54,40 @@ export interface SessionPathGuardOptions {
   readonly workspace: string;
   readonly permission: SessionPermission;
   readonly protectedPaths: readonly string[];
+  /**
+   * 允许执行命令的沙箱根（可选）。
+   *
+   * ★ 存在的理由：审查 Agent 需要在**临时副本**里跑测试/构建。
+   *   没有这个字段时 `run_command` 一律被拒 —— 而审查提示词又明确教模型
+   *   用它跑测试，等于每次审查都先撞一次墙，白烧一轮 token，
+   *   "在临时副本里跑测试"这个承诺实际不成立。
+   *
+   * ⚠️ 给了它也不等于放开命令执行：
+   *   · cwd 必须落在该根之下（字面与真实路径都比）；
+   *   · 可执行文件名必须在白名单里；
+   *   · 主对话的工具作用域**不会**传这个字段。
+   */
+  readonly commandRoot?: string;
 }
+
+/** 审查沙箱里允许的可执行文件（只覆盖"跑测试 / 构建 / 看状态"）。 */
+const SANDBOX_COMMANDS: ReadonlySet<string> = new Set([
+  'node',
+  'npm',
+  'npm.cmd',
+  'npx',
+  'npx.cmd',
+  'pnpm',
+  'pnpm.cmd',
+  'yarn',
+  'yarn.cmd',
+  'tsc',
+  'vitest',
+  'git',
+  'git.exe',
+  'python',
+  'python.exe',
+]);
 
 export type SessionPathGuard = (
   toolName: string,
@@ -133,9 +168,39 @@ export async function sessionPathGuard(
   };
 
   return async (toolName, args) => {
-    // 当前 Web 会话不提供命令工具；防止从全局工具列表被复制进来。
+    /**
+     * 命令执行：**只有**在给了 `commandRoot`（审查沙箱）时才可能放行，
+     * 而且必须同时满足"cwd 在沙箱内"与"可执行文件在白名单内"。
+     *
+     * ⚠️ 主对话永远走上面这条拒绝分支 —— Web 会话没有 OS 沙箱，
+     *    与其假装"工作区内执行"，不如明确不提供。
+     */
     if (toolName === 'run_command') {
-      return '本对话不提供命令执行工具（Web 会话没有 OS 沙箱；workspace/full 都不开放 run_command）。';
+      const sandboxRoot = options.commandRoot;
+      if (sandboxRoot === undefined) {
+        return '本对话不提供命令执行工具（Web 会话没有 OS 沙箱；workspace/full 都不开放 run_command）。';
+      }
+      const record: Record<string, unknown> =
+        typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
+
+      const rawCommand = typeof record['command'] === 'string' ? record['command'].trim() : '';
+      const executable = rawCommand.split(/[\\/]/).pop() ?? '';
+      if (!SANDBOX_COMMANDS.has(executable.toLowerCase())) {
+        return `审查沙箱不允许执行「${rawCommand || '（空命令）'}」；只允许跑测试/构建/查看状态类命令（node / npm / npx / pnpm / yarn / tsc / vitest / git / python）。`;
+      }
+
+      const rawCwd = typeof record['cwd'] === 'string' ? record['cwd'].trim() : '';
+      const literalCwd = resolve(sandboxRoot, rawCwd.length > 0 ? rawCwd : '.');
+      if (!isPathInside(sandboxRoot, literalCwd)) {
+        return `审查沙箱只允许在临时副本 ${sandboxRoot} 内执行命令（收到 ${literalCwd}）。`;
+      }
+      // 真实路径再判一次：副本里的符号链接不能把人带出去
+      const realRoot = await resolveRealPathForGuard(sandboxRoot);
+      const realCwd = await resolveRealPathForGuard(literalCwd);
+      if (!isPathInside(realRoot, realCwd)) {
+        return `审查沙箱只允许在临时副本内执行命令（真实路径 ${realCwd} 越界）。`;
+      }
+      return null;
     }
 
     if (

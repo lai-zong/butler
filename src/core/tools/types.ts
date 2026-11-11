@@ -114,6 +114,12 @@ export interface ToolSpec {
   /** 该工具的动作分级 */
   readonly tier: ActionTier;
   /**
+   * 参数级分级：同一工具的不同 action 可能有不同风险。
+   * 例如 file_op 的 mkdir 是 normal，remove 是 dangerous。
+   * 未提供时始终使用 `tier`。
+   */
+  readonly tierForArgs?: (args: unknown) => ActionTier;
+  /**
    * 桌面动作的**阶梯级**（方案 §9.4 / D-32）。
    *
    * ★ 与 `tier` 是**两个正交的维度**，不要混淆：

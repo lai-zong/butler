@@ -36,7 +36,7 @@ import { parseSessionSettingsPatch } from '@/app/server/sessionSettingsApi.js';
 import { saveSessionPersona } from '@/app/server/sessionSettingsStore.js';
 import { resolveProfileModel } from '@/app/server/modelProfiles.js';
 import { assertSessionWorkspace } from '@/app/server/sessionWorkspace.js';
-import { dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
+import { appRootOf, dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import { readSessionDisplay } from '@/app/server/sessionDisplayStore.js';
 
 export const dynamic = 'force-dynamic';
@@ -116,7 +116,13 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<NextRe
     try {
       normalizedWorkspace = await assertSessionWorkspace(patch.workspace, {
         dataDir: dir,
-        appRoot: scopeDefaults.workspace,
+        /**
+         * ⚠️ 必须是与 chat 路由一致的**应用根**（`process.cwd()`），
+         *    不能传默认工作区。传错会让 `config/`、`.env.local` 的受保护判定
+         *    变成 `workplace/config`，于是 PATCH 接受 `<repo>/config`（实测 200），
+         *    下一轮对话又被 chat 的守卫拒掉 —— 用户看到"设置成功但对话打不开"。
+         */
+        appRoot: appRootOf(rt),
       });
     } catch (err) {
       return NextResponse.json(

@@ -7,14 +7,14 @@
  * 这个假设同样无法靠推理确认，必须实测：
  *   · 它会不会正确调工具（而不是绕过工具凭空编）？
  *   · 它会不会漏参数、写错类型？
- *   · 它会不会在拿到结果后正确收尾（调用 submit_report）？
+ *   · 它会不会在拿到结果后正确收尾（直接输出最终文本）？
  *
  * 通过条件（全部可判定）：
  *   ① 模型会调用 read_file 读取真实文件
  *   ② 读取到的内容影响了它的产出（不是凭空编）
  *   ③ 模型会调用 write_file 把产出落盘，且文件真的出现在磁盘上
  *   ④ 全流程经过安全闸门（有审计、有 tool.call / tool.result 事件）
- *   ⑤ 最终通过 submit_report 提交合法汇报
+ *   ⑤ 最终直接输出非空回复，不再调用提交工具
  *
  * 隔离设计：
  *   在临时目录里操作，跑完清理。**不碰仓库里的任何文件。**
@@ -37,7 +37,6 @@ import { ToolFramework } from '../core/tools/framework.js';
 import { runButler } from '../core/butler/execute.js';
 import type { TaskContract } from '../core/butler/contract.js';
 import type { ActionTier, PermissionPolicy } from '../core/tools/types.js';
-import { artifactToText } from '../core/execution/render.js';
 
 const line = (s = ''): void => console.log(s);
 const hr = (t: string): void => {
@@ -132,7 +131,7 @@ async function main(): Promise<void> {
       '读一下工作目录里的 inventory.txt，看看家里现有什么。' +
       '然后据此写一份"需要采购的清单"到 shopping-list.txt。' +
       '注意：清单里只能包含家里**缺的**东西，已有的不要再买。' +
-      '完成后用 submit_report 提交汇报。';
+      '完成后直接输出最终回复。';
     line(`  ${instruction}`);
 
     hr('执行中（真实模型 + 真实文件系统）…');
@@ -195,12 +194,9 @@ async function main(): Promise<void> {
     // ── 条件 ②：读到内容影响了产出 ──
     hr('② 读到的内容是否影响了产出');
     const report = run.report;
-    const reportText = JSON.stringify(report.artifacts);
+    const reportText = report.reply;
     line(`  汇报状态：${report.status}`);
-    for (const a of report.artifacts) {
-      const text = artifactToText(a, '；');
-      line(`  [${a.kind}] ${text.slice(0, 150)}`);
-    }
+    line(`  最终回复：${report.reply.slice(0, 500)}`);
 
     // 已有物品不该出现在采购清单里（说明它真的读了）
     const mentionsExisting = ['鸡蛋', '北豆腐', '糙米', '西兰花'].filter((x) =>
@@ -245,19 +241,13 @@ async function main(): Promise<void> {
     line(`  tool.call 事件 ${callEvents.length} 条 · tool.result 事件 ${resultEvents.length} 条`);
     check('④ 工具调用全程留痕', callEvents.length > 0 && resultEvents.length > 0);
 
-    // ── 条件 ⑤：结构化汇报 ──
-    hr('⑤ 结构化汇报');
+    // ── 条件 ⑤：最终文本就是交付 ──
+    hr('⑤ 最终回复');
     line(`  status: ${report.status}`);
-    line(`  产出物: ${report.artifacts.length} 项`);
-    line(`  findings: ${report.findings?.length ?? 0} 条`);
-    for (const f of report.findings ?? []) {
-      line(`    ⚑ [${f.kind}] ${f.statement.slice(0, 70)}`);
-    }
-    line(`  uncertainties: ${report.uncertainties.length} 条`);
-    for (const u of report.uncertainties) line(`    ? ${u.slice(0, 70)}`);
+    line(`  回复长度: ${report.reply.length} 字符`);
 
-    check('⑤ 通过 submit_report 提交了汇报', report.status === 'done', report.status);
-    check('⑤ 汇报含实质产出', report.artifacts.length > 0, `${report.artifacts.length} 项`);
+    check('⑤ 以最终文本结束（没有 submit_report）', report.status === 'done', report.status);
+    check('⑤ 最终回复非空', report.reply.trim().length > 0, `${report.reply.length} 字符`);
 
     // ── 条件 ⑤b：★ 汇报内容与落盘内容是否一致 ──
     //

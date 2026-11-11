@@ -13,6 +13,11 @@ import { NextResponse } from 'next/server';
 import { getRuntime } from '@/app/runtime';
 import { dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import { loadSessionDisplays } from '@/app/server/sessionDisplayStore.js';
+import {
+  getMarkedPetSessionId,
+  normalSessions,
+  sidebarSessions,
+} from '@/app/server/petSession.js';
 import { toSessionDto } from '@/app/server/uiData.js';
 
 export const dynamic = 'force-dynamic';
@@ -23,13 +28,14 @@ export async function GET(): Promise<NextResponse> {
   const chat = rt.bootstrapped.chat;
   const scopeDefaults = scopeDefaultsOf(rt);
   const displays = await loadSessionDisplays(dataDirOf(rt));
+  const petSessionId = await getMarkedPetSessionId();
 
-  const sessions = chat
-    .listSessions()
+  const sessions = (await sidebarSessions(chat))
     .map((s) => {
       const display = displays.get(s.id);
       return toSessionDto(s, chat.messagesOf(s.id), chat.verdictsOf(s.id), {
         scopeDefaults,
+        isPet: s.id === petSessionId,
         ...(display !== undefined ? { display } : {}),
       });
     });
@@ -43,7 +49,8 @@ export async function POST(): Promise<NextResponse> {
 
   // 新对话只保留一个未发送草稿；已有空会话时直接复用，
   // 避免每次点击“新对话”都新建一个空会话并计入历史。
-  const draft = chat.listSessions().find((s) => chat.messagesOf(s.id).length === 0);
+  // 桌宠会话不是普通草稿，不能复用。
+  const draft = (await normalSessions(chat)).find((s) => chat.messagesOf(s.id).length === 0);
   const session = draft ?? chat.createSession();
 
   if (draft === undefined) {

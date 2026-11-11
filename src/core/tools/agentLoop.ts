@@ -41,6 +41,11 @@ import type { ToolSpec } from './types.js';
 import { issuesToMessage, validateArgs } from './validate.js';
 import type { ApprovalAsker } from './approval.js';
 import {
+  clearCancelRemainingTools,
+  drainSteering,
+  shouldCancelRemainingTools,
+} from './steering.js';
+import {
   buildAlert,
   isUntrusted,
   wrapUntrusted,
@@ -432,9 +437,20 @@ export async function runAgentLoop(
     }
   };
 
+  /**
+   * 在模型调用的边界注入用户中途消息。
+   * 工具执行中不强行插入；当前工具/当前轮结束后才进入下一轮上下文。
+   */
+  const injectSteering = (): number => {
+    const texts = drainSteering(opts.taskId);
+    for (const text of texts) messages.push(msg.user(text));
+    return texts.length;
+  };
+
   while (true) {
     throwIfAborted(opts.signal);
     round += 1;
+    injectSteering();
 
     /**
      * ★★ 两条路径共用同一份「一轮的产出」形状，主循环不必分叉。
@@ -510,9 +526,11 @@ export async function runAgentLoop(
       totalOutputTokens: outputTokens,
     });
 
-    // 模型不再调用工具 → 这就是最终答案
+    // 模型不再调用工具 → 先检查是否有刚好在流式输出期间到达的中途消息
     if (res.toolCalls.length === 0) {
       if (res.text.length > 0) messages.push(msg.assistant(res.text));
+      clearCancelRemainingTools(opts.taskId);
+      if (injectSteering() > 0) continue;
       emitProgress({
         kind: 'finished',
         rounds: round,
@@ -542,9 +560,44 @@ export async function runAgentLoop(
       ],
     });
 
+    /**
+     * 用户发消息取消本轮待确认操作后，补齐剩余工具调用的 consumed 结果。
+     * 每个 toolCall 都必须有对应 toolResult，否则下一次模型请求不合法。
+     */
+    const cancelRemaining = (from: number): boolean => {
+      if (!shouldCancelRemainingTools(opts.taskId)) return false;
+      clearCancelRemainingTools(opts.taskId);
+      const reason = '用户发送了新的消息，操作已取消。';
+      for (const rest of res.toolCalls.slice(from)) {
+        traces.push({
+          round,
+          toolName: rest.name,
+          args: rest.args,
+          validated: false,
+          validationMessage: reason,
+          ok: false,
+          denied: true,
+          durationMs: 0,
+        });
+        emitProgress({
+          kind: 'toolResult',
+          round,
+          callId: rest.callId,
+          name: rest.name,
+          ok: false,
+          denied: true,
+          output: reason,
+          durationMs: 0,
+        });
+        messages.push(msg.toolResult(rest.callId, { denied: reason }, true));
+      }
+      return true;
+    };
+
     // 逐个执行（顺序执行：避免并发写同一文件导致的竞态，
     // 也让审计顺序与用户看到的顺序一致）
-    for (const tc of res.toolCalls) {
+    for (const [tcIndex, tc] of res.toolCalls.entries()) {
+      if (cancelRemaining(tcIndex)) break;
       throwIfAborted(opts.signal);
       const started = opts.clock.now();
       const spec = opts.tools.get(tc.name);
@@ -683,6 +736,9 @@ export async function runAgentLoop(
           !ok,
         ),
       );
+
+      // 当前工具是最后一个时也检查一次；不是最后一个则补齐剩余结果并停止执行。
+      if (cancelRemaining(tcIndex + 1)) break;
 
       // ★ 终止工具成功执行 → 立即结束，不再多跑一轮。
       //   注意只有成功才算：失败时继续循环，让模型有机会修正后重新提交。

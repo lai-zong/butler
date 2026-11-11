@@ -77,6 +77,7 @@ beforeEach(async () => {
   mocks.getRuntime.mockResolvedValue({
     bootstrapped: { chat, log },
     workspaceRoot: appRoot,
+    appRoot,
     dataDir: dir,
     permissionPolicy: { mode: 'view' },
   });

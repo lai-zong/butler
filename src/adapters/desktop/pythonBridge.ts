@@ -18,6 +18,18 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
+import { DEFAULT_ENV_WHITELIST } from '../exec/node.js';
+
+/** 只带白名单变量 + Python 编码项；不把整份 process.env 交给子进程。 */
+function bridgeEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of DEFAULT_ENV_WHITELIST) {
+    const value = process.env[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return { ...out, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+}
+
 import type {
   ConvertResult,
   DesktopBridgePort,
@@ -112,8 +124,12 @@ export class PythonDesktopBridge implements DesktopBridgePort {
 
     const python = this.opts.pythonExe ?? process.env['BUTLER_PYTHON'] ?? 'python';
     const child = spawn(python, [this.opts.scriptPath], {
-      // 显式 UTF-8：Windows 默认 GBK
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      /**
+       * ⚠️ 不能 `{ ...process.env }`：Python 子进程会读到 `DEEPSEEK_API_KEY`
+       *    等全部密钥，把"凭证可用不可见"这条约束自己拆掉。
+       *    只给系统必需项 + Python 的编码变量（与 exec 适配器同一份白名单）。
+       */
+      env: bridgeEnv() as NodeJS.ProcessEnv,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -204,9 +220,18 @@ export class PythonDesktopBridge implements DesktopBridgePort {
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        /**
+         * ★ 超时后必须杀掉子进程。
+         *
+         *   COM 被 Word 弹窗卡住时，Python 端永远不会回包；只 reject 不 kill
+         *   的话，这个进程会一直挂着，后续每个请求都排在它后面超时。
+         *   杀掉后下一次调用会重建一个干净的子进程。
+         */
+        this.killChild();
         reject(
           new Error(
-            `桌面操作超时（${op}，${timeoutMs}ms）。COM 调用可能被弹窗卡住了` +
+            `桌面操作超时（${op}，${timeoutMs}ms）。COM 调用可能被弹窗卡住了；` +
+              '已重启桌面桥子进程' +
               this.stderrTail(),
           ),
         );
@@ -376,6 +401,25 @@ export class PythonDesktopBridge implements DesktopBridgePort {
       hadInput: o['hadInput'] === true,
       ...(typeof o['idleMs'] === 'number' ? { idleMs: o['idleMs'] } : {}),
     };
+  }
+
+  /**
+   * 杀掉当前子进程并清空引用（下一次调用会重建）。
+   *
+   * 与 `close()` 的区别：不设置 `closed`，也不拒绝所有 pending ——
+   * 调用方（超时分支）自己负责 reject 自己那一条。
+   */
+  private killChild(): void {
+    this.failAll(new Error('桌面桥子进程已被重启'));
+    if (this.child !== null) {
+      try {
+        this.child.stdin.end();
+        this.child.kill();
+      } catch {
+        // 杀不掉就交给 OS 回收
+      }
+      this.child = null;
+    }
   }
 
   close(): void {

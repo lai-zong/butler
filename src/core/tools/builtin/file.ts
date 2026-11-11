@@ -18,6 +18,7 @@
 import type { FileSystemPort } from '../../ports/fs.js';
 import { FileSystemError } from '../../ports/fs.js';
 import type { DirEntry } from '../../ports/fs.js';
+import { globTool, grepTool } from './search.js';
 import type { ToolContext, ToolSpec } from '../types.js';
 
 /** 把文件系统错误转成模型能理解的一句话。 */
@@ -458,6 +459,177 @@ export function statTool(fs: FileSystemPort): ToolSpec {
 }
 
 // ═══════════════════════════════════════════════════════════
+// ⑦ 精确文本替换（normal）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 只替换指定旧文本，不重写整个文件。
+ * 这不是完整 unified diff；对 Agent 来说，oldText/newText 更不容易编错，
+ * 也足够完成“只改这几行”的常见编辑。
+ */
+export function applyPatchTool(fs: FileSystemPort): ToolSpec {
+  return {
+    name: 'apply_patch',
+    description:
+      '在一个文本文件里精确替换一段旧文本为新文本，不重写其他内容。' +
+      'oldText 必须与文件中的文本完全一致（包括空白）；找不到就拒绝，不会猜测位置。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '要修改的文件路径' },
+        oldText: { type: 'string', description: '文件中已存在的旧文本，必须完全匹配' },
+        newText: { type: 'string', description: '替换后的新文本' },
+        replaceAll: { type: 'boolean', description: '是否替换所有匹配，默认只替换第一处' },
+      },
+      required: ['path', 'oldText', 'newText'],
+    },
+    tier: 'normal',
+    summarize: (args: unknown) => {
+      const a = args as { path?: unknown };
+      return `编辑 ${String(a?.path ?? '?')}`;
+    },
+    async execute(args: unknown, ctx: ToolContext) {
+      const a = args as {
+        path?: string;
+        oldText?: string;
+        newText?: string;
+        replaceAll?: boolean;
+      };
+      if (
+        typeof a?.path !== 'string' ||
+        typeof a?.oldText !== 'string' ||
+        typeof a?.newText !== 'string'
+      ) {
+        return {
+          ok: false,
+          output: '参数错误：path / oldText / newText 必须是字符串',
+          isError: true,
+          durationMs: 0,
+        };
+      }
+      if (a.oldText.length === 0) {
+        return { ok: false, output: 'oldText 不能为空', isError: true, durationMs: 0 };
+      }
+      const started = ctx.clock.now();
+      try {
+        const before = await fs.readText(a.path);
+        const first = before.indexOf(a.oldText);
+        if (first < 0) {
+          return {
+            ok: false,
+            output: '在文件里找不到 oldText；没有做任何修改。',
+            isError: true,
+            durationMs: ctx.clock.now() - started,
+          };
+        }
+        const count = a.replaceAll === true ? before.split(a.oldText).length - 1 : 1;
+        const after =
+          a.replaceAll === true
+            ? before.split(a.oldText).join(a.newText)
+            : `${before.slice(0, first)}${a.newText}${before.slice(first + a.oldText.length)}`;
+        await fs.writeText(a.path, after);
+        return {
+          ok: true,
+          output: `已修改 ${fs.resolve(a.path)}（替换 ${count} 处）。`,
+          data: { path: a.path, replacements: count },
+          durationMs: ctx.clock.now() - started,
+        };
+      } catch (err) {
+        return { ok: false, output: fsMessage(err), isError: true, durationMs: ctx.clock.now() - started };
+      }
+    },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// ⑧ 文件操作（参数级分级）
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * 一个入口承载 新建目录 / 移动 / 删除，减少模型可选工具数。
+ * 风险不合并：tierForArgs 把 action 映射到 normal/highRisk/dangerous，
+ * 闸门、审计和熔断都看到真实等级。
+ */
+export function fileOpTool(fs: FileSystemPort): ToolSpec {
+  return {
+    name: 'file_op',
+    description:
+      '文件管理操作：mkdir 新建目录，move 移动/重命名，remove 删除。' +
+      '必须指定 action；删除默认禁用，移动/删除不能通过只读权限。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['mkdir', 'move', 'remove'] },
+        path: { type: 'string', description: 'mkdir/remove 的目标路径' },
+        from: { type: 'string', description: 'move 的源路径' },
+        to: { type: 'string', description: 'move 的目标路径' },
+        recursive: { type: 'boolean', description: 'remove 目录时必须显式传 true' },
+      },
+      required: ['action'],
+    },
+    tier: 'normal',
+    tierForArgs: (args) => {
+      const action = (args as { action?: unknown } | null)?.action;
+      if (action === 'remove') return 'dangerous';
+      if (action === 'move') return 'highRisk';
+      return 'normal';
+    },
+    summarize: (args) => {
+      const a = args as { action?: unknown; path?: unknown; from?: unknown; to?: unknown };
+      if (a.action === 'move') return `移动 ${String(a.from ?? '?')} → ${String(a.to ?? '?')}`;
+      if (a.action === 'remove') return `删除 ${String(a.path ?? '?')}`;
+      return `新建目录 ${String(a.path ?? '?')}`;
+    },
+    async execute(args: unknown, ctx: ToolContext) {
+      const a = args as {
+        action?: string;
+        path?: string;
+        from?: string;
+        to?: string;
+        recursive?: boolean;
+      };
+      if (a.action === 'mkdir') {
+        if (typeof a.path !== 'string') {
+          return { ok: false, output: 'mkdir 需要 path', isError: true, durationMs: 0 };
+        }
+        return makeDirTool(fs).execute({ path: a.path }, ctx);
+      }
+      if (a.action === 'move') {
+        if (typeof a.from !== 'string' || typeof a.to !== 'string') {
+          return { ok: false, output: 'move 需要 from 和 to', isError: true, durationMs: 0 };
+        }
+        return moveTool(fs).execute({ from: a.from, to: a.to }, ctx);
+      }
+      if (a.action === 'remove') {
+        if (typeof a.path !== 'string') {
+          return { ok: false, output: 'remove 需要 path', isError: true, durationMs: 0 };
+        }
+        return removeTool(fs).execute(
+          { path: a.path, ...(a.recursive === true ? { recursive: true } : {}) },
+          ctx,
+        );
+      }
+      return { ok: false, output: 'action 必须是 mkdir/move/remove', isError: true, durationMs: 0 };
+    },
+    async preview(args: unknown, ctx: ToolContext) {
+      const a = args as { action?: string; path?: string; from?: string; to?: string; recursive?: boolean };
+      if (a.action === 'remove' && typeof a.path === 'string') {
+        return (
+          (await removeTool(fs).preview?.(
+            { path: a.path, ...(a.recursive === true ? { recursive: true } : {}) },
+            ctx,
+          )) ?? ''
+        );
+      }
+      if (a.action === 'move' && typeof a.from === 'string' && typeof a.to === 'string') {
+        return (await moveTool(fs).preview?.({ from: a.from, to: a.to }, ctx)) ?? '';
+      }
+      return '';
+    },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
 // 汇总
 // ═══════════════════════════════════════════════════════════
 
@@ -472,9 +644,10 @@ export function fileTools(fs: FileSystemPort): readonly ToolSpec[] {
     readFileTool(fs),
     listDirTool(fs),
     writeFileTool(fs),
-    makeDirTool(fs),
-    moveTool(fs),
-    removeTool(fs),
+    fileOpTool(fs),
     statTool(fs),
+    grepTool(fs),
+    globTool(fs),
+    applyPatchTool(fs),
   ];
 }

@@ -320,6 +320,22 @@ export function inferTier(toolName: string, description = ''): TierInference {
   //   只读动词表是**锚定开头**的（`^(get|list|read|...)`），
   //   所以放在前面不会误放行 `get_and_delete` 这类 ——
   //   那种名字在第 ① 步就因含 delete 被判危险了。
+  /**
+   * ★ 组合名：只读动词开头、但后半段是写动作。
+   *
+   *   `search_and_replace_files` 曾因 `^search` 被判成 readOnly ——
+   *   于是它在只读策略下**自动执行**，而它其实会改文件。实测确认。
+   *
+   *   ⚠️ 用**分隔符划词的完整动词**匹配，不用裸子串：
+   *      裸 `update` 会命中 `get_updated_at`，裸 `set` 会命中 `get_settings`。
+   *      这里要求动词前后是 `_` `-` `.` 空格或首尾。
+   */
+  const COMPOUND_WRITE =
+    /(^|[_.\- ])(write|create|save|upload|install|deploy|replace|edit|patch|rename|move|insert|append|overwrite)([_.\- ]|$)/i;
+  if (COMPOUND_WRITE.test(toolName)) {
+    return { tier: 'highRisk', why: '工具名含写入类动词（不因只读前缀而放行）' };
+  }
+
   for (const re of READ_ONLY_PATTERNS) {
     if (re.test(toolName)) return { tier: 'readOnly', why: '工具名以只读动词开头' };
   }
