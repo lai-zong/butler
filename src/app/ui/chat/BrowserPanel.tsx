@@ -3,10 +3,19 @@
 /**
  * 内嵌浏览器面板 —— 右栏「浏览器」页签
  *
- * 三块能力：
+ * 五块能力：
  *   · 画面：订阅 `/api/browser/stream` 的 SSE 帧，等比缩放到面板里；
  *   · 操作：地址栏、前进后退刷新、鼠标/滚轮/键盘都转发给服务端的 CDP 浏览器；
+ *   · 输入：画面里藏一个看不见的 <textarea> 专门承接中文输入法，另有一个
+ *     「粘贴」按钮把本地剪贴板读成 text 送进页面；
+ *   · 下载：弹层列出 `<数据目录>/browser-downloads` 里的文件（GET /api/browser/downloads）；
  *   · 给 AI：读当前页正文与截图，整理成问题交给父组件**填进输入框**（不自动发送）。
+ *
+ * ★ 为什么键盘要经过一个看不见的 <textarea>：
+ *   Chromium 只给「可编辑元素」派发 composition 事件。画面容器是个 div，
+ *   没有可编辑性，输入法根本不会启动 —— 中文只能一个字母一个字母地被 keydown
+ *   当成拼音发出去。所以画面里放一个 1px、透明、不吃指针事件的 textarea 承接组字：
+ *   它的 value 永远清空，只当输入法的落点；普通字符与特殊键仍由 keydown 逐键转发。
  *
  * ★ 为什么要懒启动：
  *   一个 Chromium 实例要几百 MB。这里只在组件挂载时（= 用户第一次点中「浏览器」页签）
@@ -26,7 +35,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type {
+  ClipboardEvent as ReactClipboardEvent,
   CompositionEvent as ReactCompositionEvent,
+  FocusEvent as ReactFocusEvent,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -71,6 +82,18 @@ interface BrowserFrame {
   readonly height: number;
 }
 
+/** 下载目录里的一项；服务端只给了这三个字段，展示需要的也只有这三个。 */
+interface DownloadItem {
+  readonly name: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+interface DownloadsResponse extends OkResponse {
+  /** 服务端在浏览器没起来时会回 `{ok:true, items:[], code}`，所以按可选处理。 */
+  readonly items?: readonly unknown[];
+}
+
 interface PageState {
   readonly running: boolean;
   readonly url: string;
@@ -93,6 +116,12 @@ type ReadState =
   | { readonly status: 'idle' }
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly page: BrowserReadResponse }
+  | { readonly status: 'error'; readonly message: string };
+
+type DownloadsState =
+  | { readonly status: 'idle' }
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly items: readonly DownloadItem[] }
   | { readonly status: 'error'; readonly message: string };
 
 type BrowserAction = 'back' | 'forward' | 'reload';
@@ -130,6 +159,16 @@ const SPECIAL_KEYS: ReadonlySet<string> = new Set([
   'ArrowLeft',
   'ArrowRight',
 ]);
+
+/**
+ * 输入法上屏后的「补发按键」忽略窗口（毫秒）。
+ *
+ * ★ Chrome 在 compositionend 之后还会替确认键（回车 / 空格）补一个 keydown，
+ *   那是输入法在选候选词，不是用户想发给远端的回车。不吞掉的话，
+ *   中文输入完按回车确认，远端页面的输入框会被同时"提交"一次。
+ *   窗口取 100ms：比人手连按两下的间隔短，不会误吞真正的回车。
+ */
+const IME_COMMIT_GUARD_MS = 100;
 
 function apiErrorCode(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
@@ -179,6 +218,60 @@ function buttonOf(button: number): MouseButton | null {
   return null;
 }
 
+/**
+ * 下载列表的响应是外部输入（目录里有什么就是什么），形状不对的项直接丢。
+ * 只保留 name 是字符串的项，size / mtimeMs 缺了就用 0，展示层自己会藏起来。
+ */
+function parseDownloads(raw: unknown): readonly DownloadItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DownloadItem[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    const name = rec['name'];
+    if (typeof name !== 'string' || name.length === 0) continue;
+    const size = rec['size'];
+    const mtimeMs = rec['mtimeMs'];
+    out.push({
+      name,
+      size: typeof size === 'number' && Number.isFinite(size) ? size : 0,
+      mtimeMs: typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) ? mtimeMs : 0,
+    });
+  }
+  return out;
+}
+
+/** 字节数 → 一眼能比出量级的大小；列表里不需要精确到字节。 */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'] as const;
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[unit] ?? 'KB'}`;
+}
+
+/**
+ * mtimeMs → `YYYY-MM-DD HH:mm`。
+ *
+ * ★ 不用 toLocaleString：格式跟着系统区域走，中英文环境下长度都不一样，
+ *   一列时间参差不齐；面板里这一列用的是等宽字体，定长才好对齐。
+ */
+function formatMtime(mtimeMs: number): string {
+  if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) return '';
+  const date = new Date(mtimeMs);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    ` ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
+}
+
 export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): JSX.Element {
   // ── 启动 / 画面连接 ────────────────────────────────────────────────
   const [boot, setBoot] = useState<BootState>({ status: 'starting' });
@@ -194,6 +287,20 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   // ── 「让 AI 看」面板 ───────────────────────────────────────────────
   const [read, setRead] = useState<ReadState>({ status: 'idle' });
 
+  // ── 下载弹层 ───────────────────────────────────────────────────────
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [downloads, setDownloads] = useState<DownloadsState>({ status: 'idle' });
+
+  /**
+   * 粘贴失败时的兜底提示。
+   * 单独一个 state 而不是复用 actionError：这不是"操作失败"，是"换个办法"，
+   * 红框会让人以为页面出问题了；但也不能不说 —— 点了没反应等于功能坏了。
+   */
+  const [hint, setHint] = useState<string | null>(null);
+
+  /** 画面是否持有键盘；只用来画那圈高亮边框（见 CSS 的 .browser-stage.is-focused）。 */
+  const [stageFocused, setStageFocused] = useState(false);
+
   /**
    * 组件是否还活着。
    * 请求都是异步的，卸载后回来再 setState 虽然 React 18 不再报警，
@@ -204,6 +311,14 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const addressRef = useRef<HTMLInputElement | null>(null);
+  /** 承接输入法的隐藏输入框；它才是真正持有焦点、产生 composition 事件的元素。 */
+  const imeRef = useRef<HTMLTextAreaElement | null>(null);
+  /** 下载按钮 + 弹层的外壳，用来判断"点在弹层外面"。 */
+  const downloadsWrapRef = useRef<HTMLDivElement | null>(null);
+  /** 是否正在输入法组字（拼音还没上屏）；组字期间一个键都不往页面发。 */
+  const composingRef = useRef(false);
+  /** 最近一次 compositionend 的时刻，用来吞掉上屏那一下的补发按键。 */
+  const commitAtRef = useRef(0);
   /** 最近一帧的 viewport 尺寸；坐标换算按它算，不用写死 1280。 */
   const frameSizeRef = useRef<{ width: number; height: number }>({
     width: DEFAULT_VIEWPORT.width,
@@ -394,11 +509,46 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     void postJson<OkResponse>('/api/browser/input', { type: 'key', key }).catch(() => undefined);
   }
 
+  /**
+   * 把焦点交给隐藏输入框。
+   *
+   * ★ 为什么非得聚焦它：Chromium 只给可编辑元素派发 composition 事件。
+   *   焦点不在它身上，输入法就根本不启动，中文只能被打成拼音字母。
+   *   按键转发本身不挑焦点（keydown 会冒泡到舞台），所以这次聚焦只服务输入法。
+   */
+  function focusIme(): void {
+    const el = imeRef.current;
+    // 已经聚焦就别再 focus：重复聚焦会把输入法刚组好的字打断。
+    if (el !== null && document.activeElement !== el) el.focus({ preventScroll: true });
+  }
+
+  /**
+   * 把隐藏输入框挪到点击处。
+   *
+   * ★ 输入法的候选词窗跟着 caret rect 走。把 1px 的输入框钉在左上角，
+   *   候选词就会永远飘在画面角落；跟着点击点走，才像在"页面上打字"。
+   *   坐标夹在舞台内部：绝对定位的子元素一旦越界，容器就可能多出可滚动区域，
+   *   而这块画面是用坐标换算点给远端页面的，滚一下全错位。
+   */
+  function placeImeCaret(clientX: number, clientY: number): void {
+    const el = imeRef.current;
+    const stage = stageRef.current;
+    if (el === null || stage === null) return;
+    const rect = stage.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const x = Math.min(Math.max(0, Math.round(clientX - rect.left)), Math.floor(rect.width) - 1);
+    const y = Math.min(Math.max(0, Math.round(clientY - rect.top)), Math.floor(rect.height) - 1);
+    el.style.left = `${Math.max(0, x)}px`;
+    el.style.top = `${Math.max(0, y)}px`;
+  }
+
   function handlePointerDown(event: ReactPointerEvent<HTMLImageElement>): void {
     const button = buttonOf(event.button);
     if (button === null) return;
-    // 键盘输入依赖容器焦点：点画面就应该等于点浏览器窗口。
-    stageRef.current?.focus({ preventScroll: true });
+    // 键盘输入依赖隐藏输入框的焦点：点画面就应该等于点浏览器窗口。
+    // 先挪 caret 再聚焦，输入法候选窗才会出现在点击位置附近。
+    placeImeCaret(event.clientX, event.clientY);
+    focusIme();
     // ★ 阻止原生行为：不阻止的话浏览器会开始拖拽这张图片（拖出半透明缩略图），
     //   而且拖拽期间指针事件不再按预期派发，松手也收不到 up，远端页面会一直以为按着。
     event.preventDefault();
@@ -437,13 +587,48 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     if (point !== null) postMouse('up', point, button);
   }
 
+  /**
+   * 画面获得 / 失去焦点。
+   *
+   * 这两个事件来自焦点在舞台内部的冒泡（focusin / focusout），所以隐藏输入框
+   * 自己拿到焦点时也会走到这里 —— 高亮边框才不会因为焦点"搬了一格"就闪一下。
+   */
+  function handleStageFocus(event: ReactFocusEvent<HTMLDivElement>): void {
+    setStageFocused(true);
+    // 用 Tab 进来时焦点落在舞台本身（隐藏输入框是 tabIndex=-1，不是停靠点）。
+    // 转给它，只用键盘的用户才打得出中文；点击进来时它本来就已经拿到焦点了。
+    if (event.target === event.currentTarget) focusIme();
+  }
+
+  function handleStageBlur(event: ReactFocusEvent<HTMLDivElement>): void {
+    const next = event.relatedTarget;
+    // 焦点在舞台内部搬动（舞台 → 隐藏输入框）不算离开。
+    if (next instanceof Node && event.currentTarget.contains(next)) return;
+    setStageFocused(false);
+  }
+
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // ★ Ctrl / Cmd / Alt 组合一律不转发：它们在本地是应用快捷键（保存、切换面板…），
     //   发到远端页面会同时触发页面里的同名快捷键，用户还不知道是哪边动的。
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     // 输入法组字中的按键不发：字符由 compositionend 一次性提交，逐键发只会送出拼音。
-    if (event.nativeEvent.isComposing) return;
+    // 除了 isComposing 还看 composingRef：有的内核在"确认上屏"的那个 keydown 上
+    // 已经把 isComposing 置回 false，只靠它会让拼音的尾字母漏出去。
+    if (event.nativeEvent.isComposing || composingRef.current) return;
     const key = event.key;
+    // ★ 上屏那一拍再吞一次：Chrome 会在 compositionend 之后替确认键补一个 keydown，
+    //   那是输入法在选候选词。不吞的话，中文输完按回车，远端页面会被同时提交一次。
+    const commitAt = commitAtRef.current;
+    const sinceCommit = Date.now() - commitAt;
+    if (
+      commitAt !== 0 &&
+      sinceCommit >= 0 &&
+      sinceCommit <= IME_COMMIT_GUARD_MS &&
+      (key === 'Enter' || key === ' ' || key === 'Escape')
+    ) {
+      event.preventDefault();
+      return;
+    }
     if (SPECIAL_KEYS.has(key)) {
       event.preventDefault();
       sendKey(key);
@@ -456,14 +641,52 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     }
   }
 
-  function handleCompositionEnd(event: ReactCompositionEvent<HTMLDivElement>): void {
-    // 中文输入法一次提交整段文字，只有这里拿到的才是最终结果。
+  /**
+   * 输入法开始组字 / 还在组字。
+   *
+   * ★ 这两个回调本身不转发任何东西：组字过程中的文本是拼音中间态，发出去只会打出字母。
+   *   compositionupdate 只用来把 composingRef 再置一次 —— 个别内核在焦点刚搬进
+   *   输入框时会直接发 update 而不发 start，漏掉就会把拼音逐键发给页面。
+   */
+  function handleCompositionStart(): void {
+    composingRef.current = true;
+  }
+
+  function handleCompositionUpdate(): void {
+    composingRef.current = true;
+  }
+
+  /**
+   * 组字结束：`event.data` 是输入法最终上屏的文字，只有这里发才不会重复。
+   *
+   * value 必须立刻清空：它是承接器不是输入框，留着内容下一次组字会把旧文本一起上屏。
+   */
+  function handleCompositionEnd(event: ReactCompositionEvent<HTMLTextAreaElement>): void {
+    composingRef.current = false;
+    commitAtRef.current = Date.now();
+    event.currentTarget.value = '';
     sendText(event.data);
+  }
+
+  /**
+   * 隐藏输入框里的 Ctrl+V。
+   *
+   * ★ 它是可编辑元素，Ctrl+V 会直接粘进这个看不见的框里 —— 用户只会看到
+   *   "什么都没发生"，框里还留下一堆文本。这里截下来转成 text 输入发给页面：
+   *   剪贴板读取被浏览器拒绝时，面板提示的"请用 Ctrl+V"指的正是这条路。
+   */
+  function handleImePaste(event: ReactClipboardEvent<HTMLTextAreaElement>): void {
+    event.preventDefault();
+    const text = event.clipboardData.getData('text/plain');
+    event.currentTarget.value = '';
+    sendText(text);
   }
 
   // ── 「让 AI 看」 ───────────────────────────────────────────────────
 
   async function openReadPanel(): Promise<void> {
+    // 模态弹层要独占视线：顺手收起下载弹层，免得两个浮层叠在一起。
+    setDownloadsOpen(false);
     setRead({ status: 'loading' });
     try {
       const res = await postJson<BrowserReadResponse>('/api/browser/read', {});
@@ -491,6 +714,64 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     ].join('\n');
     onSendToButler(text);
     setRead({ status: 'idle' });
+  }
+
+  // ── 粘贴 / 下载 ────────────────────────────────────────────────────
+
+  /**
+   * 「粘贴」：把本地剪贴板里的文本送进远端页面。
+   *
+   * ★ readText 必须留在点击的手势里同步调用：先 await 别的东西再读，
+   *   用户激活状态就过期了，浏览器会直接拒绝。
+   * ★ 失败绝不能静默：点了按钮却什么都没发生，用户只会以为功能坏了。
+   *   兜底路径是画面聚焦后按 Ctrl+V（见 handleImePaste）。
+   */
+  async function pasteFromClipboard(): Promise<void> {
+    setHint(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!aliveRef.current) return;
+      if (text.length === 0) {
+        // 读成功了、只是里面没有文本：这时说"读不到"是假话，所以分开提示。
+        // 两种提示都给出 Ctrl+V，用户不需要判断自己遇到的是哪一种。
+        setHint('剪贴板里没有文本；浏览器不允许读取剪贴板时请用 Ctrl+V');
+        return;
+      }
+      sendText(text);
+      // 粘完把焦点还给画面：接着就能用键盘，不用再点一下。
+      focusIme();
+    } catch {
+      if (!aliveRef.current) return;
+      setHint('浏览器不允许读取剪贴板，请用 Ctrl+V');
+    }
+  }
+
+  /**
+   * 拉一次下载列表。
+   *
+   * ★ 只在弹层打开时拉、不轮询：下载是低频动作，定时刷新不会让列表更快，
+   *   只会让服务端隔几秒就去读一次磁盘。
+   */
+  async function loadDownloads(): Promise<void> {
+    setDownloads({ status: 'loading' });
+    try {
+      const res = await fetchJson<DownloadsResponse>('/api/browser/downloads');
+      if (!aliveRef.current) return;
+      setDownloads({ status: 'ready', items: parseDownloads(res.items) });
+    } catch (err) {
+      if (!aliveRef.current) return;
+      setDownloads({ status: 'error', message: errorMessage(err) });
+    }
+  }
+
+  /** 点「下载」：开着就收起；要打开就先刷新一次，用户看到的永远是最新目录。 */
+  function toggleDownloads(): void {
+    if (downloadsOpen) {
+      setDownloadsOpen(false);
+      return;
+    }
+    setDownloadsOpen(true);
+    void loadDownloads();
   }
 
   // ── 生命周期 ───────────────────────────────────────────────────────
@@ -554,6 +835,31 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   }, [read.status]);
 
   /**
+   * 下载弹层的「点外面关掉 / Esc 关掉」。
+   *
+   * ★ 不铺遮罩：它不该挡住画面，用户很可能是一边看页面一边开下载列表。
+   *   所以只在打开期间挂两个 window 监听，关掉立刻摘掉，不留常驻监听。
+   */
+  useEffect(() => {
+    if (!downloadsOpen) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      const wrap = downloadsWrapRef.current;
+      // 点在按钮或弹层里不关：那是在和弹层本身交互（按钮自己还会 toggle）。
+      if (wrap !== null && event.target instanceof Node && wrap.contains(event.target)) return;
+      setDownloadsOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setDownloadsOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [downloadsOpen]);
+
+  /**
    * 切会话时收起 AI 面板。
    *
    * ★ 面板里的正文属于上一个会话的上下文，继续留着，用户点「发给管家」
@@ -592,6 +898,57 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       : boot.status === 'starting'
         ? { title: '启动中…', hint: '首次启动 Chromium 需要几秒' }
         : { title: '等待画面…', hint: '页面还没有产生新帧' };
+
+  /**
+   * 下载弹层的内容区。
+   *
+   * ★ 空态、错误态都写死在弹层里而不是"什么都不显示"：
+   *   一个空的白色弹层会让人以为列表没加载完。
+   */
+  function renderDownloadsBody(): JSX.Element {
+    if (downloads.status === 'loading') {
+      return (
+        <div className="browser-downloads-body" aria-busy="true">
+          <span className="review-spinner" aria-hidden="true" />
+          <p>正在读取下载列表…</p>
+        </div>
+      );
+    }
+    if (downloads.status === 'error') {
+      return (
+        <div className="browser-downloads-body is-error" role="alert">
+          <Icon name="alert" size={15} />
+          <p>{downloads.message}</p>
+        </div>
+      );
+    }
+    if (downloads.status === 'ready' && downloads.items.length > 0) {
+      return (
+        <ul className="browser-downloads-list">
+          {downloads.items.map((item) => {
+            const time = formatMtime(item.mtimeMs);
+            return (
+              <li key={`${item.name}:${item.mtimeMs}`} className="browser-downloads-item">
+                <span className="browser-downloads-name" title={item.name}>
+                  {item.name}
+                </span>
+                <span className="browser-downloads-meta">
+                  {formatBytes(item.size)}
+                  {time.length > 0 ? ` · ${time}` : ''}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      );
+    }
+    return (
+      <div className="browser-downloads-body">
+        <Icon name="download" size={15} />
+        <p>还没有下载</p>
+      </div>
+    );
+  }
 
   function renderReadPanel(): JSX.Element | null {
     if (read.status === 'idle') return null;
@@ -741,6 +1098,62 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
           />
         </form>
 
+        {/*
+          输入与下载工具。
+          用「图标 + 两个字」而不是纯图标：图标集里没有剪贴板，单看一个双矩形
+          没人知道是粘贴；两个按钮加起来一百来像素，地址栏在最小分栏下仍够用。
+        */}
+        <div className="browser-tools" role="group" aria-label="页面输入与下载">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm browser-tool-btn"
+            onClick={() => void pasteFromClipboard()}
+            // 页面没起来时贴进去也没人收，和「让 AI 看」保持一致直接禁用。
+            disabled={!ready}
+            title="把本地剪贴板里的文本输入到页面"
+          >
+            {/* 图标集里没有剪贴板，复制用的双矩形是这套线稿里最接近的一个。 */}
+            <Icon name="copy" size={13} /> 粘贴
+          </button>
+
+          {/* 外壳只为判断"点在弹层外面"；弹层自身相对 .browser-panel 定位，
+              面板再窄也不会被裁掉左边。 */}
+          <div className="browser-downloads-wrap" ref={downloadsWrapRef}>
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm browser-tool-btn${downloadsOpen ? ' is-active' : ''}`}
+              onClick={toggleDownloads}
+              // 读目录不依赖浏览器进程，所以不跟 ready 联动：
+              // 进程挂了也应该能看见之前下载过什么。
+              title="查看浏览器下载的文件"
+              aria-haspopup="dialog"
+              aria-expanded={downloadsOpen}
+            >
+              <Icon name="download" size={13} /> 下载
+            </button>
+
+            {downloadsOpen ? (
+              <section className="browser-downloads" role="dialog" aria-label="已下载的文件">
+                <header className="browser-downloads-head">
+                  <h3>下载的文件</h3>
+                  <button
+                    type="button"
+                    className="browser-icon-btn"
+                    onClick={() => setDownloadsOpen(false)}
+                    aria-label="关闭下载列表"
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
+                </header>
+                {renderDownloadsBody()}
+                <p className="browser-downloads-foot">
+                  下载保存在本机数据目录的 browser-downloads 里
+                </p>
+              </section>
+            ) : null}
+          </div>
+        </div>
+
         <button
           type="button"
           className="btn btn-ghost btn-sm browser-read-btn"
@@ -751,6 +1164,25 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
           <Icon name="eye" size={13} /> 让 AI 看
         </button>
       </div>
+
+      {/*
+        剪贴板读不到时的提示：不是错误（页面没问题），但也必须说出来，
+        否则用户点「粘贴」看到零反应，只会以为按钮坏了。
+      */}
+      {hint !== null ? (
+        <div className="browser-alert" role="status">
+          <Icon name="info" size={13} />
+          <span>{hint}</span>
+          <button
+            type="button"
+            className="browser-alert-close"
+            onClick={() => setHint(null)}
+            aria-label="关闭这条提示"
+          >
+            <Icon name="close" size={12} />
+          </button>
+        </div>
+      ) : null}
 
       {actionError !== null ? (
         <div className="browser-alert is-error" role="alert">
@@ -795,12 +1227,15 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
         ) : (
           <div
             ref={stageRef}
-            className="browser-stage"
+            // is-focused 是"键盘被画面接管"的信号：真正的焦点在隐藏输入框上，
+            // 舞台自己永远不匹配 :focus-visible，所以只能靠这个类画高亮。
+            className={`browser-stage${stageFocused ? ' is-focused' : ''}`}
             tabIndex={0}
             role="group"
             aria-label="浏览器画面：点击后可用键盘操作"
             onKeyDown={handleKeyDown}
-            onCompositionEnd={handleCompositionEnd}
+            onFocus={handleStageFocus}
+            onBlur={handleStageBlur}
           >
             <img
               ref={imgRef}
@@ -815,6 +1250,42 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
               // 本地弹出「另存为图片」只会让人误以为操作的是本地文件。
               onContextMenu={(event) => event.preventDefault()}
             />
+            {/*
+              输入法宿主：Chromium 只给可编辑元素派发 composition 事件，
+              没有它中文输入法根本不启动（原因见文件头）。
+              它只有 1px、透明、pointer-events:none：不占布局、不挡点击，
+              唯一的"出口"是被 focus 和被 composition 事件找到。
+            */}
+            <textarea
+              ref={imeRef}
+              className="browser-ime"
+              // tabIndex=-1：Tab 要转发给远端页面，本地绝不把它算作一个停靠点；
+              // 需要时由点击或舞台的 onFocus 主动把焦点搬进来。
+              tabIndex={-1}
+              rows={1}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              aria-label="页面键盘输入（输入法）"
+              onInput={(event) => {
+                // 非组字状态下的 input 是内核把字符插进了这个 textarea。
+                // 立刻清空：它只负责承接，任何文本都不该留在里面。
+                // 组字中清空会打断候选词，那种情况由 compositionend 统一清。
+                if (!composingRef.current) event.currentTarget.value = '';
+              }}
+              onCompositionStart={handleCompositionStart}
+              onCompositionUpdate={handleCompositionUpdate}
+              onCompositionEnd={handleCompositionEnd}
+              onPaste={handleImePaste}
+            />
+            {stageFocused && hasFrame ? (
+              // 焦点高亮只有一圈边框，说人话补一句：现在打字是打到页面上。
+              // 纯装饰，读屏不重复播报（舞台的 aria-label 已经说过一次）。
+              <span className="browser-stage-focus" aria-hidden="true">
+                键盘已接管
+              </span>
+            ) : null}
             {hasFrame ? null : (
               <div className="browser-stage-note" aria-live="polite">
                 <span className="review-spinner" aria-hidden="true" />

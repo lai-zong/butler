@@ -5890,6 +5890,44 @@ button.work-crumb:hover {
   white-space: nowrap;
 }
 
+/*
+ * ── 输入与下载工具 ────────────────────────────────────────
+ * 图标 + 两个字：图标集里没有剪贴板，纯图标看不出是"粘贴"。
+ * 两个按钮合计约 120px，地址栏是弹性宽度，最小分栏下仍够显示一截网址。
+ */
+.browser-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.browser-tool-btn {
+  flex: none;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 弹层开着时按钮保持按下态：用户一眼能看出列表是从这个按钮出来的。 */
+.browser-tool-btn.is-active {
+  border-color: #b6cbc0;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+/*
+ * 只有按钮和弹层的 DOM 关系，不设 position：
+ * 弹层要相对 .browser-panel 定位（见 .browser-downloads），
+ * 面板窄的时候 right/宽度都按面板算，不会被裁掉左边。
+ */
+.browser-downloads-wrap {
+  display: flex;
+  align-items: center;
+}
+
 /* ── 错误条：导航失败 / 画面断开 ──────────────────────────── */
 
 .browser-alert {
@@ -5948,6 +5986,123 @@ button.work-crumb:hover {
   opacity: 1;
 }
 
+/* ── 下载弹层 ────────────────────────────────────────────── */
+
+/*
+ * 相对 .browser-panel 定位（wrap 没有 position，所以往上一层找）：
+ * 宽度用百分比夹住，面板被拖窄时列表跟着窄，不会从左边溢出去。
+ * top 是工具栏高度（上下 8 + 地址栏 28 + 1px 边框 = 45）再留 2px 呼吸。
+ * z-index 低于 .browser-read-backdrop(5)：万一两个弹层同时开着，
+ * 「让 AI 看」是模态的，必须压在上面。
+ */
+.browser-downloads {
+  position: absolute;
+  top: 47px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  width: min(300px, calc(100% - 24px));
+  max-height: min(340px, 64%);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  text-align: left;
+}
+
+.browser-downloads-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px 6px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.browser-downloads-head h3 {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* 空态 / 加载 / 出错共用一块居中的说明区；只有颜色不同。 */
+.browser-downloads-body {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 22px 16px;
+  color: var(--ink-4);
+  font-size: 10.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.browser-downloads-body.is-error {
+  color: var(--danger);
+}
+
+.browser-downloads-body > svg {
+  flex: none;
+}
+
+/* 深色底才用高对比转圈，这里是浅色弹层，换成常规配色。 */
+.browser-downloads-body .review-spinner {
+  border-color: var(--line);
+  border-top-color: var(--accent);
+}
+
+.browser-downloads-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  list-style: none;
+}
+
+.browser-downloads-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.browser-downloads-item:hover {
+  background: var(--surface-2);
+}
+
+/* 文件名可能很长：一行截断，完整名字在 title 里。 */
+.browser-downloads-name {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-downloads-meta {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+}
+
+.browser-downloads-foot {
+  flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--ink-4);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
 /* ── 画面 ────────────────────────────────────────────────── */
 
 .browser-body {
@@ -5978,8 +6133,65 @@ button.work-crumb:hover {
   user-select: none;
 }
 
+/*
+ * ★ 为什么还要 is-focused：
+ *   真正的焦点在隐藏输入框（.browser-ime）上，舞台自己拿不到焦点，
+ *   也就永远不会匹配 :focus-visible。键盘现在归远端页面所有，
+ *   必须给用户一个"我现在打字是打到页面上"的信号。
+ */
+.browser-stage.is-focused,
 .browser-stage:focus-visible {
   box-shadow: inset 0 0 0 2px var(--accent-bright);
+}
+
+/*
+ * 输入法宿主：看不见，但必须能被 focus。
+ *
+ * ★ 为什么不用 display:none / visibility:hidden：这两者都拿不到焦点，
+ *   输入法不会启动 —— 那就回到了"中文只能打出拼音"的老问题。
+ *   1px + opacity:0 是唯一既可聚焦又完全看不见的写法。
+ * ★ 为什么 pointer-events:none：它盖在画面上，不关掉的话点击永远落不到 <img>，
+ *   鼠标转发直接断掉；聚焦由 JS 在 pointerdown 里主动做，不需要点得到它。
+ */
+.browser-ime {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  opacity: 0;
+  overflow: hidden;
+  resize: none;
+  pointer-events: none;
+  /* 舞台上是 user-select:none，这里要放开：输入法上屏依赖可编辑语义。 */
+  -webkit-user-select: text;
+  user-select: text;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 焦点高亮之外再补一句话，纯视觉提示，不吃指针事件。 */
+.browser-stage-focus {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(20, 19, 16, 0.62);
+  color: rgba(236, 231, 218, 0.94);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /*
