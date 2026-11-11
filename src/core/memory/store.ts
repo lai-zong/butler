@@ -706,6 +706,83 @@ export class MemoryStore {
   }
 
   /**
+   * 第一步删除：把记忆移出记忆库，原文交给存档区保存。
+   *
+   * ★ 与 `forget()` 的分工：
+   *   `forget` 是"彻底删除"（抹原文 + 只留指纹），用于存档区里的第二步；
+   *   本方法是"收起来"：记忆库不再持有、召回不再命中，但原文还在存档区，
+   *   随时可以恢复。用户点一次「删除」走的是这里。
+   *
+   * ⚠️ 硬约束（过敏/禁忌）不走这里：它必须显式确认后直接销毁，
+   *    避免"删除再恢复"这种来回操作把安全边界搅浑。
+   */
+  takeOutForArchive(args: {
+    readonly actor: MemoryActor;
+    readonly id: string;
+    readonly archiveId: string;
+  }): { ok: boolean; reason?: string; entry?: MemoryEntry } {
+    const entry = this.entries.get(args.id);
+    if (!entry) return { ok: false, reason: 'not_found' };
+    if (entry.memClass === 'global_constraint') {
+      return { ok: false, reason: 'hard_constraint_requires_confirmation' };
+    }
+    const deny = this.canWrite(args.actor, entry);
+    if (deny) return { ok: false, reason: deny };
+
+    this.entries.delete(args.id);
+    // 版本历史里也有 patch.before/after（可能带原文），一并移走
+    const kept = this.revisions.filter((r) => r.memoryId !== args.id);
+    this.revisions.splice(0, this.revisions.length, ...kept);
+
+    this.log.append({
+      type: 'intervention.archivedOut',
+      actor: args.actor.kind === 'user' ? 'user' : args.actor.kind,
+      payload: {
+        memoryId: args.id,
+        archiveId: args.archiveId,
+        memClass: entry.memClass,
+        // 只记指纹，不记原文 —— 事件流不承载已删除的内容
+        contentHash: hashContent(entry.content),
+        note: '已移入存档区；在存档区再次删除才会抹除原文',
+      },
+      createdAt: this.clock.now(),
+    });
+
+    return { ok: true, entry };
+  }
+
+  /**
+   * 从存档区恢复：原样回到记忆库，状态置为 `active`。
+   *
+   * ★ 恢复即"承认它是对的"，所以不回到 candidate 再走一遍验证流程。
+   */
+  restoreFromArchive(actor: MemoryActor, entry: MemoryEntry): boolean {
+    if (this.entries.has(entry.id)) return false;
+    const now = this.clock.now();
+    // 清掉"归档中/休眠中"的时间戳：它现在重新生效了
+    const cleaned = (({ archivedAt: _a, dormantSince: _d, ...rest }) => rest as MemoryEntry)(entry);
+    const restored: MemoryEntry = {
+      ...cleaned,
+      lifecycle: 'active',
+      updatedAt: now,
+      version: entry.version + 1,
+    };
+    this.entries.set(entry.id, restored);
+
+    this.log.append({
+      type: 'memory.restored',
+      actor: actor.kind === 'user' ? 'user' : actor.kind,
+      payload: {
+        memoryId: entry.id,
+        reason: '从存档区恢复',
+        snapshot: snapshotOf(restored),
+      },
+      createdAt: now,
+    });
+    return true;
+  }
+
+  /**
    * 用户明确确认后删除硬约束。
    *
    * 普通 `forget` 仍然拒绝硬约束（防止 AI/误操作绕过）。

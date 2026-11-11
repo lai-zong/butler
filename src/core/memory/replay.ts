@@ -55,12 +55,14 @@ export const MEMORY_STATE_EVENTS: readonly string[] = [
   'memory.rejected',
   'memory.revised',
   'memory.archived',
+  'memory.restored',
   'memory.merged',
   'memory.dormant',
   'memory.revived',
   'fitness.updated',
   // ★ v9：遗忘必须参与重放。少了这一条，删除只活到下一次重启。
   'intervention.forgotten',
+  'intervention.archivedOut',
 ];
 
 /**
@@ -122,6 +124,7 @@ export function replayMemory(events: readonly SessionEvent[]): ReplayMemoryResul
         break;
       }
 
+      case 'intervention.archivedOut':
       case 'intervention.forgotten': {
         /**
          * ★ v9：删除也参与重放。

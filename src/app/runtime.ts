@@ -30,6 +30,8 @@ import { mkdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 
 import { JsonlEventStore, loadEvents } from '@/adapters/storage/jsonlEvents.js';
+import { JsonlMemoryArchive } from '@/adapters/storage/jsonlMemoryArchive.js';
+import type { MemoryArchivePort } from '@/core/memory/archive.js';
 import { SeededRandom } from '@/core/ports/clock.js';
 import { SystemClock } from '@/adapters/clock/system.js';
 import { bootstrap, renderRestoreSummary, type BootstrapResult } from '@/core/runtime/bootstrap.js';
@@ -151,6 +153,13 @@ export interface ButlerRuntime {
   readonly workspaceRoot: string;
   /** 程序安装根（与 `APP_ROOT` 同源）：`.env.local`、`config/` 在这里。 */
   readonly appRoot: string;
+  /**
+   * 记忆存档区（第一步删除的落点）。
+   *
+   * ⚠️ 每个功能域各有自己的存档区：记忆的在这里，文档的由文档服务管理，
+   *    工作区文件将来有自己的回收站。**不要合并成一个大归档区。**
+   */
+  readonly memoryArchive: MemoryArchivePort;
   /** 主模型（文本 + 结构化 + 工具） */
   readonly model: ModelPort | null;
   /** 固定的记忆模型；不跟随对话模型切换。 */
@@ -851,6 +860,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     random,
     dataDir: DATA_DIR,
     appRoot: APP_ROOT,
+    memoryArchive: new JsonlMemoryArchive({ dataDir: DATA_DIR }),
     workspaceRoot: WORKSPACE_ROOT,
     model,
     memoryModel,

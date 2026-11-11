@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   search: vi.fn(),
   ingest: vi.fn(),
   remove: vi.fn(),
+  // 删除改成两步：先移入文档存档区（可恢复），再在存档区彻底删除
+  archiveOut: vi.fn(),
 }));
 
 vi.mock('@/app/server/documents.js', () => ({
@@ -14,6 +16,7 @@ vi.mock('@/app/server/documents.js', () => ({
     search: mocks.search,
     ingest: mocks.ingest,
     remove: mocks.remove,
+    archiveOut: mocks.archiveOut,
   }),
 }));
 
@@ -65,11 +68,24 @@ describe('/api/documents', () => {
   });
 
   it('DELETE 找不到 404', async () => {
-    mocks.remove.mockResolvedValue(false);
+    mocks.archiveOut.mockResolvedValue(null);
     const r = await DELETE(
       new NextRequest('http://localhost/api/documents/doc_x', { method: 'DELETE' }),
       { params: Promise.resolve({ id: 'doc_x' }) },
     );
     expect(r.status).toBe(404);
+  });
+
+  it('DELETE 成功后返回已移入存档区（不是彻底删除）', async () => {
+    mocks.archiveOut.mockResolvedValue('darc_1');
+    const r = await DELETE(
+      new NextRequest('http://localhost/api/documents/doc_1', { method: 'DELETE' }),
+      { params: Promise.resolve({ id: 'doc_1' }) },
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { archived?: boolean; archiveId?: string };
+    expect(body.archived).toBe(true);
+    expect(body.archiveId).toBe('darc_1');
+    expect(mocks.archiveOut).toHaveBeenCalledWith('doc_1', '用户删除');
   });
 });

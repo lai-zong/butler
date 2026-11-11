@@ -381,6 +381,13 @@ function PanelBody({
             <Icon name="close" size={13} />
             删除这条记忆
           </button>
+          {/* 入口处就说清这一步的后果：等用户点开确认框才第一次知道"其实可恢复"，
+              会让「删除」在心理上仍然是一次不可逆操作。 */}
+          <p className="md-muted">
+            {hardConstraint
+              ? '硬约束确认后直接销毁，不进入存档区。'
+              : '删除会先移入存档区，可恢复。'}
+          </p>
         </div>
       </footer>
 
@@ -400,9 +407,16 @@ function PanelBody({
             aria-labelledby="md-delete-title"
             aria-describedby="md-delete-desc"
           >
-            <h3 id="md-delete-title">删除这条记忆？</h3>
+            <h3 id="md-delete-title">
+              {hardConstraint ? '删除这条记忆？' : '把这条记忆移入存档区？'}
+            </h3>
+            {/* 文案直接对应"两步删除"：普通记忆第一步只是移入存档区，
+                硬约束仍是"确认即销毁"的唯一例外 —— 两句话必须分开，
+                否则用户会以为硬约束也能在存档区找回。 */}
             <p id="md-delete-desc">
-              它会从记忆库永久删除，历史事件中的原文也会被抹去，无法恢复。
+              {hardConstraint
+                ? '这是硬约束：确认后直接销毁，不进入存档区；历史事件中的原文也会被抹去，无法恢复。'
+                : '它会先移入记忆存档区，可恢复；只有在存档区点「彻底删除」才会抹除原文。'}
               你在聊天里自己说过的话不在此列。
             </p>
             {hardConstraint && (
@@ -430,7 +444,7 @@ function PanelBody({
                 disabled={deleting}
                 onClick={() => void confirmDelete()}
               >
-                {deleting ? '正在删除…' : hardConstraint ? '仍然删除' : '删除'}
+                {deleting ? '处理中…' : hardConstraint ? '仍然删除' : '移入存档区'}
               </button>
             </div>
           </div>

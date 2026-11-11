@@ -125,6 +125,7 @@ export type EventType =
   | 'memory.rejected'
   | 'memory.revised'
   | 'memory.archived'
+  | 'memory.restored'
   | 'memory.merged'
   | 'principle.derived'
   | 'principle.applied'
@@ -165,6 +166,8 @@ export type EventType =
   | 'intervention.reroute'
   | 'intervention.weightAdjusted'
   | 'intervention.forgotten'
+  /** 移入存档区（第一步删除）：记忆库不再持有，原文交给存档区 */
+  | 'intervention.archivedOut'
   | 'credential.authorized'
   | 'credential.used'
   | 'action.classified'
@@ -310,6 +313,7 @@ export const EVENT_FAMILIES = {
     'memory.rejected',
     'memory.revised',
     'memory.archived',
+    'memory.restored',
     'memory.merged',
     'principle.derived',
     'principle.applied',
@@ -354,6 +358,7 @@ export const EVENT_FAMILIES = {
     'intervention.reroute',
     'intervention.weightAdjusted',
     'intervention.forgotten',
+    'intervention.archivedOut',
     'credential.authorized',
     'credential.used',
     'action.classified',

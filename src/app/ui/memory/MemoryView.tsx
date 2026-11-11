@@ -48,6 +48,7 @@ import {
   type StarEdge,
   type StarNode,
 } from './starMap.js';
+import { MemoryArchive } from './MemoryArchive';
 import { MemoryCanvas, type MemoryCanvasHandle } from './MemoryCanvas';
 import { MemoryDetail, type MemoryConnection } from './MemoryDetail';
 import { MemoryModelSettings } from './MemoryModelSettings';
@@ -95,6 +96,8 @@ export function MemoryView({
   const [layoutCustomized, setLayoutCustomized] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  /** 存档区与详情共用右侧抽屉位置，同一时间只开一个。 */
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   const [graph, setGraph] = useState<MemoryGraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -208,6 +211,8 @@ export function MemoryView({
     (id: string): void => {
       const node = nodeById.get(id);
       if (node === undefined) return;
+      // 存档区占着右侧抽屉，选中一颗星就把它让给详情。
+      setArchiveOpen(false);
       setSelectedId(id);
       setFocusNonce((value) => value + 1);
       setAnnounce(
@@ -216,6 +221,12 @@ export function MemoryView({
     },
     [nodeById],
   );
+
+  const openArchive = useCallback((): void => {
+    // 两个抽屉同位置，打开存档区前先把详情收起来，避免左边一层右边一层。
+    setSelectedId(null);
+    setArchiveOpen(true);
+  }, []);
 
   const clearSelection = useCallback((): void => {
     setSelectedId(null);
@@ -272,17 +283,30 @@ export function MemoryView({
             ...(hardConstraint ? { hardConstraintConfirmation: 'confirmed' } : {}),
           }),
         });
-        const payload = (await response.json().catch(() => null)) as { error?: unknown } | null;
+        const payload = (await response.json().catch(() => null)) as {
+          error?: unknown;
+          archived?: unknown;
+        } | null;
         if (!response.ok) {
           return typeof payload?.error === 'string'
             ? payload.error
             : `删除失败（HTTP ${response.status}）`;
         }
         setSelectedId(null);
-        setAnnounce('记忆已删除。');
         setNonce((value) => value + 1);
         onRefreshOverview();
-        notify('这条记忆已删除，无法恢复。', 'success');
+        /**
+         * 后端在硬约束上仍走"确认后直接销毁"，其余记忆进存档区。
+         * 两句话不能混用：一句"已删除无法恢复"会让用户不敢再删，
+         * 一句"可恢复"又会让硬约束的销毁看起来像是可以撤回的。
+         */
+        if (payload?.archived === true) {
+          setAnnounce('记忆已移入存档区。');
+          notify('已移入记忆存档区，可在「存档区」恢复或彻底删除。', 'success');
+        } else {
+          setAnnounce('硬约束已删除。');
+          notify('这条硬约束已永久删除，无法恢复。', 'success');
+        }
         return null;
       } catch (err) {
         return errorMessage(err);
@@ -506,6 +530,15 @@ export function MemoryView({
         panelRef={panelRef}
       />
 
+      {/* 存档区与详情共用右侧同一个抽屉位置，所以打开一个就收起另一个；
+          位置交给 CSS，这里只负责状态。 */}
+      <MemoryArchive
+        open={archiveOpen}
+        onClose={() => setArchiveOpen(false)}
+        notify={notify}
+        onChanged={refresh}
+      />
+
       <header className="mm-head">
         <div className="mm-head-row">
           <h1 className="mm-title">{isText ? '记忆文本' : '记忆星图'}</h1>
@@ -531,6 +564,17 @@ export function MemoryView({
           >
             <Icon name="settings" size={12} />
             模型设置
+          </button>
+          <button
+            type="button"
+            className="mm-guide-btn"
+            aria-haspopup="dialog"
+            aria-expanded={archiveOpen}
+            aria-controls="memory-archive-panel"
+            onClick={openArchive}
+          >
+            <Icon name="history" size={12} />
+            存档区
           </button>
         </div>
         <p className="mm-sub">
@@ -652,7 +696,7 @@ export function MemoryView({
                     lifecycle === 'candidate'
                       ? '2 个独立日期证据 + 置信度 ≥65% 自动转正；14 天未转正归档。'
                       : lifecycle === 'archived'
-                        ? '归档不等于删除；相关场景命中时仍可能被唤醒。'
+                        ? '归档是系统行为，不是删除；归档的记忆仍在库里，相关场景命中时仍可能被唤醒。'
                         : undefined
                   }
                   onClick={() => setFilter(active ? 'all' : lifecycle)}
@@ -883,8 +927,9 @@ export function MemoryView({
                   <div>
                     <dt className="is-danger">删除</dt>
                     <dd>
-                      从记忆库永久删除，历史事件中的原文也会被抹去，无法恢复。
-                      这是唯一会真正移除记忆的操作。
+                      删除分两步：先从记忆库移入右侧「存档区」，这一步随时可以恢复；
+                      在存档区点「彻底删除」，原文才会被抹除、无法恢复。
+                      硬约束是唯一例外：确认后直接销毁，不进存档区。
                     </dd>
                   </div>
                 </dl>

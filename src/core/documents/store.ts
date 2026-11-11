@@ -37,6 +37,30 @@ export interface DocumentSummary {
   readonly chunkCount: number;
 }
 
+/**
+ * 存档区里的文档记录。
+ *
+ * ★ 文档删除也走两步：先移入**文档自己的存档区**（可恢复），
+ *   在存档区再删才是真的删。它与记忆存档区互相独立，不合并。
+ */
+export interface ArchivedDocumentRecord {
+  readonly archiveId: string;
+  readonly doc: DocumentRecord;
+  readonly reason: string;
+  readonly archivedAt: number;
+}
+
+export interface ArchivedDocumentSummary {
+  readonly archiveId: string;
+  readonly id: string;
+  readonly name: string;
+  readonly mime: string;
+  readonly size: number;
+  readonly chunkCount: number;
+  readonly reason: string;
+  readonly archivedAt: number;
+}
+
 export interface DocumentHit {
   readonly documentId: string;
   readonly name: string;
@@ -112,10 +136,16 @@ function scoreChunk(text: string, tokens: readonly string[]): number {
 }
 
 export class DocumentStore {
+  /** 文档存档区目录（默认与文档目录同级：`<dataDir>/archive/documents`）。 */
+  private readonly archiveDir: string;
+
   constructor(
     private readonly dir: string,
     private readonly now: () => number = Date.now,
-  ) {}
+    archiveDir?: string,
+  ) {
+    this.archiveDir = archiveDir ?? join(dir, '..', 'archive', 'documents');
+  }
 
   private fileOf(id: string): string {
     if (!/^doc_[A-Za-z0-9-]+$/.test(id)) throw new Error('非法文档 id');
@@ -199,6 +229,104 @@ export class DocumentStore {
     const doc = await this.read(id);
     if (doc === null) return false;
     await rm(this.fileOf(id), { force: true });
+    return true;
+  }
+
+  // ── 存档区（删除的第一步）──
+
+  private archiveFileOf(archiveId: string): string {
+    if (!/^darc_[A-Za-z0-9-]+$/.test(archiveId)) throw new Error('非法存档 id');
+    return join(this.archiveDir, `${archiveId}.json`);
+  }
+
+  /**
+   * 把文档移入存档区。
+   *
+   * ★ 与 `remove` 的区别：`remove` 是真删；本方法保留原文，可以恢复。
+   *   用户点「删除」走这里；在存档区再点删除才是 `remove`。
+   */
+  async archiveOut(id: string, reason: string): Promise<string | null> {
+    const doc = await this.read(id);
+    if (doc === null) return null;
+
+    const archiveId = `darc_${randomUUID()}`;
+    const record: ArchivedDocumentRecord = {
+      archiveId,
+      doc,
+      reason,
+      archivedAt: this.now(),
+    };
+    await mkdir(this.archiveDir, { recursive: true });
+    const dest = this.archiveFileOf(archiveId);
+    const tmp = `${dest}.${process.pid}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(record)}\n`, 'utf8');
+    await rename(tmp, dest);
+
+    // 存档写成功后再删原文档：反过来的话中途崩溃会两边都没有
+    await rm(this.fileOf(id), { force: true });
+    return archiveId;
+  }
+
+  async listArchived(): Promise<readonly ArchivedDocumentSummary[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.archiveDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const out: ArchivedDocumentSummary[] = [];
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const record = await this.readArchived(name.slice(0, -5));
+      if (record === null) continue;
+      out.push({
+        archiveId: record.archiveId,
+        id: record.doc.id,
+        name: record.doc.name,
+        mime: record.doc.mime,
+        size: record.doc.size,
+        chunkCount: record.doc.chunks.length,
+        reason: record.reason,
+        archivedAt: record.archivedAt,
+      });
+    }
+    out.sort((a, b) => b.archivedAt - a.archivedAt);
+    return out;
+  }
+
+  async readArchived(archiveId: string): Promise<ArchivedDocumentRecord | null> {
+    try {
+      const raw = await readFile(this.archiveFileOf(archiveId), 'utf8');
+      const parsed = JSON.parse(raw) as ArchivedDocumentRecord;
+      if (typeof parsed.archiveId !== 'string' || typeof parsed.doc !== 'object') return null;
+      return parsed;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+  }
+
+  /** 从存档区恢复：写回文档目录并移除存档记录。 */
+  async restoreArchived(archiveId: string): Promise<boolean> {
+    const record = await this.readArchived(archiveId);
+    if (record === null) return false;
+    if (await this.read(record.doc.id) !== null) return false;
+
+    await mkdir(this.dir, { recursive: true });
+    const dest = this.fileOf(record.doc.id);
+    const tmp = `${dest}.${process.pid}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(record.doc)}\n`, 'utf8');
+    await rename(tmp, dest);
+    await rm(this.archiveFileOf(archiveId), { force: true });
+    return true;
+  }
+
+  /** 彻底删除：只删存档记录。 */
+  async purgeArchived(archiveId: string): Promise<boolean> {
+    const record = await this.readArchived(archiveId);
+    if (record === null) return false;
+    await rm(this.archiveFileOf(archiveId), { force: true });
     return true;
   }
 

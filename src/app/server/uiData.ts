@@ -133,6 +133,8 @@ export const EVENT_LABEL: Record<string, string> = {
   'intervention.reroute': '人工改派',
   'intervention.weightAdjusted': '调整权重',
   'intervention.forgotten': '遗忘记忆',
+  'intervention.archivedOut': '移入存档区',
+  'memory.restored': '从存档区恢复',
   'credential.authorized': '凭证授权',
   'credential.used': '使用凭证',
   'action.classified': '动作分级',

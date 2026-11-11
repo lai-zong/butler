@@ -24,6 +24,7 @@ import type {
   DocumentsResponse,
   KnowledgeRetrievalMode,
 } from '../lib/types.js';
+import { DocumentArchive } from './DocumentArchive';
 import { KnowledgeRetrievalSettings } from './KnowledgeRetrievalSettings';
 
 const DOMAINS = [
@@ -74,6 +75,8 @@ export function DocumentsPanel({
   const [detail, setDetail] = useState<DocumentDetailDto | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [retrievalOpen, setRetrievalOpen] = useState(false);
+  /** 文档有自己的存档区入口；删除只是第一步，第二步在浮层里完成。 */
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [rememberScope, setRememberScope] = useState<'domain' | 'global_shared'>('domain');
   const [rememberDomain, setRememberDomain] = useState('life');
   const [rememberingChunk, setRememberingChunk] = useState<string | null>(null);
@@ -177,10 +180,18 @@ export function DocumentsPanel({
   }
 
   async function remove(doc: DocumentSummaryDto): Promise<void> {
-    if (!window.confirm(`删除「${doc.name}」？删除后检索不到这份文档。`)) return;
+    // 删除是两步制：这一步只是移入文档存档区，确认文案必须说清楚，
+    // 否则用户会以为点下去原文就没了，从而不敢清理旧文档。
+    if (
+      !window.confirm(
+        `删除「${doc.name}」？\n删除后进入文档存档区，可恢复；在存档区点「彻底删除」才会抹除原文。`,
+      )
+    ) {
+      return;
+    }
     try {
       await fetchJson(`/api/documents/${encodeURIComponent(doc.id)}`, { method: 'DELETE' });
-      notify('文档已删除。', 'default');
+      notify(`「${doc.name}」已移入文档存档区，可恢复。`, 'default');
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -220,6 +231,13 @@ export function DocumentsPanel({
               onClick={() => setRetrievalOpen(true)}
             >
               <Icon name="settings" size={13} /> 检索设置
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setArchiveOpen(true)}
+            >
+              <Icon name="history" size={13} /> 存档区
             </button>
             <button
               type="button"
@@ -274,6 +292,7 @@ export function DocumentsPanel({
       </div>
       <p className="doc-note">
         文档内容默认只用于检索，不会自动写进记忆；回答会带文档名与片段号。
+        删除文档会先移入「存档区」，可恢复。
       </p>
 
       {loading ? (
@@ -412,6 +431,15 @@ export function DocumentsPanel({
         open={retrievalOpen}
         onClose={() => setRetrievalOpen(false)}
         notify={notify}
+      />
+
+      <DocumentArchive
+        open={archiveOpen}
+        onClose={() => setArchiveOpen(false)}
+        notify={notify}
+        onChanged={() => {
+          void load();
+        }}
       />
     </section>
   );
