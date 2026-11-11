@@ -24,6 +24,7 @@ import type {
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { Badge, Collapse, InlineError, Skeleton } from '../components/Common';
+import { primaryPathOf } from '@/core/tools/pathFields.js';
 import { useAutoResize, useMounted, useNow } from '../lib/hooks.js';
 import { ApiError, errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
 import {
@@ -126,6 +127,7 @@ import {
   ReportsPanel,
 } from './Cards';
 import { QuizSection } from './Quiz';
+import { WorkPanel, type WorkPanelAiOp } from './WorkPanel';
 
 /**
  * 草稿 key 前缀。
@@ -561,6 +563,28 @@ function traceToRounds(trace: AgentTrace | null): ProcRound[] {
   }));
 }
 
+/**
+ * 一次「已拼完参数」的工具调用碰了哪个文件。
+ *
+ * ★ 为什么在界面侧再解析一次 JSON：
+ *   SSE 的 toolCall 参数是逐片到达的（partial:true），完成事件（partial:false）
+ *   只带空 argsDelta，不带参数全文；参数全文只有界面自己按 callId 拼得出来。
+ *   拿到全文后仍调用 core 的 primaryPathOf，保证「哪个参数算路径」只有一处规则。
+ */
+function aiOpOfToolCall(name: string, argsText: string): WorkPanelAiOp | null {
+  if (name.length === 0) return null;
+  const trimmed = argsText.trim();
+  let args: unknown = {};
+  if (trimmed.length > 0) {
+    try {
+      args = JSON.parse(trimmed) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  return primaryPathOf(name, args);
+}
+
 function statusLabel(a: LiveAssistant): string {
   if (a.status === 'waiting') return '正在读取上下文';
   if (a.status === 'streaming') return a.stages[a.stages.length - 1] ?? '正在处理';
@@ -783,6 +807,11 @@ export function ChatView({
   const [ttsSupported, setTtsSupported] = useState(false);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  /**
+   * 工作区面板展开：右栏占满主区域，对话变成浮动窗。
+   * 它依附于 reviewOpen —— 面板关掉时由 effect 复位，避免留下不可见的“展开”状态。
+   */
+  const [panelMax, setPanelMax] = useState(false);
   const [reviewRange, setReviewRange] = useState<{ readonly start: number; readonly end: number } | null>(null);
   const [reviewAnchor, setReviewAnchor] = useState<number | null>(null);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
@@ -812,6 +841,13 @@ export function ChatView({
   const [reviewHistoryOpen, setReviewHistoryOpen] = useState(false);
   /** 当前展示的历史 run id；实时审查完成后也用它高亮列表。 */
   const [reviewActiveId, setReviewActiveId] = useState<string | null>(null);
+  /**
+   * 右栏页签：文件（工作区）/ 审查。
+   * 两块内容共用同一个 review-pane、同一个拖拽宽度与 reviewOpen 开关。
+   */
+  const [paneTab, setPaneTab] = useState<'files' | 'review'>('review');
+  /** AI 最近一次完整工具调用碰到的文件；只用于工作区面板的自动打开/高亮。 */
+  const [aiOp, setAiOp] = useState<WorkPanelAiOp | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
@@ -835,6 +871,17 @@ export function ChatView({
   /** 抽屉开关按钮 / 抽屉关闭按钮：用于打开时送入焦点、关闭后还回焦点。 */
   const reviewHistoryToggleRef = useRef<HTMLButtonElement | null>(null);
   const reviewHistoryCloseRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * 工具参数分片按 callId 累积。
+   * 完成事件只带空 argsDelta，必须靠这份拼接结果才能解析出完整参数。
+   */
+  const toolArgsRef = useRef<Map<string, string>>(new Map());
+  /**
+   * 已经解析出路径、但还在执行的工具调用。
+   * 写文件的 toolCall 事件在真正落盘**之前**就发出，所以必须等 toolResult
+   * 回来再推一次 aiOp，面板才会重新拉取到写完后的内容。
+   */
+  const pendingAiOpsRef = useRef<Map<string, WorkPanelAiOp>>(new Map());
   const atBottomRef = useRef(true);
   /**
    * 只在用户主动发送 / 打开会话时置 true：流式增量不能把正在回看的用户拽回底部。
@@ -899,6 +946,14 @@ export function ChatView({
   const pendingPetFocusRef = useRef<PendingPetFocus | null>(null);
   const petFocusSeqRef = useRef(0);
   const petFocusDrainingRef = useRef(false);
+
+  /**
+   * 只有“面板开着 + 点了展开”才进入浮窗布局。
+   * reviewOpen 在跳轮次 / 切会话时也会变 false，用这个派生值兜底，
+   * 避免出现没有面板却仍按浮窗排版的中间态。
+   */
+  const panelExpanded = reviewOpen && panelMax;
+  const chatFloat = useChatFloat(sessionId, panelExpanded, chatBodyRef);
 
   const now = useNow(30_000);
   const mounted = useMounted();
@@ -1310,6 +1365,16 @@ export function ChatView({
   useEffect(() => {
     onReviewModeChange(reviewOpen);
   }, [onReviewModeChange, reviewOpen]);
+
+  /**
+   * AI 操作提示只保留一个短窗口：横幅由面板自己计时，这里把状态也清掉，
+   * 避免用户几分钟后才切到「文件」页签时看到一条早已结束的「AI 正在…」。
+   */
+  useEffect(() => {
+    if (aiOp === null) return;
+    const timer = window.setTimeout(() => setAiOp(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [aiOp]);
 
   function jumpToTurn(index: number): void {
     const turn = reviewTurns[index];
@@ -1842,6 +1907,7 @@ export function ChatView({
       }
     }
     setReviewPickerOpen(false);
+    setPaneTab('review');
     setReviewOpen(true);
   }
 
@@ -1850,7 +1916,21 @@ export function ChatView({
     reviewAutoRestoreRef.current = false;
     setReviewPickerOpen(false);
     setReviewHistoryOpen(false);
+    // 面板收起后 AI 提示不再有意义，清掉避免下次打开时显示很久以前的操作。
+    setAiOp(null);
     setReviewOpen(false);
+  }
+
+  /** 打开「文件」页签；已经停在文件页签时再点一次就收起面板。 */
+  function openWorkspace(): void {
+    if (reviewOpen && paneTab === 'files') {
+      closeReview();
+      return;
+    }
+    // 手动打开时不重放上一次 AI 操作：只有面板开着时收到的 aiOp 才用于自动打开。
+    if (!reviewOpen) setAiOp(null);
+    setPaneTab('files');
+    setReviewOpen(true);
   }
 
   /** 收起历史抽屉，并把焦点还给入口按钮。 */
@@ -1860,8 +1940,13 @@ export function ChatView({
   }
 
   function toggleReview(): void {
-    if (reviewOpen) closeReview();
+    if (reviewOpen && paneTab === 'review') closeReview();
     else openReview();
+  }
+
+  /** 展开 / 还原工作区：只切换布局，不动审查与文件的任何状态。 */
+  function togglePanelMax(): void {
+    setPanelMax((expanded) => !expanded);
   }
 
   useAutoResize(textareaRef, input);
@@ -1902,6 +1987,8 @@ export function ChatView({
     setReviewRange(null);
     setReviewAnchor(null);
     setReviewPickerOpen(false);
+    // 工作区面板跟会话走：切换会话后不能还显示上一个工作区的 AI 操作。
+    setAiOp(null);
     setNavTurn(null);
     resetReview();
     // 历史属于会话：切走时立即作废旧列表，等新会话的 GET 回来再填。
@@ -2134,6 +2221,8 @@ export function ChatView({
       setReviewRange(null);
       setReviewAnchor(null);
       setReviewPickerOpen(false);
+      // 新对话是新的工作区，不能继承上一个会话的 AI 操作提示。
+      setAiOp(null);
       setNavTurn(null);
       resetReview();
       reviewHistorySeqRef.current += 1;
@@ -2393,6 +2482,18 @@ export function ChatView({
     }
   }, [active, messages, liveTurns]);
 
+  /**
+   * 展开 / 还原 / 收起会改变消息区高度。
+   * 原本贴底的话要把最后一条重新贴回可视区底部，否则缩高后看起来像“跳到了上一屏”。
+   */
+  useEffect(() => {
+    if (!atBottomRef.current) return;
+    const el = scrollRef.current;
+    if (el === null) return;
+    el.scrollTop = el.scrollHeight;
+    setPinnedToBottom(true);
+  }, [panelExpanded, chatFloat.collapsed]);
+
   useEffect(() => {
     if (!active || !focusEnabled) return;
     textareaRef.current?.focus();
@@ -2630,6 +2731,9 @@ export function ChatView({
     // 新一轮从这里接管；旧流的收尾会对照这个令牌，确认自己是否已被取代。
     const turnToken: object = {};
     turnTokenRef.current = turnToken;
+    // 上一轮被中断时可能留下没等到完成事件的参数分片，这里整批作废。
+    toolArgsRef.current.clear();
+    pendingAiOpsRef.current.clear();
     updateStreaming(true);
 
     const controller = new AbortController();
@@ -2696,6 +2800,46 @@ export function ChatView({
         setApprovals((prev) => enqueueApproval(prev, approvalFromEvent(ev)));
         notify('管家在等你确认一个动作', 'warning');
         return;
+      }
+
+      if (ev.type === 'agent' && ev.kind === 'toolCall') {
+        /**
+         * 工具参数是逐片到达的，完成事件本身反而只带空 argsDelta。
+         * 所以先按 callId 拼全文，看到 partial:false 才认为这次调用已完整。
+         */
+        const previous = toolArgsRef.current.get(ev.callId) ?? '';
+        if (ev.partial) {
+          toolArgsRef.current.set(ev.callId, previous + ev.argsDelta);
+        } else {
+          toolArgsRef.current.delete(ev.callId);
+          const op = aiOpOfToolCall(ev.name, previous);
+          if (op !== null) {
+            pendingAiOpsRef.current.set(ev.callId, op);
+            setAiOp(op);
+            /**
+             * 只对「写文件」自动展开右栏：
+             * 读文件在一次回答里可能发生十几次，每次都把对话挤成半宽会打断阅读；
+             * 写入是用户最需要当场看到结果的动作，值得主动让出空间。
+             */
+            if (op.writing) {
+              setPaneTab('files');
+              setReviewOpen(true);
+            }
+          }
+        }
+      }
+
+      if (ev.type === 'agent' && ev.kind === 'toolResult') {
+        const op = pendingAiOpsRef.current.get(ev.callId);
+        if (op !== undefined) {
+          pendingAiOpsRef.current.delete(ev.callId);
+          /**
+           * toolCall 是「模型刚决定要写」时发的，文件可能还没落盘；
+           * 写成功后再推一次（新对象 = 新 identity），WorkPanel 才会重新读取。
+           * 若用户此时正在编辑，面板会自己拦住覆盖并给「载入 AI 版本」。
+           */
+          if (op.writing && ev.ok && !ev.denied) setAiOp({ ...op });
+        }
       }
 
       queue.push(ev);
@@ -2924,6 +3068,11 @@ export function ChatView({
     if (input.trim() !== pending.text) return;
     void send(pending.text);
   }, [input, send, streaming]);
+
+  /** 面板关闭就退出展开：展开是面板的一种排版，面板没了不该留着浮窗状态。 */
+  useEffect(() => {
+    if (!reviewOpen) setPanelMax(false);
+  }, [reviewOpen]);
 
   function toggleVoice(): void {
     if (listening) {
@@ -3269,7 +3418,13 @@ export function ChatView({
             : '';
 
   return (
-    <div className={`chat-view ${active ? 'is-active' : ''} ${reviewOpen ? 'is-review' : ''}`}>
+    <div
+      className={`chat-view ${active ? 'is-active' : ''} ${reviewOpen ? 'is-review' : ''}${
+        reviewOpen && paneTab === 'files' ? ' is-work' : ''
+      }${panelExpanded ? ' is-panel-max' : ''}${
+        panelExpanded && chatFloat.collapsed ? ' is-chat-collapsed' : ''
+      }`}
+    >
       <p className="sr-only" role="status" aria-live="polite">
         {announcement}
       </p>
@@ -3283,7 +3438,20 @@ export function ChatView({
         <div className="chat-head-actions">
           <button
             type="button"
-            className={`btn btn-ghost btn-sm is-review-toggle${reviewOpen ? ' is-active' : ''}`}
+            className={`btn btn-ghost btn-sm is-work-toggle${
+              reviewOpen && paneTab === 'files' ? ' is-active' : ''
+            }`}
+            onClick={openWorkspace}
+            aria-pressed={reviewOpen && paneTab === 'files'}
+            title={reviewOpen && paneTab === 'files' ? '关闭工作区' : '打开工作区'}
+          >
+            <Icon name="file" size={15} /> 工作区
+          </button>
+          <button
+            type="button"
+            className={`btn btn-ghost btn-sm is-review-toggle${
+              reviewOpen && paneTab === 'review' ? ' is-active' : ''
+            }`}
             disabled={
               !reviewOpen &&
               lastReviewable === null &&
@@ -3294,9 +3462,9 @@ export function ChatView({
               reviewError === null
             }
             onClick={toggleReview}
-            aria-pressed={reviewOpen}
+            aria-pressed={reviewOpen && paneTab === 'review'}
             title={
-              reviewOpen
+              reviewOpen && paneTab === 'review'
                 ? '关闭审查'
                 : lastReviewable === null && reviewHistory.length === 0
                   ? '还没有可审查的完成或中断轮次'
@@ -3315,11 +3483,41 @@ export function ChatView({
         className="chat-body"
         ref={chatBodyRef}
         style={
-          reviewOpen
+          reviewOpen && !panelExpanded
             ? { gridTemplateColumns: `${1 - reviewRatio}fr 1px ${reviewRatio}fr` }
             : undefined
         }
       >
+      {/*
+        ★ 消息 + 输入框始终是同一个容器里的同一份 DOM。
+          展开工作区时只是让 .chat-float 改成 absolute 并套用记忆里的矩形，
+          不复制对话组件、不重新挂载，所以滚动位置、草稿、输入焦点都不会丢。
+      */}
+      <div className="chat-float" style={chatFloat.style}>
+        {panelExpanded ? (
+          <div
+            className="chat-float-bar"
+            onPointerDown={chatFloat.startMove}
+            onPointerMove={chatFloat.moveDrag}
+            onPointerUp={chatFloat.endDrag}
+            onPointerCancel={chatFloat.endDrag}
+            onLostPointerCapture={chatFloat.lostPointerCapture}
+            title="拖动这里移动对话窗"
+          >
+            <Icon name="menu" size={13} className="chat-float-grip" />
+            <span className="chat-float-label">对话</span>
+            <button
+              type="button"
+              className="chat-float-collapse"
+              onClick={chatFloat.collapse}
+              title="收起为气泡"
+              aria-label="收起对话浮窗"
+            >
+              <Icon name="minus" size={14} />
+            </button>
+          </div>
+        ) : null}
+      <div className="chat-scroll-wrap">
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll} aria-busy={streaming}>
         <div className="chat-column">
           {!hasContent && !loadingSession && sessionError === null && (
@@ -3432,7 +3630,6 @@ export function ChatView({
           </div>
         </div>
       </div>
-
       {/*
         不在底部时的回底入口：长回答读到这里可以一键回到最新，
         不用手动滚到贴底再让下一批增量接着跟随。
@@ -3449,22 +3646,265 @@ export function ChatView({
           <Icon name="chevronDown" size={14} /> 回到最新
         </button>
       )}
+      </div>
+
+      <div className="chat-composer-wrap">
+        <div className="chat-column">
+          {overview !== null && overview.model === null && !availableChatModels && (
+            <div className="chat-banner">
+              <span className="chat-banner-icon">
+                <Icon name="info" size={16} />
+              </span>
+              <span>
+                还没有可用的对话模型。去设置 → 模型接入添加配置并选择模型；
+                记忆治理不依赖模型。
+              </span>
+              <button type="button" className="text-btn" onClick={onOpenSettings}>
+                去设置
+                <Icon name="chevronRight" size={13} />
+              </button>
+            </div>
+          )}
+
+          {attachments.length > 0 && (
+            <div className="attach-row">
+              {attachments.map((a, i) => (
+                <div key={`${a.name}-${i}`} className="attach-thumb">
+                                    <img src={a.url} alt={a.name} />
+                  <button
+                    type="button"
+                    className="attach-remove"
+                    aria-label={`移除 ${a.name}`}
+                    onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeApproval !== null && (
+            <ApprovalCard
+              approval={activeApproval}
+              pendingCount={approvals.length}
+              answering={answering}
+              onAnswer={(allow) => void answerApproval(allow)}
+            />
+          )}
+
+          <div className={`composer ${streaming ? 'is-busy' : ''}`}>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              rows={1}
+              placeholder={
+                canChat
+                  ? streaming
+                    ? '运行中也能补充；Enter 中途发送，Shift+Enter 换行'
+                    : '说说你想办的事…（Enter 发送，Shift+Enter 换行）'
+                  : '未配置模型，暂不能对话'
+              }
+              aria-label="输入消息"
+              onChange={(e) => setInput(e.target.value)}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files);
+                if (files.length > 0) {
+                  e.preventDefault();
+                  void addFiles(files);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+            />
+            <div className="composer-bar">
+              <div className="composer-tools">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files !== null) void addFiles(Array.from(e.target.files));
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={imageProcessing}
+                  title={imageProcessing ? '图片处理中，请稍候' : '添加图片或文档'}
+                  aria-label="添加图片或文档"
+                >
+                  <Icon name="paperclip" size={18} />
+                </button>
+                <button
+                  type="button"
+                  className={`icon-btn voice-btn ${listening ? 'is-listening' : ''}`}
+                  onClick={toggleVoice}
+                  disabled={!voiceSupported}
+                  title={
+                    voiceSupported
+                      ? listening
+                        ? '停止语音输入'
+                        : '用语音输入（浏览器需要麦克风权限）'
+                      : '当前浏览器不支持语音输入'
+                  }
+                  aria-label={listening ? '停止语音输入' : '语音输入'}
+                  aria-pressed={listening}
+                >
+                  <Icon name="mic" size={17} />
+                </button>
+                {(listening || attachments.length > 0 || imageProcessing) && (
+                  <span className="composer-hint" aria-live="polite">
+                    {listening
+                      ? '正在听… 再点麦克风结束'
+                      : imageProcessing
+                        ? '图片处理中…'
+                        : `${attachments.length} 张图片`}
+                  </span>
+                )}
+              </div>
+
+              <SessionControls
+                profiles={modelCatalog}
+                model={chatModel}
+                reasoning={activeReasoning}
+                saving={settingsSaving}
+                catalogLoading={modelCatalogLoading}
+                catalogError={modelCatalogError}
+                settingsError={settingsError}
+                onRefreshCatalog={() => void loadModelCatalog()}
+                onSelectModel={selectChatModel}
+                onSelectReasoning={selectReasoning}
+                onOpenSettings={onOpenSettings}
+              />
+              {streaming ? (
+                <>
+                  {input.trim().length > 0 && (
+                    <button
+                      type="button"
+                      className="send-btn send-btn--steer"
+                      onClick={() => void send()}
+                      title="发送给正在执行的这一轮"
+                      aria-label="中途发送"
+                    >
+                      <Icon name="arrowUp" size={17} />
+                    </button>
+                  )}
+                  <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
+                    <Icon name="stop" size={16} />
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="send-btn"
+                  onClick={() => void send()}
+                  disabled={
+                    !canChat ||
+                    imageProcessing ||
+                    (input.trim().length === 0 && attachments.length === 0)
+                  }
+                  aria-label="发送"
+                  title={imageProcessing ? '图片处理中，请稍候' : undefined}
+                >
+                  <Icon name="arrowUp" size={17} />
+                </button>
+              )}
+            </div>
+          </div>
+          {streaming && (
+            <p className="composer-note">
+              <span className="composer-live">
+                <span className="typing-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                {statusLabel(liveTurns[liveTurns.length - 1]?.assistant ?? emptyAssistant()) || '正在处理'}
+              </span>
+            </p>
+          )}
+        </div>
+      </div>
+
+      {panelExpanded ? (
+        <div
+          className="chat-float-resize"
+          onPointerDown={chatFloat.startResize}
+          onPointerMove={chatFloat.moveDrag}
+          onPointerUp={chatFloat.endDrag}
+          onPointerCancel={chatFloat.endDrag}
+          onLostPointerCapture={chatFloat.lostPointerCapture}
+          aria-hidden="true"
+          title="拖动调整对话窗大小"
+        />
+      ) : null}
+      </div>
 
       {reviewOpen && (
         <>
-          <div
-            className="review-splitter"
-            role="separator"
-            aria-label="调整主对话与审查宽度"
-            aria-orientation="vertical"
-            aria-valuemin={35}
-            aria-valuemax={65}
-            aria-valuenow={Math.round(reviewRatio * 100)}
-            tabIndex={0}
-            onPointerDown={handleReviewSplitterPointerDown}
-            onKeyDown={handleReviewSplitterKeyDown}
-          />
-          <section className="review-pane" aria-label="审查">
+          {/* 展开时右栏占满主区域，分隔条没有意义，直接不渲染。 */}
+          {!panelExpanded ? (
+            <div
+              className="review-splitter"
+              role="separator"
+              aria-label="调整主对话与右栏宽度"
+              aria-orientation="vertical"
+              aria-valuemin={35}
+              aria-valuemax={65}
+              aria-valuenow={Math.round(reviewRatio * 100)}
+              tabIndex={0}
+              onPointerDown={handleReviewSplitterPointerDown}
+              onKeyDown={handleReviewSplitterKeyDown}
+            />
+          ) : null}
+          <section className="review-pane" aria-label="工作区与审查">
+            <div className="review-tabs" role="group" aria-label="右栏视图">
+              <button
+                type="button"
+                className={`review-tab${paneTab === 'files' ? ' is-active' : ''}`}
+                aria-pressed={paneTab === 'files'}
+                onClick={() => setPaneTab('files')}
+              >
+                <Icon name="file" size={13} /> 文件
+              </button>
+              <button
+                type="button"
+                className={`review-tab${paneTab === 'review' ? ' is-active' : ''}`}
+                aria-pressed={paneTab === 'review'}
+                onClick={() => setPaneTab('review')}
+              >
+                <Icon name="eye" size={13} /> 审查
+              </button>
+              <button
+                type="button"
+                className={`review-expand${panelMax ? ' is-active' : ''}`}
+                onClick={togglePanelMax}
+                aria-pressed={panelMax}
+                title={panelMax ? '还原为左右分栏' : '展开面板，对话变成浮动窗'}
+              >
+                <Icon name={panelMax ? 'panelLeft' : 'external'} size={13} />
+                {panelMax ? '还原' : '展开'}
+              </button>
+            </div>
+            {/*
+              文件页签保持挂载，只用 hidden 收起来：
+              切去审查再回来时，文件树、正在编辑的草稿和滚动手位都还在，
+              不会因为一次页签切换丢掉未保存的修改。
+            */}
+            <div className="work-panel-slot" hidden={paneTab !== 'files'}>
+              <WorkPanel sessionId={sessionId} open={reviewOpen} aiOp={aiOp} />
+            </div>
+            {paneTab === 'review' ? (
+              <>
             <header className="review-head">
               <div className="review-head-main">
                 <h2>审查</h2>
@@ -3860,9 +4300,25 @@ export function ChatView({
                 </>
               )}
             </div>
+              </>
+            ) : null}
           </section>
         </>
       )}
+
+      {/* 收起后的入口：位置/尺寸仍留在 chatFloat.rect 里，点一下原样恢复。 */}
+      {panelExpanded && chatFloat.collapsed ? (
+        <button
+          type="button"
+          className={`chat-bubble${streaming ? ' is-generating' : ''}`}
+          onClick={chatFloat.restore}
+          title={streaming ? '正在生成 · 展开对话' : '展开对话'}
+          aria-label={streaming ? '展开对话，正在生成' : '展开对话'}
+        >
+          <Icon name="chat" size={21} />
+          {streaming ? <span className="chat-bubble-dot" aria-hidden="true" /> : null}
+        </button>
+      ) : null}
 
       <aside className="turn-rail" aria-label="轮次导航">
         <div
@@ -3918,193 +4374,6 @@ export function ChatView({
       </aside>
       </div>
 
-      <div className="chat-composer-wrap">
-        <div className="chat-column">
-          {overview !== null && overview.model === null && !availableChatModels && (
-            <div className="chat-banner">
-              <span className="chat-banner-icon">
-                <Icon name="info" size={16} />
-              </span>
-              <span>
-                还没有可用的对话模型。去设置 → 模型接入添加配置并选择模型；
-                记忆治理不依赖模型。
-              </span>
-              <button type="button" className="text-btn" onClick={onOpenSettings}>
-                去设置
-                <Icon name="chevronRight" size={13} />
-              </button>
-            </div>
-          )}
-
-          {attachments.length > 0 && (
-            <div className="attach-row">
-              {attachments.map((a, i) => (
-                <div key={`${a.name}-${i}`} className="attach-thumb">
-                                    <img src={a.url} alt={a.name} />
-                  <button
-                    type="button"
-                    className="attach-remove"
-                    aria-label={`移除 ${a.name}`}
-                    onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
-                  >
-                    <Icon name="close" size={12} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {activeApproval !== null && (
-            <ApprovalCard
-              approval={activeApproval}
-              pendingCount={approvals.length}
-              answering={answering}
-              onAnswer={(allow) => void answerApproval(allow)}
-            />
-          )}
-
-          <div className={`composer ${streaming ? 'is-busy' : ''}`}>
-            <textarea
-              ref={textareaRef}
-              value={input}
-              rows={1}
-              placeholder={
-                canChat
-                  ? streaming
-                    ? '运行中也能补充；Enter 中途发送，Shift+Enter 换行'
-                    : '说说你想办的事…（Enter 发送，Shift+Enter 换行）'
-                  : '未配置模型，暂不能对话'
-              }
-              aria-label="输入消息"
-              onChange={(e) => setInput(e.target.value)}
-              onPaste={(e) => {
-                const files = Array.from(e.clipboardData.files);
-                if (files.length > 0) {
-                  e.preventDefault();
-                  void addFiles(files);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
-            />
-            <div className="composer-bar">
-              <div className="composer-tools">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp,.pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json"
-                  multiple
-                  hidden
-                  onChange={(e) => {
-                    if (e.target.files !== null) void addFiles(Array.from(e.target.files));
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => fileRef.current?.click()}
-                  disabled={imageProcessing}
-                  title={imageProcessing ? '图片处理中，请稍候' : '添加图片或文档'}
-                  aria-label="添加图片或文档"
-                >
-                  <Icon name="paperclip" size={18} />
-                </button>
-                <button
-                  type="button"
-                  className={`icon-btn voice-btn ${listening ? 'is-listening' : ''}`}
-                  onClick={toggleVoice}
-                  disabled={!voiceSupported}
-                  title={
-                    voiceSupported
-                      ? listening
-                        ? '停止语音输入'
-                        : '用语音输入（浏览器需要麦克风权限）'
-                      : '当前浏览器不支持语音输入'
-                  }
-                  aria-label={listening ? '停止语音输入' : '语音输入'}
-                  aria-pressed={listening}
-                >
-                  <Icon name="mic" size={17} />
-                </button>
-                {(listening || attachments.length > 0 || imageProcessing) && (
-                  <span className="composer-hint" aria-live="polite">
-                    {listening
-                      ? '正在听… 再点麦克风结束'
-                      : imageProcessing
-                        ? '图片处理中…'
-                        : `${attachments.length} 张图片`}
-                  </span>
-                )}
-              </div>
-
-              <SessionControls
-                profiles={modelCatalog}
-                model={chatModel}
-                reasoning={activeReasoning}
-                saving={settingsSaving}
-                catalogLoading={modelCatalogLoading}
-                catalogError={modelCatalogError}
-                settingsError={settingsError}
-                onRefreshCatalog={() => void loadModelCatalog()}
-                onSelectModel={selectChatModel}
-                onSelectReasoning={selectReasoning}
-                onOpenSettings={onOpenSettings}
-              />
-              {streaming ? (
-                <>
-                  {input.trim().length > 0 && (
-                    <button
-                      type="button"
-                      className="send-btn send-btn--steer"
-                      onClick={() => void send()}
-                      title="发送给正在执行的这一轮"
-                      aria-label="中途发送"
-                    >
-                      <Icon name="arrowUp" size={17} />
-                    </button>
-                  )}
-                  <button type="button" className="send-btn send-btn--stop" onClick={stop} aria-label="断开接收">
-                    <Icon name="stop" size={16} />
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="send-btn"
-                  onClick={() => void send()}
-                  disabled={
-                    !canChat ||
-                    imageProcessing ||
-                    (input.trim().length === 0 && attachments.length === 0)
-                  }
-                  aria-label="发送"
-                  title={imageProcessing ? '图片处理中，请稍候' : undefined}
-                >
-                  <Icon name="arrowUp" size={17} />
-                </button>
-              )}
-            </div>
-          </div>
-          {streaming && (
-            <p className="composer-note">
-              <span className="composer-live">
-                <span className="typing-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                {statusLabel(liveTurns[liveTurns.length - 1]?.assistant ?? emptyAssistant()) || '正在处理'}
-              </span>
-            </p>
-          )}
-        </div>
-      </div>
-
       {/* 历史只在侧栏；这里不再保留抽屉，也不重复加载会话列表。 */}
       <SessionSettingsSheet
         open={settingsTargetId !== null && settingsTarget !== null}
@@ -4116,6 +4385,342 @@ export function ChatView({
 
     </div>
   );
+}
+
+// ═══════════════════════════════════════════════════════════
+// 工作区展开时的对话浮动窗
+// ═══════════════════════════════════════════════════════════
+
+interface ChatFloatRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+interface ChatFloatStored extends ChatFloatRect {
+  readonly collapsed: boolean;
+}
+
+interface ChatFloatDrag {
+  readonly mode: 'move' | 'resize';
+  readonly pointerId: number;
+  readonly startX: number;
+  readonly startY: number;
+  readonly startRect: ChatFloatRect;
+}
+
+interface ChatFloatController {
+  readonly collapsed: boolean;
+  readonly style: CSSProperties | undefined;
+  readonly startMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  readonly startResize: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  readonly moveDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  readonly endDrag: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  readonly lostPointerCapture: () => void;
+  readonly collapse: () => void;
+  readonly restore: () => void;
+}
+
+/**
+ * 位置/尺寸按会话存。
+ *
+ * ★ 为什么带 sessionId：每个会话各有自己的工作区，A 会话把浮窗拖到左下角，
+ *   不该让 B 会话也继承这个位置。
+ */
+const CHAT_FLOAT_STORAGE_KEY = 'butler.chat.float';
+const CHAT_FLOAT_MIN_WIDTH = 340;
+const CHAT_FLOAT_MIN_HEIGHT = 280;
+const CHAT_FLOAT_DEFAULT_WIDTH = 720;
+const CHAT_FLOAT_DEFAULT_HEIGHT = 600;
+const CHAT_FLOAT_DEFAULT_TOP = 52;
+
+function chatFloatStorageKey(sessionId: string | null): string {
+  return sessionId === null ? CHAT_FLOAT_STORAGE_KEY : `${CHAT_FLOAT_STORAGE_KEY}.${sessionId}`;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readChatFloatStored(sessionId: string | null): ChatFloatStored | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(chatFloatStorageKey(sessionId));
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const record = parsed as Record<string, unknown>;
+    const left = finiteNumber(record['left']);
+    const top = finiteNumber(record['top']);
+    const width = finiteNumber(record['width']);
+    const height = finiteNumber(record['height']);
+    if (left === null || top === null || width === null || height === null) return null;
+    return { left, top, width, height, collapsed: record['collapsed'] === true };
+  } catch {
+    // 坏数据或隐私模式禁写：退回默认位置，不能因此打不开面板。
+    return null;
+  }
+}
+
+function writeChatFloatStored(
+  sessionId: string | null,
+  rect: ChatFloatRect,
+  collapsed: boolean,
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      chatFloatStorageKey(sessionId),
+      JSON.stringify({ ...rect, collapsed }),
+    );
+  } catch {
+    // 存不了就只在本次页面里记住，不影响拖动。
+  }
+}
+
+/** 把矩形夹回主区域：宽高先满足下限，再保证四边都不越界。 */
+function clampChatFloatRect(
+  rect: ChatFloatRect,
+  boundsWidth: number,
+  boundsHeight: number,
+): ChatFloatRect {
+  const width = Math.min(
+    Math.max(rect.width, CHAT_FLOAT_MIN_WIDTH),
+    Math.max(CHAT_FLOAT_MIN_WIDTH, boundsWidth),
+  );
+  const height = Math.min(
+    Math.max(rect.height, CHAT_FLOAT_MIN_HEIGHT),
+    Math.max(CHAT_FLOAT_MIN_HEIGHT, boundsHeight),
+  );
+  const left = Math.min(Math.max(rect.left, 0), Math.max(0, boundsWidth - width));
+  const top = Math.min(Math.max(rect.top, 0), Math.max(0, boundsHeight - height));
+  return { left, top, width, height };
+}
+
+function defaultChatFloatRect(boundsWidth: number, boundsHeight: number): ChatFloatRect {
+  // 右侧留出 160px：默认位置不要压住 tab 栏最右边的「还原」按钮。
+  const width = Math.min(
+    CHAT_FLOAT_DEFAULT_WIDTH,
+    Math.max(CHAT_FLOAT_MIN_WIDTH, boundsWidth - 160),
+  );
+  const height = Math.min(
+    CHAT_FLOAT_DEFAULT_HEIGHT,
+    Math.max(CHAT_FLOAT_MIN_HEIGHT, boundsHeight - CHAT_FLOAT_DEFAULT_TOP - 16),
+  );
+  return { left: 24, top: CHAT_FLOAT_DEFAULT_TOP, width, height };
+}
+
+function useChatFloat(
+  sessionId: string | null,
+  expanded: boolean,
+  bodyRef: { readonly current: HTMLDivElement | null },
+): ChatFloatController {
+  const [rect, setRect] = useState<ChatFloatRect | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  const rectRef = useRef<ChatFloatRect | null>(null);
+  const collapsedRef = useRef(false);
+  const dragRef = useRef<ChatFloatDrag | null>(null);
+  /** 事件回调里读最新 sessionId：拖动结束时可能已经切过会话。 */
+  const sessionRef = useRef(sessionId);
+  sessionRef.current = sessionId;
+
+  function applyRect(next: ChatFloatRect): void {
+    rectRef.current = next;
+    setRect(next);
+  }
+
+  function persist(nextCollapsed: boolean): void {
+    const current = rectRef.current;
+    if (current !== null) writeChatFloatStored(sessionRef.current, current, nextCollapsed);
+  }
+
+  // 切会话先载入该会话的「是否收起」；位置尺寸在展开时再按当前主区域夹一次。
+  useEffect(() => {
+    const stored = readChatFloatStored(sessionId);
+    const nextCollapsed = stored?.collapsed ?? false;
+    collapsedRef.current = nextCollapsed;
+    setCollapsed(nextCollapsed);
+    rectRef.current = stored;
+    setRect(stored);
+  }, [sessionId]);
+
+  // 每次展开（或展开中换会话）都重新夹一次：窗口变小后旧坐标可能已经在区域外。
+  useEffect(() => {
+    if (!expanded) return;
+    const body = bodyRef.current;
+    if (body === null) return;
+    const bounds = body.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    const stored = readChatFloatStored(sessionId);
+    const next = clampChatFloatRect(
+      stored ?? defaultChatFloatRect(bounds.width, bounds.height),
+      bounds.width,
+      bounds.height,
+    );
+    applyRect(next);
+    const nextCollapsed = stored?.collapsed ?? false;
+    collapsedRef.current = nextCollapsed;
+    setCollapsed(nextCollapsed);
+    // bodyRef 是稳定 ref；真正需要重跑的是「会话」和「展开」两个时机。
+  }, [expanded, sessionId, bodyRef]);
+
+  // 窗口缩放时同步夹住；纯浏览器窗口事件，卸载/收起都清掉。
+  useEffect(() => {
+    if (!expanded) return;
+    const onResize = (): void => {
+      const body = bodyRef.current;
+      const current = rectRef.current;
+      if (body === null || current === null) return;
+      const bounds = body.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return;
+      applyRect(clampChatFloatRect(current, bounds.width, bounds.height));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [expanded, bodyRef]);
+
+  // 指针捕获在元素卸载时由浏览器释放；这里只清掉本地拖动态，避免闭包残留。
+  useEffect(() => {
+    return () => {
+      dragRef.current = null;
+    };
+  }, []);
+
+  /**
+   * ★ 使用 pointer capture 而不是 window 监听：
+   *   pointermove/pointerup 都绑在把手自己身上，松手、指针被取消、
+   *   组件卸载时浏览器会自动释放捕获，不存在忘记 removeEventListener 的泄漏。
+   */
+  function beginDrag(mode: 'move' | 'resize', event: ReactPointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return;
+    const body = bodyRef.current;
+    const current = rectRef.current;
+    if (body === null || current === null) return;
+    const bounds = body.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    const startRect = clampChatFloatRect(current, bounds.width, bounds.height);
+    applyRect(startRect);
+    event.preventDefault();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // 个别环境不支持捕获：退化为在把手内部拖动，仍然不会泄漏监听。
+    }
+    dragRef.current = {
+      mode,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startRect,
+    };
+  }
+
+  function startMove(event: ReactPointerEvent<HTMLDivElement>): void {
+    // 顶部条里的收起按钮不能当作拖拽起点，否则点一下会先拖动再触发 click。
+    const target = event.target;
+    if (target instanceof Element && target.closest('button') !== null) return;
+    beginDrag('move', event);
+  }
+
+  function startResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    beginDrag('resize', event);
+  }
+
+  function moveDrag(event: ReactPointerEvent<HTMLDivElement>): void {
+    const drag = dragRef.current;
+    const body = bodyRef.current;
+    if (drag === null || body === null || event.pointerId !== drag.pointerId) return;
+    const bounds = body.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+
+    if (drag.mode === 'move') {
+      const { width, height } = drag.startRect;
+      const left = Math.min(
+        Math.max(drag.startRect.left + dx, 0),
+        Math.max(0, bounds.width - width),
+      );
+      const top = Math.min(
+        Math.max(drag.startRect.top + dy, 0),
+        Math.max(0, bounds.height - height),
+      );
+      applyRect({ left, top, width, height });
+      return;
+    }
+
+    // 缩放只改右下角：left/top 不动，上限由“到右/下边还剩多少”决定。
+    const width = Math.min(
+      Math.max(drag.startRect.width + dx, CHAT_FLOAT_MIN_WIDTH),
+      Math.max(CHAT_FLOAT_MIN_WIDTH, bounds.width - drag.startRect.left),
+    );
+    const height = Math.min(
+      Math.max(drag.startRect.height + dy, CHAT_FLOAT_MIN_HEIGHT),
+      Math.max(CHAT_FLOAT_MIN_HEIGHT, bounds.height - drag.startRect.top),
+    );
+    applyRect({ left: drag.startRect.left, top: drag.startRect.top, width, height });
+  }
+
+  function endDrag(event: ReactPointerEvent<HTMLDivElement>): void {
+    const drag = dragRef.current;
+    if (drag === null || event.pointerId !== drag.pointerId) return;
+    dragRef.current = null;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // 指针已经结束：无需再释放。
+    }
+    persist(collapsedRef.current);
+  }
+
+  function lostPointerCapture(): void {
+    if (dragRef.current === null) return;
+    dragRef.current = null;
+    persist(collapsedRef.current);
+  }
+
+  function collapse(): void {
+    const current = rectRef.current;
+    if (current !== null) writeChatFloatStored(sessionRef.current, current, true);
+    collapsedRef.current = true;
+    setCollapsed(true);
+  }
+
+  function restore(): void {
+    const body = bodyRef.current;
+    const current = rectRef.current;
+    if (body !== null && current !== null) {
+      const bounds = body.getBoundingClientRect();
+      if (bounds.width > 0 && bounds.height > 0) {
+        applyRect(clampChatFloatRect(current, bounds.width, bounds.height));
+      }
+    }
+    if (rectRef.current !== null) {
+      writeChatFloatStored(sessionRef.current, rectRef.current, false);
+    }
+    collapsedRef.current = false;
+    setCollapsed(false);
+  }
+
+  const style: CSSProperties | undefined =
+    expanded && !collapsed && rect !== null
+      ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+      : undefined;
+
+  return {
+    collapsed,
+    style,
+    startMove,
+    startResize,
+    moveDrag,
+    endDrag,
+    lostPointerCapture,
+    collapse,
+    restore,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
