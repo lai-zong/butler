@@ -1,0 +1,555 @@
+/**
+ * 内嵌浏览器（CDP）
+ *
+ * ★ 为什么不用 Playwright：
+ *   只需要三件事——启动一个 Chromium、收画面帧、转发输入。
+ *   这些用 CDP 直连就够了，而 Playwright 会拉进一整棵依赖树。
+ *
+ * ★ 为什么优先 Edge：
+ *   本机没装 Chrome，Windows 自带 Chromium 内核的 Edge。
+ *   两者 CDP 协议一致，所以"内核"仍是 Chromium，只是壳不同。
+ *   可以用 `BUTLER_BROWSER_PATH` 指定别的 Chromium。
+ *
+ * ★ 为什么 headless=new：
+ *   不弹窗、不被系统判定为遮挡而暂停渲染；
+ *   代价是少数站点会检测无头环境。真需要可见窗口时把 HEADLESS 改成 false 即可。
+ */
+
+import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+
+const VIEWPORT = { width: 1280, height: 800 } as const;
+const HEADLESS = true;
+const SCREENCAST = { format: 'jpeg', quality: 65, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 } as const;
+
+export class BrowserError extends Error {
+  override readonly name = 'BrowserError';
+  constructor(
+    message: string,
+    readonly code: 'no_browser' | 'launch_failed' | 'timeout' | 'not_started' | 'cdp_error',
+  ) {
+    super(message);
+  }
+}
+
+/** 找一个可用的 Chromium：环境变量 → Chrome → Edge。 */
+export function findBrowserExecutable(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string | null {
+  const explicit = env['BUTLER_BROWSER_PATH'];
+  if (explicit !== undefined && explicit.trim().length > 0 && existsSync(explicit.trim())) {
+    return explicit.trim();
+  }
+  const candidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    join(env['LOCALAPPDATA'] ?? '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  ];
+  for (const c of candidates) {
+    if (c.length > 0 && existsSync(c)) return c;
+  }
+  return null;
+}
+
+/** 输入框里是网址还是搜索词。 */
+export function normalizeAddress(input: string): { kind: 'url' | 'search'; url: string } {
+  const raw = input.trim();
+  if (raw.length === 0) throw new BrowserError('地址不能为空', 'cdp_error');
+
+  if (/^(https?|file|about|data):/i.test(raw)) return { kind: 'url', url: raw };
+  // 看起来像域名（有点、无空格、无中文）→ 当网址补 https
+  if (!/\s/.test(raw) && /^[a-z0-9.-]+\.[a-z]{2,}([/:?#].*)?$/i.test(raw)) {
+    return { kind: 'url', url: `https://${raw}` };
+  }
+  const engine = process.env['BUTLER_SEARCH_ENGINE'] === 'baidu'
+    ? 'https://www.baidu.com/s?wd='
+    : 'https://www.bing.com/search?q=';
+  return { kind: 'search', url: `${engine}${encodeURIComponent(raw)}` };
+}
+
+// ═══════════════════════════════════════════════════════════
+// 极简 CDP 客户端
+// ═══════════════════════════════════════════════════════════
+
+interface Pending {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+}
+
+class CdpConnection {
+  private readonly pending = new Map<number, Pending>();
+  private readonly handlers = new Map<string, Set<(params: Record<string, unknown>, sessionId?: string) => void>>();
+  private seq = 0;
+  private closed = false;
+
+  private constructor(private readonly ws: WebSocket) {
+    ws.addEventListener('message', (event) => {
+      let msg: { id?: number; method?: string; params?: Record<string, unknown>; sessionId?: string; result?: unknown; error?: { message?: string } };
+      try {
+        msg = JSON.parse(typeof event.data === 'string' ? event.data : '') as typeof msg;
+      } catch {
+        return;
+      }
+      if (typeof msg.id === 'number') {
+        const p = this.pending.get(msg.id);
+        if (p === undefined) return;
+        this.pending.delete(msg.id);
+        if (msg.error !== undefined) p.reject(new BrowserError(msg.error.message ?? 'CDP 调用失败', 'cdp_error'));
+        else p.resolve(msg.result);
+        return;
+      }
+      if (typeof msg.method === 'string') {
+        for (const cb of this.handlers.get(msg.method) ?? []) {
+          try {
+            cb(msg.params ?? {}, msg.sessionId);
+          } catch {
+            // 事件回调出错不影响连接
+          }
+        }
+      }
+    });
+    ws.addEventListener('close', () => {
+      this.closed = true;
+      for (const [, p] of this.pending) p.reject(new BrowserError('浏览器连接已断开', 'cdp_error'));
+      this.pending.clear();
+    });
+  }
+
+  static async connect(url: string): Promise<CdpConnection> {
+    const ws = new WebSocket(url);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new BrowserError('连接浏览器超时', 'timeout')), 10_000);
+      ws.addEventListener('open', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      ws.addEventListener('error', () => {
+        clearTimeout(timer);
+        reject(new BrowserError('无法连接浏览器调试端口', 'cdp_error'));
+      });
+    });
+    return new CdpConnection(ws);
+  }
+
+  send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+    if (this.closed) return Promise.reject(new BrowserError('浏览器连接已断开', 'cdp_error'));
+    this.seq += 1;
+    const id = this.seq;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId !== undefined ? { sessionId } : {}) }));
+    });
+  }
+
+  on(method: string, cb: (params: Record<string, unknown>, sessionId?: string) => void): () => void {
+    const set = this.handlers.get(method) ?? new Set();
+    set.add(cb);
+    this.handlers.set(method, set);
+    return () => set.delete(cb);
+  }
+
+  close(): void {
+    try {
+      this.ws.close();
+    } catch {
+      // 已关闭
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 浏览器会话
+// ═══════════════════════════════════════════════════════════
+
+export interface BrowserFrame {
+  readonly data: string;
+  readonly width: number;
+  readonly height: number;
+  readonly at: number;
+}
+
+interface BrowserSessionState {
+  readonly executable: string;
+  readonly child: ChildProcess;
+  readonly cdp: CdpConnection;
+  readonly pageSessionId: string;
+  readonly targetId: string;
+  frame: BrowserFrame | null;
+  readonly frameSubscribers: Set<(frame: BrowserFrame) => void>;
+  lastUsedAt: number;
+}
+
+let session: BrowserSessionState | null = null;
+
+async function waitForDevToolsPort(profileDir: string, timeoutMs = 20_000): Promise<number> {
+  const file = join(profileDir, 'DevToolsActivePort');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const text = await readFile(file, 'utf8');
+      const port = Number(text.split('\n')[0]);
+      if (Number.isInteger(port) && port > 0) return port;
+    } catch {
+      // 还没写出来
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new BrowserError('浏览器启动超时（没有写出调试端口）', 'timeout');
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) throw new BrowserError(`调试端口返回 ${res.status}`, 'cdp_error');
+  return (await res.json()) as T;
+}
+
+/**
+ * 启动（或复用）浏览器。
+ *
+ * ★ 懒启动：第一次打开浏览器页签才启动，不用就不占内存。
+ */
+export async function ensureBrowser(dataDir: string): Promise<{ executable: string; reused: boolean }> {
+  if (session !== null) {
+    session.lastUsedAt = Date.now();
+    return { executable: session.executable, reused: true };
+  }
+
+  const executable = findBrowserExecutable();
+  if (executable === null) {
+    throw new BrowserError(
+      '没有找到可用的 Chromium 浏览器（Chrome / Edge）。安装其一，或用 BUTLER_BROWSER_PATH 指定路径。',
+      'no_browser',
+    );
+  }
+
+  const profileDir = join(dataDir, 'browser-profile');
+  await mkdir(profileDir, { recursive: true });
+  // 上次异常退出可能留下锁：删掉再启动（只影响我们的专用 profile）
+  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile']) {
+    await rm(join(profileDir, lock), { force: true }).catch(() => undefined);
+  }
+
+  const args = [
+    '--remote-debugging-port=0',
+    `--user-data-dir=${profileDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-networking',
+    '--disable-component-update',
+    '--disable-sync',
+    '--disable-features=Translate,MediaRouter,OptimizationHints',
+    `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
+    ...(HEADLESS ? ['--headless=new', '--hide-scrollbars'] : []),
+    'about:blank',
+  ];
+
+  let child: ChildProcess;
+  try {
+    child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
+  } catch (err) {
+    throw new BrowserError(`启动浏览器失败：${err instanceof Error ? err.message : String(err)}`, 'launch_failed');
+  }
+
+  const exited = new Promise<never>((_, reject) => {
+    child.once('exit', (code) => reject(new BrowserError(`浏览器进程退出（code=${String(code)}）`, 'launch_failed')));
+  });
+
+  try {
+    const port = await Promise.race([waitForDevToolsPort(profileDir), exited]);
+    const version = await fetchJson<{ webSocketDebuggerUrl: string }>(`http://127.0.0.1:${port}/json/version`);
+    const cdp = await CdpConnection.connect(version.webSocketDebuggerUrl);
+
+    // 新建一个页面并附着（flatten 模式：事件里带 sessionId）
+    const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
+    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
+
+    await cdp.send('Page.enable', {}, sessionId);
+    await cdp.send('Runtime.enable', {}, sessionId);
+    await cdp.send(
+      'Emulation.setDeviceMetricsOverride',
+      { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false },
+      sessionId,
+    );
+
+    const state: BrowserSessionState = {
+      executable,
+      child,
+      cdp,
+      pageSessionId: sessionId,
+      targetId,
+      frame: null,
+      frameSubscribers: new Set(),
+      lastUsedAt: Date.now(),
+    };
+
+    // 画面帧：必须逐帧 ack，否则 Chrome 会暂停串流
+    cdp.on('Page.screencastFrame', (params, eventSessionId) => {
+      const meta = params['metadata'] as { deviceWidth?: number; deviceHeight?: number } | undefined;
+      const frame: BrowserFrame = {
+        data: String(params['data'] ?? ''),
+        width: meta?.deviceWidth ?? VIEWPORT.width,
+        height: meta?.deviceHeight ?? VIEWPORT.height,
+        at: Date.now(),
+      };
+      state.frame = frame;
+      const frameSessionId = eventSessionId ?? sessionId;
+      const ackId = params['sessionId'];
+      if (typeof ackId === 'number') {
+        void cdp.send('Page.screencastFrameAck', { sessionId: ackId }, frameSessionId).catch(() => undefined);
+      }
+      for (const cb of state.frameSubscribers) {
+        try {
+          cb(frame);
+        } catch {
+          // 订阅者出错不影响其它订阅者
+        }
+      }
+    });
+
+    await cdp.send('Page.startScreencast', SCREENCAST, sessionId);
+    child.once('exit', () => {
+      if (session === state) session = null;
+    });
+    session = state;
+    return { executable, reused: false };
+  } catch (err) {
+    child.kill();
+    if (err instanceof BrowserError) throw err;
+    throw new BrowserError(`浏览器启动失败：${err instanceof Error ? err.message : String(err)}`, 'launch_failed');
+  }
+}
+
+function requireSession(): BrowserSessionState {
+  if (session === null) throw new BrowserError('浏览器还没启动', 'not_started');
+  session.lastUsedAt = Date.now();
+  return session;
+}
+
+export function browserStatus(): { running: boolean; executable: string | null } {
+  return { running: session !== null, executable: session?.executable ?? null };
+}
+
+export async function navigate(input: string): Promise<{ url: string; kind: 'url' | 'search' }> {
+  const state = requireSession();
+  const target = normalizeAddress(input);
+  await state.cdp.send('Page.navigate', { url: target.url }, state.pageSessionId);
+  return { url: target.url, kind: target.kind };
+}
+
+export async function goBack(): Promise<void> {
+  const state = requireSession();
+  const history = await state.cdp.send<{
+    currentIndex: number;
+    entries: { id: number; url: string }[];
+  }>('Page.getNavigationHistory', {}, state.pageSessionId);
+  const entry = history.entries[history.currentIndex - 1];
+  if (entry === undefined) return;
+  await state.cdp.send('Page.navigateToHistoryEntry', { entryId: entry.id }, state.pageSessionId);
+}
+
+export async function goForward(): Promise<void> {
+  const state = requireSession();
+  const history = await state.cdp.send<{
+    currentIndex: number;
+    entries: { id: number; url: string }[];
+  }>('Page.getNavigationHistory', {}, state.pageSessionId);
+  const entry = history.entries[history.currentIndex + 1];
+  if (entry === undefined) return;
+  await state.cdp.send('Page.navigateToHistoryEntry', { entryId: entry.id }, state.pageSessionId);
+}
+
+export async function reload(): Promise<void> {
+  const state = requireSession();
+  await state.cdp.send('Page.reload', {}, state.pageSessionId);
+}
+
+export async function stopLoading(): Promise<void> {
+  const state = requireSession();
+  await state.cdp.send('Page.stopLoading', {}, state.pageSessionId);
+}
+
+export interface PageInfo {
+  readonly url: string;
+  readonly title: string;
+  readonly loading: boolean;
+  readonly canBack: boolean;
+  readonly canForward: boolean;
+}
+
+export async function pageInfo(): Promise<PageInfo> {
+  const state = requireSession();
+  const history = await state.cdp.send<{ currentIndex: number; entries: unknown[] }>(
+    'Page.getNavigationHistory',
+    {},
+    state.pageSessionId,
+  );
+  const evalResult = await state.cdp.send<{ result: { value?: unknown } }>(
+    'Runtime.evaluate',
+    {
+      expression: '({ url: location.href, title: document.title })',
+      returnByValue: true,
+    },
+    state.pageSessionId,
+  );
+  const value = (evalResult.result.value ?? {}) as { url?: string; title?: string };
+  return {
+    url: value.url ?? 'about:blank',
+    title: value.title ?? '',
+    loading: false,
+    canBack: history.currentIndex > 0,
+    canForward: history.currentIndex < history.entries.length - 1,
+  };
+}
+
+/** 读当前页面（给 AI 用）：标题、正文、以及一张截图。 */
+export async function readPage(): Promise<{ url: string; title: string; text: string; screenshot: string }> {
+  const state = requireSession();
+  const info = await pageInfo();
+  const evalResult = await state.cdp.send<{ result: { value?: unknown } }>(
+    'Runtime.evaluate',
+    {
+      expression: `(() => {
+        const body = document.body;
+        if (!body) return '';
+        const text = (body.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
+        return text.slice(0, 20000);
+      })()`,
+      returnByValue: true,
+    },
+    state.pageSessionId,
+  );
+  const shot = await state.cdp.send<{ data: string }>('Page.captureScreenshot', { format: 'png' }, state.pageSessionId);
+  return {
+    url: info.url,
+    title: info.title,
+    text: String(evalResult.result.value ?? ''),
+    screenshot: shot.data,
+  };
+}
+
+export async function closeBrowser(): Promise<void> {
+  if (session === null) return;
+  const state = session;
+  session = null;
+  try {
+    state.cdp.close();
+  } catch {
+    // 忽略
+  }
+  try {
+    state.child.kill();
+  } catch {
+    // 忽略
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// 输入转发
+// ═══════════════════════════════════════════════════════════
+
+const BUTTON_MASK = { left: 1, middle: 4, right: 2 } as const;
+
+export async function mouseInput(event: {
+  readonly type: 'down' | 'up' | 'move' | 'wheel';
+  readonly x: number;
+  readonly y: number;
+  readonly button?: 'left' | 'middle' | 'right';
+}): Promise<void> {
+  const state = requireSession();
+  const button = event.button ?? 'left';
+  if (event.type === 'wheel') {
+    await state.cdp.send(
+      'Input.dispatchMouseEvent',
+      { type: 'mouseWheel', x: event.x, y: event.y, deltaX: 0, deltaY: 120 },
+      state.pageSessionId,
+    );
+    return;
+  }
+  const type = event.type === 'down' ? 'mousePressed' : event.type === 'up' ? 'mouseReleased' : 'mouseMoved';
+  await state.cdp.send(
+    'Input.dispatchMouseEvent',
+    {
+      type,
+      x: event.x,
+      y: event.y,
+      button: event.type === 'move' ? 'none' : button,
+      buttons: event.type === 'move' ? 0 : BUTTON_MASK[button],
+      clickCount: event.type === 'move' ? 0 : 1,
+    },
+    state.pageSessionId,
+  );
+}
+
+/**
+ * 键盘输入。
+ *
+ * ★ 普通字符走 `Input.insertText`：它会触发页面里的 input 事件，
+ *   比逐个 keyCode 稳（中文/emoji 也能进），但不触发 keydown 的某些监听。
+ *   特殊键（回车/退格/箭头/Tab）单独发 keyDown/keyUp。
+ */
+export async function keyInput(event: {
+  readonly type: 'text' | 'key';
+  readonly text?: string;
+  readonly key?: string;
+}): Promise<void> {
+  const state = requireSession();
+  if (event.type === 'text') {
+    const text = event.text ?? '';
+    if (text.length > 0) await state.cdp.send('Input.insertText', { text }, state.pageSessionId);
+    return;
+  }
+  const key = event.key ?? '';
+  const map: Record<string, { key: string; code: string; windowsVirtualKeyCode: number; text?: string }> = {
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+    Backspace: { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 },
+    Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+    Delete: { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 },
+  };
+  const info = map[key];
+  if (info === undefined) return;
+  await state.cdp.send(
+    'Input.dispatchKeyEvent',
+    {
+      type: 'keyDown',
+      key: info.key,
+      code: info.code,
+      windowsVirtualKeyCode: info.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: info.windowsVirtualKeyCode,
+      ...(info.text !== undefined ? { text: info.text } : {}),
+    },
+    state.pageSessionId,
+  );
+  await state.cdp.send(
+    'Input.dispatchKeyEvent',
+    { type: 'keyUp', key: info.key, code: info.code, windowsVirtualKeyCode: info.windowsVirtualKeyCode },
+    state.pageSessionId,
+  );
+}
+
+/** 订阅画面帧；返回取消函数。 */
+export function subscribeFrames(cb: (frame: BrowserFrame) => void): () => void {
+  const state = requireSession();
+  state.frameSubscribers.add(cb);
+  if (state.frame !== null) cb(state.frame);
+  return () => state.frameSubscribers.delete(cb);
+}
+
+export function latestFrame(): BrowserFrame | null {
+  return session?.frame ?? null;
+}
+
+/** 测试用：把模块状态清掉（不杀进程）。 */
+export function __resetBrowserForTest(): void {
+  session = null;
+}
+
+export { VIEWPORT };
