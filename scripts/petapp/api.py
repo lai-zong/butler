@@ -155,6 +155,47 @@ class ButlerApi:
                 return text.strip()
         return ''
 
+    def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """读取固定会话的完整历史，只留下用户和管家说给用户听的话。
+
+        `GET /api/sessions/<id>` 的每条消息还带 reasoning、agentTrace、
+        servantReports 等内部字段；它们在本方法里就被丢掉，桌板拿不到，
+        也就不可能误显示。tool / servant / system 等其它角色同样过滤掉。
+
+        返回 `[{id, role, text, createdAt}]`，顺序保持服务端的时序。
+        """
+        if not isinstance(session_id, str) or not session_id.strip():
+            return []
+        data = self.get(f'/api/sessions/{urllib.parse.quote(session_id)}')
+        messages = data.get('messages') if isinstance(data, dict) else None
+        if not isinstance(messages, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get('role')
+            if role not in ('user', 'butler'):
+                continue
+            text = message.get('text')
+            if not isinstance(text, str):
+                continue
+            # 空文本的 user 消息不是脏数据：桌宠可以只发图片/附件。
+            # 它仍然属于历史，保留 id 让当前轮能精确去重。
+            if role == 'butler' and not text.strip():
+                continue
+            message_id = message.get('id')
+            created_at = message.get('createdAt')
+            out.append(
+                {
+                    'id': message_id if isinstance(message_id, str) else '',
+                    'role': role,
+                    'text': text,
+                    'createdAt': created_at if isinstance(created_at, (int, float)) else 0,
+                }
+            )
+        return out
+
     def chat_models(self) -> list[dict[str, Any]]:
         """可选的聊天模型。返回 [{profileId, profileName, modelId, label}]。"""
         try:

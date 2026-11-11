@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import math
 import queue
+import re
 import threading
 import time
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog
 from typing import Any, Callable
@@ -48,6 +50,86 @@ EXECUTING_TEXT = '正在执行'
 WEB_ACTIVE_TEXT = '主界面有对话正在执行'
 
 BODY_STATES = {'running', 'done', 'error', 'cancelled'}
+
+# 历史里用户消息的“内部文档正文”标记：
+#   Web 桌宠：\n\n【附件：name】
+#   Tk 桌宠：\n\n【附件 · name】
+# 两段正文都属于发出去的上下文，不是用户输入，不上面板。
+DOC_MARKER_RE = re.compile(r'\n*【附件\s*[：:·]')
+
+
+@dataclass(frozen=True)
+class HistoryMessage:
+    """桌板能看到的、最小化的一条历史消息。"""
+
+    id: str
+    role: str
+    text: str
+    created_at: float = 0.0
+
+
+@dataclass
+class _HistoryBlock:
+    """历史消息的折行结果；只在历史或宽度变化时重建。"""
+
+    message: HistoryMessage
+    lines: list[str]
+    font_key: str
+    width: int
+    pad: int
+    label_h: int
+    bubble_h: int
+    height: int
+
+
+def display_user_history_text(text: str) -> str:
+    """只显示用户真正输入的内容，去掉随消息发送的文档正文。"""
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    match = DOC_MARKER_RE.search(text)
+    if match is not None:
+        visible = text[: match.start()].strip()
+        # 只发了附件、没有文字：给一个用户能看懂的回退，而不是空白气泡。
+        return visible or '（附件）'
+    return text.strip()
+
+
+def normalize_history_messages(raw: Any) -> list[HistoryMessage]:
+    """把 `GET /api/sessions/<id>` 的 messages 收窄成桌板要显示的部分。
+
+    ★ 只允许 user / butler；reasoning、agentTrace、verdict 等内部字段
+       连读都不读，后续渲染没有机会误用。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[HistoryMessage] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = item.get('role')
+        if role not in ('user', 'butler'):
+            continue
+        text = item.get('text')
+        if not isinstance(text, str):
+            continue
+        display = display_user_history_text(text) if role == 'user' else text.strip()
+        if not display:
+            # 只发了图片/附件时服务端 user.text 可能是空串；保留这一条，
+            # 否则当前轮的用户消息没有 id 可去重，会掉到管家答复后面。
+            if role == 'user':
+                display = '（附件）'
+            else:
+                continue
+        message_id = item.get('id')
+        created_at = item.get('createdAt')
+        out.append(
+            HistoryMessage(
+                id=message_id if isinstance(message_id, str) else '',
+                role=role,
+                text=display,
+                created_at=float(created_at) if isinstance(created_at, (int, float)) else 0.0,
+            )
+        )
+    return out
 
 
 class Animated:
@@ -223,10 +305,27 @@ class BoardView:
         self.answer = ''
         self.error_text = ''
         self.last_user = ''
+        self.last_user_id = ''
+        self.answer_id = ''
         self.started_at = 0.0
         self.voice_state = 'idle'
         self.attachments: list[Attachment] = []
         self.web_active: dict[str, Any] | None = None
+
+        # 完整历史（只含 user / butler）与它的折行缓存。
+        # 历史只在 set_history 时重建；流式 narration 的每帧只重画 current 层。
+        self.history: list[HistoryMessage] = []
+        self._history_ids: set[str] = set()
+        self._history_sig: tuple[tuple[str, str, str], ...] | None = None
+        self._history_version = 0
+        self._history_layout: list[_HistoryBlock] | None = None
+        self._history_layout_w = -1
+        self._history_height = 0
+        self._history_paint_key: tuple[int, int] | None = None
+        self._scroll_anchor: float | None = None
+        # 第一轮结束时历史还是空的：set_reply 为了看长答复先停在顶部；
+        # 紧接着的历史刷新第一次把整段对话接上，此时应该回到底部看新答复。
+        self._follow_first_history = False
 
         self.board_h = Animated(0.0, 0.10)
         self.composer_h = Animated(0.0, 0.075)
@@ -284,7 +383,13 @@ class BoardView:
         self.input_min_lines = 1
         self.input_max_lines = 4
         self.input_lines = max(1, min(4, getattr(self, 'input_lines', 1)))
+        old_body_w = getattr(self, 'body_w', -1)
         self.body_w = self.W - 2 * self.body_pad
+        if old_body_w != self.body_w:
+            # 宽度变了，历史折行必须重排；但只在真正变宽/变窄时做一次。
+            self._history_layout = None
+            self._history_layout_w = -1
+            self._history_paint_key = None
         if hasattr(self, 'body'):
             self.body.configure(yscrollincrement=t.line_h('answer'))
         if hasattr(self, 'chrome') and self.W > 0:
@@ -410,6 +515,7 @@ class BoardView:
         self._closed_reported = False
         self.board_h.value = 0.0
         self._scroll_follow = True
+        self._scroll_anchor = None
         self.cb['on_show']()
         if self.state in ('running', 'done', 'error', 'cancelled') or self._external_idle():
             self.expanded = False
@@ -433,6 +539,7 @@ class BoardView:
         self.tooltip.hide()
         self.toast.hide()
         self.input.place_forget()
+        self._scroll_anchor = None
         self.board_h.to(0)
         self._start_anim()
 
@@ -503,15 +610,19 @@ class BoardView:
 
     def begin_run(self, user_text: str) -> None:
         self.state = 'running'
-        self.last_user = user_text
+        self.last_user = user_text.strip() if isinstance(user_text, str) else ''
+        self.last_user_id = ''
         self.narration = ''
         self.narration_done = False
         self.answer = ''
+        self.answer_id = ''
         self.error_text = ''
         self.stage = ''
         self.attachments = []
         self.started_at = time.monotonic()
         self._scroll_follow = True
+        self._scroll_anchor = None
+        self._follow_first_history = False
         self.expanded = False
         self.composer_h.to(0)
         self.input.place_forget()
@@ -542,17 +653,67 @@ class BoardView:
             self._paint_body()
             self._reflow()
 
-    def set_reply(self, text: str) -> None:
-        self.answer = self._clean_answer(text)
+    def set_reply(self, text: str, message_id: str | None = None) -> None:
+        self.answer = self._clean_answer(text, limit=None if self.history else 6000)
+        self.answer_id = message_id.strip() if isinstance(message_id, str) else ''
         self.state = 'done'
         self.expanded = False
         self.composer_h.to(0)
         self.input.place_forget()
-        self._scroll_follow = False
+        # 没有历史时保留旧行为（从答复开头看）；有历史时新答复在底部，
+        # 跟随的人留在底部，已经上翻的人保持原位。
+        if self.history:
+            self._scroll_anchor = None if self._scroll_follow else self._capture_scroll_anchor()
+            self._follow_first_history = False
+        else:
+            self._scroll_follow = False
+            self._scroll_anchor = None
+            self._follow_first_history = True
         self._sync_placeholder()
         self._paint_all()
         self._reflow()
-        self.root.after(30, self._scroll_to_top)
+        if not self.history:
+            self.root.after(30, self._scroll_to_top)
+
+    def set_user_message_id(self, message_id: str) -> None:
+        """SSE 的 user 事件带 id；拿到后就可以和历史精确去重。"""
+        mid = message_id.strip() if isinstance(message_id, str) else ''
+        if not mid or mid == self.last_user_id:
+            return
+        self.last_user_id = mid
+        if self.open and self.state in ('running', 'done'):
+            self._paint_body()
+            self._reflow()
+
+    def set_history(self, messages: Any) -> None:
+        """替换完整历史；内容没变时连折行都不重算。"""
+        items = normalize_history_messages(messages)
+        signature = tuple((item.id, item.role, item.text) for item in items)
+        if signature == self._history_sig:
+            return
+        anchor = None if self._scroll_follow else self._capture_scroll_anchor()
+        self.history = items
+        self._history_ids = {item.id for item in items if item.id}
+        self._history_sig = signature
+        self._history_version += 1
+        self._history_layout = None
+        self._history_paint_key = None
+        if self._follow_first_history and items and self.state == 'done':
+            # 第一轮答复刚结束，整段历史第一次接上：让新答复留在视野底部。
+            self._scroll_follow = True
+            self._scroll_anchor = None
+            anchor = None
+            self._follow_first_history = False
+        if not self.open:
+            return
+        self._paint_body()
+        self._reflow()
+        self._start_anim()
+        if self._scroll_follow:
+            self._scroll_anchor = None
+        else:
+            self._scroll_anchor = anchor
+            self._restore_scroll_anchor()
 
     def set_error(self, message: str) -> None:
         self.state = 'error'
@@ -895,7 +1056,8 @@ class BoardView:
             item = c.create_oval(
                 x + index * t.px(7) - r, cy - r,
                 x + index * t.px(7) + r, cy + r,
-                fill=COLOR['accent_soft'], outline='', tags=('dot',),
+                fill=COLOR['accent_soft'], outline='',
+                tags=('dot',) if target == 'top' else ('dot', 'current'),
             )
             if target == 'top':
                 self._top_dots.append(item)
@@ -963,53 +1125,248 @@ class BoardView:
 
     def _paint_body(self) -> None:
         c = self.body
-        c.delete('all')
         self._body_dots = []
-        self._scroll_item = None
-        if self.state not in BODY_STATES:
+        if not self._body_has_content():
+            c.delete('all')
+            self._scroll_item = None
             self.body_content_h = 0
+            self._history_paint_key = None
             c.configure(scrollregion=(0, 0, self.body_w, 1))
+            self._update_scrollbar()
             return
 
         text_w = max(20, self.body_w - 6)
-        y = 0
+        key = (self._history_version, self.body_w)
+        full = key != self._history_paint_key
+        anchor = None
+        if not self._scroll_follow:
+            anchor = self._capture_scroll_anchor()
+
         try:
-            if self.state == 'running':
-                if self.expanded:
-                    y = self._draw_status(c, 0)
-                if self.narration:
-                    y = self._lines(
-                        c, 0, y + self.t.px(1), self.narration, 'quote',
-                        COLOR['ink_2'], text_w,
-                    )
-                    y += self.t.px(2)
-            elif self.state == 'done':
-                y = self._lines(c, 0, y, self.answer, 'answer', COLOR['ink'], text_w)
-                y += self.t.px(2)
-            elif self.state == 'error':
-                y = self._lines(
-                    c, 0, y, self.error_text, 'answer', COLOR['ink_2'], text_w
-                )
-                y += self.t.px(2)
-            elif self.state == 'cancelled':
-                c.create_text(
-                    0, 0, text='已停止', anchor='nw', font=self.t.fonts['status'],
-                    fill=COLOR['ink_3'],
-                )
-                y = self.t.line_h('status') + self.t.px(2)
+            if full:
+                # 历史变了或宽度变了：整页重建一次，之后流式只动 current 层。
+                c.delete('all')
+                self._scroll_item = None
+                self._history_paint_key = key
+                y = self._paint_history(c)
+            else:
+                c.delete('current')
+                y = self._history_height
+
+            y = self._paint_current(c, y, text_w)
+            self.body_content_h = int(max(0, y) + 2)
+            c.configure(scrollregion=(0, 0, self.body_w, max(self.body_content_h, 1)))
+            if self._scroll_follow:
+                self._scroll_anchor = None
+                c.yview_moveto(1.0)
+            elif anchor is not None:
+                self._scroll_anchor = anchor
+                self._restore_scroll_anchor()
+            self._update_scrollbar()
         except Exception:
             self.error_text = '界面渲染出错'
+            c.delete('all')
+            self._scroll_item = None
+            self._body_dots = []
+            self._history_paint_key = None
             c.create_text(
                 0, 0, text='界面渲染出错', anchor='nw',
                 font=self.t.fonts['hint'], fill=COLOR['danger'],
+                tags=('current',),
             )
-            y = self.t.line_h('hint')
+            self.body_content_h = int(self.t.line_h('hint') + 2)
+            c.configure(scrollregion=(0, 0, self.body_w, max(self.body_content_h, 1)))
+            if self._scroll_follow:
+                c.yview_moveto(1.0)
 
-        self.body_content_h = int(y + 2)
-        c.configure(scrollregion=(0, 0, self.body_w, max(self.body_content_h, 1)))
-        if self._scroll_follow:
-            c.yview_moveto(1.0)
-        self._update_scrollbar()
+    def _body_has_content(self) -> bool:
+        # 主界面有别的对话在执行时，桌板只保留那条跳转提示（旧行为）。
+        if self._external_idle():
+            return False
+        return bool(self.history) or self.state in BODY_STATES
+
+    def _paint_history(self, c: tk.Canvas) -> float:
+        self._ensure_history_layout()
+        y = 0.0
+        for block in self._history_layout or []:
+            self._draw_block(c, block, y, 'hist')
+            y += block.height
+        self._history_height = y
+        return y
+
+    def _ensure_history_layout(self) -> None:
+        width = max(20, self.body_w - 6)
+        if self._history_layout is not None and self._history_layout_w == width:
+            return
+        blocks: list[_HistoryBlock] = []
+        for message in self.history:
+            if message.role == 'user':
+                blocks.append(self._make_block(message, 'user', message.text, width))
+                continue
+            # 管家正文沿用现有的轻量 Markdown 清理，但历史不设 6000 字上限。
+            text = self._clean_answer(message.text, limit=None)
+            if text:
+                blocks.append(self._make_block(message, 'butler', text, width))
+        self._history_layout = blocks
+        self._history_layout_w = width
+
+    def _make_block(
+        self, message: HistoryMessage, role: str, text: str, width: int
+    ) -> _HistoryBlock:
+        t = self.t
+        label_h = t.line_h('meta')
+        if role == 'user':
+            font_key = 'quote'
+            pad = t.px(8)
+            text_w = max(10, width - 2 * pad)
+            lines = self.wrapper.lines(t.fonts[font_key], text, text_w)
+            text_h = len(lines) * t.line_h(font_key)
+            bubble_h = max(t.line_h(font_key) + 2 * pad, text_h + 2 * pad)
+        else:
+            font_key = 'answer'
+            pad = 0
+            lines = self.wrapper.lines(t.fonts[font_key], text, width)
+            bubble_h = len(lines) * t.line_h(font_key)
+        return _HistoryBlock(
+            message=message,
+            lines=lines,
+            font_key=font_key,
+            width=width,
+            pad=pad,
+            label_h=label_h,
+            bubble_h=bubble_h,
+            height=label_h + t.px(3) + bubble_h + t.px(12),
+        )
+
+    def _draw_block(
+        self, c: tk.Canvas, block: _HistoryBlock, y: float, tag: str
+    ) -> None:
+        t = self.t
+        user = block.message.role == 'user'
+        c.create_text(
+            0, y, text='你' if user else '管家', anchor='nw', font=t.fonts['meta'],
+            fill=COLOR['accent_ink'] if user else COLOR['ink_3'], tags=(tag,),
+        )
+        text_y = y + block.label_h + t.px(3)
+        if user:
+            radius = min(float(t.px(8)), block.bubble_h / 2)
+            c.create_polygon(
+                rounded_points(
+                    0, text_y, block.width, text_y + block.bubble_h,
+                    radius, radius, radius, radius,
+                ),
+                fill=COLOR['board_soft'], outline='', tags=(tag,),
+            )
+            self._draw_lines(
+                c, block.pad, text_y + block.pad, block.lines,
+                block.font_key, COLOR['ink_2'], tag,
+            )
+        else:
+            self._draw_lines(
+                c, 0, text_y, block.lines, block.font_key, COLOR['ink'], tag
+            )
+
+    def _paint_current(self, c: tk.Canvas, y: float, text_w: int) -> float:
+        if self.state not in BODY_STATES:
+            return y
+        t = self.t
+        user_text = self._current_user_text()
+        answer_text = self._current_answer_text() if self.state == 'done' else ''
+        has_status = self.state == 'running' and self.expanded
+        has_narration = self.state == 'running' and bool(self.narration)
+        has_error = self.state == 'error' and bool(self.error_text)
+        has_cancelled = self.state == 'cancelled'
+        # 首轮没有历史时保持旧观感：只显示状态/叙述/答复，不额外画"你"。
+        show_user = bool(self.history and user_text)
+        if not (
+            show_user or answer_text or has_status or has_narration
+            or has_error or has_cancelled
+        ):
+            return y
+
+        if self.history:
+            y += t.px(8)
+            c.create_line(
+                0, y, max(1, self.body_w - 6), y,
+                fill=COLOR['divider'], width=max(1, t.px(0.8)), tags=('current',),
+            )
+            y += t.px(8)
+
+        if show_user:
+            message = HistoryMessage(id=self.last_user_id, role='user', text=user_text)
+            block = self._make_block(message, 'user', user_text, text_w)
+            self._draw_block(c, block, y, 'current')
+            y += block.height
+
+        if self.state == 'running':
+            if self.expanded:
+                y = self._draw_status(c, y)
+            if self.narration:
+                y = self._lines(
+                    c, 0, y + t.px(1), self.narration, 'quote',
+                    COLOR['ink_2'], text_w, tag='current',
+                )
+                y += t.px(2)
+        elif self.state == 'done' and answer_text:
+            if self.history:
+                c.create_text(
+                    0, y, text='管家', anchor='nw', font=t.fonts['meta'],
+                    fill=COLOR['ink_3'], tags=('current',),
+                )
+                y += t.line_h('meta') + t.px(3)
+            y = self._lines(
+                c, 0, y, answer_text, 'answer', COLOR['ink'], text_w,
+                tag='current',
+            )
+            y += t.px(2)
+        elif self.state == 'error':
+            y = self._lines(
+                c, 0, y, self.error_text, 'answer', COLOR['ink_2'], text_w,
+                tag='current',
+            )
+            y += t.px(2)
+        elif self.state == 'cancelled':
+            c.create_text(
+                0, y, text='已停止', anchor='nw', font=t.fonts['status'],
+                fill=COLOR['ink_3'], tags=('current',),
+            )
+            y += t.line_h('status') + t.px(2)
+        return y
+
+    def _current_user_text(self) -> str:
+        text = self.last_user.strip() if isinstance(self.last_user, str) else ''
+        if not text:
+            return ''
+        # 拿到 SSE 的 message id 后，用 id 精确判断，避免同文误伤。
+        if self.last_user_id:
+            return '' if self.last_user_id in self._history_ids else text
+        last_user = ''
+        for message in reversed(self.history):
+            if message.role == 'user':
+                last_user = message.text
+                break
+        if last_user and self._same_text(last_user, text):
+            return ''
+        return text
+
+    def _current_answer_text(self) -> str:
+        answer = self.answer.strip()
+        if not answer:
+            return ''
+        if self.answer_id:
+            return '' if self.answer_id in self._history_ids else answer
+        for message in reversed(self.history):
+            if message.role != 'butler':
+                continue
+            history_answer = self._clean_answer(message.text, limit=None)
+            if history_answer and self._same_text(history_answer, answer):
+                return ''
+            break
+        return answer
+
+    @staticmethod
+    def _same_text(left: str, right: str) -> bool:
+        return ' '.join(left.split()) == ' '.join(right.split())
 
     def _draw_status(self, c: tk.Canvas, y: float) -> float:
         t = self.t
@@ -1017,7 +1374,7 @@ class BoardView:
         text = EXECUTING_TEXT if (self.narration or self.stage) else THINKING_TEXT
         c.create_text(
             0, y, text=text, anchor='nw', font=font, fill=COLOR['ink_3'],
-            tags=('status',),
+            tags=('status', 'current'),
         )
         dot_x = font.measure(text) + t.px(8)
         line_h = t.line_h('status')
@@ -1037,8 +1394,24 @@ class BoardView:
         tag: str | None = None,
     ) -> int:
         font = self.t.fonts[font_key]
+        return self._draw_lines(
+            c, x, y, self.wrapper.lines(font, text, width),
+            font_key, fill, tag or '',
+        )
+
+    def _draw_lines(
+        self,
+        c: tk.Canvas,
+        x: float,
+        y: float,
+        lines: list[str],
+        font_key: str,
+        fill: str,
+        tag: str,
+    ) -> int:
+        font = self.t.fonts[font_key]
         line_h = self.t.line_h(font_key)
-        for line in self.wrapper.lines(font, text, width):
+        for line in lines:
             if line:
                 c.create_text(
                     x, y, text=line, anchor='nw', font=font, fill=fill,
@@ -1046,6 +1419,24 @@ class BoardView:
                 )
             y += line_h
         return y
+
+    def _capture_scroll_anchor(self) -> float | None:
+        try:
+            if self.body_content_h > 0 and self.body.winfo_height() > 1:
+                return float(self.body.canvasy(0))
+        except Exception:
+            pass
+        return None
+
+    def _restore_scroll_anchor(self) -> None:
+        anchor = self._scroll_anchor
+        if anchor is None:
+            return
+        try:
+            total = max(1, self.body_content_h)
+            self.body.yview_moveto(max(0.0, min(1.0, anchor / total)))
+        except Exception:
+            pass
 
     def _scroll_to_top(self) -> None:
         try:
@@ -1108,10 +1499,15 @@ class BoardView:
         return bool(self._input_text() or any(a.ready for a in self.attachments))
 
     def _body_view_h(self) -> int:
-        if self.state not in BODY_STATES:
+        if not self._body_has_content():
             return 0
         content = max(0, min(self.body_content_h, self.max_body_h))
-        if self.state == 'running' and not self.expanded and not self.narration:
+        if (
+            self.state == 'running'
+            and not self.expanded
+            and not self.narration
+            and not self.history
+        ):
             return 0
         return content
 
@@ -1119,7 +1515,7 @@ class BoardView:
         ch = self.composer_h.value if composer_h is None else composer_h
         if self.expanded and ch > 2:
             return int(round(self.pad + ch + self.body_gap))
-        if self.state in BODY_STATES:
+        if self.state in BODY_STATES or self.history:
             return self.pad + self.top_row_h + self.body_gap
         return self.pad
 
@@ -1189,7 +1585,7 @@ class BoardView:
         self.chrome.place(x=0, y=0, width=self.W, height=max(1, h))
         body_top = self._body_top()
         body_h = max(1, h - body_top - self.pad)
-        if self.state in BODY_STATES and self.open and h > body_top + 2:
+        if self._body_has_content() and self.open and h > body_top + 2:
             self.body.place(
                 x=self.body_pad, y=body_top,
                 width=max(20, self.body_w), height=body_h,
@@ -1197,6 +1593,12 @@ class BoardView:
         else:
             self.body.place_forget()
         self._place_input()
+        # 打开桌板/动画变高时优先停在最新一条；用户上翻后这里只用锚点还原。
+        if self._body_has_content():
+            if self._scroll_follow:
+                self.body.yview_moveto(1.0)
+            elif self._scroll_anchor is not None:
+                self._restore_scroll_anchor()
 
     def _place_input(self) -> None:
         t = self.t
@@ -1299,14 +1701,25 @@ class BoardView:
         self.input.mark_set('insert', 'end-1c')
 
     def _on_wheel(self, event: tk.Event) -> None:
-        if self.state not in BODY_STATES:
+        if not self._body_has_content():
             return
         if self.body_content_h <= self.body.winfo_height():
             return
         delta = -1 if event.delta > 0 else 1
         self.body.yview_scroll(delta, 'units')
         if event.delta > 0:
+            # 用户主动上翻后，新的 narration / 历史刷新不再把视野拽回底部。
             self._scroll_follow = False
+            self._scroll_anchor = None
+            self._follow_first_history = False
+        else:
+            try:
+                _first, last = self.body.yview()
+                if last >= 0.999:
+                    self._scroll_follow = True
+                    self._scroll_anchor = None
+            except Exception:
+                pass
         self._update_scrollbar()
 
     def _on_return(self, event: tk.Event) -> str:
@@ -1566,10 +1979,10 @@ class BoardView:
             self.cb['on_check_connection']()
             return
         payload = compose_message(text, ready)
-        summary = text or f'（{len(ready)} 个附件）'
+        display_text = text or '（附件）'
         self.attachments = []
         self._clear_input()
-        self.begin_run(summary)
+        self.begin_run(display_text)
         self.cb['on_send'](payload, images)
 
     # ═══════════════════════════════════════════════════
@@ -1639,7 +2052,12 @@ class BoardView:
         return text if len(text) <= 300 else text[:300].rstrip() + '…'
 
     @staticmethod
-    def _clean_answer(text: str) -> str:
+    def _clean_answer(text: str, limit: int | None = 6000) -> str:
+        """轻量 Markdown 清理；历史调用 `limit=None`，保证完整不截断。
+
+        无历史时的当前答复仍沿用旧的 6000 字保护；finished 后历史会接上，
+        同一个答复由完整历史替换（按 message id 去重）。
+        """
         out: list[str] = []
         for raw in text.replace('\r\n', '\n').split('\n'):
             line = raw.rstrip()
@@ -1653,19 +2071,22 @@ class BoardView:
             line = line.replace('**', '').replace('__', '').replace('`', '')
             out.append(line)
         cleaned = '\n'.join(out).strip()
-        if len(cleaned) > 6000:
-            cleaned = cleaned[:6000].rstrip() + '\n\n（内容太长，完整答复请在主界面查看）'
+        if limit is not None and len(cleaned) > limit:
+            cleaned = cleaned[:limit].rstrip() + '\n\n（内容太长，完整答复请在主界面查看）'
         return cleaned
 
     def reset_idle(self) -> None:
         self.state = 'idle'
         self.last_user = ''
+        self.last_user_id = ''
         self.narration = ''
         self.answer = ''
+        self.answer_id = ''
         self.error_text = ''
         self.stage = ''
         self.started_at = 0.0
         self.voice_state = 'idle'
+        self._follow_first_history = False
         self._stop_pulse()
         if self.open:
             if self._external_idle():

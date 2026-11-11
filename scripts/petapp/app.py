@@ -16,6 +16,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 import urllib.parse
 import webbrowser
@@ -28,6 +29,7 @@ from . import webwindow
 from .api import ApiError, ButlerApi
 from .board import BoardView
 from .menu import PetContextMenu
+from .proactive import ProactiveReminder
 from .store import (
     ASSET_DIR,
     Paths,
@@ -64,6 +66,8 @@ class PetApp:
         self.state = load_state(self.paths)
         self.api = ButlerApi()
         self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        # 主动提醒气泡：只在主线程操作，网络由 _poll_proactive 的工作线程负责。
+        self.proactive = ProactiveReminder(self.root, self.theme)
 
         self._closing = False
         self._board_h = 0
@@ -106,6 +110,14 @@ class PetApp:
         self._menu: PetContextMenu | None = None
         self._tray: SystemTray | None = None
         self._notified_offline = False
+        # 历史读取：只在启动/会话确定/每轮结束/打开桌板时触发；
+        # 绘制与滚动永远不碰网络。
+        self._history_loading = False
+        self._history_pending = False
+        self._history_loaded = False
+        self._history_last_attempt = 0.0
+        self._history_session = ''
+        self._history_last_error = ''
         # ⚠️ pystray 在**它自己的线程**里读菜单状态；Tk 的 root.state() 不能在
         #    别的线程里碰。所以这里维护一份普通 dict 快照，托盘只读它。
         self._tray_snapshot: dict[str, Any] = {
@@ -441,6 +453,11 @@ class PetApp:
     def _on_board_show(self) -> None:
         if self.root.state() == 'withdrawn':
             return
+        # 打开桌板时收回主动气泡，避免两块浮层叠在一起。
+        try:
+            self.proactive.hide()
+        except Exception:
+            pass
         try:
             self.board_window.deiconify()
         except Exception:
@@ -574,6 +591,11 @@ class PetApp:
         self.root.bind_all('<Escape>', self._on_escape, add='+')
 
     def _on_pet_press(self, event: tk.Event) -> None:
+        # 用户抓住人物（拖动或打开桌板）时，先收起主动气泡。
+        try:
+            self.proactive.hide()
+        except Exception:
+            pass
         self._drag = {
             'x': event.x_root,
             'y': event.y_root,
@@ -622,11 +644,13 @@ class PetApp:
         if self.board.open:
             self.board.close_board()
         else:
-            self.board.open_board()
+            self.open_board()
 
     def open_board(self) -> None:
         if not self.board.open:
             self.board.open_board()
+        # 打开即读一次；in-flight 合并 + 短节流，连续点开不会叠请求。
+        self._load_history('open', min_interval=1.5)
 
     def _on_send(self, payload: str, images: list[str]) -> None:
         if self.chat.running:
@@ -874,6 +898,10 @@ class PetApp:
         except Exception:
             pass
         try:
+            self.proactive.destroy()
+        except Exception:
+            pass
+        try:
             self.board_window.destroy()
         except Exception:
             pass
@@ -959,10 +987,13 @@ class PetApp:
             return
         self._check_connection()
         self._load_models()
+        self._load_history('startup')
         self.root.after(900, self._poll_active)
         self.root.after(1000, self._poll_config)
         self.root.after(1200, self._poll_tasks)
         self.root.after(15000, self._poll_health)
+        # 主动提醒：等页面稳定后再开始，避免刚启动就弹一条。
+        self.root.after(15000, self._poll_proactive)
 
     def _start_demo(self) -> None:
         """演示模式：不需要主应用，按时序把"空闲 → 执行 → 展开 → 完成"走一遍。
@@ -1067,6 +1098,65 @@ class PetApp:
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(2800, self._poll_active)
 
+    # ── 主动说话：只领取服务端决定好的结果 ──────────────
+
+    def _poll_proactive(self) -> None:
+        if self._closing or self.demo:
+            return
+        # 人物被隐藏或桌板开着时先不领取；这是展示节奏，不是策略判断。
+        if self.root.state() == 'withdrawn' or self.proactive.visible or self.board.open:
+            self.root.after(15000, self._poll_proactive)
+            return
+
+        def worker() -> None:
+            try:
+                data = self.api.post('/api/pet/proactive/claim', {})
+            except Exception:
+                return
+            if isinstance(data, dict) and data.get('shouldSpeak') is True:
+                self.events.put(('proactive', data))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(60000, self._poll_proactive)
+
+    def _show_proactive(self, raw: Any) -> None:
+        if not isinstance(raw, dict):
+            return
+        text = raw.get('text')
+        if not isinstance(text, str) or not text.strip():
+            return
+        trigger = raw.get('trigger')
+        trigger = trigger if isinstance(trigger, str) else 'return'
+        persona = self.config.get('persona')
+        persona = persona if isinstance(persona, str) else ''
+        try:
+            self.root.update_idletasks()
+            center_x = self._x + self._pet_x + self._pet_w // 2
+            pet_top = self._y
+            pet_bottom = self._y + self._pet_h
+        except Exception:
+            return
+        self.proactive.show(
+            text,
+            trigger=trigger,
+            persona=persona,
+            center_x=center_x,
+            pet_top=pet_top,
+            pet_bottom=pet_bottom,
+            on_action=self._on_proactive_action,
+        )
+
+    def _on_proactive_action(self, action: str) -> None:
+        def worker() -> None:
+            try:
+                self.api.post('/api/pet/proactive/feedback', {'action': action})
+            except Exception:
+                return
+
+        threading.Thread(target=worker, daemon=True).start()
+        # mute 会让服务端关闭开关；下一次配置轮询会带回真实状态。
+        self.root.after(2000, self._poll_config)
+
     def _on_active(self, active: Any) -> None:
         if not isinstance(active, list):
             return
@@ -1092,6 +1182,65 @@ class PetApp:
             self.events.put(('models', models))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _load_history(self, reason: str, *, min_interval: float = 0.0) -> None:
+        """异步读取固定会话的完整历史。
+
+        ★ 只在启动 / 会话确定 / 每轮 finished / 打开桌板时调用；
+          `_paint_body`、滚动和动画里没有任何网络调用。
+        ★ 同一时间只允许一个请求；期间的新触发合并成一次 pending，
+          避免 finished 与打开桌板同时打过去。
+        """
+        if self.demo or self._closing:
+            return
+        if self._history_loading:
+            # 打开桌板只是“顺便刷新”，在途请求已经覆盖它；
+            # 但如果手里还没有任何历史（启动时可能正离线），这次打开必须补上。
+            # finished / 会话变化更不能被旧请求吞掉。
+            if reason in ('finished', 'session', 'pending') or not self._history_loaded:
+                self._history_pending = True
+            return
+        now = time.monotonic()
+        if (
+            min_interval > 0
+            and now - self._history_last_attempt < min_interval
+            and self._history_loaded
+        ):
+            # 只有“刚成功过”才值得跳过；失败后打开桌板应该能立刻重试。
+            return
+        session_id = self.chat.session_id or self._session_id
+        if not isinstance(session_id, str) or not session_id:
+            return
+        self._history_loading = True
+        self._history_last_attempt = now
+        self._history_session = session_id
+
+        def worker() -> None:
+            messages: list[dict[str, Any]] | None = None
+            error = ''
+            try:
+                messages = self.api.session_messages(session_id)
+            except ApiError as err:
+                error = str(err)
+            except Exception as err:  # noqa: BLE001 —— 历史失败不能拖垮桌板
+                error = str(err)
+            self.events.put(('history', session_id, messages, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_history(self, session_id: str, messages: Any, error: str = '') -> None:
+        self._history_loading = False
+        self._history_last_error = error
+        current = self.chat.session_id or self._session_id
+        expected = self._history_session
+        if session_id == current and session_id == expected and messages is not None:
+            # messages 是成功响应（可能为空数组）；失败时保持旧历史不覆盖。
+            self.board.set_history(messages)
+            self._history_loaded = True
+        # 会话变了（或请求失败）：结果作废 / 保留旧历史，等下一次触发重读。
+        if self._history_pending:
+            self._history_pending = False
+            self._load_history('pending')
 
     # ═══════════════════════════════════════════════════
     # 主线程事件循环
@@ -1127,15 +1276,29 @@ class PetApp:
             self._on_reminders(item[1])
         elif kind == 'active':
             self._on_active(item[1])
+        elif kind == 'history':
+            self._on_history(
+                str(item[1]),
+                item[2] if len(item) > 2 else None,
+                str(item[3]) if len(item) > 3 else '',
+            )
         elif kind == 'session_id':
             self._remember_session(str(item[1]))
         elif kind == 'toast':
             self.board.flash(str(item[1]), str(item[2]) if len(item) > 2 else 'ink')
+        elif kind == 'proactive':
+            self._show_proactive(item[1])
         elif kind == 'tray':
             self._handle_tray(str(item[1]))
 
     def _handle_chat(self, kind: str, payload: Any) -> None:
         if kind == 'started':
+            return
+        if kind == 'user_message':
+            data = payload if isinstance(payload, dict) else {}
+            message_id = data.get('messageId')
+            if isinstance(message_id, str) and message_id:
+                self.board.set_user_message_id(message_id)
             return
         if kind == 'stage':
             self.board.set_stage(str(payload))
@@ -1143,7 +1306,15 @@ class PetApp:
             data = payload if isinstance(payload, dict) else {}
             self.board.set_narration(str(data.get('text', '')), bool(data.get('done')))
         elif kind == 'reply':
-            self.board.set_reply(str(payload))
+            if isinstance(payload, dict):
+                text = payload.get('text')
+                message_id = payload.get('messageId')
+                self.board.set_reply(
+                    str(text) if isinstance(text, str) else '',
+                    message_id if isinstance(message_id, str) else None,
+                )
+            else:
+                self.board.set_reply(str(payload))
             self._refresh_tray()
         elif kind == 'reflection':
             data = payload if isinstance(payload, dict) else {}
@@ -1158,6 +1329,8 @@ class PetApp:
             data = payload if isinstance(payload, dict) else {}
             self.board.finish(float(data.get('elapsed', 0.0)))
             self._refresh_tray()
+            # 新消息此时已经落盘；拉一次历史，下一帧起由历史接管去重。
+            self._load_history('finished')
 
     def _on_health(self, ok: bool) -> None:
         self.board.set_connected(ok)
@@ -1168,6 +1341,9 @@ class PetApp:
             self._notified_offline = False
             if not self._models_loading and not self._chat_models:
                 self._load_models()
+            if not self._history_loaded and not self._history_loading:
+                # 启动时离线的人，等主应用回来后补读一次；不按帧重试。
+                self._load_history('reconnect', min_interval=60.0)
         else:
             self._notified_offline = True
         self._refresh_tray()
@@ -1178,6 +1354,12 @@ class PetApp:
         # updatedAt 每次轮询都会变，不能拿它当"用户改了设置"
         changed = {key for key in cfg if key != 'updatedAt' and cfg.get(key) != old.get(key)}
         self.config = cfg
+        if not cfg.get('proactiveEnabled', False):
+            # 设置页关掉主动说话后，已经弹出的提醒也应该收起。
+            try:
+                self.proactive.hide()
+            except Exception:
+                pass
         if changed:
             save_config(self.paths, cfg)
         if 'enabled' in changed:
@@ -1215,11 +1397,19 @@ class PetApp:
         self._refresh_tray()
 
     def _remember_session(self, session_id: str) -> None:
+        changed = session_id != self._session_id
         self._session_id = session_id
         self.chat.session_id = session_id
         self.chat._session_checked = True
         self.state['sessionId'] = session_id
         save_state(self.paths, self.state)
+        if changed:
+            # 会话换了就不能继续显示旧会话的历史；新历史读失败时至少不会张冠李戴。
+            self._history_loaded = False
+            self._history_session = ''
+            self._history_last_error = ''
+            self.board.set_history([])
+        self._load_history('session')
 
     def _layout_for_pet(self) -> None:
         self._board_w = self._compute_board_w()

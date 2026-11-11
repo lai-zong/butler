@@ -160,6 +160,11 @@ class ChatController:
                 kind = event.get('type')
                 if kind == 'progress':
                     self._on_progress(event)
+                elif kind == 'user':
+                    # 只留消息 id：桌板用它和历史去重，正文仍然只从历史读。
+                    message_id = event.get('messageId')
+                    if isinstance(message_id, str) and message_id:
+                        self.emit('user_message', {'messageId': message_id})
                 elif kind == 'narration':
                     self.emit(
                         'narration',
@@ -171,7 +176,14 @@ class ChatController:
                 elif kind == 'reply':
                     reply = event.get('text')
                     if isinstance(reply, str):
-                        self.emit('reply', reply)
+                        message_id = event.get('messageId')
+                        self.emit(
+                            'reply',
+                            {
+                                'text': reply,
+                                'messageId': message_id if isinstance(message_id, str) else '',
+                            },
+                        )
                 elif kind == 'reflection':
                     reflection = event.get('reflection')
                     if isinstance(reflection, dict):
@@ -187,7 +199,7 @@ class ChatController:
                     self.emit('error', message if isinstance(message, str) else '这一轮出错了')
                 elif kind == 'done':
                     break
-                # session / user / agent / contract / usage / verdict / reports / audit
+                # session / agent / contract / usage / verdict / reports / audit
                 # 一律不处理：桌板不显示思考与工具细节。
         except ApiError as err:
             if self._cancel.is_set():

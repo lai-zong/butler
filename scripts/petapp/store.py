@@ -30,6 +30,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'model': None,
     'thinkingLevel': 'default',
     'persona': '',
+    'proactiveEnabled': False,
+    'proactiveFrequency': 'normal',
+    'quietStart': '22:30',
+    'quietEnd': '08:00',
+    'proactiveScenarios': {
+        'lateNight': True,
+        'longSession': True,
+        'return': True,
+    },
 }
 
 THINKING_LEVELS = ('default', 'low', 'medium', 'high')
@@ -125,6 +134,21 @@ def normalize_config(raw: Any) -> dict[str, Any]:
         cfg['thinkingLevel'] = 'default'
     if cfg.get('displayMode') not in ('desktop', 'web'):
         cfg['displayMode'] = 'desktop'
+    if cfg.get('proactiveFrequency') not in ('rare', 'normal', 'often'):
+        cfg['proactiveFrequency'] = 'normal'
+    for key in ('quietStart', 'quietEnd'):
+        value = cfg.get(key)
+        if not isinstance(value, str) or len(value) != 5 or value[2] != ':':
+            cfg[key] = DEFAULT_CONFIG[key]
+    scenarios = cfg.get('proactiveScenarios')
+    if not isinstance(scenarios, dict):
+        scenarios = {}
+    cfg['proactiveScenarios'] = {
+        'lateNight': scenarios.get('lateNight') is not False,
+        'longSession': scenarios.get('longSession') is not False,
+        'return': scenarios.get('return') is not False,
+    }
+    cfg['proactiveEnabled'] = cfg.get('proactiveEnabled') is True
     if cfg.get('model') is not None and not (
         isinstance(cfg['model'], dict)
         and isinstance(cfg['model'].get('profileId'), str)

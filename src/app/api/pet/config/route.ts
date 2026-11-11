@@ -10,12 +10,14 @@ import { NextResponse } from 'next/server';
 
 import {
   isPetDisplayMode,
+  isPetProactiveFrequency,
   isPetThinkingLevel,
   listPetAssets,
   loadPetConfig,
   savePetConfig,
   type PetConfigUpdate,
   type PetModelChoice,
+  type PetProactiveScenarios,
 } from '@/app/server/petConfig.js';
 
 export const dynamic = 'force-dynamic';
@@ -54,6 +56,17 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
       ? { thinkingLevel: body['thinkingLevel'] }
       : {}),
     ...(typeof body['persona'] === 'string' ? { persona: body['persona'] } : {}),
+    ...(typeof body['proactiveEnabled'] === 'boolean'
+      ? { proactiveEnabled: body['proactiveEnabled'] }
+      : {}),
+    ...(isPetProactiveFrequency(body['proactiveFrequency'])
+      ? { proactiveFrequency: body['proactiveFrequency'] }
+      : {}),
+    ...(typeof body['quietStart'] === 'string' ? { quietStart: body['quietStart'] } : {}),
+    ...(typeof body['quietEnd'] === 'string' ? { quietEnd: body['quietEnd'] } : {}),
+    ...(typeof body['proactiveScenarios'] === 'object' && body['proactiveScenarios'] !== null
+      ? { proactiveScenarios: body['proactiveScenarios'] as PetProactiveScenarios }
+      : {}),
   };
 
   try {

@@ -17,6 +17,7 @@
  */
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -32,29 +33,31 @@ import type {
 
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
-import { SessionControls } from '../chat/SessionControls';
-import type { ModelChoice, PickableProfile } from '../chat/ModelPicker';
-import { DEFAULT_REASONING } from '../chat/sessionSettings.js';
 import { errorMessage } from '../lib/api.js';
-import type { ReasoningLevel, SessionSettingsPatch } from '../lib/types.js';
+import { formatClock } from '../lib/format.js';
 import type { PetMessage, PetTurn } from './petChat.js';
 import {
+  PET_TIME_GAP_MS,
   applyPetEvent,
+  claimPetProactive,
   composePetText,
-  fetchPetModelProfiles,
   fetchPetSession,
   fetchPetSessionSnapshot,
   foldPetTurn,
+  groupPetMessages,
+  historyContainsTurn,
   openPetChat,
-  patchPetSessionSettings,
+  petMessagesFromHistory,
   readPetEvents,
-  recentPetMessages,
+  sendPetProactiveFeedback,
 } from './petChat.js';
 import { acquirePetLeadership } from './petLeader.js';
 import { usePetConfig } from './usePetConfig.js';
 import '../../styles/webpet.css';
 
 const POSITION_KEY = 'butler.webpet.position';
+const HIDDEN_KEY = 'butler.pet.hidden';
+
 const BOARD_HEIGHT_KEY = 'butler.webpet.boardHeight';
 const DEFAULT_BOARD_HEIGHT = 360; // 540 的 2/3，长对话仍在内部滚动
 const MIN_BOARD_HEIGHT = 240;
@@ -63,7 +66,14 @@ const MAX_IMAGES = 3;
 const MAX_DOCS = 3;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_DOC_CHARS = 20_000;
-const MOBILE_MAX_WIDTH = 760;
+
+/** 主动说话的领取节奏：先等一会儿，避免刚打开页面就弹。 */
+const PROACTIVE_FIRST_MS = 15_000;
+const PROACTIVE_POLL_MS = 60_000;
+
+interface ProactiveBubble {
+  readonly text: string;
+}
 
 interface WebPetProps {
   /** 只有主界面（对话/设置/任务）才显示；控制台 surface 传 false。 */
@@ -198,13 +208,25 @@ function payloadRecord(value: unknown): Record<string, unknown> {
 }
 
 export function WebPet({ active }: WebPetProps): JSX.Element | null {
-  const { config, assets, loading: configLoading } = usePetConfig();
+  const { config, assets, loading: configLoading, reload: reloadPetConfig } = usePetConfig();
 
   const [leader, setLeader] = useState(false);
   const [leaderSettled, setLeaderSettled] = useState(false);
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState<{ readonly x: number; readonly y: number } | null>(null);
-  const [hiddenByUser, setHiddenByUser] = useState(false);
+  /**
+   * 隐藏状态要持久化。
+   *
+   * ★ 旧实现只存在组件 state 里：点「隐藏桌宠」后刷新页面，桌宠又回来了。
+   *   用户以为关掉了，其实每次刷新都会"复活"。
+   */
+  const [hiddenByUser, setHiddenByUser] = useState(() => {
+    try {
+      return window.localStorage.getItem(HIDDEN_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [position, setPosition] = useState<Position | null>(null);
   const [boardHeight, setBoardHeight] = useState(DEFAULT_BOARD_HEIGHT);
   const [dragging, setDragging] = useState(false);
@@ -216,15 +238,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [sessionRetry, setSessionRetry] = useState(0);
   const [history, setHistory] = useState<readonly PetMessage[]>([]);
   const [turn, setTurn] = useState<PetTurn | null>(null);
-
-  // 会话级「模型 · 思考强度」：与主对话同源，读写 /api/sessions/<petSession>。
-  const [profiles, setProfiles] = useState<readonly PickableProfile[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(true);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [reasoning, setReasoning] = useState<ReasoningLevel>(DEFAULT_REASONING);
-  const [model, setModel] = useState<ModelChoice | null>(null);
-  const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   const [input, setInput] = useState('');
   const [images, setImages] = useState<readonly PetImage[]>([]);
@@ -236,13 +250,22 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [listening, setListening] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
+  // 主动说话：只消费服务端决定好的结果，不在前端猜频率或安静时段。
+  const [proactive, setProactive] = useState<ProactiveBubble | null>(null);
+  const [proactiveError, setProactiveError] = useState<string | null>(null);
+  const [proactiveAnswering, setProactiveAnswering] = useState(false);
+
   const widgetRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sendingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  /** 用户是否停在桌板底部；上翻后为 false，新消息不再抢滚动。 */
+  const threadAtBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const turnRunningRef = useRef(false);
+  turnRunningRef.current = turn !== null && turn.status === 'running';
   const fileRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
@@ -250,8 +273,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const historyLoadedRef = useRef<string | null>(null);
   const historyTouchedRef = useRef(false);
   const storedProbedRef = useRef(false);
-  const settingsSavingRef = useRef(false);
-  const settingsTouchedRef = useRef(false);
 
   // ── 唯一标签页 ─────────────────────────────────────────
 
@@ -301,8 +322,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const petSize = useMemo(() => {
     if (config === null) return 180;
     const source = viewport.height > 0 ? viewport.height : 900;
-    const ratio = viewport.width > 0 && viewport.width <= MOBILE_MAX_WIDTH ? 0.26 : 0.42;
-    const cap = Math.min(420, Math.round(source * ratio));
+    const cap = Math.min(420, Math.round(source * 0.42));
     return Math.max(96, Math.min(config.size, cap));
   }, [config, viewport]);
 
@@ -324,7 +344,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     (next: Position): Position => {
       const width = Math.max(viewport.width, 320);
       const height = Math.max(viewport.height, 480);
-      const bottomReserve = viewport.width <= MOBILE_MAX_WIDTH ? 78 : 10;
+      const bottomReserve = 10;
       const maxX = Math.max(8, width - petSize - 8);
       const maxY = Math.max(8, height - petSize - bottomReserve);
       const x = Math.min(Math.max(8, Math.round(next.x)), maxX);
@@ -360,23 +380,6 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     setMenu(null);
   }, [webConfigured]);
 
-  const loadModelCatalog = useCallback(async (): Promise<void> => {
-    setCatalogLoading(true);
-    setCatalogError(null);
-    try {
-      const list = await fetchPetModelProfiles();
-      setProfiles(list);
-    } catch (err) {
-      setCatalogError(errorMessage(err));
-    } finally {
-      setCatalogLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadModelCatalog();
-  }, [loadModelCatalog]);
-
   useEffect(() => {
     if (!active || !webConfigured || !leader || sessionId !== null) return;
     let cancelled = false;
@@ -402,12 +405,11 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       .then((snapshot) => {
         if (cancelled) return;
         if (!historyTouchedRef.current) {
-          setHistory(recentPetMessages(snapshot.messages));
-        }
-        // 用户已经手动改过设置时，不让迟到的快照把选择覆盖回去。
-        if (!settingsTouchedRef.current) {
-          setReasoning(snapshot.reasoning);
-          setModel(snapshot.model);
+          const loaded = petMessagesFromHistory(snapshot.messages);
+          setHistory(loaded);
+          setTurn((prev) =>
+            prev !== null && historyContainsTurn(loaded, prev) ? null : prev,
+          );
         }
       })
       .catch(() => {
@@ -419,6 +421,88 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       cancelled = true;
     };
   }, [leader, sessionId]);
+
+  // ── 主动说话：只领取服务端决定好的结果 ──────────────────
+  //
+  // ★ 不在前端判断频率、安静时段或深夜——那些都在服务端。
+  //   这里只负责：开关打开、页面可见、桌板没打开时，定期问一次。
+  // ★ 一次只显示一个气泡；气泡在等待回应时不继续领取，避免叠提醒。
+  useEffect(() => {
+    if (!active || !webConfigured || !leader) return;
+    if (config === null || !config.proactiveEnabled) return;
+    if (open || proactive !== null) return;
+
+    let cancelled = false;
+    let timer = 0;
+
+    const schedule = (delay: number): void => {
+      timer = window.setTimeout(() => {
+        void tick();
+      }, delay);
+    };
+
+    const tick = async (): Promise<void> => {
+      if (cancelled) return;
+      if (document.visibilityState !== 'visible') {
+        schedule(PROACTIVE_POLL_MS);
+        return;
+      }
+      try {
+        const res = await claimPetProactive();
+        if (cancelled) return;
+        if (res.ok && res.shouldSpeak && typeof res.text === 'string' && res.text.trim().length > 0) {
+          setProactiveError(null);
+          setProactive({ text: res.text });
+          // 气泡出现后先停轮询；用户回应或关闭气泡后 effect 会重新开始。
+          return;
+        }
+      } catch {
+        // 接口暂不可用/网络抖动：下一轮再试，不用错误打扰用户。
+      }
+      if (!cancelled) schedule(PROACTIVE_POLL_MS);
+    };
+
+    schedule(PROACTIVE_FIRST_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [active, webConfigured, leader, open, proactive, config]);
+
+  // 设置页（或别的标签页）关闭主动说话时，立即收回还在显示的气泡。
+  useEffect(() => {
+    if (config !== null && !config.proactiveEnabled) setProactive(null);
+  }, [config]);
+
+  // 长任务才需要“在完整对话中查看”；运行期间每 5 秒刷新一次判断。
+  useEffect(() => {
+    if (turn === null || turn.status !== 'running') return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, [turn?.id, turn?.status]);
+
+  // 打开桌板时重读一次历史：主动提醒由服务端写进固定会话，
+  // 桌板要像普通消息一样显示它，而不是继续依赖外部气泡。
+  useEffect(() => {
+    if (!open || sessionId === null || turnRunningRef.current) return;
+    let cancelled = false;
+    void fetchPetSessionSnapshot(sessionId)
+      .then((snapshot) => {
+        if (cancelled || turnRunningRef.current) return;
+        const loaded = petMessagesFromHistory(snapshot.messages);
+        setHistory(loaded);
+        setTurn((prev) =>
+          prev !== null && historyContainsTurn(loaded, prev) ? null : prev,
+        );
+      })
+      .catch(() => {
+        // 打开桌板时的历史刷新失败不阻塞输入；下一轮完成后再读。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sessionId]);
 
   // ── 语音 / 文本域 / 滚动 ────────────────────────────────
 
@@ -497,8 +581,20 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
   useEffect(() => {
     if (!open) return;
+    // 每次打开都从最新一条开始；history 随后异步到达时再由下方 effect 贴底。
+    threadAtBottomRef.current = true;
+    const frame = window.requestAnimationFrame(() => {
+      const el = threadRef.current;
+      if (el !== null) el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+
+  // 只有用户仍在底部时才跟随新内容；上翻阅读历史时绝不抢滚动。
+  useEffect(() => {
+    if (!open) return;
     const el = threadRef.current;
-    if (el === null) return;
+    if (el === null || !threadAtBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [open, history, turn]);
 
@@ -550,14 +646,15 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
               : '（文档）';
 
       historyTouchedRef.current = true;
+      // 明确发送时跳回最新一条：这是用户自己的动作，不属于“被动新消息”。
+      threadAtBottomRef.current = true;
       setHistory((prev) => foldPetTurn(prev, turn));
 
       setTurn({
         id: makeId('turn'),
         userText: display,
         outgoingText: outgoing,
-        stage: null,
-        narration: '',
+        milestones: [],
         reply: '',
         status: 'running',
         error: null,
@@ -620,74 +717,28 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     setHint('已停止这一轮；取消会写入会话事件。');
   }, []);
 
-  // ── 会话设置：模型 · 思考强度 ──────────────────────────
-  //
-  // ★ 只 PATCH 这一条固定桌宠会话；pet-config 里的模型/思考是
-  //   桌面 Tk 桌宠的偏好，两者互不覆盖。
-  // ★ 执行中允许改：后端本轮已持有 TurnSettings 快照。
-
-  async function patchSessionSettings(
-    patch: SessionSettingsPatch,
-    optimistic: () => void,
-    rollback: () => void,
-  ): Promise<void> {
-    if (settingsSavingRef.current) return;
-    let id = sessionId;
-    if (id === null) {
-      try {
-        id = await fetchPetSession();
-        setSessionId(id);
-      } catch (err) {
-        const message = errorMessage(err);
-        setSettingsError(message);
-        setHint(`设置保存失败：${message}`);
-        return;
-      }
-    }
-
-    settingsSavingRef.current = true;
-    setSettingsSaving(true);
-    setSettingsError(null);
-    settingsTouchedRef.current = true;
-    optimistic();
-
+  /** 回应主动气泡；mute 由服务端关闭 proactiveEnabled，随后重新读配置。 */
+  async function answerProactive(action: 'dismiss' | 'snooze' | 'mute'): Promise<void> {
+    if (proactiveAnswering) return;
+    setProactiveAnswering(true);
+    setProactiveError(null);
     try {
-      const next = await patchPetSessionSettings(id, patch);
-      setReasoning(next.reasoning);
-      setModel(next.model);
-      setHint('设置已保存到这条桌宠会话。');
+      await sendPetProactiveFeedback(action);
+      setProactive(null);
+      if (action === 'mute') reloadPetConfig();
     } catch (err) {
-      rollback();
-      const message = errorMessage(err);
-      setSettingsError(message);
-      setHint(`设置保存失败：${message}`);
+      setProactiveError(errorMessage(err));
     } finally {
-      settingsSavingRef.current = false;
-      setSettingsSaving(false);
+      setProactiveAnswering(false);
     }
   }
 
-  function selectChatModel(choice: ModelChoice): void {
-    if (model !== null && model.profileId === choice.profileId && model.modelId === choice.modelId) {
-      return;
-    }
-    const previous = model;
-    void patchSessionSettings(
-      { modelProfileId: choice.profileId, modelId: choice.modelId },
-      () => setModel(choice),
-      () => setModel(previous),
-    );
-  }
-
-  function selectReasoning(level: ReasoningLevel): void {
-    if (level === reasoning) return;
-    const previous = reasoning;
-    void patchSessionSettings(
-      { reasoning: level },
-      () => setReasoning(level),
-      () => setReasoning(previous),
-    );
-  }
+  /** 记录用户是否仍贴着底部；离开底部后历史再长也不强制跳底。 */
+  const handleThreadScroll = (): void => {
+    const el = threadRef.current;
+    if (el === null) return;
+    threadAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
 
   // ── 拖动 ───────────────────────────────────────────────
 
@@ -743,6 +794,10 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       return;
     }
     setMenu(null);
+    if (!open) {
+      // 打开桌板后，主动提醒会从会话历史里出现；外部气泡先收起，避免同一句显示两次。
+      setProactive(null);
+    }
     setOpen((prev) => !prev);
   };
 
@@ -899,30 +954,30 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   // ── 渲染 ───────────────────────────────────────────────
 
   const isRunning = turn !== null && turn.status === 'running';
-  const status = turn === null ? 'idle' : turn.status;
-  const statusText =
-    status === 'running'
-      ? '正在执行'
-      : status === 'done'
-        ? '完成'
-        : status === 'cancelled'
-          ? '已停止'
-          : status === 'error'
-            ? '出错'
-            : history.length > 0
-              ? '上次对话'
-              : '待命';
+  const longRunning = isRunning && turn !== null && now - turn.startedAt >= 20_000;
 
   const transcript = useMemo<readonly PetMessage[]>(() => {
     if (turn === null) return history;
     const list: PetMessage[] = [
       ...history,
-      { role: 'user', text: turn.userText.length > 0 ? turn.userText : '（附件）' },
+      {
+        role: 'user',
+        kind: 'user',
+        text: turn.userText.length > 0 ? turn.userText : '（附件）',
+        at: turn.startedAt,
+      },
     ];
-    const answer = turn.reply.length > 0 ? turn.reply : turn.narration;
-    if (answer.length > 0) list.push({ role: 'assistant', text: answer });
+    // 任务：每条 milestone 一个独立短气泡；聊天没有 milestone，只剩最终回答。
+    for (const milestone of turn.milestones) {
+      list.push({ role: 'assistant', kind: 'progress', text: milestone, at: null });
+    }
+    if (turn.reply.length > 0) {
+      list.push({ role: 'assistant', kind: 'final', text: turn.reply, at: null });
+    }
     return list;
   }, [history, turn]);
+
+  const messageGroups = useMemo(() => groupPetMessages(transcript), [transcript]);
 
   const spriteUrl = useMemo(() => {
     if (config === null) return null;
@@ -977,12 +1032,21 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
   const boardStyle = useMemo<CSSProperties>(() => {
     const style: CSSProperties = { height: `${effectiveBoardHeight}px` };
-    if (position === null || viewport.width <= MOBILE_MAX_WIDTH) return style;
+    if (position === null) return style;
     const boardWidth = Math.min(374, viewport.width - 28);
     // 默认右对齐人物；只有右边放不下时才改为左对齐。
     if (position.x + petSize - boardWidth >= 10) return style;
     return { ...style, left: '0px', right: 'auto' };
   }, [position, petSize, viewport, effectiveBoardHeight]);
+
+  /** 主动气泡比桌板窄；同样避免拖到屏幕左缘时伸出视口。 */
+  const proactiveStyle = useMemo<CSSProperties>(() => {
+    if (position === null) return {};
+    const bubbleWidth = Math.min(320, viewport.width - 40);
+    return position.x + petSize - bubbleWidth >= 10
+      ? {}
+      : { left: '0px', right: 'auto' };
+  }, [position, petSize, viewport.width]);
 
   const widgetStyle = useMemo<CSSProperties | undefined>(
     () =>
@@ -1023,10 +1087,24 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     setMenu(null);
     setOpen(false);
     if (sessionId === null) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set('session', sessionId);
-    url.hash = '#/chat';
-    window.location.assign(url.toString());
+
+    // 同页切换：先切到对话视图，再把会话意图交给已挂载的 ChatView。
+    // 不用 location.assign —— 整页刷新会丢掉桌板当前状态。
+    if (window.location.hash !== '#/chat') {
+      window.location.hash = '#/chat';
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('session', sessionId);
+      window.history.replaceState(window.history.state, '', url.toString());
+    } catch {
+      // 地址栏只是展示投影；写不进去也不影响同页加载。
+    }
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent('butler:open-session', { detail: { sessionId } }),
+      );
+    }, 0);
   };
 
   const openSettingsPage = (): void => {
@@ -1035,10 +1113,19 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     window.location.hash = '#/settings';
   };
 
+  const setPetHidden = (hidden: boolean): void => {
+    setHiddenByUser(hidden);
+    try {
+      window.localStorage.setItem(HIDDEN_KEY, hidden ? '1' : '0');
+    } catch {
+      // localStorage 不可用时只是不持久，不影响当下
+    }
+  };
+
   const hidePet = (): void => {
     setMenu(null);
     setOpen(false);
-    setHiddenByUser(true);
+    setPetHidden(true);
   };
 
   if (hiddenByUser) {
@@ -1048,7 +1135,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
         className="webpet-restore"
         aria-label="显示桌宠"
         title="显示桌宠"
-        onClick={() => setHiddenByUser(false)}
+        onClick={() => setPetHidden(false)}
       >
         <span className="webpet-restore-dot" aria-hidden="true" />
         显示桌宠
@@ -1108,6 +1195,47 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
         </div>
       )}
 
+      {!open && proactive !== null && (
+        <aside
+          className={`webpet-proactive${boardBelow ? ' is-below' : ''}`}
+          style={proactiveStyle}
+          role="status"
+          aria-live="polite"
+          aria-label="桌宠的主动提醒"
+        >
+          <p className="webpet-proactive-text">{proactive.text}</p>
+          {proactiveError !== null && (
+            <p className="webpet-proactive-error">{proactiveError}</p>
+          )}
+          <div className="webpet-proactive-actions">
+            <button
+              type="button"
+              className="webpet-proactive-btn is-primary"
+              disabled={proactiveAnswering}
+              onClick={() => void answerProactive('dismiss')}
+            >
+              知道了
+            </button>
+            <button
+              type="button"
+              className="webpet-proactive-btn"
+              disabled={proactiveAnswering}
+              onClick={() => void answerProactive('snooze')}
+            >
+              稍后
+            </button>
+            <button
+              type="button"
+              className="webpet-proactive-btn is-quiet"
+              disabled={proactiveAnswering}
+              onClick={() => void answerProactive('mute')}
+            >
+              别再提醒
+            </button>
+          </div>
+        </aside>
+      )}
+
       {open && (
         <section
           className={`webpet-board${boardBelow ? ' is-below' : ''}`}
@@ -1126,18 +1254,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
             onPointerUp={handleResizeEnd}
             onPointerCancel={handleResizeEnd}
           />
-          <header className="webpet-board-head">
-            <div className="webpet-head-main">
-              <span className={`webpet-dot is-${status}`} aria-hidden="true" />
-              <span className="webpet-status" role="status" aria-live="polite">
-                {statusText}
-              </span>
-              {isRunning && turn !== null && (
-                <span className="webpet-stage" title={turn.stage ?? '正在准备'}>
-                  {turn.stage ?? '正在准备…'}
-                </span>
-              )}
-            </div>
+          <header className="webpet-board-head is-bare">
             <button
               type="button"
               className="webpet-icon-btn"
@@ -1149,7 +1266,13 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
             </button>
           </header>
 
-          <div className="webpet-thread" ref={threadRef}>
+          <div
+            className={`webpet-thread${
+              transcript.length === 0 && turn === null ? ' is-empty' : ''
+            }`}
+            ref={threadRef}
+            onScroll={handleThreadScroll}
+          >
             {sessionError !== null && (
               <div className="webpet-error">
                 <span>无法连接桌宠会话：{sessionError}</span>
@@ -1168,44 +1291,52 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
             {transcript.length === 0 && turn === null && (
               <div className="webpet-empty">
-                <span className="webpet-empty-mark" aria-hidden="true">
-                  <Icon name="sparkle" size={16} />
-                </span>
-                <p className="webpet-empty-title">我在这儿。</p>
-                <p className="webpet-empty-sub">
-                  说一句话就行。这一轮会记进桌宠固定会话，和桌面桌宠共用。
-                </p>
+                <p className="webpet-empty-line">聊聊天吗？或者干活也行</p>
               </div>
             )}
 
-            {transcript.map((message, index) => {
-              const streamThis =
-                turn !== null &&
-                turn.status === 'running' &&
-                turn.reply.length === 0 &&
-                turn.narration.length > 0 &&
-                index === transcript.length - 1;
-              if (message.role === 'user') {
-                return (
-                  <div className="webpet-msg webpet-msg--user" key={`user-${index}`}>
-                    {message.text}
-                  </div>
-                );
-              }
+            {messageGroups.map((group, index) => {
+              const previous = messageGroups[index - 1];
+              const showTime =
+                group.at !== null &&
+                (previous === undefined ||
+                  previous.endAt === null ||
+                  group.at - previous.endAt >= PET_TIME_GAP_MS);
               return (
-                <div className="webpet-msg webpet-msg--bot" key={`bot-${index}`}>
-                  <span className="webpet-msg-role">管家</span>
-                  <div className="webpet-msg-body">
-                    <Markdown text={message.text} streaming={streamThis} />
+                <Fragment key={group.startIndex}>
+                  {showTime && group.at !== null && (
+                    <div className="webpet-time mono">{formatClock(group.at)}</div>
+                  )}
+                  <div
+                    className={`webpet-msg webpet-msg--${
+                      group.role === 'user' ? 'user' : 'bot'
+                    }${group.kind === 'progress' ? ' is-progress' : ''}`}
+                  >
+                    <div className="webpet-msg-body">
+                      {group.role === 'user' ? (
+                        <span className="webpet-msg-text">{group.text}</span>
+                      ) : (
+                        <Markdown text={group.text} streaming={false} />
+                      )}
+                    </div>
                   </div>
-                </div>
+                </Fragment>
               );
             })}
 
-            {isRunning && turn !== null && turn.stage !== null && (
+            {isRunning && turn !== null && (
               <div className="webpet-stage-line" role="status" aria-live="polite">
                 <span className="webpet-stage-spinner" aria-hidden="true" />
-                <span>{turn.stage}</span>
+                <span className="webpet-stage-text">正在思考…</span>
+                {longRunning && turn.milestones.length > 0 && (
+                  <button
+                    type="button"
+                    className="webpet-stage-link"
+                    onClick={openFullConversation}
+                  >
+                    在完整对话中查看
+                  </button>
+                )}
               </div>
             )}
 
@@ -1259,74 +1390,25 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
               </div>
             )}
 
-            <div className="webpet-input-box">
-              <textarea
-                ref={textareaRef}
-                className="webpet-input"
-                rows={1}
-                value={input}
-                placeholder={isRunning ? '正在执行，先等一下…' : '和管家说点什么…'}
-                aria-label="给桌宠的消息"
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={handleKeyDown}
-              />
-              <div className="webpet-input-actions">
-                <SessionControls
-                  profiles={profiles}
-                  model={model}
-                  reasoning={reasoning}
-                  saving={settingsSaving}
-                  catalogLoading={catalogLoading}
-                  catalogError={catalogError}
-                  settingsError={settingsError}
-                  onRefreshCatalog={() => void loadModelCatalog()}
-                  onSelectModel={selectChatModel}
-                  onSelectReasoning={selectReasoning}
-                  onOpenSettings={() => {
-                    setOpen(false);
-                    window.location.hash = '#/settings';
-                  }}
-                  popoverClassName="webpet-session-pop"
-                />
-                <div className="webpet-send-group">
-                  {isRunning && (
-                    <button
-                      type="button"
-                      className="webpet-send is-stop"
-                      aria-label="停止这一轮"
-                      title="停止这一轮"
-                      onClick={stopTurn}
-                    >
-                      <Icon name="stop" size={14} />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="webpet-send"
-                    aria-label="发送"
-                    title="发送（Enter）"
-                    disabled={!canSend}
-                    onClick={() => void sendMessage()}
-                  >
-                    <Icon name="arrowUp" size={15} />
-                  </button>
-                </div>
+            {(hint !== null || extracting) && (
+              <div className="webpet-compose-note" role="status">
+                {hint ?? '正在读取附件…'}
               </div>
-            </div>
+            )}
 
-            <div className="webpet-tools">
+            <div className="webpet-compose-row">
               <button
                 type="button"
-                className="webpet-tool"
+                className="webpet-compose-icon"
                 aria-label="添加图片或文档"
                 title={`添加图片或文档（最多 ${MAX_IMAGES} 图 / ${MAX_DOCS} 文档）`}
                 onClick={() => fileRef.current?.click()}
               >
-                <Icon name="paperclip" size={16} />
+                <Icon name="paperclip" size={17} />
               </button>
               <button
                 type="button"
-                className={`webpet-tool${listening ? ' is-recording' : ''}`}
+                className={`webpet-compose-icon${listening ? ' is-recording' : ''}`}
                 aria-label="语音输入"
                 aria-disabled={!voiceSupported}
                 title={
@@ -1338,16 +1420,40 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
                 }
                 onClick={toggleVoice}
               >
-                <Icon name="mic" size={16} />
+                <Icon name="mic" size={17} />
               </button>
-              <span className={`webpet-hint${hint !== null ? ' is-note' : ''}`} role="status">
-                {hint ??
-                  (extracting
-                    ? '正在读取附件…'
-                    : voiceSupported
-                      ? 'Enter 发送 · Shift+Enter 换行'
-                      : 'Enter 发送 · 当前浏览器不支持语音')}
-              </span>
+              <textarea
+                ref={textareaRef}
+                className="webpet-input"
+                rows={1}
+                value={input}
+                placeholder={isRunning ? '正在执行，先等一下…' : '说点什么呗……'}
+                aria-label="给桌宠的消息"
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={handleKeyDown}
+              />
+              {isRunning ? (
+                <button
+                  type="button"
+                  className="webpet-send is-stop"
+                  aria-label="停止这一轮"
+                  title="停止这一轮"
+                  onClick={stopTurn}
+                >
+                  <Icon name="stop" size={14} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="webpet-send"
+                  aria-label="发送"
+                  title="发送（Enter）"
+                  disabled={!canSend}
+                  onClick={() => void sendMessage()}
+                >
+                  <Icon name="arrowUp" size={15} />
+                </button>
+              )}
             </div>
 
             <input
@@ -1379,12 +1485,12 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
         {spriteUrl !== null && !imageBroken ? (
           <img
             src={spriteUrl}
-            alt="管家"
+            alt="桌宠"
             draggable={false}
             onError={() => setImageBroken(true)}
           />
         ) : (
-          <span className="webpet-avatar-fallback">管家</span>
+          <span className="webpet-avatar-fallback">桌宠</span>
         )}
         {isRunning && <span className="webpet-avatar-pulse" aria-hidden="true" />}
       </button>

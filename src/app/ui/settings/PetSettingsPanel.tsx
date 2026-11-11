@@ -31,6 +31,8 @@ import type {
   PetConfigView,
   PetDisplayMode,
   PetModelChoice,
+  PetProactiveFrequency,
+  PetProactiveScenarios,
   PetRuntimeView,
   PetStartResponse,
   PetStatusResponse,
@@ -51,6 +53,26 @@ const THINKING_OPTIONS: readonly { readonly value: PetThinkingLevel; readonly la
   { value: 'low', label: '低' },
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
+];
+
+const PROACTIVE_FREQUENCY_OPTIONS: readonly {
+  readonly value: PetProactiveFrequency;
+  readonly label: string;
+  readonly hint: string;
+}[] = [
+  { value: 'rare', label: '少', hint: '更克制' },
+  { value: 'normal', label: '正常', hint: '默认' },
+  { value: 'often', label: '多', hint: '更主动' },
+];
+
+const PROACTIVE_SCENARIO_OPTIONS: readonly {
+  readonly key: keyof PetProactiveScenarios;
+  readonly label: string;
+  readonly hint: string;
+}[] = [
+  { key: 'lateNight', label: '深夜', hint: '夜深还在用' },
+  { key: 'longSession', label: '长会话', hint: '连续用了一阵' },
+  { key: 'return', label: '回来', hint: '隔了很久回来' },
 ];
 
 interface ModelOption {
@@ -77,6 +99,11 @@ interface PetFormState {
   readonly modelKey: string;
   readonly thinkingLevel: PetThinkingLevel;
   readonly persona: string;
+  readonly proactiveEnabled: boolean;
+  readonly proactiveFrequency: PetProactiveFrequency;
+  readonly quietStart: string;
+  readonly quietEnd: string;
+  readonly proactiveScenarios: PetProactiveScenarios;
 }
 
 interface PetSettingsPanelProps {
@@ -103,6 +130,7 @@ function sameRuntime(prev: PetRuntimeView | null, next: PetRuntimeView): boolean
 }
 
 function formFromConfig(config: PetConfigView): PetFormState {
+  const scenarios = config.proactiveScenarios;
   return {
     enabled: config.enabled,
     displayMode: config.displayMode,
@@ -114,6 +142,15 @@ function formFromConfig(config: PetConfigView): PetFormState {
       config.model === null ? '' : choiceKey(config.model.profileId, config.model.modelId),
     thinkingLevel: config.thinkingLevel,
     persona: config.persona,
+    proactiveEnabled: config.proactiveEnabled === true,
+    proactiveFrequency: config.proactiveFrequency ?? 'normal',
+    quietStart: typeof config.quietStart === 'string' ? config.quietStart : '22:30',
+    quietEnd: typeof config.quietEnd === 'string' ? config.quietEnd : '08:00',
+    proactiveScenarios: {
+      lateNight: scenarios?.lateNight !== false,
+      longSession: scenarios?.longSession !== false,
+      return: scenarios?.return !== false,
+    },
   };
 }
 
@@ -167,6 +204,14 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
   const [error, setError] = useState<string | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /**
+   * 数字输入框的**文本态**。
+   *
+   * ★ 旧实现把 `value` 直接绑在 `form.size` 上，且只在 `valueAsNumber` 是有限数时
+   *   才更新状态：用户清空输入框时 `valueAsNumber` 是 NaN，不更新 → 受控值立刻
+   *   弹回旧数字，**整段删不掉**。这里保留文本态，失焦时才提交并夹紧范围。
+   */
+  const [sizeText, setSizeText] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -240,6 +285,11 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
     }
   }, []);
 
+  // 表单里的尺寸变化（加载/滑块）同步到输入框文本
+  useEffect(() => {
+    if (form !== null) setSizeText(String(form.size));
+  }, [form?.size]);
+
   useEffect(() => {
     let cancelled = false;
     const poll = (): void => {
@@ -308,6 +358,11 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
           model: resolveModelChoice(form.modelKey, modelOptions, savedConfig),
           thinkingLevel: form.thinkingLevel,
           persona: form.persona.slice(0, PERSONA_MAX),
+          proactiveEnabled: form.proactiveEnabled,
+          proactiveFrequency: form.proactiveFrequency,
+          quietStart: form.quietStart,
+          quietEnd: form.quietEnd,
+          proactiveScenarios: form.proactiveScenarios,
         }),
       });
       if (!mountedRef.current) return;
@@ -587,15 +642,19 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 min={SIZE_MIN}
                 max={SIZE_MAX}
                 step={1}
-                value={form.size}
+                value={sizeText}
                 aria-label="桌宠显示大小（像素）"
                 className="pet-size-number"
                 disabled={saving || modeSaving}
-                onChange={(e) => {
-                  const next = e.target.valueAsNumber;
-                  if (Number.isFinite(next)) patch({ size: Math.round(next) });
+                onChange={(e) => setSizeText(e.target.value)}
+                onBlur={() => {
+                  const clamped = clampSize(Number(sizeText));
+                  patch({ size: clamped });
+                  setSizeText(String(clamped));
                 }}
-                onBlur={() => patch({ size: clampSize(form.size) })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
               />
               <span className="pet-size-unit">px</span>
               <span className="settings-muted">
@@ -733,6 +792,133 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
               </small>
             </span>
           </label>
+        </div>
+
+        <div className="pet-section pet-proactive">
+          <p className="pet-section-title">主动说话</p>
+          <p className="pet-proactive-intro">
+            开不开、什么时候说由服务端按使用节奏决定；这里只限制频率、安静时段与允许的场景。
+            人格影响的是措辞，不会改变开口的时机。
+          </p>
+
+          <div className="settings-rows">
+            <div className="settings-row pet-toggle-row">
+              <span className="settings-key">允许主动说话</span>
+              <span className="settings-val">
+                <Switch
+                  checked={form.proactiveEnabled}
+                  disabled={saving || modeSaving}
+                  label="允许桌宠主动说话"
+                  onChange={(next) => patch({ proactiveEnabled: next })}
+                />
+                <span className="settings-muted">
+                  默认关闭。打开后，Web 桌宠与桌面桌宠共用这一份开关；关闭时不会领取新的主动提醒。
+                </span>
+              </span>
+            </div>
+
+            <div className="settings-row">
+              <span className="settings-key">频率</span>
+              <span className="settings-val">
+                <div className="pet-proactive-freq" role="radiogroup" aria-label="主动说话频率">
+                  {PROACTIVE_FREQUENCY_OPTIONS.map((option) => (
+                    <label
+                      key={option.value}
+                      className={`pet-proactive-freq-option${
+                        form.proactiveFrequency === option.value ? ' is-active' : ''
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="pet-proactive-frequency"
+                        value={option.value}
+                        checked={form.proactiveFrequency === option.value}
+                        disabled={saving || modeSaving}
+                        onChange={() => patch({ proactiveFrequency: option.value })}
+                      />
+                      <span>
+                        <strong>{option.label}</strong>
+                        <small>{option.hint}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <span className="settings-muted">
+                  这是上限；服务端还会看今天已经说过几次、离上一次多久。
+                </span>
+              </span>
+            </div>
+
+            <div className="settings-row">
+              <span className="settings-key">安静时段</span>
+              <span className="settings-val pet-quiet">
+                <label className="pet-quiet-field">
+                  <span>从</span>
+                  <input
+                    type="time"
+                    className="pet-time"
+                    value={form.quietStart}
+                    aria-label="安静时段开始"
+                    disabled={saving || modeSaving}
+                    onChange={(e) => {
+                      if (e.target.value.length > 0) patch({ quietStart: e.target.value });
+                    }}
+                  />
+                </label>
+                <label className="pet-quiet-field">
+                  <span>到</span>
+                  <input
+                    type="time"
+                    className="pet-time"
+                    value={form.quietEnd}
+                    aria-label="安静时段结束"
+                    disabled={saving || modeSaving}
+                    onChange={(e) => {
+                      if (e.target.value.length > 0) patch({ quietEnd: e.target.value });
+                    }}
+                  />
+                </label>
+                <span className="settings-muted">
+                  跨午夜也生效；这段时间内不会主动开口。留空或格式不对时服务端会忽略。
+                </span>
+              </span>
+            </div>
+
+            <div className="settings-row">
+              <span className="settings-key">允许的场景</span>
+              <span className="settings-val pet-proactive-scenarios">
+                {PROACTIVE_SCENARIO_OPTIONS.map((option) => (
+                  <label
+                    key={option.key}
+                    className={`pet-scenario${
+                      form.proactiveScenarios[option.key] ? ' is-active' : ''
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={form.proactiveScenarios[option.key]}
+                      disabled={saving || modeSaving}
+                      onChange={(e) =>
+                        patch({
+                          proactiveScenarios: {
+                            ...form.proactiveScenarios,
+                            [option.key]: e.target.checked,
+                          },
+                        })
+                      }
+                    />
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.hint}</small>
+                    </span>
+                  </label>
+                ))}
+                <span className="settings-muted">
+                  三个都关掉时，服务端不会主动开口；其它设置仍会保留。
+                </span>
+              </span>
+            </div>
+          </div>
         </div>
 
         {saveError !== null && (

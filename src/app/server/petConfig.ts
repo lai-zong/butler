@@ -19,6 +19,13 @@ export const PET_STATE_FILE = 'pet-state.json';
 
 export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
 export type PetDisplayMode = 'desktop' | 'web';
+export type PetProactiveFrequency = 'rare' | 'normal' | 'often';
+
+export interface PetProactiveScenarios {
+  readonly lateNight: boolean;
+  readonly longSession: boolean;
+  readonly return: boolean;
+}
 
 export interface PetModelChoice {
   readonly profileId: string;
@@ -48,6 +55,15 @@ export interface PetConfig {
   readonly thinkingLevel: PetThinkingLevel;
   /** 只在桌宠会话使用的额外人格说明；空 = 默认管家。 */
   readonly persona: string;
+  /** 允许桌宠根据使用节奏主动说话；默认关闭，由用户在桌宠设置中开启。 */
+  readonly proactiveEnabled: boolean;
+  /** 主动说话的频率上限；只控制“能不能说”，不控制人格语气。 */
+  readonly proactiveFrequency: PetProactiveFrequency;
+  /** 安静时段（本地时间，HH:mm）；与 proactiveFrequency 一起由服务端判定。 */
+  readonly quietStart: string;
+  readonly quietEnd: string;
+  /** 允许主动说话的触发场景。 */
+  readonly proactiveScenarios: PetProactiveScenarios;
   /**
    * 服务端固定的宠物会话 id。
    * 桌宠和 Web 悬浮桌宠共用这一条；为空时由 /api/pet/session 创建。
@@ -79,6 +95,11 @@ export interface PetConfigUpdate {
   readonly model?: PetModelChoice | null;
   readonly thinkingLevel?: PetThinkingLevel;
   readonly persona?: string;
+  readonly proactiveEnabled?: boolean;
+  readonly proactiveFrequency?: PetProactiveFrequency;
+  readonly quietStart?: string;
+  readonly quietEnd?: string;
+  readonly proactiveScenarios?: PetProactiveScenarios;
   /** 仅供服务端宠物会话端点使用；设置页不提交。 */
   readonly sessionId?: string | null;
 }
@@ -116,6 +137,11 @@ export function defaultPetConfig(now = Date.now()): PetConfig {
     model: null,
     thinkingLevel: 'default',
     persona: '',
+    proactiveEnabled: false,
+    proactiveFrequency: 'normal',
+    quietStart: '22:30',
+    quietEnd: '08:00',
+    proactiveScenarios: { lateNight: true, longSession: true, return: true },
     sessionId: null,
     updatedAt: now,
   };
@@ -154,6 +180,24 @@ function normalizeDisplayMode(value: unknown, fallback: PetDisplayMode): PetDisp
   return value === 'desktop' || value === 'web' ? value : fallback;
 }
 
+export function isPetProactiveFrequency(value: unknown): value is PetProactiveFrequency {
+  return value === 'rare' || value === 'normal' || value === 'often';
+}
+
+function normalizeTime(value: unknown, fallback: string): string {
+  return typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value) ? value : fallback;
+}
+
+function normalizeScenarios(value: unknown, fallback: PetProactiveScenarios): PetProactiveScenarios {
+  if (typeof value !== 'object' || value === null) return fallback;
+  const v = value as Record<string, unknown>;
+  return {
+    lateNight: bool(v['lateNight'], fallback.lateNight),
+    longSession: bool(v['longSession'], fallback.longSession),
+    return: bool(v['return'], fallback.return),
+  };
+}
+
 function normalizeSessionId(value: unknown, fallback: string | null): string | null {
   if (value === null) return null;
   if (typeof value !== 'string') return fallback;
@@ -178,6 +222,13 @@ function normalize(raw: unknown, fallback: PetConfig, now: number): PetConfig {
     model: normalizeModel(v['model']),
     thinkingLevel: normalizeThinking(v['thinkingLevel'], fallback.thinkingLevel),
     persona,
+    proactiveEnabled: bool(v['proactiveEnabled'], fallback.proactiveEnabled),
+    proactiveFrequency: isPetProactiveFrequency(v['proactiveFrequency'])
+      ? v['proactiveFrequency']
+      : fallback.proactiveFrequency,
+    quietStart: normalizeTime(v['quietStart'], fallback.quietStart),
+    quietEnd: normalizeTime(v['quietEnd'], fallback.quietEnd),
+    proactiveScenarios: normalizeScenarios(v['proactiveScenarios'], fallback.proactiveScenarios),
     sessionId: normalizeSessionId(v['sessionId'], fallback.sessionId),
     updatedAt: now,
   };

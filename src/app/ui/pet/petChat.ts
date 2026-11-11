@@ -5,19 +5,20 @@
  *   SSE 的折叠、历史恢复、错误文案都要能被单测；把这些混进组件里的
  *   一堆 setState，会出现「事件到了、但状态还没建」的竞态。
  *
- * ★ 这里**故意只看三类事件**：阶段（progress）、叙述（narration）、
- *   最终答复（reply）。`agent` / `reasoning` / `tool` 事件即使到达也
- *   不会进入桌宠的展示状态 —— 桌宠只负责“说人话”，推理与工具留在
- *   对话页的完整视图里。
+ * ★ 这里只保留**最终答复**（reply）与**里程碑摘要**（milestone）：
+ *   旧的 progress / narration / stage 一律丢弃 —— 桌宠不展示
+ *   “写任务契约”“开始执行”这类内部阶段，也不展示推理与工具细节。
  */
 
 import { isReasoningLevel, modelRefOf, settingsOf, type SessionModelRef } from '../chat/sessionSettings.js';
-import { errorMessage, fetchJson, patchJson } from '../lib/api.js';
+import { errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
 import type {
   MessageDto,
   ModelChoicesResponse,
   ModelChoiceProfileView,
   PetConfigResponse,
+  PetProactiveClaimResponse,
+  PetProactiveFeedbackResponse,
   PetSessionResponse,
   ReasoningLevel,
   SessionDetailResponse,
@@ -31,9 +32,20 @@ import type {
 
 export type PetMessageRole = 'user' | 'assistant';
 
+/**
+ * 气泡类型：
+ *   user      用户消息
+ *   progress  任务中的一个里程碑摘要（只出现在本轮，不进历史）
+ *   final     最终回答（聊天或任务都只有一条）
+ */
+export type PetMessageKind = 'user' | 'progress' | 'final';
+
 export interface PetMessage {
   readonly role: PetMessageRole;
+  readonly kind?: PetMessageKind;
   readonly text: string;
+  /** 消息时间（毫秒）；null/缺省表示暂时未知（例如本轮尚未落盘）。 */
+  readonly at?: number | null;
 }
 
 export type PetTurnStatus = 'running' | 'done' | 'cancelled' | 'error';
@@ -45,8 +57,8 @@ export interface PetTurn {
   readonly userText: string;
   /** 实际发给 /api/chat 的文本（含已提取的文档正文）。 */
   readonly outgoingText: string;
-  stage: string | null;
-  narration: string;
+  /** 任务里程碑摘要；聊天通常为空。每条单独一个轻气泡。 */
+  milestones: readonly string[];
   reply: string;
   status: PetTurnStatus;
   error: string | null;
@@ -56,8 +68,7 @@ export interface PetTurn {
 /** 桌宠能看懂的事件子集；其它 SSE 事件在本层就被丢弃。 */
 export type PetEvent =
   | { readonly kind: 'session'; readonly sessionId: string }
-  | { readonly kind: 'stage'; readonly label: string }
-  | { readonly kind: 'narration'; readonly text: string }
+  | { readonly kind: 'milestone'; readonly text: string }
   | { readonly kind: 'reply'; readonly text: string }
   | { readonly kind: 'settings'; readonly reasoning: ReasoningLevel }
   | { readonly kind: 'error'; readonly message: string }
@@ -78,18 +89,11 @@ export function toPetEvent(raw: unknown): PetEvent | null {
     return { kind: 'session', sessionId: rec['sessionId'] };
   }
 
-  if (type === 'progress') {
-    const event = rec['event'];
-    if (typeof event !== 'object' || event === null) return null;
-    const inner = event as Record<string, unknown>;
-    if (inner['kind'] !== 'stage' || typeof inner['label'] !== 'string') return null;
-    const label = inner['label'].trim();
-    return label.length > 0 ? { kind: 'stage', label } : null;
-  }
-
-  if (type === 'narration') {
-    const answer = rec['answer'];
-    return typeof answer === 'string' ? { kind: 'narration', text: answer } : null;
+  if (type === 'milestone') {
+    const text = rec['text'];
+    if (typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    return trimmed.length > 0 ? { kind: 'milestone', text: trimmed } : null;
   }
 
   if (type === 'reply') {
@@ -115,8 +119,8 @@ export function toPetEvent(raw: unknown): PetEvent | null {
 
   if (type === 'done') return { kind: 'done' };
 
-  // agent / reasoning / tool / approval / usage / verdict ...
-  // 桌宠不展示，也不保留。
+  // progress（阶段名）/ narration（叙述）/ stage 等内部过程不再进入桌宠；
+  // agent / reasoning / tool / approval / usage / verdict 同样丢弃。
   return null;
 }
 
@@ -187,13 +191,10 @@ export async function* readPetEvents(res: Response): AsyncGenerator<PetEvent> {
 /** 把事件折叠进当前轮。返回新对象；无变化时返回原对象。 */
 export function applyPetEvent(turn: PetTurn, event: PetEvent): PetTurn {
   switch (event.kind) {
-    case 'stage': {
-      if (turn.stage === event.label) return turn;
-      return { ...turn, stage: event.label };
-    }
-    case 'narration': {
-      if (turn.narration === event.text) return turn;
-      return { ...turn, narration: event.text };
+    case 'milestone': {
+      // 服务端已对连续相同文案去重一次；这里再做一次，避免重放/重连时重复。
+      if (turn.milestones.includes(event.text)) return turn;
+      return { ...turn, milestones: [...turn.milestones, event.text] };
     }
     case 'reply': {
       return { ...turn, reply: event.text, status: 'done', error: null };
@@ -229,33 +230,127 @@ export function displayUserText(text: string): string {
   return visible.trim();
 }
 
-/** 取服务端历史里最后几条用户/管家消息，供刷新后恢复。 */
-export function recentPetMessages(
-  messages: readonly MessageDto[],
-  limit = 4,
-): readonly PetMessage[] {
+/**
+ * 取服务端历史里的全部用户/管家消息，供刷新后恢复。
+ *
+ * ★ 不再截断：桌板要能翻到这条固定会话的第一句话。
+ *   只过滤无法展示的空文本；reasoning / 工具 / system 一律不进来。
+ */
+export function petMessagesFromHistory(messages: readonly MessageDto[]): readonly PetMessage[] {
   const list: PetMessage[] = [];
   for (const message of messages) {
     if (message.role !== 'user' && message.role !== 'butler') continue;
     const text = (message.role === 'user' ? displayUserText(message.text) : message.text).trim();
     if (text.length === 0) continue;
-    list.push({ role: message.role === 'user' ? 'user' : 'assistant', text });
+    list.push({
+      role: message.role === 'user' ? 'user' : 'assistant',
+      kind: message.role === 'user' ? 'user' : 'final',
+      text,
+      at: message.createdAt,
+    });
   }
-  return list.slice(-limit);
+  return list;
 }
 
-/** 新开一轮前，把上一轮折进历史；只保留最近 limit 条。 */
+export interface PetMessageGroup {
+  readonly role: PetMessageRole;
+  readonly kind: PetMessageKind;
+  readonly text: string;
+  /** 这一组第一条消息的时间。 */
+  readonly at: number | null;
+  /** 这一组最后一条消息的时间。 */
+  readonly endAt: number | null;
+  /** 这一组第一条消息在原始列表里的下标，用作稳定 key。 */
+  readonly startIndex: number;
+}
+
+function kindOf(message: PetMessage): PetMessageKind {
+  return message.kind ?? (message.role === 'user' ? 'user' : 'final');
+}
+
+/**
+ * 把连续同角色、同为最终回答的消息合并成一组，供“微信式”气泡渲染。
+ *
+ * ★ 阶段摘要（progress）每条独立显示，不和 final 合并、也不彼此合并；
+ *   否则“读文件 → 改文件 → 检查”会被压成一大段，看不出执行节奏。
+ */
+export function groupPetMessages(messages: readonly PetMessage[]): readonly PetMessageGroup[] {
+  const groups: PetMessageGroup[] = [];
+  messages.forEach((message, index) => {
+    const kind = kindOf(message);
+    const at = typeof message.at === 'number' && Number.isFinite(message.at) ? message.at : null;
+    const last = groups[groups.length - 1];
+    if (last !== undefined && last.role === message.role && last.kind === kind && kind === 'final') {
+      groups[groups.length - 1] = {
+        ...last,
+        text: `${last.text}\n\n${message.text}`,
+        endAt: at ?? last.endAt,
+      };
+      return;
+    }
+    groups.push({
+      role: message.role,
+      kind,
+      text: message.text,
+      at,
+      endAt: at,
+      startIndex: index,
+    });
+  });
+  return groups;
+}
+
+/**
+ * 当前已完成的一轮是否已经存在于服务端历史里。
+ *
+ * 这是修复“关闭/重新打开桌板后同一轮出现两次”的关键：
+ * 服务端历史已经包含本轮时，前端不能再把内存里的 turn 追加一遍。
+ */
+export function historyContainsTurn(
+  history: readonly PetMessage[],
+  turn: PetTurn | null,
+): boolean {
+  if (turn === null || turn.status === 'running' || turn.reply.trim().length === 0) {
+    return false;
+  }
+  const lastUser = [...history].reverse().find((m) => m.role === 'user');
+  const lastFinal = [...history]
+    .reverse()
+    .find((m) => m.role === 'assistant' && (m.kind === undefined || m.kind === 'final'));
+  return (
+    lastUser !== undefined &&
+    lastFinal !== undefined &&
+    lastUser.text.trim() === turn.userText.trim() &&
+    lastFinal.text.trim() === turn.reply.trim()
+  );
+}
+
+/** 两条气泡之间超过这个间隔才显示时间（微信式：不是每条都带时间）。 */
+export const PET_TIME_GAP_MS = 5 * 60_000;
+
+/**
+ * 新开一轮前，把上一轮折进历史。
+ *
+ * ★ 不设条数上限：历史只增不减，桌板内部滚动查看。
+ *   这里只追加，不做任何 slice —— 截断会让用户永远看不到更早的对话。
+ */
 export function foldPetTurn(
   history: readonly PetMessage[],
   turn: PetTurn | null,
-  limit = 4,
 ): readonly PetMessage[] {
   if (turn === null) return history;
-  const answer = turn.reply.trim().length > 0 ? turn.reply : turn.narration;
+  // 历史已经包含本轮（例如打开桌板时刷新过）时，不能重复追加。
+  if (historyContainsTurn(history, turn)) return history;
+  // 里程碑是过程摘要，不写进持久历史；只折叠最终回答。
+  const answer = turn.reply.trim();
   const next: PetMessage[] = [...history];
-  if (turn.userText.trim().length > 0) next.push({ role: 'user', text: turn.userText });
-  if (answer.trim().length > 0) next.push({ role: 'assistant', text: answer });
-  return next.slice(-limit);
+  if (turn.userText.trim().length > 0) {
+    next.push({ role: 'user', kind: 'user', text: turn.userText });
+  }
+  if (answer.length > 0) {
+    next.push({ role: 'assistant', kind: 'final', text: answer });
+  }
+  return next;
 }
 
 export interface PetDocAttachment {
@@ -277,6 +372,25 @@ export function composePetText(text: string, docs: readonly PetDocAttachment[]):
 
 export async function fetchPetConfig(): Promise<PetConfigResponse> {
   return fetchJson<PetConfigResponse>('/api/pet/config');
+}
+
+/**
+ * 领取一次主动说话。
+ *
+ * ★ 这里不判断频率或安静时段：那些由服务端决定。
+ *   前端只负责在页面可见、桌板未打开时问一句“现在可以说吗”。
+ */
+export async function claimPetProactive(): Promise<PetProactiveClaimResponse> {
+  return fetchJson<PetProactiveClaimResponse>('/api/pet/proactive/claim', {
+    method: 'POST',
+  });
+}
+
+/** 用户对主动气泡的回应；mute 会由服务端关闭 proactiveEnabled。 */
+export async function sendPetProactiveFeedback(
+  action: 'dismiss' | 'snooze' | 'mute',
+): Promise<PetProactiveFeedbackResponse> {
+  return postJson<PetProactiveFeedbackResponse>('/api/pet/proactive/feedback', { action });
 }
 
 /** 桌面桌宠与 Web 桌宠共用的固定会话。 */

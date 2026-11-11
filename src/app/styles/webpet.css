@@ -142,6 +142,120 @@
   transform-origin: 100% 0;
 }
 
+/* ─────────────────────────────────────────────
+   主动说话气泡
+   ─────────────────────────────────────────────
+   只在人物旁边出现，不展开桌板、不覆盖页面输入区；
+   说什么、能不能说由服务端决定，这里只负责展示与回应。
+   ───────────────────────────────────────────── */
+
+.webpet-proactive {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 3;
+  width: min(320px, calc(100vw - 40px));
+  padding: 12px 13px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 100% at 100% 0, rgba(232, 239, 233, 0.6), transparent 62%),
+    var(--surface);
+  box-shadow:
+    0 20px 48px rgba(35, 31, 22, 0.16),
+    0 1px 0 rgba(255, 255, 255, 0.75) inset;
+  animation: webpetProactiveIn 0.2s var(--ease-out) both;
+}
+
+.webpet-proactive.is-below {
+  top: calc(100% - 8px);
+  bottom: auto;
+  transform-origin: 100% 0;
+}
+
+.webpet-proactive-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.webpet-proactive-error {
+  margin: 7px 0 0;
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.webpet-proactive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.webpet-proactive-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  transition:
+    border-color 0.16s var(--ease),
+    background 0.16s var(--ease),
+    color 0.16s var(--ease);
+}
+
+.webpet-proactive-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.webpet-proactive-btn.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.webpet-proactive-btn.is-primary:hover:not(:disabled) {
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+  color: #fff;
+}
+
+.webpet-proactive-btn.is-quiet {
+  border-color: var(--line);
+  color: var(--ink-3);
+}
+
+.webpet-proactive-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@keyframes webpetProactiveIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes webpetProactiveFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .webpet-resize {
   position: absolute;
   left: 50%;
@@ -190,6 +304,25 @@
   backdrop-filter: blur(8px);
 }
 
+.webpet-board-head.is-idle {
+  min-height: 32px;
+  justify-content: flex-end;
+  padding: 4px 6px 0;
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* 桌板只留右上角收起箭头：不放“管家”标题，也不放状态圆点。 */
+.webpet-board-head.is-bare {
+  min-height: 30px;
+  justify-content: flex-end;
+  padding: 3px 5px 0;
+  border-bottom: 0;
+  background: transparent;
+  backdrop-filter: none;
+}
+
 .webpet-head-main {
   display: flex;
   min-width: 0;
@@ -224,32 +357,27 @@
   background: var(--danger);
 }
 
-.webpet-name {
+.webpet-board-title {
   color: var(--ink);
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.01em;
 }
 
-.webpet-status {
+.webpet-board-live {
   color: var(--ink-3);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
   white-space: nowrap;
 }
 
-.webpet-stage {
-  min-width: 0;
-  max-width: 148px;
-  overflow: hidden;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-family: var(--font-mono);
+.webpet-time {
+  margin: 2px 0 8px;
+  color: var(--ink-4);
   font-size: 9.5px;
-  letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  letter-spacing: 0.03em;
+  text-align: center;
 }
 
 .webpet-icon-btn {
@@ -283,36 +411,26 @@
   scrollbar-width: thin;
 }
 
+.webpet-thread.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .webpet-empty {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 5px;
   padding: 8px 2px 6px;
+  text-align: center;
 }
 
-.webpet-empty-mark {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  margin-bottom: 3px;
-  border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.webpet-empty-title {
-  color: var(--ink);
+.webpet-empty-line {
+  margin: 0;
+  color: var(--ink-2);
   font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.webpet-empty-sub {
-  max-width: 260px;
-  color: var(--ink-3);
-  font-size: 11.5px;
-  line-height: 1.65;
+  line-height: 1.7;
 }
 
 .webpet-msg {
@@ -340,9 +458,28 @@
 .webpet-msg--bot {
   display: flex;
   flex-direction: column;
+  width: fit-content;
+  max-width: 86%;
   gap: 3px;
-  padding-left: 10px;
-  border-left: 2px solid var(--line);
+  padding: 8px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px 12px 12px 4px;
+  background: var(--surface);
+}
+
+/* 任务的阶段摘要：独立、更轻的一条，不与最终回答合并。 */
+.webpet-msg--bot.is-progress {
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  border-color: transparent;
+  background: var(--paper-deep);
+  color: var(--ink-2);
+}
+
+.webpet-msg--bot.is-progress .webpet-msg-body {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .webpet-msg-role {
@@ -426,6 +563,30 @@
   animation: webpetSpin 0.9s linear infinite;
 }
 
+.webpet-stage-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webpet-stage-link {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 4px;
+  border-radius: 5px;
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.webpet-stage-link:hover {
+  color: var(--accent-ink);
+}
+
 .webpet-error {
   display: flex;
   align-items: flex-start;
@@ -468,6 +629,64 @@
   padding: 10px 12px 11px;
   border-top: 1px solid var(--line-soft);
   background: var(--surface-2);
+}
+
+.webpet-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  padding: 4px 5px 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+  transition:
+    border-color 0.18s var(--ease),
+    box-shadow 0.18s var(--ease);
+}
+
+.webpet-compose-row:focus-within {
+  border-color: #9fb9a7;
+  box-shadow: 0 0 0 3px rgba(47, 91, 76, 0.07);
+}
+
+.webpet-compose-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  color: var(--ink-3);
+  transition:
+    background 0.16s var(--ease),
+    color 0.16s var(--ease);
+}
+
+.webpet-compose-icon:hover {
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+.webpet-compose-icon.is-recording {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.webpet-compose-row .webpet-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.webpet-compose-row .webpet-send {
+  flex: none;
+  margin-left: auto;
+}
+
+.webpet-compose-note {
+  margin-bottom: 6px;
+  color: var(--ink-4);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .webpet-attach-error {
@@ -841,76 +1060,6 @@
   }
 }
 
-/* ─────────────────────────────────────────────
-   窄屏：桌板变成贴近底部的便签，避开底部导航
-   ───────────────────────────────────────────── */
-
-@media (max-width: 760px) {
-  .webpet.is-docked {
-    right: 12px;
-    bottom: calc(72px + env(safe-area-inset-bottom));
-  }
-
-  .webpet-avatar {
-    border-radius: 18px;
-  }
-
-  /* 窄屏桌板是贴底便签；展开时先把人物收起来，避免头像从桌板后穿出来。 */
-  .webpet.is-open .webpet-avatar {
-    visibility: hidden;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .webpet-board,
-  .webpet-board.is-below {
-    position: fixed;
-    right: 10px;
-    bottom: calc(72px + env(safe-area-inset-bottom));
-    left: 10px;
-    top: auto;
-    width: auto;
-    max-height: min(62vh, 500px);
-    border-radius: 16px;
-    animation: webpetBoardInMobile 0.24s var(--ease-out) both;
-  }
-
-  .webpet-board-head {
-    padding: 10px 10px 10px 13px;
-  }
-
-  .webpet-thread {
-    min-height: 64px;
-    padding: 11px 12px 13px;
-  }
-
-  .webpet-composer {
-    padding: 9px 10px calc(9px + env(safe-area-inset-bottom));
-  }
-
-  .webpet .session-controls-trigger {
-    max-width: 122px;
-  }
-
-  .webpet .session-controls-model-name {
-    max-width: 56px;
-  }
-
-  .webpet-hint {
-    font-size: 8.5px;
-  }
-
-  .webpet-muted {
-    right: 12px;
-    bottom: calc(78px + env(safe-area-inset-bottom));
-  }
-
-  .webpet-restore {
-    right: 12px;
-    bottom: calc(78px + env(safe-area-inset-bottom));
-  }
-}
-
 @media (max-height: 620px) {
   .webpet-board {
     max-height: calc(100dvh - 96px);
@@ -937,6 +1086,11 @@
   .webpet-board.is-below {
     animation: none;
   }
+
+  /* 只淡入：不做位移与缩放 */
+  .webpet-proactive {
+    animation: webpetProactiveFade 0.2s var(--ease-out) both;
+  }
 }
 
 @keyframes webpetFloat {
@@ -953,17 +1107,6 @@
   from {
     opacity: 0;
     transform: translateY(8px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes webpetBoardInMobile {
-  from {
-    opacity: 0;
-    transform: translateY(16px);
   }
   to {
     opacity: 1;
