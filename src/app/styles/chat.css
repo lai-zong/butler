@@ -5827,6 +5827,18 @@ button.work-crumb:hover {
   min-height: 0;
   flex-direction: column;
   background: var(--paper);
+  /*
+   * ★ 容器查询上下文放在浏览器面板自己的根节点上，而不是 .review-pane：
+   *   右栏是「文件 / 浏览器 / 审查」三个页签共用的框，给共用外框加
+   *   container-type 会让审查页签也进入新的尺寸包含上下文；这里只影响
+   *   浏览器页签内部，其它页签的布局完全不变。
+   * ★ inline-size 只隔离行内轴尺寸：面板宽高仍由 .browser-panel-slot 的
+   *   flex 决定，面板内部那套 flex: 1 的画面自适应不受影响。
+   * ★ 命名成 browser-pane：将来面板内部再出现别的容器时，查询不会串到
+   *   离得最近的那个上。
+   */
+  container-name: browser-pane;
+  container-type: inline-size;
 }
 
 /* ── 工具栏：标签条 + ← → ⟳ + 地址栏 + 让 AI 看 ───────────── */
@@ -6057,6 +6069,10 @@ button.work-crumb:hover {
   transform: scaleX(-1);
 }
 
+/*
+ * 地址栏：宽面板里宽度全交给 flex（保持原来的 min-width: 0，不加下限）；
+ * 窄栏的 120px 下限在下面的 @container browser-pane 里给。
+ */
 .browser-address {
   display: flex;
   flex: 1 1 auto;
@@ -6135,6 +6151,27 @@ button.work-crumb:hover {
   border-color: #b6cbc0;
   background: var(--accent-soft);
   color: var(--accent-ink);
+}
+
+/*
+ * ── 窄栏：容器查询折叠工具栏文字 ─────────────────────────────
+ *
+ * 阈值按容器（.browser-panel 的 content box）宽度算，不是视口宽度：
+ * 右栏拖窄、面板展开成主区域时都会实时生效。520px 是约定的分界——
+ * 再窄，三段按钮文字就会把地址栏挤到只剩几十像素。
+ * ★ 只 display:none 文字，按钮本身不卸载：图标、title、aria-label 都还在，
+ *   点击区域不变；宽面板（>520px）不命中查询，自动恢复现状。
+ * ★ 地址栏给 120px 下限：它原来的 min-width: 0 会让 flex 一路压到十几像素，
+ *   连一个域名都显示不全。宽面板不加下限，保留原来的弹性行为。
+ */
+@container browser-pane (max-width: 520px) {
+  .browser-tool-label {
+    display: none;
+  }
+
+  .browser-address {
+    min-width: 120px;
+  }
 }
 
 /*
@@ -6593,6 +6630,96 @@ button.work-crumb:hover {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── 沉浸全屏（面板内，不是浏览器窗口全屏） ───────────────── */
+
+/*
+ * ★ 只 display:none，不卸载：标签轮询、页面状态轮询与 SSE 都挂在组件上，
+ *   把工具栏 / 状态栏从 DOM 里拿掉会连带重建这些逻辑，画面直接断流。
+ * ★ 不调用 requestFullscreen()：这是「面板内沉浸」，原生全屏会盖住整个应用，
+ *   退出语义也由浏览器掌握，做不到「先关弹层、再退沉浸」。
+ */
+.browser-panel.is-immersive .browser-toolbar,
+.browser-panel.is-immersive .browser-status {
+  display: none;
+}
+
+/*
+ * 右栏页签条（文件 / 浏览器 / 审查）属于 ChatView 的 DOM，不在本组件里；
+ * 但沉浸时它就是画面正上方最后一条栏。用 :has 从样式侧临时收起，
+ * 不必改 ChatView 的 JSX；选择器只在浏览器面板沉浸时命中，
+ * 不影响文件 / 审查页签的布局。
+ */
+.review-pane:has(.browser-panel.is-immersive) > .review-tabs {
+  display: none;
+}
+
+/* 工具栏与状态栏都没了之后，画面区自然吃满整个面板（.browser-body 本来就是 flex:1）。 */
+.browser-panel.is-immersive .browser-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/*
+ * 画面拿到焦点时会浮一个「键盘已接管」提示，默认也在右上角；
+ * 沉浸时把它挪到左上，免得和退出浮钮叠在一起、互相遮住。
+ */
+.browser-panel.is-immersive .browser-stage-focus {
+  right: auto;
+  left: 10px;
+}
+
+/*
+ * 画面右上角的退出浮钮。
+ * ★ 半透明压在帧上：截图可能整片发白或发黑，靠底色 + 描边 + 模糊保持可读。
+ * ★ 放在 .browser-body 内绝对定位（不是 .browser-stage 内），
+ *   这样画面还没起来时它也在，不会只剩 Esc 一条退出路径。
+ */
+.browser-immersive-exit {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid rgba(236, 231, 218, 0.22);
+  border-radius: 999px;
+  background: rgba(20, 19, 16, 0.56);
+  color: rgba(245, 243, 238, 0.92);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  transition:
+    background 0.16s var(--ease),
+    border-color 0.16s var(--ease);
+}
+
+.browser-immersive-exit:hover {
+  border-color: rgba(236, 231, 218, 0.4);
+  background: rgba(20, 19, 16, 0.74);
+}
+
+.browser-immersive-exit:focus-visible {
+  outline: 2px solid var(--accent-bright);
+  outline-offset: 2px;
+}
+
+/* Esc 提示做成一颗小键帽：窄栏里也不至于把「退出全屏」挤到换行。 */
+.browser-immersive-exit kbd {
+  padding: 0 4px;
+  border: 1px solid rgba(236, 231, 218, 0.28);
+  border-radius: 4px;
+  color: rgba(236, 231, 218, 0.72);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 15px;
 }
 
 /* ── 「让 AI 看」只读弹层 ────────────────────────────────── */

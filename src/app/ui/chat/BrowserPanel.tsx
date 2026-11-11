@@ -3,7 +3,7 @@
 /**
  * 内嵌浏览器面板 —— 右栏「浏览器」页签
  *
- * 七块能力：
+ * 九块能力：
  *   · 画面：订阅 `/api/browser/stream` 的 SSE 帧，等比缩放到面板里；
  *   · 标签：工具栏最上面一行列出所有标签页，可新建 / 切换 / 关闭（/api/browser/tabs）；
  *   · 操作：地址栏、前进后退刷新、鼠标/滚轮/键盘都转发给服务端的 CDP 浏览器；
@@ -12,7 +12,11 @@
  *   · 下载：弹层列出 `<数据目录>/browser-downloads` 里的文件（GET /api/browser/downloads）；
  *   · 给 AI：读当前页正文与截图，整理成问题交给父组件**填进输入框**（不自动发送）；
  *   · 自愈：轮询发现浏览器进程被外部关掉时，收起画面、清空标签与地址栏，
- *     等用户点「重新启动」——不自动拉起，因为可能是用户自己在别的程序里关的。
+ *     等用户点「重新启动」——不自动拉起，因为可能是用户自己在别的程序里关的；
+ *   · 窄栏：右栏被拖窄时由 CSS 容器查询把「粘贴 / 下载 / 让 AI 看」收成纯图标，
+ *     地址栏保底 120px（见 chat.css 的 @container 段）；
+ *   · 沉浸：工具栏最右侧的「全屏」把画面铺满面板（纯面板内状态，不调用
+ *     requestFullscreen），Esc 或画面右上角的浮钮退出。
  *
  * ★ 为什么键盘要经过一个看不见的 <textarea>：
  *   Chromium 只给「可编辑元素」派发 composition 事件。画面容器是个 div，
@@ -411,6 +415,17 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const [stageFocused, setStageFocused] = useState(false);
 
   /**
+   * 面板内「沉浸全屏」。
+   *
+   * ★ 为什么不用 requestFullscreen()：需求是「面板内沉浸」，让画面盖住整个应用窗口
+   *   反而会把旁边的对话一起藏掉；而且原生全屏的进入 / 退出语义由浏览器掌握，
+   *   我们没法保证 Esc 先关弹层、再退沉浸的顺序。
+   * ★ 为什么只隐藏不卸载工具栏：标签轮询、状态轮询与 SSE 都挂在组件上，
+   *   DOM 重建会顺手把流断开；沉浸只是一个显示状态，CSS 隐藏就够。
+   */
+  const [immersive, setImmersive] = useState(false);
+
+  /**
    * 组件是否还活着。
    * 请求都是异步的，卸载后回来再 setState 虽然 React 18 不再报警，
    * 但会白跑一遍 EventSource 重连逻辑，用一个 ref 直接剪掉。
@@ -418,6 +433,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const aliveRef = useRef(true);
   const streamRef = useRef<EventSource | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  /** 工具栏上的「全屏」按钮；退出沉浸后要把键盘焦点还给它（它随工具栏一起被隐藏过）。 */
+  const immersiveToggleRef = useRef<HTMLButtonElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const addressRef = useRef<HTMLInputElement | null>(null);
   /** 承接输入法的隐藏输入框；它才是真正持有焦点、产生 composition 事件的元素。 */
@@ -439,6 +456,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const tabsSeqRef = useRef(0);
   /** 标签条的横向滚动区；用来把切过去的活动标签滚进可视区。 */
   const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  /** 上一次的非空活动标签 id；用来区分「用户切了标签」和「标签列表第一次加载出来」。 */
+  const lastActiveTabRef = useRef('');
   /**
    * 当前启动状态。
    * refreshTabs 会被定时器闭包和事件回调调用，读 state 会拿到创建闭包那一刻的旧值，
@@ -881,6 +900,17 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       event.preventDefault();
       return;
     }
+    /**
+     * ★ 沉浸模式下的 Esc 先用来退出，而不是当成远端按键转发：
+     *   否则远端页面里的弹窗会先被关掉，本地却还停在沉浸模式里。
+     * ★ 有弹层时让弹层先关（它们的 Esc 监听挂在 window 上）：这里不抢那一下，
+     *   同一次按键就不会既关弹层又退沉浸。
+     */
+    if (key === 'Escape' && immersive && read.status === 'idle' && !downloadsOpen) {
+      event.preventDefault();
+      exitImmersive(false);
+      return;
+    }
     if (SPECIAL_KEYS.has(key)) {
       event.preventDefault();
       sendKey(key);
@@ -1051,6 +1081,43 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     void loadDownloads();
   }
 
+  // ── 沉浸全屏 ───────────────────────────────────────────────────────
+
+  /**
+   * 进入沉浸模式。
+   *
+   * ★ 顺手收起下载弹层：进入后工具栏（含触发它的按钮）会被隐藏，
+   *   弹层却还浮在画面上，用户会找不到关闭入口。
+   */
+  function enterImmersive(): void {
+    setDownloadsOpen(false);
+    setImmersive(true);
+  }
+
+  /**
+   * 退出沉浸模式。
+   *
+   * ★ restoreFocus：退出这一刻工具栏还是 display:none，按钮要等这次渲染提交后
+   *   才重新可见；立刻 focus() 会落在 body 上，键盘用户就失去了落点。
+   *   等一帧再聚焦，焦点正好回到触发它的「全屏」按钮。
+   */
+  function exitImmersive(restoreFocus: boolean): void {
+    setImmersive(false);
+    if (!restoreFocus) return;
+    window.requestAnimationFrame(() => {
+      immersiveToggleRef.current?.focus();
+    });
+  }
+
+  /** 工具栏按钮的开关；沉浸模式下按钮随工具栏隐藏，退出走浮钮或 Esc。 */
+  function toggleImmersive(): void {
+    if (immersive) {
+      exitImmersive(true);
+      return;
+    }
+    enterImmersive();
+  }
+
   // ── 生命周期 ───────────────────────────────────────────────────────
 
   /**
@@ -1194,6 +1261,55 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [downloadsOpen]);
+
+  /**
+   * 切换浏览器标签时自动退出沉浸。
+   *
+   * ★ 沉浸模式里标签条是隐藏的：不退出的话，用户看不到新标签、也点不到下一个，
+   *   画面内容已经换页却没有任何可见的上下文。
+   * ★ 只认「非空 id → 另一个非空 id」：启动后标签列表第一次加载出活动标签不是切换，
+   *   不能把用户刚点开的沉浸模式顺手关掉。
+   */
+  useEffect(() => {
+    if (activeTabId.length === 0 || lastActiveTabRef.current === activeTabId) return;
+    const isSwitch = lastActiveTabRef.current.length > 0;
+    lastActiveTabRef.current = activeTabId;
+    if (isSwitch) setImmersive(false);
+  }, [activeTabId]);
+
+  /**
+   * 进入沉浸后把焦点交给画面。
+   *
+   * ★ 触发全屏的按钮马上会被 CSS 隐藏，焦点随之落回 body：不主动搬进舞台，
+   *   接下来的按键就不再转发给远端页面，画面看起来「点不动」。
+   * ★ 卸载时组件里的沉浸状态随组件一起消失，不需要额外的全局清理。
+   */
+  useEffect(() => {
+    if (!immersive) return;
+    stageRef.current?.focus({ preventScroll: true });
+  }, [immersive]);
+
+  /**
+   * 沉浸模式的全局 Esc。
+   *
+   * ★ 焦点不一定在舞台里（刚点完按钮、或停在浮钮上），只在舞台的 onKeyDown 里
+   *   处理会漏掉这些情况，所以再挂一个 window 监听。
+   * ★ 弹层优先：阅读弹层 / 下载弹层各自也有 Esc 监听；它们那一下没关完之前
+   *   不能顺手退出沉浸，否则按一次 Esc 会同时关两层。
+   * ★ 舞台自己处理过的那一次已被 preventDefault，这里跳过（defaultPrevented），
+   *   避免重复触发，也避免把焦点从画面挪回工具栏。
+   */
+  useEffect(() => {
+    if (!immersive) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (read.status !== 'idle' || downloadsOpen) return;
+      event.preventDefault();
+      exitImmersive(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [immersive, read.status, downloadsOpen]);
 
   /**
    * 切会话时收起 AI 面板。
@@ -1381,7 +1497,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   }
 
   return (
-    <div className="browser-panel">
+    <div className={`browser-panel${immersive ? ' is-immersive' : ''}`}>
       <div className="browser-toolbar">
         {/*
           标签条：工具栏最上面一行。
@@ -1527,9 +1643,12 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
               // 页面没起来时贴进去也没人收，和「让 AI 看」保持一致直接禁用。
               disabled={!ready}
               title="把本地剪贴板里的文本输入到页面"
+              aria-label="粘贴"
             >
-              {/* 图标集里没有剪贴板，复制用的双矩形是这套线稿里最接近的一个。 */}
-              <Icon name="copy" size={13} /> 粘贴
+              {/* 图标集里没有剪贴板，复制用的双矩形是这套线稿里最接近的一个。
+                  文字包一层 span：窄栏（@container）只藏文字、保留图标。 */}
+              <Icon name="copy" size={13} />
+              <span className="browser-tool-label">粘贴</span>
             </button>
 
             {/* 外壳只为判断"点在弹层外面"；弹层自身相对 .browser-panel 定位，
@@ -1542,10 +1661,12 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
                 // 读目录不依赖浏览器进程，所以不跟 ready 联动：
                 // 进程挂了也应该能看见之前下载过什么。
                 title="查看浏览器下载的文件"
+                aria-label="下载"
                 aria-haspopup="dialog"
                 aria-expanded={downloadsOpen}
               >
-                <Icon name="download" size={13} /> 下载
+                <Icon name="download" size={13} />
+                <span className="browser-tool-label">下载</span>
               </button>
 
               {downloadsOpen ? (
@@ -1576,8 +1697,26 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
             onClick={() => void openReadPanel()}
             disabled={!ready || read.status === 'loading'}
             title="读取当前页面正文与截图，交给管家参考"
+            aria-label="让 AI 看"
           >
-            <Icon name="eye" size={13} /> 让 AI 看
+            <Icon name="eye" size={13} />
+            <span className="browser-tool-label">让 AI 看</span>
+          </button>
+
+          {/*
+            全屏（面板内沉浸）：放在工具栏最右侧，和「让 AI 看」保持一个点击距离。
+            图标集里没有 expand，external 的「四向展开」是这套线性图标里最接近的。
+          */}
+          <button
+            ref={immersiveToggleRef}
+            type="button"
+            className="browser-icon-btn browser-immersive-toggle"
+            onClick={toggleImmersive}
+            aria-pressed={immersive}
+            title={immersive ? '退出全屏' : '全屏'}
+            aria-label={immersive ? '退出全屏' : '全屏'}
+          >
+            <Icon name="external" size={14} />
           </button>
         </div>
       </div>
@@ -1730,6 +1869,28 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
             )}
           </div>
         )}
+
+        {/*
+          沉浸模式的退出浮钮：放在 .browser-body 里而不是 .browser-stage 里，
+          这样画面还没起来（启动失败 / 已退出）时它也在，用户不会只剩 Esc 一条路。
+          ★ 半透明压在帧上，位置就是画面右上角；只在沉浸时渲染。
+        */}
+        {immersive ? (
+          <button
+            type="button"
+            className="browser-immersive-exit"
+            // ★ 画面区域会把指针事件换算成远端页面坐标；按钮虽然不在 <img> 里，
+            //   仍显式停掉冒泡，避免以后把浮钮挪进舞台时点击穿透到远端页面。
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => exitImmersive(true)}
+            title="退出全屏（Esc）"
+            aria-label="退出全屏"
+          >
+            <Icon name="close" size={12} />
+            <span>退出全屏</span>
+            <kbd>Esc</kbd>
+          </button>
+        ) : null}
       </div>
 
       <footer className="browser-status">
