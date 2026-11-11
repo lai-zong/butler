@@ -128,6 +128,7 @@ import {
 } from './Cards';
 import { QuizSection } from './Quiz';
 import { WorkPanel, type WorkPanelAiOp } from './WorkPanel';
+import { BrowserPanel } from './BrowserPanel';
 
 /**
  * 草稿 key 前缀。
@@ -842,10 +843,10 @@ export function ChatView({
   /** 当前展示的历史 run id；实时审查完成后也用它高亮列表。 */
   const [reviewActiveId, setReviewActiveId] = useState<string | null>(null);
   /**
-   * 右栏页签：文件（工作区）/ 审查。
-   * 两块内容共用同一个 review-pane、同一个拖拽宽度与 reviewOpen 开关。
+   * 右栏页签：文件（工作区）/ 浏览器 / 审查。
+   * 三块内容共用同一个 review-pane、同一个拖拽宽度与 reviewOpen 开关。
    */
-  const [paneTab, setPaneTab] = useState<'files' | 'review'>('review');
+  const [paneTab, setPaneTab] = useState<'files' | 'browser' | 'review'>('review');
   /** AI 最近一次完整工具调用碰到的文件；只用于工作区面板的自动打开/高亮。 */
   const [aiOp, setAiOp] = useState<WorkPanelAiOp | null>(null);
 
@@ -1931,6 +1932,41 @@ export function ChatView({
     if (!reviewOpen) setAiOp(null);
     setPaneTab('files');
     setReviewOpen(true);
+  }
+
+  /**
+   * 打开「浏览器」页签。
+   *
+   * ★ 为什么页签栏里已有入口，头部还要一个按钮：
+   *   页签栏只在 reviewOpen 时渲染。没有这个入口，面板关着时用户根本点不到「浏览器」，
+   *   “点了就打开面板并选中浏览器”这条也就无从触发。
+   */
+  function openBrowser(): void {
+    if (reviewOpen && paneTab === 'browser') {
+      closeReview();
+      return;
+    }
+    if (!reviewOpen) setAiOp(null);
+    setPaneTab('browser');
+    setReviewOpen(true);
+  }
+
+  /**
+   * 浏览器「发给管家」：只把整理好的问题填进输入框，绝不自动发送。
+   *
+   * ★ 页面正文是不可信输入，发不发、要不要补充，得由用户看过再决定。
+   * ★ 展开模式下对话是浮窗、还可能被收成气泡：先把它还原出来，
+   *   否则文字填进的是一个看不见的输入框，用户会以为按钮没反应。
+   */
+  function sendBrowserPageToButler(text: string): void {
+    setInput(text);
+    if (panelExpanded && chatFloat.collapsed) {
+      chatFloat.restore();
+      // 还原后的浮窗要等 React 提交才可见，这里不抢先 focus（隐藏元素 focus 不生效）。
+      return;
+    }
+    // 填完把焦点还给输入框，用户可以直接补一句问题再回车。
+    textareaRef.current?.focus();
   }
 
   /** 收起历史抽屉，并把焦点还给入口按钮。 */
@@ -3421,7 +3457,7 @@ export function ChatView({
     <div
       className={`chat-view ${active ? 'is-active' : ''} ${reviewOpen ? 'is-review' : ''}${
         reviewOpen && paneTab === 'files' ? ' is-work' : ''
-      }${panelExpanded ? ' is-panel-max' : ''}${
+      }${reviewOpen && paneTab === 'browser' ? ' is-browser' : ''}${panelExpanded ? ' is-panel-max' : ''}${
         panelExpanded && chatFloat.collapsed ? ' is-chat-collapsed' : ''
       }`}
     >
@@ -3446,6 +3482,17 @@ export function ChatView({
             title={reviewOpen && paneTab === 'files' ? '关闭工作区' : '打开工作区'}
           >
             <Icon name="file" size={15} /> 工作区
+          </button>
+          <button
+            type="button"
+            className={`btn btn-ghost btn-sm is-browser-toggle${
+              reviewOpen && paneTab === 'browser' ? ' is-active' : ''
+            }`}
+            onClick={openBrowser}
+            aria-pressed={reviewOpen && paneTab === 'browser'}
+            title={reviewOpen && paneTab === 'browser' ? '关闭浏览器面板' : '打开内嵌浏览器'}
+          >
+            <Icon name="console" size={15} /> 浏览器
           </button>
           <button
             type="button"
@@ -3866,7 +3913,7 @@ export function ChatView({
               onKeyDown={handleReviewSplitterKeyDown}
             />
           ) : null}
-          <section className="review-pane" aria-label="工作区与审查">
+          <section className="review-pane" aria-label="工作区、浏览器与审查">
             <div className="review-tabs" role="group" aria-label="右栏视图">
               <button
                 type="button"
@@ -3875,6 +3922,19 @@ export function ChatView({
                 onClick={() => setPaneTab('files')}
               >
                 <Icon name="file" size={13} /> 文件
+              </button>
+              <button
+                type="button"
+                className={`review-tab${paneTab === 'browser' ? ' is-active' : ''}`}
+                aria-pressed={paneTab === 'browser'}
+                onClick={() => {
+                  // 页签本身就在面板里，面板必然是开的；仍然显式打开一次，
+                  // 以后若从别处复用这个入口（比如头部按钮）也不会点了没反应。
+                  setPaneTab('browser');
+                  setReviewOpen(true);
+                }}
+              >
+                <Icon name="console" size={13} /> 浏览器
               </button>
               <button
                 type="button"
@@ -3903,6 +3963,16 @@ export function ChatView({
             <div className="work-panel-slot" hidden={paneTab !== 'files'}>
               <WorkPanel sessionId={sessionId} open={reviewOpen} aiOp={aiOp} />
             </div>
+            {/*
+              浏览器页签只在选中时挂载：没选中就不发 /api/browser/start，也不占一条 SSE 连接。
+              画面尺寸全部交给 flex（.browser-stage 是 flex:1），
+              因此展开成浮窗时画面会跟着面板缩放，不依赖任何写死的高度。
+            */}
+            {paneTab === 'browser' ? (
+              <div className="browser-panel-slot">
+                <BrowserPanel sessionId={sessionId} onSendToButler={sendBrowserPageToButler} />
+              </div>
+            ) : null}
             {paneTab === 'review' ? (
               <>
             <header className="review-head">

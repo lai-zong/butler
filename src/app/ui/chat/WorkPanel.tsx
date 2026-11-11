@@ -968,12 +968,24 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
           </header>
 
           {preview.kind === 'pdf' ? (
-            <iframe
-              key={`${view.path}:${previewNonce}`}
-              className="work-preview-frame"
-              src={preview.url}
-              title={`PDF 预览：${view.path}`}
-            />
+            /**
+             * ★ PDF 用浏览器内置查看器（iframe）渲染，旁边永远给一个"在新标签打开"。
+             *   少数环境（无 PDF 插件的 Chromium、企业策略）里内嵌会空白甚至卡住，
+             *   这时用户仍有一条可用的路。
+             */
+            <>
+              <div className="work-preview-actions">
+                <a className="text-btn" href={preview.url} target="_blank" rel="noreferrer">
+                  <Icon name="external" size={13} /> 在新标签打开
+                </a>
+              </div>
+              <iframe
+                key={`${view.path}:${previewNonce}`}
+                className="work-preview-frame"
+                src={preview.url}
+                title={`PDF 预览：${view.path}`}
+              />
+            </>
           ) : preview.kind === 'text' ? (
             <>
               <p className="work-preview-note">

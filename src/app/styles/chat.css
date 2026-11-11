@@ -2546,6 +2546,16 @@
   display: block;
 }
 
+/**
+ * ★ 浏览器页签同样要保留输入框。
+ *
+ *   浏览器的「让 AI 看 → 发给管家」只把问题填进 composer，不自动发送；
+ *   如果跟着审查模式一起把输入框藏掉，用户会以为按钮没反应。
+ */
+.chat-view.is-review.is-browser .chat-composer-wrap {
+  display: block;
+}
+
 .chat-view.is-review .turn-rail {
   display: none;
 }
@@ -4003,16 +4013,18 @@
   cursor: pointer;
 }
 
-/* 审查 / 工作区开关 */
+/* 审查 / 工作区 / 浏览器开关 */
 .chat-head-actions .btn.is-review-toggle,
-.chat-head-actions .btn.is-work-toggle {
+.chat-head-actions .btn.is-work-toggle,
+.chat-head-actions .btn.is-browser-toggle {
   border-color: var(--line-strong);
   background: var(--surface-2);
   color: var(--ink);
 }
 
 .chat-head-actions .btn.is-review-toggle.is-active,
-.chat-head-actions .btn.is-work-toggle.is-active {
+.chat-head-actions .btn.is-work-toggle.is-active,
+.chat-head-actions .btn.is-browser-toggle.is-active {
   border-color: #b6cbc0;
   background: var(--accent-soft);
 }
@@ -5629,6 +5641,14 @@ button.work-crumb:hover {
 }
 
 /* PDF 交给浏览器内置查看器，给足高度即可。 */
+.work-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
 .work-preview-frame {
   flex: 1 1 auto;
   min-height: 0;
@@ -5746,4 +5766,527 @@ button.work-crumb:hover {
   background: var(--warn-soft);
   color: var(--warn);
   font-size: 10.5px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   右栏浏览器页签（内嵌 CDP 浏览器）
+   ═══════════════════════════════════════════════════════════ */
+
+/* 页签挂载时才有内容；和文件页签共用一套「撑满右栏」的 flex 约束。 */
+.browser-panel-slot {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.browser-panel {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--paper);
+}
+
+/* ── 工具栏：← → ⟳ + 地址栏 + 让 AI 看 ────────────────────── */
+
+.browser-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(245, 243, 238, 0.7);
+}
+
+.browser-nav {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+}
+
+.browser-icon-btn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    color 0.18s var(--ease);
+}
+
+.browser-icon-btn:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.browser-icon-btn:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+}
+
+/* 图标集没有右箭头：翻转左箭头，线宽与端点和其它图标保持一致。 */
+.browser-flip {
+  transform: scaleX(-1);
+}
+
+.browser-address {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  transition:
+    border-color 0.18s var(--ease),
+    box-shadow 0.18s var(--ease);
+}
+
+.browser-address:focus-within {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.browser-address > svg {
+  flex: none;
+  color: var(--ink-4);
+}
+
+.browser-address input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.browser-address input::placeholder {
+  color: var(--ink-4);
+}
+
+.browser-read-btn {
+  flex: none;
+  height: 28px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ── 错误条：导航失败 / 画面断开 ──────────────────────────── */
+
+.browser-alert {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #e7c49c;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10.5px;
+}
+
+.browser-alert.is-error {
+  border-bottom-color: #e7c4bc;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.browser-alert > svg {
+  flex: none;
+}
+
+.browser-alert > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-alert .btn {
+  flex: none;
+  margin-left: 4px;
+  height: 22px;
+  font-size: 10px;
+}
+
+.browser-alert-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.browser-alert-close:hover {
+  background: rgba(30, 29, 25, 0.08);
+  opacity: 1;
+}
+
+/* ── 画面 ────────────────────────────────────────────────── */
+
+.browser-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/*
+ * 黑底、居中的画面区。
+ * 舞台本身只负责占满剩余空间：宽高都来自 flex，展开成浮窗时自动跟着变，
+ * 所以这里没有任何写死的高度。
+ */
+.browser-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--code-bg);
+  outline: none;
+  /* 画面是远端页面的截图：本地选中文字、拖拽图片都没有意义，还会拖出幽灵图。 */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.browser-stage:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent-bright);
+}
+
+/*
+ * 绝对定位铺满舞台，再用 object-fit: contain 等比缩放：
+ * 宽度方向撑满；高度方向到顶后自动缩小，不会顶出容器。
+ * 坐标换算由 JS 反推「真正画出来的矩形」（见 BrowserPanel 的注释）。
+ */
+.browser-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  opacity: 0;
+  cursor: default;
+  touch-action: none;
+  -webkit-user-drag: none;
+  transition: opacity 0.12s linear;
+}
+
+/* 第一帧到达后才显形，避免先闪一个空图片框。 */
+.browser-frame.is-live {
+  opacity: 1;
+}
+
+.browser-stage-note {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: rgba(236, 231, 218, 0.66);
+  text-align: center;
+}
+
+.browser-stage-note p {
+  color: rgba(236, 231, 218, 0.82);
+  font-size: 12px;
+}
+
+.browser-stage-note small {
+  max-width: 340px;
+  color: rgba(236, 231, 218, 0.46);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* 深色底上沿用审查的转圈，但换一组对比度足够的颜色。 */
+.browser-stage-note .review-spinner {
+  border-color: rgba(236, 231, 218, 0.2);
+  border-top-color: var(--accent-bright);
+}
+
+/* ── 启动失败 ────────────────────────────────────────────── */
+
+.browser-error {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 30px 24px;
+  background: var(--paper);
+  text-align: center;
+}
+
+.browser-error > svg {
+  color: var(--danger);
+}
+
+.browser-error h3 {
+  color: var(--danger);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.browser-error p {
+  max-width: 380px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.browser-error .browser-error-hint {
+  max-width: 380px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.browser-error .btn {
+  height: 30px;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+/* ── 状态栏：标题 + URL ──────────────────────────────────── */
+
+.browser-status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+
+.browser-status-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-4);
+}
+
+.browser-status-dot.is-live {
+  background: var(--accent);
+}
+
+.browser-status-dot.is-busy {
+  background: var(--warn);
+  animation: review-status-pulse 1.4s var(--ease) infinite;
+}
+
+.browser-status-dot.is-error {
+  background: var(--danger);
+}
+
+.browser-status-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-status-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 「让 AI 看」只读弹层 ────────────────────────────────── */
+
+.browser-read-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(30, 29, 25, 0.26);
+  backdrop-filter: blur(2px);
+}
+
+.browser-read {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.browser-read-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.browser-read-head h3 {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.browser-read-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.browser-read-body.is-busy,
+.browser-read-body.is-error {
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 30px 24px;
+  color: var(--ink-3);
+  font-size: 11px;
+  text-align: center;
+}
+
+.browser-read-body.is-error > svg {
+  color: var(--danger);
+}
+
+.browser-read-body.is-error p {
+  max-width: 340px;
+  color: var(--danger);
+  line-height: 1.6;
+}
+
+.browser-read-title {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.browser-read-url {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.browser-read-shot {
+  align-self: flex-start;
+  width: auto;
+  max-width: 100%;
+  max-height: 132px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper-deep);
+  object-fit: contain;
+}
+
+.browser-read-text {
+  margin: 0;
+  padding: 9px 10px;
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.browser-read-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+
+.browser-read-foot span {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-4);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.browser-read-foot .btn {
+  flex: none;
+  height: 28px;
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-frame {
+    transition: none;
+  }
+
+  .browser-status-dot.is-busy {
+    animation: none;
+  }
 }
