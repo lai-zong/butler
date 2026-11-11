@@ -9,6 +9,10 @@
  *   · AI 联动：收到 aiOp 时自动打开被读写的文件并高亮；本文件有未保存修改时
  *     只提示、不覆盖编辑器内容。
  *
+ * 另外还有一层「本地草稿」：编辑中的脏内容按「会话 + 工作区相对路径」防抖写进
+ * localStorage（纯本地，不经过服务端），关闭面板 / 切会话 / 刷新后重新打开同一个
+ * 文件会恢复草稿；只有保存成功或用户明确放弃时才删除。
+ *
  * ★ 为什么不用通用编辑器库：
  *   P0 只需要「看 + 改 + 存」，textarea 足够；引入 Monaco/CodeMirror 会带来
  *   几 MB 体积与一整套与现有浅色控制台不一致的视觉，收益和成本不成比例。
@@ -226,6 +230,89 @@ function apiErrorCode(err: unknown): string | null {
   return typeof code === 'string' ? code : null;
 }
 
+/**
+ * 草稿存储（localStorage）的键前缀与上限。
+ *
+ * ★ 为什么按「会话 + 工作区相对路径」存：工作区是按会话隔离的，
+ *   同一个 `src/a.ts` 在 A、B 两个会话里可能是两个完全不同的文件；
+ *   只按路径存，草稿会串到另一个会话的同名文件上。
+ * ★ 为什么 sessionId 为 null 时用 anon：新建会话还没有 id 时用户已经在打字了，
+ *   丢掉这段草稿比偶尔和"匿名会话"共用更糟。
+ */
+const DRAFT_KEY_PREFIX = 'butler.work.draft.';
+const DRAFT_ANON_SCOPE = 'anon';
+/**
+ * 防抖窗口：一次连续输入只在停顿 300ms 后写一次盘。
+ * 更短会让每个按键都碰一次同步的 localStorage（输入会卡），
+ * 更长则关闭面板时更容易丢掉最后几个字（靠卸载时的补写兜底）。
+ */
+const DRAFT_DEBOUNCE_MS = 300;
+/**
+ * 单份草稿的字节上限。
+ * ★ localStorage 一个源通常只有 5MB，草稿只是"救急"，不该把配额吃光，
+ *   否则连别的本地状态都写不进去。超限的处理是"这一份不写盘"，不是截断后写。
+ */
+const DRAFT_MAX_BYTES = 200 * 1024;
+
+function draftKeyOf(sessionId: string | null, path: string): string {
+  const scope = sessionId !== null && sessionId.length > 0 ? sessionId : DRAFT_ANON_SCOPE;
+  return `${DRAFT_KEY_PREFIX}${scope}.${path}`;
+}
+
+/**
+ * 草稿是否超过上限。
+ *
+ * ★ 为什么按 UTF-8 字节而不是字符串 length：中文一个字在存储里占 3 字节，
+ *   按 length 算的话"200KB"实际能写到 600KB。
+ * ★ 为什么先做字符数比较：一个 UTF-16 单元最多编码成 3 字节，
+ *   所以 length > 上限 一定超限、length×3 ≤ 上限 一定不超限；
+ *   只有中间区间才真的编码一次，避免每次按键都为一份大文本分配数组。
+ */
+function draftOverLimit(content: string): boolean {
+  if (content.length > DRAFT_MAX_BYTES) return true;
+  if (content.length * 3 <= DRAFT_MAX_BYTES) return false;
+  try {
+    return new TextEncoder().encode(content).length > DRAFT_MAX_BYTES;
+  } catch {
+    // 没有 TextEncoder 的极老内核：宁可当超限不写，也不要凭空把配额写爆。
+    return true;
+  }
+}
+
+/**
+ * 读一条草稿。
+ *
+ * ★ localStorage 在隐私模式、配额满、企业策略下都会直接抛异常。
+ *   草稿是"有更好、没有也能用"的附加能力：任何异常都按"没有草稿"降级，
+ *   绝不能让"存储不可用"变成"文件打不开"。
+ */
+function readDraft(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** 写一条草稿；超限或存储不可用都静默跳过，编辑本身不受影响。 */
+function writeDraft(key: string, content: string): void {
+  if (draftOverLimit(content)) return;
+  try {
+    window.localStorage.setItem(key, content);
+  } catch {
+    // 配额满 / 隐私模式：静默降级成"没有草稿"，不打断用户编辑。
+  }
+}
+
+/** 删一条草稿；删不掉也不影响本次操作，最多是下次打开时又恢复一次。 */
+function removeDraft(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // 隐私模式下 removeItem 也可能抛；忽略即可。
+  }
+}
+
 export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Element {
   // ── 文件树 ─────────────────────────────────────────────────────────
   const [dirs, setDirs] = useState<Readonly<Record<string, DirState>>>({});
@@ -253,6 +340,25 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
   const [aiBannerVisible, setAiBannerVisible] = useState(false);
   /** 有未保存修改时，AI 又动了这个文件：保留本地内容，等用户决定是否载入。 */
   const [aiConflict, setAiConflict] = useState<AiNotice | null>(null);
+
+  // ── 本地草稿 ───────────────────────────────────────────────────────
+  /** 编辑器当前内容是否来自 localStorage 草稿；决定是否显示「已恢复」提示条。 */
+  const [draftRestored, setDraftRestored] = useState(false);
+  /** 防抖写盘的定时器：放弃草稿 / 保存成功后要能立刻掐掉它，否则会被写回来。 */
+  const draftTimerRef = useRef<number | null>(null);
+  /**
+   * 编辑器当前内容是从哪个会话的工作区读出来的。
+   * ★ 切会话时 props 先变成新会话、重置 effect 还没跑，补写草稿必须用这个"旧会话"，
+   *   否则会把上一个会话的草稿写到新会话的键下。
+   */
+  const editorSessionRef = useRef<string | null>(sessionId);
+  /**
+   * 最近一次提交的 view。
+   * ★ 卸载时的清理函数是早期渲染创建的闭包，直接读 state 只能拿到那一刻的旧值；
+   *   补写最后一段草稿必须靠这个每次渲染都刷新的 ref。
+   */
+  const viewRef = useRef<FileView>(view);
+  viewRef.current = view;
 
   const gutterRef = useRef<HTMLPreElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -441,6 +547,8 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
         mtimeMs: entry?.mtimeMs ?? null,
       });
       setDraft('');
+      // 图片没有可编辑正文，上一份草稿提示不能跟着视图留下来。
+      setDraftRestored(false);
       setAiConflict(null);
       revealFile(path);
       return;
@@ -460,6 +568,7 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
         message: '旧版 .doc / .xls 文档不支持完整预览，请用系统应用打开',
       });
       setDraft('');
+      setDraftRestored(false);
       setAiConflict(null);
       revealFile(path);
       return;
@@ -491,6 +600,7 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
           mtimeMs: entry?.mtimeMs ?? null,
         });
         setDraft('');
+        setDraftRestored(false);
         setAiConflict(null);
         revealFile(path);
       } catch (err) {
@@ -505,6 +615,7 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
           mtimeMs: entry?.mtimeMs ?? null,
         });
         setDraft('');
+        setDraftRestored(false);
       }
       return;
     }
@@ -521,16 +632,45 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
         setAiConflict({ path, writing: aiOp?.writing ?? false });
         return;
       }
+      /**
+       * 有本地草稿就恢复草稿，而不是服务端内容。
+       *
+       * ★ 为什么连 AI 打开也要恢复：草稿是用户没保存的字，被"AI 刚读过"悄悄换成
+       *   磁盘版本等于替他丢了修改；恢复之后 dirty 为 true，接下来 AI 再写这个文件
+       *   会走既有的"只提示、不覆盖"逻辑。
+       * ★ 草稿和磁盘内容一样时直接清键：没有可恢复的东西，
+       *   留着只会让每次打开都弹一条"已恢复"。
+       */
+      const draftKey = draftKeyOf(sessionId, res.path);
+      const saved = readDraft(draftKey);
+      let content = res.content;
+      let restored = false;
+      if (saved !== null) {
+        if (saved === res.content) {
+          removeDraft(draftKey);
+        } else {
+          content = saved;
+          restored = true;
+        }
+      }
       setView({
         kind: 'text',
         path: res.path,
+        // content 永远是「磁盘上的版本」：dirty、保存基线、放弃草稿都拿它做对照。
         content: res.content,
         sha256: res.sha256,
         size: res.size,
         mtimeMs: res.mtimeMs,
       });
-      setDraft(res.content);
-      setAiConflict(null);
+      setDraft(content);
+      setDraftRestored(restored);
+      // 记录这份内容属于哪个会话：切会话时补写草稿要写回旧会话的键。
+      editorSessionRef.current = sessionId;
+      // AI 刚写过、而这里恢复的是旧草稿：把「AI 已写入 · 载入」的入口也亮出来，
+      // 否则用户只会看到"未保存"，不知道磁盘上已经换了一版。
+      setAiConflict(
+        mode === 'ai' && restored ? { path: res.path, writing: aiOp?.writing ?? false } : null,
+      );
       revealFile(res.path);
     } catch (err) {
       if (seq !== fileSeqRef.current) return;
@@ -547,6 +687,7 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
           message: code === 'too_large' ? errorMessage(err) : '这种文件暂不支持预览',
         });
         setDraft('');
+        setDraftRestored(false);
         return;
       }
       setView({ kind: 'error', path, message: errorMessage(err) });
@@ -559,6 +700,7 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
     const content = draft;
     const baseSha = view.sha256;
     const seq = fileSeqRef.current;
+    const draftKey = draftKeyOf(sessionId, path);
 
     setSaving(true);
     setSaveError(null);
@@ -570,6 +712,21 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
         baseSha,
       });
       if (seq !== fileSeqRef.current) return;
+      /**
+       * 保存成功 = 磁盘上已经是这份内容，草稿没有存在的意义。
+       * ★ 只在「存的就是当前草稿」时清：保存期间用户可能又敲了字，
+       *   那部分还没保存，清掉等于把它丢了。
+       * ★ 清键前先掐掉防抖定时器，否则它会在清完之后把旧内容又写回去。
+       */
+      if (draftRef.current === content) {
+        cancelPendingDraft();
+        removeDraft(draftKey);
+        setDraftRestored(false);
+      } else {
+        // 保存期间又有了新输入：草稿立刻跟上最新内容，
+        // 否则关掉面板后恢复出来的是"保存前"的旧版。
+        writeDraft(draftKey, draftRef.current);
+      }
       // 只更新「服务器上现在是什么」；draft 保留用户保存期间继续敲的字，
       // 于是 dirty 会继续为 true，不会假装已经保存了更新的内容。
       setView((prev) =>
@@ -592,29 +749,110 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
     }
   }
 
+  /**
+   * 掐掉还没落盘的防抖写。
+   *
+   * ★ 为什么需要它：用户可能刚敲完 100ms 就点保存 / 放弃，
+   *   这时定时器还在队列里；不清掉，它会在我们删完键之后把旧草稿又写回去。
+   */
+  function cancelPendingDraft(): void {
+    if (draftTimerRef.current === null) return;
+    window.clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = null;
+  }
+
+  /**
+   * 立刻把当前编辑中的草稿写盘（不等防抖）。
+   *
+   * ★ 只给"用户主动换文件"用：view 一变，防抖定时器就被 cleanup 清掉，
+   *   不补这一次，最后 300ms 敲的字永远进不了 localStorage。
+   * ★ 作用域用 editorSessionRef：这份内容属于哪个会话，键就必须写到那个会话下。
+   */
+  function flushCurrentDraft(): void {
+    if (view.kind !== 'text') return;
+    if (draft === view.content) return;
+    cancelPendingDraft();
+    writeDraft(draftKeyOf(editorSessionRef.current, view.path), draft);
+  }
+
+  /**
+   * 放弃草稿：编辑器回到磁盘版本，同时删掉本地那条记录。
+   * ★ 必须先清键再改 draft：先改的话，防抖 / 脏判定会在删除前又写一次。
+   */
+  function discardDraft(): void {
+    if (view.kind !== 'text') return;
+    cancelPendingDraft();
+    removeDraft(draftKeyOf(editorSessionRef.current, view.path));
+    setDraft(view.content);
+    setDraftRestored(false);
+    setSaveError(null);
+  }
+
+  /**
+   * 用 ref 里的最新快照补写一次草稿（防抖定时器之外的兜底）。
+   *
+   * ★ 只读 ref：beforeunload、effect 清理这些时机都可能是早期渲染创建的闭包，
+   *   直接读 state 会拿到过时的内容。
+   */
+  function flushDraftSnapshot(): void {
+    const current = viewRef.current;
+    if (current.kind !== 'text') return;
+    if (draftRef.current === current.content) return;
+    writeDraft(draftKeyOf(editorSessionRef.current, current.path), draftRef.current);
+  }
+
   async function reloadCurrent(): Promise<void> {
     if (view.kind !== 'text') return;
     if (dirtyRef.current && !window.confirm('放弃未保存的修改并重新载入？')) return;
+    /**
+     * ★ 「重新载入」是明确放弃草稿：不先删键，openPath 会优先恢复草稿，
+     *   等于用户确认放弃之后又把它捡了回来。
+     */
+    cancelPendingDraft();
+    removeDraft(draftKeyOf(editorSessionRef.current, view.path));
+    setDraftRestored(false);
     setSaveError(null);
     await openPath(view.path, 'user');
   }
 
+  /**
+   * 载入 AI 版本。
+   *
+   * ★ 打开的就是 AI 动的那个文件 = 明确放弃它的草稿（先删键再 openPath）。
+   * ★ AI 动的是别的文件时只是"切走"：当前草稿补写一次就够，
+   *   不能删，也不能弹"会丢弃"的确认 —— 草稿会留在本机。
+   */
   function loadAiVersion(): void {
     const notice = aiNotice;
     if (notice === null) return;
-    if (dirtyRef.current && !window.confirm('当前文件有未保存的修改，载入 AI 版本会丢弃它们。继续？')) {
-      return;
+    const sameFile = view.kind === 'text' && view.path === notice.path;
+    if (sameFile) {
+      if (dirtyRef.current && !window.confirm('载入 AI 版本会丢弃当前文件的未保存修改与草稿。继续？')) {
+        return;
+      }
+      cancelPendingDraft();
+      removeDraft(draftKeyOf(editorSessionRef.current, notice.path));
+      setDraftRestored(false);
+    } else {
+      flushCurrentDraft();
     }
     setAiBannerVisible(false);
     setAiConflict(null);
     void openPath(notice.path, 'user');
   }
 
-  /** 用户主动切换文件：同样不能悄悄丢掉未保存的修改。 */
+  /**
+   * 用户主动切换文件。
+   *
+   * ★ 先补写当前草稿再切：防抖窗口内的最后几个字不能因为一次点击就没了。
+   * ★ 为什么仍然确认一次：草稿能保命，但隐私模式 / 配额满时 localStorage 会静默失败，
+   *   这道确认是那种情况下最后一层保护。文案不能说"会丢弃"——草稿其实会留下。
+   */
   function openFromTree(path: string): void {
-    if (dirtyRef.current && !window.confirm('当前文件有未保存的修改，切换文件会丢弃它们。继续？')) {
+    if (dirtyRef.current && !window.confirm('当前文件有未保存的修改（会保留为本机草稿）。继续切换？')) {
       return;
     }
+    flushCurrentDraft();
     void openPath(path, 'user');
   }
 
@@ -631,6 +869,67 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
   }
 
   /**
+   * 草稿防抖落盘。
+   *
+   * ★ 为什么依赖 view：保存成功后 view.content 变了，同一份 draft 会重新变成"脏"，
+   *   需要重新排一次写；反过来"变干净"时必须清键 —— 否则用户手动把内容改回磁盘版本后，
+   *   旧草稿还会在下次打开时诈尸。
+   * ★ 这里只处理"当前打开的文件"；切文件 / 切会话 / 关面板都不会走到这个分支去删别人的草稿。
+   */
+  useEffect(() => {
+    if (view.kind !== 'text') return;
+    const key = draftKeyOf(sessionId, view.path);
+    if (draft === view.content) {
+      // 没有未保存的内容：清掉旧键。保存成功、放弃草稿、用户自己改回磁盘版本都会走到这里。
+      cancelPendingDraft();
+      removeDraft(key);
+      // 内容已经和磁盘一致，"已恢复草稿"的提示就不该再挂着（同值 setState 不会多渲染一次）。
+      setDraftRestored(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      draftTimerRef.current = null;
+      writeDraft(key, draft);
+    }, DRAFT_DEBOUNCE_MS);
+    draftTimerRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (draftTimerRef.current === timer) draftTimerRef.current = null;
+    };
+  }, [draft, view, sessionId]);
+
+  /**
+   * 切会话 / 关闭右栏（卸载）之前，把当前还没落盘的草稿补写一次。
+   *
+   * ★ 为什么用 ref 读 view / draft：清理函数是上一次渲染创建的闭包，
+   *   直接读 state 只能拿到那一刻的旧值。
+   * ★ 为什么键用 editorSessionRef 而不是 sessionId：切会话时 props 已经变成新会话，
+   *   用 sessionId 会把上一个会话的草稿写到新会话的键下。
+   * ★ 依赖里放 sessionId 是为了让"切会话"也触发清理；卸载本来就会触发。
+   */
+  useEffect(() => {
+    return () => {
+      flushDraftSnapshot();
+    };
+    // 只依赖 sessionId：切会话与卸载（关闭右栏）都会走清理；
+    // flushDraftSnapshot 读的是 ref，不需要进依赖表。
+  }, [sessionId]);
+
+  /**
+   * 刷新 / 关页前把还没落盘的那份补上。
+   *
+   * ★ 防抖 300ms 内的最后几个字，不补的话会随一次刷新一起消失；
+   *   beforeunload 是同步收尾的最后机会。
+   * ★ 面板卸载时摘掉监听：关掉右栏后不该再被页面级事件调用。
+   */
+  useEffect(() => {
+    const onBeforeUnload = (): void => flushDraftSnapshot();
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+    // 同上：靠 ref 读最新内容，监听只挂一次。
+  }, []);
+
+  /**
    * 会话切换时整体重来：目录树、编辑器、AI 提示都属于「这个会话的工作区」。
    * 这里不用 useCallback 把 loadDir 包进来——它依赖 sessionId，直接依赖更清楚。
    */
@@ -644,11 +943,15 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
     setExpanded(new Set<string>(['.']));
     setView({ kind: 'empty' });
     setDraft('');
+    // 旧会话的草稿已经由上面那个清理函数补写过；这个定时器再留着只会晚一步写旧内容。
+    cancelPendingDraft();
+    setDraftRestored(false);
     setSaveError(null);
     setImageError(false);
     setAiNotice(null);
     setAiBannerVisible(false);
     setAiConflict(null);
+    editorSessionRef.current = sessionId;
     void loadDir('.');
     // 只以「会话 / 面板开关」为重置条件；loadDir 是当前渲染里的实现，不需要进依赖。
   }, [open, sessionId]);
@@ -1093,6 +1396,21 @@ export function WorkPanel({ sessionId, open, aiOp }: WorkPanelProps): JSX.Elemen
                 重新载入
               </button>
             ) : null}
+          </div>
+        ) : null}
+
+        {/*
+          草稿恢复提示：磁盘上的内容和编辑器里的不是同一份，必须让用户知道，
+          否则他会以为打开的就是文件当前的样子。文案只提"本机浏览器"，
+          草稿不经过服务端，不能写成会让人误以为同步过的措辞。
+        */}
+        {draftRestored ? (
+          <div className="work-draft-notice" role="status">
+            <Icon name="info" size={13} />
+            <span>已恢复未保存的草稿（只存在本机浏览器里，保存后才会写入文件）</span>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={discardDraft}>
+              放弃草稿（用磁盘版本）
+            </button>
           </div>
         ) : null}
 
