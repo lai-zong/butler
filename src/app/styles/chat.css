@@ -5790,16 +5790,192 @@ button.work-crumb:hover {
   background: var(--paper);
 }
 
-/* ── 工具栏：← → ⟳ + 地址栏 + 让 AI 看 ────────────────────── */
+/* ── 工具栏：标签条 + ← → ⟳ + 地址栏 + 让 AI 看 ───────────── */
 
+/*
+ * ★ 为什么工具栏改成纵向两行：
+ *   标签条必须在地址栏之上、并且只能横向滚动。和地址栏挤在同一行时，
+ *   标签一多就会先把地址栏和右侧按钮压到看不见。纵向排列后
+ *   「标签条 / 操作行」各占一行，谁都挤不掉谁。
+ * ★ flex: none + 子项各自的固定高度：展开成浮窗、或者把分栏拖到很矮时，
+ *   被压缩的只能是下面的画面（.browser-body 是 flex: 1），标签条保持原高。
+ */
 .browser-toolbar {
   display: flex;
   flex: none;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  padding: 7px 12px 8px;
   border-bottom: 1px solid var(--line-soft);
   background: rgba(245, 243, 238, 0.7);
+}
+
+/* 地址栏这一行；min-width: 0 让内部先压地址栏，而不是把面板撑宽。 */
+.browser-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ── 标签条 ──────────────────────────────────────────────── */
+
+/*
+ * 高度固定、不参与收缩，理由见 .browser-toolbar 的注释。
+ * 34 = 标签 26 + 滚动条最多 8 的余量：不同内核的横向滚动条高度不一样，
+ * 留一点空，标签不会被 scrollbar 顶掉一截。
+ */
+.browser-tabs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  min-width: 0;
+}
+
+/*
+ * ★ 只有这一层滚动：nowrap 保证标签永不换行，overflow-x: auto 让多出来的
+ *   标签滚出来，而不是把 .browser-panel 撑宽。
+ * ★ 滚动条压到 6px：全局是 9px，34px 高的标签条里放不下更高的条。
+ */
+.browser-tabs-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  scrollbar-width: thin;
+}
+
+/* 仍走自定义滚动条的内核（Safari 等）才用得上这两条。 */
+.browser-tabs-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+/*
+ * 全局的滚动条拇指带 3px 透明边（让细条更细），照抄到 6px 高的横条上
+ * 会正好把可视部分挤成 0 —— 滚动条就"看不见"了。这里把边收窄到 1px，
+ * 留 4px 可见，标签多到要滚动时用户才知道右边还有东西。
+ */
+.browser-tabs-scroll::-webkit-scrollbar-thumb {
+  border-width: 1px;
+}
+
+/*
+ * 一个标签 = 标题按钮 + 关闭按钮。
+ * ★ 关闭按钮不能嵌在标题按钮里：button 里再放 button 是非法结构，
+ *   而且点关闭会连带触发"切换到这个标签"。
+ * ★ flex-basis 150px 就是标签的固定宽度（不放大），标题比较长时正好触发省略号；
+ *   容器实在不够宽时先缩到 min-width，再不够才横向滚动。
+ */
+.browser-tab {
+  display: flex;
+  flex: 0 1 150px;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  min-width: 76px;
+  padding: 0 3px 0 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--ink-3);
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease),
+    color 0.18s var(--ease);
+}
+
+.browser-tab:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* 活动态和 .review-tab 用同一套「描边 + 纸面底 + 轻阴影」，一眼认出当前页。 */
+.browser-tab.is-active {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 标题按钮铺满标签的剩余宽度；省略号由里面的 .browser-tab-title 负责。 */
+.browser-tab-main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.browser-tab-main:disabled {
+  cursor: default;
+}
+
+/*
+ * ★ 省略号交给 CSS：标签宽度是弹性的，用 JS 数几个字符永远对不上实际宽度。
+ *   min-width: 0 + overflow: hidden 是 flex 子项能出现 text-overflow 的前提。
+ */
+.browser-tab-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * 关闭按钮平时压暗、悬停整条标签时提亮。
+ * ★ 不用 opacity: 0 完全藏起来：那样键盘用户和触屏用户就点不到了；
+ *   保留占位与可点区域，只调透明度，才既安静又可用。
+ */
+.browser-tab-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+  transition:
+    background 0.16s var(--ease),
+    opacity 0.16s var(--ease);
+}
+
+.browser-tab:hover .browser-tab-close,
+.browser-tab.is-active .browser-tab-close,
+.browser-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.browser-tab-close:hover:not(:disabled) {
+  background: rgba(30, 29, 25, 0.09);
+}
+
+.browser-tab-close:disabled {
+  cursor: default;
+}
+
+/* 「+」在滚动区之外，贴着标签条右边：标签再多它也一直在。 */
+.browser-tab-new {
+  width: 26px;
+  height: 26px;
 }
 
 .browser-nav {
@@ -5991,13 +6167,15 @@ button.work-crumb:hover {
 /*
  * 相对 .browser-panel 定位（wrap 没有 position，所以往上一层找）：
  * 宽度用百分比夹住，面板被拖窄时列表跟着窄，不会从左边溢出去。
- * top 是工具栏高度（上下 8 + 地址栏 28 + 1px 边框 = 45）再留 2px 呼吸。
+ * top 是工具栏高度再留 2px 呼吸：
+ *   上内边距 7 + 标签条 34 + 行间距 7 + 操作行 28 + 下内边距 8 + 1px 边框 = 85。
+ *   工具栏改结构（比如调标签条高度）时这里要一起改。
  * z-index 低于 .browser-read-backdrop(5)：万一两个弹层同时开着，
  * 「让 AI 看」是模态的，必须压在上面。
  */
 .browser-downloads {
   position: absolute;
-  top: 47px;
+  top: 87px;
   right: 12px;
   z-index: 4;
   display: flex;

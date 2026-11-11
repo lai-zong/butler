@@ -3,8 +3,9 @@
 /**
  * 内嵌浏览器面板 —— 右栏「浏览器」页签
  *
- * 五块能力：
+ * 六块能力：
  *   · 画面：订阅 `/api/browser/stream` 的 SSE 帧，等比缩放到面板里；
+ *   · 标签：工具栏最上面一行列出所有标签页，可新建 / 切换 / 关闭（/api/browser/tabs）；
  *   · 操作：地址栏、前进后退刷新、鼠标/滚轮/键盘都转发给服务端的 CDP 浏览器；
  *   · 输入：画面里藏一个看不见的 <textarea> 专门承接中文输入法，另有一个
  *     「粘贴」按钮把本地剪贴板读成 text 送进页面；
@@ -82,6 +83,19 @@ interface BrowserFrame {
   readonly height: number;
 }
 
+/** 一个标签页；`active` 由服务端按当前串流页判定，地址栏与画面都跟着它。 */
+interface BrowserTab {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+  readonly active: boolean;
+}
+
+interface TabsResponse extends OkResponse {
+  /** 浏览器没起来时服务端回 `{ok:true,tabs:[],code}`，所以按可选处理。 */
+  readonly tabs?: readonly unknown[];
+}
+
 /** 下载目录里的一项；服务端只给了这三个字段，展示需要的也只有这三个。 */
 interface DownloadItem {
   readonly name: string;
@@ -125,6 +139,7 @@ type DownloadsState =
   | { readonly status: 'error'; readonly message: string };
 
 type BrowserAction = 'back' | 'forward' | 'reload';
+type TabAction = 'new' | 'activate' | 'close';
 type MouseAction = 'down' | 'up' | 'move' | 'wheel';
 type MouseButton = 'left' | 'middle' | 'right';
 
@@ -132,6 +147,13 @@ type MouseButton = 'left' | 'middle' | 'right';
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 /** 状态轮询间隔：页签可见时每 2 秒同步一次标题 / URL / 前进后退可用性。 */
 const STATE_POLL_MS = 2_000;
+/**
+ * 标签轮询间隔。
+ *
+ * ★ 为什么比页面状态慢半秒：每轮都要用 CDP 逐个向浏览器要标题，
+ *   轮得太快只是白烧 CPU；2.5 秒足够让「点进新页面 → 标签标题变化」及时出现。
+ */
+const TABS_POLL_MS = 2_500;
 /**
  * 滚轮节流：触控板一次滑动会发几十个 wheel 事件，而服务端每个事件固定滚 120px，
  * 不节流会把页面直接滚飞；60ms 对鼠标滚轮（约 10~20 次/秒）几乎没有延迟感。
@@ -241,6 +263,67 @@ function parseDownloads(raw: unknown): readonly DownloadItem[] {
   return out;
 }
 
+/**
+ * 标签列表同样是外部输入（浏览器里开着什么就是什么），形状不对的项直接丢。
+ * ★ id 是后续 activate / close 的唯一凭据：没有 id 的项留在界面上，
+ *   点下去只会换回一个 400。
+ */
+function parseTabs(raw: unknown): readonly BrowserTab[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BrowserTab[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    const id = rec['id'];
+    if (typeof id !== 'string' || id.length === 0) continue;
+    const title = rec['title'];
+    const url = rec['url'];
+    out.push({
+      id,
+      title: typeof title === 'string' ? title : '',
+      url: typeof url === 'string' ? url : '',
+      active: rec['active'] === true,
+    });
+  }
+  return out;
+}
+
+/** URL 的 host；about:blank、chrome-error: 这类地址没有 host，返回空串。 */
+function urlHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 服务端给的标题里，哪些算「真有标题」。
+ *
+ * ★ 有些内核会把 about:blank 或者网址本身当作标题回给我们（页面没写 <title> 时），
+ *   这种"标题"没有信息量，按无标题处理才能显示「新标签页」或主机名。
+ */
+function tabTitleOf(tab: BrowserTab): string {
+  const title = tab.title.trim();
+  if (title.length === 0 || title === 'about:blank' || title === tab.url) return '';
+  return title;
+}
+
+/**
+ * 标签上显示的文字。
+ *
+ * ★ 顺序：页面标题 → URL 主机名 → 「新标签页」。
+ *   新开的就是 about:blank，既没标题也没 host；有 URL 却没标题时（部分单页应用）
+ *   显示主机名比显示整条网址有用 —— 标签很窄，路径在这里是噪音。
+ *   超长不在这里截：交给 CSS 的 text-overflow: ellipsis，跟着实际宽度省略。
+ */
+function tabLabel(tab: BrowserTab): string {
+  const title = tabTitleOf(tab);
+  if (title.length > 0) return title;
+  const host = urlHost(tab.url);
+  return host.length > 0 ? host : '新标签页';
+}
+
 /** 字节数 → 一眼能比出量级的大小；列表里不需要精确到字节。 */
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -284,6 +367,22 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // ── 标签条 ─────────────────────────────────────────────────────────
+  const [tabs, setTabs] = useState<readonly BrowserTab[]>([]);
+  /**
+   * 是否有标签操作在途。
+   * 和 busy 分开：切换标签时地址栏、前进后退都不该被一起锁住；
+   * 这个只用来禁用标签条自己，避免连点发出多个 activate / close。
+   */
+  const [tabBusy, setTabBusy] = useState(false);
+
+  /**
+   * 当前活动标签 id。
+   * 只给下面的「把活动标签滚进可视区」当依赖用：标签很多时要横向滚动，
+   * 切过去的那个可能整个在可视区外，不滚过去用户会以为点了没反应。
+   */
+  const activeTabId = tabs.find((tab) => tab.active)?.id ?? '';
+
   // ── 「让 AI 看」面板 ───────────────────────────────────────────────
   const [read, setRead] = useState<ReadState>({ status: 'idle' });
 
@@ -326,6 +425,18 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   });
   /** 状态请求序号：轮询与手动刷新可能并发，只认最后一次的响应。 */
   const stateSeqRef = useRef(0);
+  /** 标签请求序号：2.5s 轮询、手动刷新、标签操作后会并发，同样只认最后一次。 */
+  const tabsSeqRef = useRef(0);
+  /** 标签条的横向滚动区；用来把切过去的活动标签滚进可视区。 */
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * 当前启动状态。
+   * refreshTabs 会被定时器闭包和事件回调调用，读 state 会拿到创建闭包那一刻的旧值，
+   * 所以用 ref 存一份"现在是 ready 吗"，请求只在浏览器已启动时发出。
+   */
+  const bootStatusRef = useRef<BootState['status']>('starting');
+  /** 标签操作是否在途（同步判断）：state 要等一次渲染才生效，连点会同时过检查。 */
+  const tabBusyRef = useRef(false);
   const dragRef = useRef<{ active: boolean; button: MouseButton }>({
     active: false,
     button: 'left',
@@ -345,17 +456,22 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   async function bootBrowser(): Promise<void> {
     streamRef.current?.close();
     streamRef.current = null;
+    bootStatusRef.current = 'starting';
     setBoot({ status: 'starting' });
     setStreamError(null);
     setHasFrame(false);
     try {
       await postJson<OkResponse>('/api/browser/start', {});
       if (!aliveRef.current) return;
+      bootStatusRef.current = 'ready';
       setBoot({ status: 'ready' });
       openStream();
       void refreshState();
     } catch (err) {
       if (!aliveRef.current) return;
+      bootStatusRef.current = 'failed';
+      // 浏览器没起来就没有标签可操作；留着上一轮的旧标签，只会是一排点不动的按钮。
+      setTabs([]);
       setBoot({
         status: 'failed',
         message: errorMessage(err),
@@ -416,6 +532,26 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     }
   }
 
+  /**
+   * 拉一次标签列表。
+   *
+   * ★ 浏览器没启动时直接不发请求：GET 会回 200 + 空列表，但标签操作（POST）会 409，
+   *   而那时候按钮本来就该是禁用的 —— 不发比发完再解释便宜。
+   * ★ 失败保留上一份：轮询 2.5 秒一次，偶发失败就清空会让标签条一闪一闪。
+   */
+  async function refreshTabs(): Promise<void> {
+    if (bootStatusRef.current !== 'ready') return;
+    const seq = tabsSeqRef.current + 1;
+    tabsSeqRef.current = seq;
+    try {
+      const res = await fetchJson<TabsResponse>('/api/browser/tabs');
+      if (!aliveRef.current || seq !== tabsSeqRef.current) return;
+      setTabs(parseTabs(res.tabs));
+    } catch {
+      // 断线由画面流统一提示；这里每 2.5 秒再弹一次只会刷屏。
+    }
+  }
+
   // ── 操作 ───────────────────────────────────────────────────────────
 
   async function navigateTo(): Promise<void> {
@@ -428,6 +564,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       if (!aliveRef.current) return;
       setAddress(res.url);
       void refreshState();
+      // 导航会改页面标题，标签条要跟着变（服务端没有 title 变化的事件通道）。
+      void refreshTabs();
     } catch (err) {
       if (aliveRef.current) setActionError(errorMessage(err));
     } finally {
@@ -441,11 +579,44 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     setActionError(null);
     try {
       await postJson<OkResponse>('/api/browser/action', { action });
-      if (aliveRef.current) void refreshState();
+      if (aliveRef.current) {
+        void refreshState();
+        // 前进 / 后退 / 刷新都可能换标题，顺手同步一次标签。
+        void refreshTabs();
+      }
     } catch (err) {
       if (aliveRef.current) setActionError(errorMessage(err));
     } finally {
       if (aliveRef.current) setBusy(false);
+    }
+  }
+
+  /**
+   * 新建 / 切换 / 关闭标签。
+   *
+   * ★ 服务端在响应返回前就把串流切到新页面了，所以这里不重建 EventSource，
+   *   只补拉一次标签列表与页面状态（地址栏、前进后退都跟着当前页变）。
+   * ★ 用 tabBusy 而不是 busy：切标签时不该把地址栏和前进后退一起锁住。
+   */
+  async function runTabAction(action: TabAction, id?: string): Promise<void> {
+    if (tabBusyRef.current || bootStatusRef.current !== 'ready') return;
+    tabBusyRef.current = true;
+    setTabBusy(true);
+    setActionError(null);
+    try {
+      await postJson<OkResponse>('/api/browser/tabs', {
+        action,
+        ...(id !== undefined ? { id } : {}),
+      });
+      if (!aliveRef.current) return;
+      void refreshTabs();
+      void refreshState();
+    } catch (err) {
+      if (aliveRef.current) setActionError(errorMessage(err));
+    } finally {
+      // ★ 失败也必须解锁：否则一次 409 会让整条标签条从此点不动。
+      tabBusyRef.current = false;
+      if (aliveRef.current) setTabBusy(false);
     }
   }
 
@@ -803,6 +974,65 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   }, []);
 
   /**
+   * 标签条：浏览器启动成功后立刻拉一次，之后每 2.5 秒同步一次（标题会变）。
+   *
+   * ★ 为什么轮询：页面标题是页面自己改的（点进链接、单页应用换路由），
+   *   服务端没有把 title 变化推给前端的通道；不轮询的话，标签会一直停在旧标题。
+   * ★ 为什么依赖 boot.status：没启动成功（starting / failed）时这个 effect 根本不存在，
+   *   连一次标签请求都不会发；重连成功（回到 ready）会自动重新拉起轮询。
+   * ★ 定时器在依赖变化与卸载时都会清掉，不会留下第二个轮询在跑。
+   */
+  useEffect(() => {
+    if (boot.status !== 'ready') return;
+    void refreshTabs();
+    const timer = window.setInterval(() => {
+      // 窗口在后台时标题变化没人看，跳过这一拍；回到前台后的下一拍自然补上。
+      if (document.hidden) return;
+      void refreshTabs();
+    }, TABS_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [boot.status]);
+
+  /**
+   * 把活动标签滚进可视区。
+   *
+   * ★ 标签多到要横向滚动时，新建出来的标签在最右边、切到的标签也可能在可视区外，
+   *   不滚过去界面看起来就是"点了没反应"。nearest 只滚最小距离，不会把用户
+   *   自己滚到的位置一把拉回去。
+   * ★ 只依赖活动标签 id：如果依赖整个列表，2.5 秒一次的轮询会反复触发，
+   *   用户滚动标签条看到一半就被拽回当前页。
+   */
+  useEffect(() => {
+    const box = tabsScrollRef.current;
+    if (box === null) return;
+    const active = box.querySelector<HTMLElement>('.browser-tab.is-active');
+    if (active !== null) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeTabId]);
+
+  /**
+   * 标签条：竖直滚轮 → 横向滚动。
+   *
+   * ★ 为什么需要它：横向滚动条在 Chromium 里是覆盖式的，静止时看不见；
+   *   只有竖向滚轮的鼠标用户，标签一多就再也点不到左边那几个。
+   * ★ 为什么用原生非 passive 监听：React 的 onWheel 在根节点是 passive 的，
+   *   里面 preventDefault 不生效，滚标签条会把外面的页面一起滚走。
+   * ★ 触控板本来就给横向增量：取绝对值大的那个轴，横向手势才不会被丢掉。
+   */
+  useEffect(() => {
+    const box = tabsScrollRef.current;
+    if (box === null) return;
+    const onWheel = (event: WheelEvent): void => {
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      // 标签没多到要滚动时不接管：那时滚轮该归外面的页面。
+      if (delta === 0 || box.scrollWidth <= box.clientWidth) return;
+      event.preventDefault();
+      box.scrollLeft += delta;
+    };
+    box.addEventListener('wheel', onWheel, { passive: false });
+    return () => box.removeEventListener('wheel', onWheel);
+  }, []);
+
+  /**
    * 滚轮用原生监听。
    *
    * ★ React 的 onWheel 在根节点以 passive 注册，里面 preventDefault 不生效；
@@ -874,6 +1104,12 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const ready = boot.status === 'ready';
   const canBack = ready && pageInfo !== null && pageInfo.canBack;
   const canForward = ready && pageInfo !== null && pageInfo.canForward;
+  /**
+   * 标签条是否禁用。
+   * 浏览器还没启动成功时，任何标签操作都会被服务端以 409 拒绝；
+   * 有一个标签操作在途时再点，会并发改动服务端的"当前页"，画面可能对不上。
+   */
+  const tabsLocked = !ready || tabBusy;
   const dotClass =
     boot.status === 'failed' || streamError !== null
       ? 'is-error'
@@ -1034,135 +1270,193 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   return (
     <div className="browser-panel">
       <div className="browser-toolbar">
-        <div className="browser-nav" role="group" aria-label="浏览器导航">
-          <button
-            type="button"
-            className="browser-icon-btn"
-            onClick={() => void runAction('back')}
-            disabled={!canBack || busy}
-            title="后退"
-            aria-label="后退"
-          >
-            <Icon name="arrowLeft" size={14} />
-          </button>
-          <button
-            type="button"
-            className="browser-icon-btn"
-            onClick={() => void runAction('forward')}
-            disabled={!canForward || busy}
-            title="前进"
-            aria-label="前进"
-          >
-            {/* 图标集里只有左箭头，翻转一下就是右箭头，线宽和端点与其余图标一致。 */}
-            <Icon name="arrowLeft" size={14} className="browser-flip" />
-          </button>
-          <button
-            type="button"
-            className="browser-icon-btn"
-            onClick={() => void runAction('reload')}
-            disabled={!ready || busy}
-            title="刷新"
-            aria-label="刷新"
-          >
-            <Icon name="refresh" size={14} />
-          </button>
-        </div>
-
-        <form
-          className="browser-address"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void navigateTo();
-          }}
-        >
-          <Icon name="search" size={12} />
-          <input
-            ref={addressRef}
-            value={address}
-            onChange={(event) => setAddress(event.target.value)}
-            onKeyDown={(event) => {
-              // 显式处理 Enter：不依赖表单的隐式提交（不同内核细节不一致），
-              // 同时避开输入法用 Enter 上屏的那一次（isComposing）。
-              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                void navigateTo();
-              }
-            }}
-            placeholder="输入网址或搜索词"
-            aria-label="地址栏"
-            spellCheck={false}
-            autoComplete="off"
-            autoCapitalize="off"
-            autoCorrect="off"
-            disabled={!ready}
-          />
-        </form>
-
         {/*
-          输入与下载工具。
-          用「图标 + 两个字」而不是纯图标：图标集里没有剪贴板，单看一个双矩形
-          没人知道是粘贴；两个按钮加起来一百来像素，地址栏在最小分栏下仍够用。
+          标签条：工具栏最上面一行。
+          ★ 为什么单独占一行：标签会越开越多，和地址栏挤在同一行，最后被压到
+            看不见的只能是地址栏和右侧按钮；单独一行 + 横向滚动，标签再多也只是
+            滚动，不会撑破面板，也不会把「让 AI 看」挤没。
+          ★ 只有一个标签时也显示：宽度一致，用户每次看到的工具栏结构都一样，
+            不会因为"标签只剩一个"就突然跳一下高度。
         */}
-        <div className="browser-tools" role="group" aria-label="页面输入与下载">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm browser-tool-btn"
-            onClick={() => void pasteFromClipboard()}
-            // 页面没起来时贴进去也没人收，和「让 AI 看」保持一致直接禁用。
-            disabled={!ready}
-            title="把本地剪贴板里的文本输入到页面"
-          >
-            {/* 图标集里没有剪贴板，复制用的双矩形是这套线稿里最接近的一个。 */}
-            <Icon name="copy" size={13} /> 粘贴
-          </button>
-
-          {/* 外壳只为判断"点在弹层外面"；弹层自身相对 .browser-panel 定位，
-              面板再窄也不会被裁掉左边。 */}
-          <div className="browser-downloads-wrap" ref={downloadsWrapRef}>
-            <button
-              type="button"
-              className={`btn btn-ghost btn-sm browser-tool-btn${downloadsOpen ? ' is-active' : ''}`}
-              onClick={toggleDownloads}
-              // 读目录不依赖浏览器进程，所以不跟 ready 联动：
-              // 进程挂了也应该能看见之前下载过什么。
-              title="查看浏览器下载的文件"
-              aria-haspopup="dialog"
-              aria-expanded={downloadsOpen}
-            >
-              <Icon name="download" size={13} /> 下载
-            </button>
-
-            {downloadsOpen ? (
-              <section className="browser-downloads" role="dialog" aria-label="已下载的文件">
-                <header className="browser-downloads-head">
-                  <h3>下载的文件</h3>
+        <div className="browser-tabs" role="group" aria-label="浏览器标签页">
+          {/* 只有这一层滚动：+ 按钮放在滚动区外，标签再多也点得到「新建」。 */}
+          <div className="browser-tabs-scroll" ref={tabsScrollRef}>
+            {tabs.map((tab) => {
+              const label = tabLabel(tab);
+              // title 给完整名字：标签宽度有限，省略号之外还得能看到全文。
+              // 没有真标题时退回正在显示的文字，避免悬停出现 about:blank。
+              const fullTitle = tabTitleOf(tab) || label;
+              return (
+                <div key={tab.id} className={`browser-tab${tab.active ? ' is-active' : ''}`}>
                   <button
                     type="button"
-                    className="browser-icon-btn"
-                    onClick={() => setDownloadsOpen(false)}
-                    aria-label="关闭下载列表"
+                    className="browser-tab-main"
+                    // 用 aria-pressed 而不是 tablist/tab：这里只有一个共用画面，
+                    // 没有"每个标签各自一个面板"的结构，硬做成 tab 反而得编造 aria-controls。
+                    aria-pressed={tab.active}
+                    title={fullTitle}
+                    disabled={tabsLocked}
+                    onClick={() => void runTabAction('activate', tab.id)}
                   >
-                    <Icon name="close" size={12} />
+                    <span className="browser-tab-title">{label}</span>
                   </button>
-                </header>
-                {renderDownloadsBody()}
-                <p className="browser-downloads-foot">
-                  下载保存在本机数据目录的 browser-downloads 里
-                </p>
-              </section>
-            ) : null}
+                  <button
+                    type="button"
+                    className="browser-tab-close"
+                    title="关闭标签页"
+                    aria-label={`关闭标签页：${label}`}
+                    disabled={tabsLocked}
+                    onClick={() => void runTabAction('close', tab.id)}
+                  >
+                    <Icon name="close" size={10} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
+          <button
+            type="button"
+            className="browser-icon-btn browser-tab-new"
+            onClick={() => void runTabAction('new')}
+            disabled={tabsLocked}
+            title="新建标签页"
+            aria-label="新建标签页"
+          >
+            <Icon name="plus" size={13} />
+          </button>
         </div>
 
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm browser-read-btn"
-          onClick={() => void openReadPanel()}
-          disabled={!ready || read.status === 'loading'}
-          title="读取当前页面正文与截图，交给管家参考"
-        >
-          <Icon name="eye" size={13} /> 让 AI 看
-        </button>
+        <div className="browser-toolbar-row">
+          <div className="browser-nav" role="group" aria-label="浏览器导航">
+            <button
+              type="button"
+              className="browser-icon-btn"
+              onClick={() => void runAction('back')}
+              disabled={!canBack || busy}
+              title="后退"
+              aria-label="后退"
+            >
+              <Icon name="arrowLeft" size={14} />
+            </button>
+            <button
+              type="button"
+              className="browser-icon-btn"
+              onClick={() => void runAction('forward')}
+              disabled={!canForward || busy}
+              title="前进"
+              aria-label="前进"
+            >
+              {/* 图标集里只有左箭头，翻转一下就是右箭头，线宽和端点与其余图标一致。 */}
+              <Icon name="arrowLeft" size={14} className="browser-flip" />
+            </button>
+            <button
+              type="button"
+              className="browser-icon-btn"
+              onClick={() => void runAction('reload')}
+              disabled={!ready || busy}
+              title="刷新"
+              aria-label="刷新"
+            >
+              <Icon name="refresh" size={14} />
+            </button>
+          </div>
+
+          <form
+            className="browser-address"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void navigateTo();
+            }}
+          >
+            <Icon name="search" size={12} />
+            <input
+              ref={addressRef}
+              value={address}
+              onChange={(event) => setAddress(event.target.value)}
+              onKeyDown={(event) => {
+                // 显式处理 Enter：不依赖表单的隐式提交（不同内核细节不一致），
+                // 同时避开输入法用 Enter 上屏的那一次（isComposing）。
+                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void navigateTo();
+                }
+              }}
+              placeholder="输入网址或搜索词"
+              aria-label="地址栏"
+              spellCheck={false}
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              disabled={!ready}
+            />
+          </form>
+
+          {/*
+            输入与下载工具。
+            用「图标 + 两个字」而不是纯图标：图标集里没有剪贴板，单看一个双矩形
+            没人知道是粘贴；两个按钮加起来一百来像素，地址栏在最小分栏下仍够用。
+          */}
+          <div className="browser-tools" role="group" aria-label="页面输入与下载">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm browser-tool-btn"
+              onClick={() => void pasteFromClipboard()}
+              // 页面没起来时贴进去也没人收，和「让 AI 看」保持一致直接禁用。
+              disabled={!ready}
+              title="把本地剪贴板里的文本输入到页面"
+            >
+              {/* 图标集里没有剪贴板，复制用的双矩形是这套线稿里最接近的一个。 */}
+              <Icon name="copy" size={13} /> 粘贴
+            </button>
+
+            {/* 外壳只为判断"点在弹层外面"；弹层自身相对 .browser-panel 定位，
+                面板再窄也不会被裁掉左边。 */}
+            <div className="browser-downloads-wrap" ref={downloadsWrapRef}>
+              <button
+                type="button"
+                className={`btn btn-ghost btn-sm browser-tool-btn${downloadsOpen ? ' is-active' : ''}`}
+                onClick={toggleDownloads}
+                // 读目录不依赖浏览器进程，所以不跟 ready 联动：
+                // 进程挂了也应该能看见之前下载过什么。
+                title="查看浏览器下载的文件"
+                aria-haspopup="dialog"
+                aria-expanded={downloadsOpen}
+              >
+                <Icon name="download" size={13} /> 下载
+              </button>
+
+              {downloadsOpen ? (
+                <section className="browser-downloads" role="dialog" aria-label="已下载的文件">
+                  <header className="browser-downloads-head">
+                    <h3>下载的文件</h3>
+                    <button
+                      type="button"
+                      className="browser-icon-btn"
+                      onClick={() => setDownloadsOpen(false)}
+                      aria-label="关闭下载列表"
+                    >
+                      <Icon name="close" size={12} />
+                    </button>
+                  </header>
+                  {renderDownloadsBody()}
+                  <p className="browser-downloads-foot">
+                    下载保存在本机数据目录的 browser-downloads 里
+                  </p>
+                </section>
+              ) : null}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm browser-read-btn"
+            onClick={() => void openReadPanel()}
+            disabled={!ready || read.status === 'loading'}
+            title="读取当前页面正文与截图，交给管家参考"
+          >
+            <Icon name="eye" size={13} /> 让 AI 看
+          </button>
+        </div>
       </div>
 
       {/*
