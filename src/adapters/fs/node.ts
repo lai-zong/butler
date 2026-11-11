@@ -10,7 +10,7 @@
 
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import {
   DEFAULT_MAX_READ_BYTES,
@@ -57,14 +57,27 @@ export interface NodeFsOptions {
    *     而不是靠"模型应该不会去读"。安全不能靠自觉。
    */
   readonly protectedPaths?: readonly string[];
+  /**
+   * 回收站目录（可选）。
+   *
+   * 给定时 `remove()` **不再物理删除**，而是把目标移进这里并写一份
+   * `<id>.json` 元数据（原路径、删除时间）。不给则保持原来的真删行为
+   * （验证脚本/测试用）。
+   *
+   * ★ 为什么不直接 rm：模型替用户删文件时没有回收站，误删就找不回。
+   *   实测场景：用户说"清理一下临时文件"，模型把路径算错，把资料目录删了。
+   */
+  readonly trashDir?: string;
 }
 
 export class NodeFileSystem implements FileSystemPort {
   private readonly root: string;
   private readonly protectedAbs: readonly string[];
+  private readonly trashDir: string | undefined;
 
   constructor(opts: NodeFsOptions) {
     this.root = resolve(opts.root);
+    this.trashDir = opts.trashDir === undefined ? undefined : resolve(opts.trashDir);
     this.protectedAbs = (opts.protectedPaths ?? []).map((p) =>
       isAbsolute(p) ? resolve(p) : resolve(this.root, p),
     );
@@ -208,12 +221,19 @@ export class NodeFileSystem implements FileSystemPort {
       for (const name of names) {
         const child = resolve(abs, name);
         try {
-          const st = await fs.stat(child);
+          /**
+           * ⚠️ 必须用 lstat：`stat` 会跟随符号链接/junction，
+           *    于是"工作区里的一个链接"会被当成普通目录继续往下扫。
+           *    lstat 看到的是链接本身，再用 isSymbolicLink 标出来。
+           */
+          const st = await fs.lstat(child);
+          const isLink = st.isSymbolicLink();
           out.push({
             name,
             path: child,
-            isDirectory: st.isDirectory(),
+            isDirectory: isLink ? false : st.isDirectory(),
             size: st.isDirectory() ? 0 : st.size,
+            ...(isLink ? { isSymbolicLink: true } : {}),
           });
         } catch {
           // 单个条目读不到（权限/竞态）不应让整个列举失败
@@ -257,6 +277,25 @@ export class NodeFileSystem implements FileSystemPort {
     if (abs === resolve(this.root)) {
       throw new FileSystemError('不能删除工作区根目录本身。', 'PERMISSION');
     }
+
+    /**
+     * ★ 配了回收站就不再物理删除。
+     *
+     *   模型替用户删文件时没有"撤销"，误删只能靠备份。
+     *   移进回收站 + 写一份原路径元数据，界面可以列出来让用户恢复。
+     */
+    if (this.trashDir !== undefined) {
+      let exists = true;
+      try {
+        await fs.lstat(abs);
+      } catch {
+        exists = false;
+      }
+      if (!exists) return;
+      await this.moveToTrash(abs);
+      return;
+    }
+
     try {
       const st = await fs.stat(abs);
       if (st.isDirectory()) {
@@ -307,6 +346,49 @@ export class NodeFileSystem implements FileSystemPort {
     const abs = this.resolve(path);
     const rel = relative(this.root, abs);
     return rel.startsWith('..') ? abs : `.${sep}${rel}`;
+  }
+
+  /**
+   * 把目标移进回收站，并写下原路径元数据。
+   *
+   * ⚠️ 跨盘（EXDEV）时 rename 会失败，回退成"复制 + 删除"。
+   */
+  private async moveToTrash(abs: string): Promise<void> {
+    const trash = this.trashDir;
+    if (trash === undefined) return;
+    await fs.mkdir(trash, { recursive: true });
+
+    let isDirectory = false;
+    try {
+      isDirectory = (await fs.lstat(abs)).isDirectory();
+    } catch {
+      return;
+    }
+
+    const id = `trash_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const dest = join(trash, id);
+    try {
+      await fs.rename(abs, dest);
+    } catch {
+      await fs.cp(abs, dest, { recursive: true, force: true });
+      await fs.rm(abs, { recursive: true, force: true });
+    }
+
+    /**
+     * 元数据一定要写成功后，原文件才真正"可见地被删"。
+     * 反过来的话，回收站里会有一条没有原路径的孤儿文件，恢复不了。
+     */
+    await fs.writeFile(
+      join(trash, `${id}.json`),
+      `${JSON.stringify({
+        id,
+        originalPath: abs,
+        root: this.root,
+        deletedAt: Date.now(),
+        isDirectory,
+      })}\n`,
+      'utf8',
+    );
   }
 
   private translate(err: unknown, path: string): FileSystemError {

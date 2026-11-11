@@ -31,6 +31,7 @@ import { mkdir } from 'node:fs/promises';
 
 import { JsonlEventStore, loadEvents } from '@/adapters/storage/jsonlEvents.js';
 import { JsonlMemoryArchive } from '@/adapters/storage/jsonlMemoryArchive.js';
+import { TrashStore } from '@/adapters/storage/trashStore.js';
 import type { MemoryArchivePort } from '@/core/memory/archive.js';
 import { SeededRandom } from '@/core/ports/clock.js';
 import { SystemClock } from '@/adapters/clock/system.js';
@@ -160,6 +161,13 @@ export interface ButlerRuntime {
    *    工作区文件将来有自己的回收站。**不要合并成一个大归档区。**
    */
   readonly memoryArchive: MemoryArchivePort;
+  /**
+   * 工作区文件回收站（`remove_path` 删掉的东西进这里）。
+   *
+   * ⚠️ 与两个存档区（记忆/文档）互相独立：文件是磁盘真实对象，
+   *    不参与导出迁移。
+   */
+  readonly trash: TrashStore;
   /** 主模型（文本 + 结构化 + 工具） */
   readonly model: ModelPort | null;
   /** 固定的记忆模型；不跟随对话模型切换。 */
@@ -521,6 +529,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
 
   const fsPort = new NodeFileSystem({
     root: WORKSPACE_ROOT,
+    // 模型删文件进回收站，而不是直接消失
+    trashDir: join(DATA_DIR, 'trash'),
     /**
      * ★★ 受保护路径 —— 模型**不得**读写。
      *
@@ -751,6 +761,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
     const policy = new TaskPermissionPolicy(task.permission);
     const taskFs = new NodeFileSystem({
       root: workspace,
+      // 定时任务删文件同样进回收站
+      trashDir: join(DATA_DIR, 'trash'),
       // 完整权限由用户任务显式选择；工作区权限仍保护程序内部数据目录
       protectedPaths: task.permission === 'full'
         ? []
@@ -861,6 +873,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     dataDir: DATA_DIR,
     appRoot: APP_ROOT,
     memoryArchive: new JsonlMemoryArchive({ dataDir: DATA_DIR }),
+    trash: new TrashStore(join(DATA_DIR, 'trash')),
     workspaceRoot: WORKSPACE_ROOT,
     model,
     memoryModel,

@@ -40,6 +40,10 @@ export interface MemoryArchivePort {
   get(archiveId: string): Promise<ArchivedMemoryRecord | null>;
   /** 彻底删除：从存档里移除这一条。返回是否真的删掉了。 */
   remove(archiveId: string): Promise<boolean>;
+  /** 存档占用（条数 + 文件字节数）—— 界面要显示"它占了多少" */
+  stats(): Promise<{ readonly count: number; readonly bytes: number }>;
+  /** 清空整个存档区，返回清掉的条数。 */
+  clear(): Promise<number>;
 }
 
 /** 生成存档 id —— 与记忆 id 解耦，避免同一条被删多次时冲突。 */

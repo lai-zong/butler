@@ -66,6 +66,8 @@ async function walk(
     }
     for (const entry of entries) {
       if (out.length >= MAX_FILES) break;
+      // 符号链接/junction 一律不跟随：见 DirEntry.isSymbolicLink 的说明
+      if (entry.isSymbolicLink === true) continue;
       const relative = slash(entry.path)
         .replace(slash(root).replace(/\/$/, ''), '')
         .replace(/^\/+/, '');

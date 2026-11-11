@@ -9,7 +9,7 @@
  *    而事件流是 append-only 的真相源，只能抹字段、不能删行。
  */
 
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type {
@@ -80,8 +80,21 @@ export class JsonlMemoryArchive implements MemoryArchivePort {
     return true;
   }
 
-  /** 仅清理用：把文件整个删掉（"清空存档"）。 */
-  async clear(): Promise<void> {
+  async stats(): Promise<{ readonly count: number; readonly bytes: number }> {
+    let bytes = 0;
+    try {
+      bytes = (await stat(this.file)).size;
+    } catch {
+      bytes = 0;
+    }
+    const count = (await this.list()).length;
+    return { count, bytes };
+  }
+
+  /** 清空存档区（用户在界面上显式确认后才调用）。返回清掉的条数。 */
+  async clear(): Promise<number> {
+    const count = (await this.list()).length;
     await rm(this.file, { force: true });
+    return count;
   }
 }

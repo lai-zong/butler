@@ -22,7 +22,9 @@ import { scrubEventForMemory } from '../src/core/events/scrub.js';
 import type { MemoryEntry, SessionEvent } from '../src/core/events/types.js';
 
 const DATA_DIR = process.env['BUTLER_DATA_DIR'] ?? join(process.cwd(), '.butler-data');
-const BAK = join(DATA_DIR, 'events.jsonl.bak');
+/** 支持 `--file=<路径>`：同一套逻辑也用于清理其它旧备份（如 pre-pet-cleanup）。 */
+const FILE_ARG = process.argv.find((a) => a.startsWith('--file='));
+const BAK = FILE_ARG !== undefined ? FILE_ARG.slice('--file='.length) : join(DATA_DIR, 'events.jsonl.bak');
 const EVENTS = join(DATA_DIR, 'events.jsonl');
 const APPLY = process.argv.includes('--apply');
 
@@ -166,13 +168,17 @@ function main(): void {
     const legacyDir = join(DATA_DIR, 'archive', 'legacy');
     mkdirSync(legacyDir, { recursive: true });
     const stamp = new Date(now).toISOString().slice(0, 10);
-    const legacyFile = join(legacyDir, `legacy-events-${stamp}.jsonl`);
+    // 用源文件名做区分，避免同一天两份备份互相覆盖
+    const label = (BAK.split(/[\\/]/).pop() ?? 'events')
+      .replace(/\.jsonl$/i, '')
+      .replace(/[^A-Za-z0-9._-]/g, '_');
+    const legacyFile = join(legacyDir, `legacy-events-${stamp}-${label}.jsonl`);
     writeFileSync(legacyFile, legacyLines.join('\n') + '\n', 'utf8');
     writeFileSync(
-      join(legacyDir, `legacy-events-${stamp}.manifest.json`),
+      join(legacyDir, `legacy-events-${stamp}-${label}.manifest.json`),
       JSON.stringify(
         {
-          source: 'events.jsonl.bak',
+          source: (BAK.split(/[\\/]/).pop() ?? 'events.jsonl.bak'),
           archivedAt: now,
           events: legacyLines.length,
           scrubbedLines,

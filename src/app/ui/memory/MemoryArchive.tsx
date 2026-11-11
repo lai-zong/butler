@@ -14,6 +14,10 @@
  * ★ 两个操作的后果完全不同，所以视觉上分开：
  *   恢复 = 回到记忆库（重新参与召回）；彻底删除 = 抹除原文（不可撤销）。
  *   后者必须过一次确认，且文案要说出"无法恢复"，否则它和"删除"看起来没区别。
+ *
+ * ★ 为什么还要一个「清空存档区」：存档不会自动过期（用户确认过的规则），
+ *   所以必须给一个"一次清干净"的出口。但它是"所有条目一起彻底删除"，
+ *   因此同样走二次确认，而不是像恢复那样点一下就执行。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -21,7 +25,7 @@ import { createPortal } from 'react-dom';
 
 import { Icon } from '../components/Icon';
 import { errorMessage, fetchJson, postJson } from '../lib/api.js';
-import { formatNumber, relativeTime, truncate } from '../lib/format.js';
+import { formatBytes, formatNumber, relativeTime, truncate } from '../lib/format.js';
 import { useNow } from '../lib/hooks.js';
 import type { MemoryClass, MemoryItem, ToastMessage } from '../lib/types.js';
 
@@ -50,6 +54,13 @@ interface MemoryArchiveResponse {
   readonly ok: boolean;
   readonly total: number;
   readonly items: readonly MemoryArchiveEntry[];
+  /**
+   * 存档区文件占用字节数。
+   *
+   * 声明成可选：这个字段是后加的，若服务端还没重启（仍在跑旧路由），
+   * 缺字段时按 0 显示，而不是让标题区出现一个 NaN。
+   */
+  readonly bytes?: number;
   readonly note?: string;
 }
 
@@ -58,6 +69,11 @@ interface MemoryArchiveResponse {
  * 如果按原文长度出点，点数本身就成了"这条记忆有多长"的信息。
  */
 const MASK = '••••••••';
+
+/**
+ * 占用大小的格式化统一走 `lib/format.ts` 的 formatBytes ——
+ * 同一个数字在记忆存档区、文档存档区、回收站必须显示成同一种写法。
+ */
 
 const CLASS_TONE: Record<MemoryClass, string> = {
   global_constraint: 'is-danger',
@@ -72,6 +88,16 @@ interface BusyState {
   readonly kind: 'restore' | 'purge';
 }
 
+/**
+ * 确认框的两个用途：抹除单条 / 清空整个存档区。
+ *
+ * 合成一个状态是为了只保留一处 Esc、遮罩与"操作进行中不许关"的逻辑 ——
+ * 两个确认框各写一套，迟早会出现"一个能按 Esc 关、另一个关不掉"。
+ */
+type ConfirmState =
+  | { readonly kind: 'entry'; readonly entry: MemoryArchiveEntry }
+  | { readonly kind: 'all' };
+
 export function MemoryArchive({
   open,
   onClose,
@@ -82,13 +108,15 @@ export function MemoryArchive({
   const asideRef = useRef<HTMLElement | null>(null);
 
   const [items, setItems] = useState<readonly MemoryArchiveEntry[]>([]);
+  const [totalBytes, setTotalBytes] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [busy, setBusy] = useState<BusyState | null>(null);
-  const [purgeTarget, setPurgeTarget] = useState<MemoryArchiveEntry | null>(null);
-  const [purgeError, setPurgeError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [purgingAll, setPurgingAll] = useState(false);
 
   const refresh = useCallback((): void => {
     setNonce((value) => value + 1);
@@ -106,6 +134,7 @@ export function MemoryArchive({
         const data = await fetchJson<MemoryArchiveResponse>('/api/memory/archive');
         if (cancelled) return;
         setItems(data.items ?? []);
+        setTotalBytes(data.bytes ?? 0);
       } catch (err) {
         if (!cancelled) setError(errorMessage(err));
       } finally {
@@ -122,8 +151,8 @@ export function MemoryArchive({
   useEffect(() => {
     if (open) return;
     setRevealed(new Set<string>());
-    setPurgeTarget(null);
-    setPurgeError(null);
+    setConfirm(null);
+    setConfirmError(null);
   }, [open]);
 
   // 抽屉关闭时仍在 DOM 里（保留滑入动画），所以要用 inert 挡住 Tab。
@@ -142,16 +171,16 @@ export function MemoryArchive({
     if (!open) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.key !== 'Escape') return;
-      if (purgeTarget !== null) {
-        setPurgeTarget(null);
-        setPurgeError(null);
+      if (confirm !== null) {
+        setConfirm(null);
+        setConfirmError(null);
         return;
       }
       onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, purgeTarget, onClose]);
+  }, [open, confirm, onClose]);
 
   const toggleReveal = useCallback((archiveId: string): void => {
     setRevealed((current) => {
@@ -190,34 +219,65 @@ export function MemoryArchive({
     [notify, onChanged, refresh],
   );
 
-  const purge = useCallback(async (): Promise<void> => {
-    if (purgeTarget === null) return;
-    const archiveId = purgeTarget.archiveId;
-    setBusy({ archiveId, kind: 'purge' });
-    setPurgeError(null);
+  const purgeEntry = useCallback(
+    async (entry: MemoryArchiveEntry): Promise<void> => {
+      setBusy({ archiveId: entry.archiveId, kind: 'purge' });
+      setConfirmError(null);
+      try {
+        await fetchJson(`/api/memory/archive/${encodeURIComponent(entry.archiveId)}`, {
+          method: 'DELETE',
+        });
+        notify('这条记忆的原文已被抹除，无法恢复。', 'success');
+        setConfirm(null);
+        refresh();
+        onChanged();
+      } catch (err) {
+        // 抹除失败必须留在确认框里说清楚：关掉它会让用户以为已经删了。
+        setConfirmError(errorMessage(err));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [notify, refresh, onChanged],
+  );
+
+  /**
+   * 清空整个存档区。
+   *
+   * 逐条抹除（写墓碑 + intervention.forgotten）由服务端完成，这里只负责
+   * "确认 → 调接口 → 让列表归零"。成功后立刻清空本地列表与占用，
+   * 避免刷新回来之前屏幕上还留着已经被抹掉的条目。
+   */
+  const purgeAll = useCallback(async (): Promise<void> => {
+    setPurgingAll(true);
+    setConfirmError(null);
     try {
-      await fetchJson(`/api/memory/archive/${encodeURIComponent(archiveId)}`, {
-        method: 'DELETE',
-      });
-      notify('这条记忆的原文已被抹除，无法恢复。', 'success');
-      setPurgeTarget(null);
+      const res = await postJson<{ readonly ok: boolean; readonly purged: number }>(
+        '/api/memory/archive',
+        { action: 'purge-all', confirm: 'confirmed' },
+      );
+      setConfirm(null);
+      setItems([]);
+      setTotalBytes(0);
+      notify(`存档区已清空，${formatNumber(res.purged)} 条记忆的原文已抹除，无法恢复。`, 'success');
       refresh();
       onChanged();
     } catch (err) {
-      // 抹除失败必须留在确认框里说清楚：关掉它会让用户以为已经删了。
-      setPurgeError(errorMessage(err));
+      // 清空失败留在确认框里：关掉它会让用户以为已经清空了。
+      setConfirmError(errorMessage(err));
     } finally {
-      setBusy(null);
+      setPurgingAll(false);
     }
-  }, [purgeTarget, notify, refresh, onChanged]);
+  }, [notify, refresh, onChanged]);
 
   // 确认框挂在 .mm 上（和记忆详情的删除确认同一个落点），才能盖住星图与抽屉。
   const overlayTarget = typeof document === 'undefined' ? null : document.querySelector('.mm');
-  const purgeBusy =
-    purgeTarget !== null &&
-    busy !== null &&
-    busy.kind === 'purge' &&
-    busy.archiveId === purgeTarget.archiveId;
+  const confirmBusy =
+    confirm === null
+      ? false
+      : confirm.kind === 'all'
+        ? purgingAll
+        : busy !== null && busy.kind === 'purge' && busy.archiveId === confirm.entry.archiveId;
 
   return (
     <aside
@@ -244,7 +304,7 @@ export function MemoryArchive({
               ? '正在读取…'
               : error !== null
                 ? '读取失败'
-                : `${formatNumber(items.length)} 条已删除的记忆`}
+                : `${formatNumber(items.length)} 条已删除的记忆 · 占用 ${formatBytes(totalBytes)}`}
           </p>
         </div>
         <button type="button" className="md-close" onClick={onClose} aria-label="关闭记忆存档区">
@@ -263,6 +323,26 @@ export function MemoryArchive({
       <p className="md-muted">
         存档期间这些记忆不参与召回。恢复 = 回到记忆库；彻底删除 = 抹除原文，不可撤销。
       </p>
+
+      {/* 清空入口只在真的有条目时出现：空存档区上摆一个"清空"按钮，
+          用户会怀疑这个按钮是不是坏了。放在列表上方而不是每一行里，
+          是因为它作用于整个存档区，不属于任何一条记忆。 */}
+      {!loading && error === null && items.length > 0 && (
+        <div className="md-actions" style={{ justifyContent: 'flex-end', marginTop: 4 }}>
+          <button
+            type="button"
+            className="md-delete"
+            disabled={busy !== null || purgingAll}
+            onClick={() => {
+              setConfirmError(null);
+              setConfirm({ kind: 'all' });
+            }}
+          >
+            <Icon name="trash" size={12} />
+            清空存档区
+          </button>
+        </div>
+      )}
 
       {error !== null ? (
         <div className="md-retry">
@@ -335,8 +415,8 @@ export function MemoryArchive({
                     className="md-delete"
                     disabled={busy !== null}
                     onClick={() => {
-                      setPurgeError(null);
-                      setPurgeTarget(entry);
+                      setConfirmError(null);
+                      setConfirm({ kind: 'entry', entry });
                     }}
                   >
                     <Icon name="trash" size={12} />
@@ -349,16 +429,16 @@ export function MemoryArchive({
         </ul>
       )}
 
-      {purgeTarget !== null && overlayTarget !== null
+      {confirm !== null && overlayTarget !== null
         ? createPortal(
             <div
               className="md-modal-backdrop"
               role="presentation"
               onMouseDown={(event) => {
                 // 抹除进行中不允许点遮罩关掉：请求的结果还没回来。
-                if (event.target === event.currentTarget && !purgeBusy) {
-                  setPurgeTarget(null);
-                  setPurgeError(null);
+                if (event.target === event.currentTarget && !confirmBusy) {
+                  setConfirm(null);
+                  setConfirmError(null);
                 }
               }}
             >
@@ -369,27 +449,32 @@ export function MemoryArchive({
                 aria-labelledby="ma-purge-title"
                 aria-describedby="ma-purge-desc"
               >
-                <h3 id="ma-purge-title">彻底删除这条记忆？</h3>
+                <h3 id="ma-purge-title">
+                  {confirm.kind === 'all' ? '清空整个记忆存档区？' : '彻底删除这条记忆？'}
+                </h3>
                 <p id="ma-purge-desc">
-                  原文会被抹除，无法恢复；事件流里只留下指纹。
-                  如果你还想留着可恢复的退路，请点「取消」。
+                  {confirm.kind === 'all'
+                    ? `存档区里 ${formatNumber(items.length)} 条记忆的原文会被全部抹除，不可恢复；事件流里只留下指纹。`
+                    : '原文会被抹除，无法恢复；事件流里只留下指纹。如果你还想留着可恢复的退路，请点「取消」。'}
                 </p>
                 <p className="md-modal-warning">
-                  存档记录会一并消失，之后无法再读回这条记忆的内容。
+                  {confirm.kind === 'all'
+                    ? '这不是「移入存档区」的反向操作：清空后没有列表可以再点恢复，所有条目会被彻底删除。'
+                    : '存档记录会一并消失，之后无法再读回这条记忆的内容。'}
                 </p>
-                {purgeError !== null && (
+                {confirmError !== null && (
                   <p className="md-modal-error" role="alert">
-                    {purgeError}
+                    {confirmError}
                   </p>
                 )}
                 <div className="md-modal-actions">
                   <button
                     type="button"
                     className="md-modal-cancel"
-                    disabled={purgeBusy}
+                    disabled={confirmBusy}
                     onClick={() => {
-                      setPurgeTarget(null);
-                      setPurgeError(null);
+                      setConfirm(null);
+                      setConfirmError(null);
                     }}
                   >
                     取消
@@ -397,10 +482,18 @@ export function MemoryArchive({
                   <button
                     type="button"
                     className="md-modal-danger"
-                    disabled={purgeBusy}
-                    onClick={() => void purge()}
+                    disabled={confirmBusy}
+                    onClick={() =>
+                      void (confirm.kind === 'all' ? purgeAll() : purgeEntry(confirm.entry))
+                    }
                   >
-                    {purgeBusy ? '正在抹除…' : '彻底删除'}
+                    {confirm.kind === 'all'
+                      ? confirmBusy
+                        ? '正在清空…'
+                        : '清空存档区'
+                      : confirmBusy
+                        ? '正在抹除…'
+                        : '彻底删除'}
                   </button>
                 </div>
               </div>

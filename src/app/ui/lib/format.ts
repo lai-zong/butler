@@ -67,6 +67,20 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/**
+ * 字节数 → 人话。
+ *
+ * ★ 放在这里而不是各组件里各写一份：存档区、回收站、知识库都会显示占用，
+ *   三份实现迟早出现"同一份数据在两个页面显示不同单位"。
+ */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 export function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—';
   if (ms < 1000) return `${Math.round(ms)} ms`;

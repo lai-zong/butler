@@ -97,13 +97,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
    * ⚠️ 反过来的话，进程在两步之间崩溃会出现"记忆没了、存档也没有"——
    *    而这一步的卖点恰恰是"删了还能找回"。
    */
-  const sessionId = req.headers.get('x-butler-session');
   await rt.memoryArchive.append({
     archiveId,
     memory: res.entry,
     reason,
     archivedAt: rt.clock.now(),
-    ...(sessionId !== null && sessionId.length > 0 ? { sessionId } : {}),
   });
   await rt.bootstrapped.log.flushPersistence().catch(() => undefined);
 

@@ -24,6 +24,14 @@ export interface DirEntry {
   readonly path: string;
   readonly isDirectory: boolean;
   readonly size: number;
+  /**
+   * 是否符号链接 / junction / 快捷方式。
+   *
+   * ★ 遍历类工具（grep/glob）必须跳过它：`fs.stat` 会跟随链接，
+   *   一个指向 `C:\Windows` 的 junction 就能让"在工作区里搜一下"
+   *   变成整盘扫描，而且结果里全是工作区外的文件。
+   */
+  readonly isSymbolicLink?: boolean;
 }
 
 /** 文件系统错误，带可判定的原因（供工具层转成可读消息）。 */

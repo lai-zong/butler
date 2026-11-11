@@ -27,6 +27,7 @@ import { PermissionsPanel } from './PermissionsPanel';
 import { McpPanel } from './McpPanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { ModelProviderPanel } from './ModelProviderPanel';
+import { TrashPanel } from './TrashPanel';
 import { errorMessage, fetchJson } from '../lib/api.js';
 import { formatNumber } from '../lib/format.js';
 import type { ToastMessage } from '../lib/types.js';
@@ -44,6 +45,7 @@ type SettingsPage =
   | 'security'
   | 'knowledge'
   | 'transfer'
+  | 'trash'
   | 'mcp';
 
 const SETTINGS_NAV: readonly {
@@ -68,7 +70,12 @@ const SETTINGS_NAV: readonly {
   },
   {
     label: '系统',
-    items: [{ id: 'mcp', label: 'MCP 扩展' }],
+    items: [
+      // 回收站放在「系统」组的第一个位置：渲染出来紧挨着上面「数据迁移」的末尾。
+      // 两者都属于"数据去哪了"这一族问题，但回收站处理的是磁盘文件，不是可迁移的数据。
+      { id: 'trash', label: '回收站' },
+      { id: 'mcp', label: 'MCP 扩展' },
+    ],
   },
 ];
 
@@ -405,6 +412,20 @@ export function SettingsView({
                   </div>
                 )}
               </section>
+            </div>
+          )}
+
+          {/* ── 回收站 ── */}
+          {/* ★ 与「数据迁移」相邻但语义不同：回收站里的文件不进导出、不参与迁移，
+              所以不给它一个"备份"的暗示，描述里只说恢复与原路径。 */}
+          {settingsPage === 'trash' && (
+            <div className="settings-page-view">
+              <SettingsPageHead
+                eyebrow="TRASH"
+                title="回收站"
+                description="模型替你删除的工作区文件先放在这里；恢复会放回原路径，彻底删除不可恢复。"
+              />
+              <TrashPanel notify={notify} />
             </div>
           )}
 

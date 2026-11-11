@@ -91,6 +91,37 @@ describe('存档区落盘', () => {
   });
 });
 
+describe('存档区统计与清空', () => {
+  it('stats 返回条数与字节数', async () => {
+    const archive = new JsonlMemoryArchive({ dataDir: tempDir() });
+    const clock = new FixedClock(T0);
+    const log = new EventLog('s_stats');
+    const store = new MemoryStore(log, clock, USER);
+    const created = store.create(butler, {
+      id: 'mem_stats',
+      memClass: 'global_shared',
+      kind: 'fact',
+      content: '统计用记忆',
+      confidence: 0.9,
+      evidence: [],
+    });
+    if (!created.ok) throw new Error('建档失败');
+    await archive.append({
+      archiveId: 'arc_stats',
+      memory: created.entry,
+      reason: 'r',
+      archivedAt: T0,
+    });
+
+    const stats = await archive.stats();
+    expect(stats.count).toBe(1);
+    expect(stats.bytes).toBeGreaterThan(0);
+
+    expect(await archive.clear()).toBe(1);
+    expect(await archive.stats()).toEqual({ count: 0, bytes: 0 });
+  });
+});
+
 describe('两步删除', () => {
   it('第一步：移出记忆库、事件留指纹、重放后确实不在', () => {
     const clock = new FixedClock(T0);

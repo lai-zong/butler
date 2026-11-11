@@ -23,6 +23,8 @@
  *   - `baseTools` 只用来复制工具定义。
  */
 
+import { join } from 'node:path';
+
 import type { SessionPermission } from '@/core/chat/settings.js';
 import { limitsConfig } from '@/core/config/env.js';
 import type { EventLog } from '@/core/events/log.js';
@@ -121,6 +123,8 @@ export async function createChatToolScope(
   const policy = new SessionPermissionPolicy(input.permission, input.confirmActions ?? true);
   const fsPort = new NodeFileSystem({
     root: workspace,
+    // 会话里删文件同样进回收站（数据目录由调用方传入）
+    trashDir: join(input.dataDir, 'trash'),
     // ★ 受保护路径在任何权限档位下都生效，包括 full。
     protectedPaths,
   });
