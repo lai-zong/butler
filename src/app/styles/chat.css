@@ -2528,12 +2528,13 @@
 
 .chat-view.is-review .review-splitter {
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 1 / -1;
 }
 
 .chat-view.is-review .review-pane {
   grid-column: 3;
-  grid-row: 1;
+  /* 面板占满整列：输入框只留在左侧对话栏下方，不再横穿到面板底下 */
+  grid-row: 1 / -1;
 }
 
 /**
@@ -2544,6 +2545,8 @@
  */
 .chat-view.is-review.is-work .chat-composer-wrap {
   display: block;
+  /* 只占左栏：横跨到右栏会跑到浏览器/文件面板下面（用户报的"输入框没缩小"） */
+  grid-column: 1;
 }
 
 /**
@@ -2554,6 +2557,8 @@
  */
 .chat-view.is-review.is-browser .chat-composer-wrap {
   display: block;
+  /* 同上：输入框跟着主对话一起缩到左栏 */
+  grid-column: 1;
 }
 
 .chat-view.is-review .turn-rail {

@@ -1908,6 +1908,7 @@ export function ChatView({
       }
     }
     setReviewPickerOpen(false);
+    setPanelMax(false);
     setPaneTab('review');
     setReviewOpen(true);
   }
@@ -1930,6 +1931,8 @@ export function ChatView({
     }
     // 手动打开时不重放上一次 AI 操作：只有面板开着时收到的 aiOp 才用于自动打开。
     if (!reviewOpen) setAiOp(null);
+    // 文件面板没有全屏入口：从浏览器最大化切过来时必须还原，否则缩不回去
+    setPanelMax(false);
     setPaneTab('files');
     setReviewOpen(true);
   }
@@ -1980,9 +1983,15 @@ export function ChatView({
     else openReview();
   }
 
-  /** 展开 / 还原工作区：只切换布局，不动审查与文件的任何状态。 */
-  function togglePanelMax(): void {
-    setPanelMax((expanded) => !expanded);
+  /**
+   * 切换右栏页签。
+   *
+   * ★ 最大化现在由浏览器面板的「全屏」按钮控制；切到文件/审查时必须还原，
+   *   否则用户离开浏览器后没有任何按钮能把面板缩回去（展开按钮已删除）。
+   */
+  function selectPaneTab(next: 'files' | 'browser' | 'review'): void {
+    if (next !== 'browser') setPanelMax(false);
+    setPaneTab(next);
   }
 
   useAutoResize(textareaRef, input);
@@ -3919,7 +3928,7 @@ export function ChatView({
                 type="button"
                 className={`review-tab${paneTab === 'files' ? ' is-active' : ''}`}
                 aria-pressed={paneTab === 'files'}
-                onClick={() => setPaneTab('files')}
+                onClick={() => selectPaneTab('files')}
               >
                 <Icon name="file" size={13} /> 文件
               </button>
@@ -3930,7 +3939,7 @@ export function ChatView({
                 onClick={() => {
                   // 页签本身就在面板里，面板必然是开的；仍然显式打开一次，
                   // 以后若从别处复用这个入口（比如头部按钮）也不会点了没反应。
-                  setPaneTab('browser');
+                  selectPaneTab('browser');
                   setReviewOpen(true);
                 }}
               >
@@ -3940,19 +3949,9 @@ export function ChatView({
                 type="button"
                 className={`review-tab${paneTab === 'review' ? ' is-active' : ''}`}
                 aria-pressed={paneTab === 'review'}
-                onClick={() => setPaneTab('review')}
+                onClick={() => selectPaneTab('review')}
               >
                 <Icon name="eye" size={13} /> 审查
-              </button>
-              <button
-                type="button"
-                className={`review-expand${panelMax ? ' is-active' : ''}`}
-                onClick={togglePanelMax}
-                aria-pressed={panelMax}
-                title={panelMax ? '还原为左右分栏' : '展开面板，对话变成浮动窗'}
-              >
-                <Icon name={panelMax ? 'panelLeft' : 'external'} size={13} />
-                {panelMax ? '还原' : '展开'}
               </button>
             </div>
             {/*
@@ -3970,7 +3969,12 @@ export function ChatView({
             */}
             {paneTab === 'browser' ? (
               <div className="browser-panel-slot">
-                <BrowserPanel sessionId={sessionId} onSendToButler={sendBrowserPageToButler} />
+                <BrowserPanel
+                  sessionId={sessionId}
+                  onSendToButler={sendBrowserPageToButler}
+                  maximized={panelMax}
+                  onMaximizedChange={setPanelMax}
+                />
               </div>
             ) : null}
             {paneTab === 'review' ? (

@@ -51,12 +51,23 @@ import type {
 
 import { Icon } from '../components/Icon';
 import { ApiError, errorMessage, fetchJson, postJson } from '../lib/api.js';
+import {
+  gatewayRpc,
+  loadGatewayInfo,
+  sendGatewayInput,
+  streamGatewayFrames,
+  type GatewayInfo,
+} from './browserGatewayClient.js';
 
 interface BrowserPanelProps {
   /** 只用于「切换会话时收起 AI 阅读面板」；浏览器进程本身是全局的单实例。 */
   readonly sessionId: string | null;
   /** 把整理好的问题填进对话输入框；实现方只填空、不发送。 */
   readonly onSendToButler: (text: string) => void;
+  /** 面板是否已占满主区域（由 ChatView 持有；全屏按钮会切换它） */
+  readonly maximized: boolean;
+  /** 切换占满/还原；全屏与「展开」现在是同一个状态机 */
+  readonly onMaximizedChange: (next: boolean) => void;
 }
 
 interface OkResponse {
@@ -89,6 +100,8 @@ interface BrowserFrame {
   readonly data: string;
   readonly width: number;
   readonly height: number;
+  /** 服务端产生这一帧的时间；用于丢弃乱序到达的旧帧 */
+  readonly at: number;
 }
 
 /** 一个标签页；`active` 由服务端按当前串流页判定，地址栏与画面都跟着它。 */
@@ -162,19 +175,14 @@ type MouseButton = 'left' | 'middle' | 'right';
 /** 服务端的页面 viewport；帧里带真实宽高，这里只是第一帧到达前的兜底。 */
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 /** 状态轮询间隔：页签可见时每 2 秒同步一次标题 / URL / 前进后退可用性。 */
-const STATE_POLL_MS = 2_000;
+const STATE_POLL_MS = 1_000;
 /**
  * 标签轮询间隔。
  *
- * ★ 为什么比页面状态慢半秒：每轮都要用 CDP 逐个向浏览器要标题，
- *   轮得太快只是白烧 CPU；2.5 秒足够让「点进新页面 → 标签标题变化」及时出现。
+ * ★ 比状态轮询略慢：每轮要用 CDP 逐个标签取标题。1.2 秒足够让
+ *   「点进新页面 → 标签标题变化」看起来是即时的，又不会白烧 CPU。
  */
-const TABS_POLL_MS = 2_500;
-/**
- * 滚轮节流：触控板一次滑动会发几十个 wheel 事件，而服务端每个事件固定滚 120px，
- * 不节流会把页面直接滚飞；60ms 对鼠标滚轮（约 10~20 次/秒）几乎没有延迟感。
- */
-const WHEEL_INTERVAL_MS = 60;
+const TABS_POLL_MS = 1_200;
 /** AI 面板里展示的正文长度（需求是前 800 字）。 */
 const READ_PREVIEW_CHARS = 800;
 /** 真正发给管家的正文上限；太长会把一轮上下文挤满。 */
@@ -239,10 +247,12 @@ function parseFrame(raw: string): BrowserFrame | null {
     if (typeof data !== 'string' || data.length === 0) return null;
     const width = rec['width'];
     const height = rec['height'];
+    const at = rec['at'];
     return {
       data,
       width: typeof width === 'number' && width > 0 ? width : DEFAULT_VIEWPORT.width,
       height: typeof height === 'number' && height > 0 ? height : DEFAULT_VIEWPORT.height,
+      at: typeof at === 'number' ? at : Date.now(),
     };
   } catch {
     return null;
@@ -371,7 +381,12 @@ function formatMtime(mtimeMs: number): string {
   );
 }
 
-export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): JSX.Element {
+export function BrowserPanel({
+  sessionId,
+  onSendToButler,
+  maximized,
+  onMaximizedChange,
+}: BrowserPanelProps): JSX.Element {
   // ── 启动 / 画面连接 ────────────────────────────────────────────────
   const [boot, setBoot] = useState<BootState>({ status: 'starting' });
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -435,9 +450,15 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   const aliveRef = useRef(true);
   const streamRef = useRef<EventSource | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  /** 本地网关：输入与画面直连它，绕开 Next dev 的每请求开销。 */
+  const gatewayRef = useRef<GatewayInfo | null>(null);
+  /** 网关帧流的取消句柄（与 SSE 二选一）。 */
+  const gatewayAbortRef = useRef<AbortController | null>(null);
+  /** 渲染序号：解码是异步的，旧帧解码完不能覆盖新帧。 */
+  const renderSeqRef = useRef(0);
   /** 工具栏上的「全屏」按钮；退出沉浸后要把键盘焦点还给它（它随工具栏一起被隐藏过）。 */
   const immersiveToggleRef = useRef<HTMLButtonElement | null>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const addressRef = useRef<HTMLInputElement | null>(null);
   /** 承接输入法的隐藏输入框；它才是真正持有焦点、产生 composition 事件的元素。 */
   const imeRef = useRef<HTMLTextAreaElement | null>(null);
@@ -448,6 +469,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   /** 最近一次 compositionend 的时刻，用来吞掉上屏那一下的补发按键。 */
   const commitAtRef = useRef(0);
   /** 最近一帧的 viewport 尺寸；坐标换算按它算，不用写死 1280。 */
+  /** 已显示帧的时间戳：resize/补帧可能乱序到达，旧帧不能覆盖新帧。 */
+  const lastFrameAtRef = useRef(0);
   const frameSizeRef = useRef<{ width: number; height: number }>({
     width: DEFAULT_VIEWPORT.width,
     height: DEFAULT_VIEWPORT.height,
@@ -474,7 +497,15 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   });
   const lastPointRef = useRef<ViewportPoint | null>(null);
   const lastMoveRef = useRef<ViewportPoint | null>(null);
-  const wheelAtRef = useRef(0);
+  /** 滚轮增量先累加、定时合并发送：触控板一次滑动几十个事件，逐个 POST 只会拖慢主线程。 */
+  const wheelDeltaRef = useRef({ x: 0, y: 0, timer: 0 });
+  /** 指针移动节流：拖拽/悬停时 pointermove 每秒可达上百个，30ms 一次足够跟手。 */
+  const lastMoveAtRef = useRef(0);
+  /** 滚轮发生的位置：合并成一次发送时仍要落到用户真正指着的点上。 */
+  const wheelPointRef = useRef<{ x: number; y: number } | null>(null);
+  /** 最近一次上报给服务端的视口尺寸，避免 1~3px 抖动重复触发 resize。 */
+  const lastResizeRef = useRef<{ width: number; height: number } | null>(null);
+  const resizeTimerRef = useRef<number | null>(null);
 
   // ── 启动 ───────────────────────────────────────────────────────────
 
@@ -487,8 +518,11 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
    */
   function clearFrame(): void {
     setHasFrame(false);
-    const img = imgRef.current;
-    if (img !== null) img.removeAttribute('src');
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas !== null && canvas !== undefined && ctx !== null && ctx !== undefined) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
   }
 
   /**
@@ -533,8 +567,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
    *   浏览器进程意外退出时它还能重新拉起一个新的，比只重连 SSE 更彻底。
    */
   async function bootBrowser(): Promise<void> {
-    streamRef.current?.close();
-    streamRef.current = null;
+    closeFrameStream();
     bootStatusRef.current = 'starting';
     setBoot({ status: 'starting' });
     setStreamError(null);
@@ -560,8 +593,78 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     }
   }
 
-  /** 建一条 SSE 连接；重复调用会先关掉旧的，保证同一时刻只有一条流。 */
-  function openStream(): void {
+  /**
+   * 把一帧 JPEG 画到 canvas 上。
+   *
+   * ★ 为什么不用 <img src=blob>：每帧换 src 都会触发一次图片解码与布局/合成，
+   *   30fps 下主线程容易抖；createImageBitmap 在后台解码，drawImage 只是一次拷贝，
+   *   帧与帧之间更稳定，也没有 object URL 需要回收。
+   * ★ 解码是异步的：用序号丢弃迟到的旧帧，避免"回退一帧"的顿挫。
+   */
+  function renderJpeg(width: number, height: number, jpeg: Uint8Array): void {
+    if (!aliveRef.current) return;
+    const seq = ++renderSeqRef.current;
+    // Uint8Array 可能来自共享缓冲；复制成独立 ArrayBuffer 再交给 Blob
+  const copy = new Uint8Array(jpeg.length);
+  copy.set(jpeg);
+  const blob = new Blob([copy], { type: 'image/jpeg' });
+    void createImageBitmap(blob)
+      .then((bitmap) => {
+        if (!aliveRef.current || seq !== renderSeqRef.current) {
+          bitmap.close();
+          return;
+        }
+        const canvas = canvasRef.current;
+        if (canvas === null) {
+          bitmap.close();
+          return;
+        }
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (ctx === null) {
+          bitmap.close();
+          return;
+        }
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        frameSizeRef.current = { width, height };
+        setHasFrame(true);
+      })
+      .catch(() => {
+        // 解码失败（半帧/已断开）直接丢，下一帧再来
+      });
+  }
+
+  /** 关掉画面流（网关或 SSE）。 */
+  function closeFrameStream(): void {
+    gatewayAbortRef.current?.abort();
+    gatewayAbortRef.current = null;
+    streamRef.current?.close();
+    streamRef.current = null;
+  }
+
+  /** 网关帧流：一条连接持续读二进制帧，失败时回退到 SSE。 */
+  function openGatewayFrames(info: GatewayInfo): void {
+    const controller = new AbortController();
+    gatewayAbortRef.current = controller;
+    void streamGatewayFrames(info, controller.signal, (frame) => {
+      if (gatewayAbortRef.current !== controller) return;
+      renderJpeg(frame.width, frame.height, frame.jpeg);
+    })
+      .catch(() => {
+        if (!aliveRef.current || controller.signal.aborted) return;
+        if (gatewayAbortRef.current === controller) gatewayAbortRef.current = null;
+        // 网关不可用时仍有一条 SSE 可用，别让用户卡在"等待画面"
+        openSseStream();
+      })
+      .finally(() => {
+        if (gatewayAbortRef.current === controller) gatewayAbortRef.current = null;
+      });
+  }
+
+  /** 旧版 SSE 通道：网关不可用时的兜底。 */
+  function openSseStream(): void {
     streamRef.current?.close();
     const source = new EventSource('/api/browser/stream');
     streamRef.current = source;
@@ -570,24 +673,36 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       if (!aliveRef.current || streamRef.current !== source) return;
       const frame = parseFrame(event.data);
       if (frame === null) return;
-      frameSizeRef.current = { width: frame.width, height: frame.height };
-      // 直接改 DOM 的 src：见文件头「为什么不把帧放进 state」。
-      const img = imgRef.current;
-      if (img !== null) img.src = `data:image/jpeg;base64,${frame.data}`;
-      setHasFrame(true);
+      if (frame.at < lastFrameAtRef.current) return;
+      lastFrameAtRef.current = frame.at;
+      try {
+        const raw = atob(frame.data);
+        const bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+        renderJpeg(frame.width, frame.height, bytes);
+      } catch {
+        // base64 损坏：等下一帧
+      }
     };
 
     source.addEventListener('error', (event: Event) => {
       if (!aliveRef.current || streamRef.current !== source) return;
-      // 服务端的 `event: error` 与 EventSource 自身的断线都会走这个监听：
-      // 前者是 MessageEvent（带 data），后者是普通 Event。
       const message = event instanceof MessageEvent ? serverErrorOf(event.data) : null;
-      // ★ 主动关掉：浏览器没启动时服务端发完错误就 close，EventSource 会自动重连，
-      //   不关掉就会变成一个打服务端的死循环，让用户点「重新连接」才重来。
       source.close();
       streamRef.current = null;
       setStreamError(message ?? '画面连接中断');
     });
+  }
+
+  /** 建画面流：有网关走网关（低延迟二进制），否则回退 SSE。 */
+  function openStream(): void {
+    closeFrameStream();
+    const gateway = gatewayRef.current;
+    if (gateway !== null) {
+      openGatewayFrames(gateway);
+      return;
+    }
+    openSseStream();
   }
 
   /** 刷新标题 / URL / 前进后退可用性。 */
@@ -595,7 +710,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     const seq = stateSeqRef.current + 1;
     stateSeqRef.current = seq;
     try {
-      const res = await fetchJson<BrowserStateResponse>('/api/browser/state');
+      const res = await callBrowser<BrowserStateResponse>('state', {}, () => fetchJson<BrowserStateResponse>('/api/browser/state'));
       if (!aliveRef.current || seq !== stateSeqRef.current) return;
       /**
        * ★ 进程被杀掉时服务端回的是 200 + running:false，不是错误；
@@ -615,7 +730,9 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       // 退出 / 重启过程中旧的请求可能晚一步回来：那时画面已经清空，
       // 不能再把上一轮浏览器的标题和 URL 写回面板。
       if (bootStatusRef.current !== 'ready') return;
-      const url = typeof res.url === 'string' ? res.url : '';
+      const rawUrl = typeof res.url === 'string' ? res.url : '';
+      // 起始页是内部 data: 页面，地址栏留空更像真实浏览器的新标签页
+      const url = rawUrl.startsWith('data:text/html') ? '' : rawUrl;
       setPageInfo({
         running: res.running === true,
         url,
@@ -623,8 +740,9 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
         canBack: res.canBack === true,
         canForward: res.canForward === true,
       });
-      // 地址栏只在用户没在编辑时跟随页面：否则输到一半的网址会被 2 秒轮询冲掉。
-      if (url.length > 0 && document.activeElement !== addressRef.current) setAddress(url);
+      // 地址栏只在用户没在编辑时跟随页面：否则输到一半的网址会被轮询冲掉。
+      // 注意空字符串也要写回（新标签起始页），否则会一直留着上一个页面的网址。
+      if (document.activeElement !== addressRef.current) setAddress(url);
     } catch {
       // 轮询失败保留上一份状态：真断线由画面流提示，这里再报一次只会来回闪。
     }
@@ -642,7 +760,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     const seq = tabsSeqRef.current + 1;
     tabsSeqRef.current = seq;
     try {
-      const res = await fetchJson<TabsResponse>('/api/browser/tabs');
+      const res = await callBrowser<TabsResponse>('tabs', {}, () => fetchJson<TabsResponse>('/api/browser/tabs'));
       if (!aliveRef.current || seq !== tabsSeqRef.current) return;
       // 退出时在途的标签请求也可能晚一步回来：不能在 exited 状态下把标签条重新填满。
       if (bootStatusRef.current !== 'ready') return;
@@ -660,12 +778,17 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     setBusy(true);
     setActionError(null);
     try {
-      const res = await postJson<NavigateResponse>('/api/browser/navigate', { input });
+      const res = await callBrowser<NavigateResponse>('navigate', { input }, () => postJson<NavigateResponse>('/api/browser/navigate', { input }));
       if (!aliveRef.current) return;
       setAddress(res.url);
       void refreshState();
       // 导航会改页面标题，标签条要跟着变（服务端没有 title 变化的事件通道）。
       void refreshTabs();
+      window.setTimeout(() => {
+        if (!aliveRef.current || bootStatusRef.current !== 'ready') return;
+        void refreshState();
+        void refreshTabs();
+      }, 700);
     } catch (err) {
       // 退出 / 重启期间不再弹 409：面板已经切到「浏览器已退出」，
       // 这时补一条"浏览器还没启动"只会和退出提示互相打架。
@@ -680,11 +803,16 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     setBusy(true);
     setActionError(null);
     try {
-      await postJson<OkResponse>('/api/browser/action', { action });
+      await callBrowser<OkResponse>('action', { action }, () => postJson<OkResponse>('/api/browser/action', { action }));
       if (aliveRef.current) {
         void refreshState();
         // 前进 / 后退 / 刷新都可能换标题，顺手同步一次标签。
         void refreshTabs();
+        window.setTimeout(() => {
+          if (!aliveRef.current || bootStatusRef.current !== 'ready') return;
+          void refreshState();
+          void refreshTabs();
+        }, 500);
       }
     } catch (err) {
       if (aliveRef.current && bootStatusRef.current === 'ready') setActionError(errorMessage(err));
@@ -706,10 +834,15 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     setTabBusy(true);
     setActionError(null);
     try {
-      await postJson<OkResponse>('/api/browser/tabs', {
-        action,
-        ...(id !== undefined ? { id } : {}),
-      });
+      await callBrowser<OkResponse>(
+        'tab',
+        { action, ...(id !== undefined ? { id } : {}) },
+        () =>
+          postJson<OkResponse>('/api/browser/tabs', {
+            action,
+            ...(id !== undefined ? { id } : {}),
+          }),
+      );
       if (!aliveRef.current) return;
       void refreshTabs();
       void refreshState();
@@ -732,9 +865,9 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
    * 避免发出负数坐标（CDP 会直接忽略）。
    */
   function toViewportPoint(clientX: number, clientY: number): ViewportPoint | null {
-    const img = imgRef.current;
-    if (img === null) return null;
-    const rect = img.getBoundingClientRect();
+    const canvas = canvasRef.current;
+    if (canvas === null) return null;
+    const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     const frame = frameSizeRef.current;
     const scale = Math.min(rect.width / frame.width, rect.height / frame.height);
@@ -747,15 +880,73 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     };
   }
 
+  /** 画面实际绘制缩放比（页码 CSS px → 屏幕 px）；用于坐标与滚轮换算。 */
+  function drawnScale(): number {
+    const canvas = canvasRef.current;
+    if (canvas === null) return 0;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return 0;
+    const frame = frameSizeRef.current;
+    const scale = Math.min(rect.width / frame.width, rect.height / frame.height);
+    return Number.isFinite(scale) && scale > 0 ? scale : 0;
+  }
+
+  /**
+   * 发送滚轮增量。
+   *
+   * ★ 必须带上真实 delta：服务端以前写死 +120，向上滚也会把页面往下滚。
+   */
+  function sendWheel(deltaX: number, deltaY: number): void {
+    const point = wheelPointRef.current;
+    if (point === null) return;
+    const mapped = toViewportPoint(point.x, point.y);
+    if (mapped === null) return;
+    sendInput({ type: 'mouse', action: 'wheel', x: mapped.x, y: mapped.y, deltaX, deltaY });
+  }
+
+  /**
+   * 发送一条输入事件：优先走长连接；环境不支持时退回单发 HTTP。
+   *
+   * ★ 不 await、不弹错：输入是高频动作，出错由画面流/状态轮询兜底，
+   *   每个事件都弹一次只会刷屏。
+   */
+  /**
+   * 优先走网关 RPC，失败再退回 Next 路由。
+   *
+   * ★ 画面/输入/导航/标签都在网关里，只有 start/close 这种生命周期动作留在 Next。
+   */
+  async function callBrowser<T>(
+    op: string,
+    args: Record<string, unknown>,
+    fallback: () => Promise<T>,
+  ): Promise<T> {
+    const gateway = gatewayRef.current;
+    if (gateway !== null) {
+      try {
+        return await gatewayRpc<T>(gateway, op, args);
+      } catch {
+        // 网关临时不可用：退回原接口，保证功能不中断
+      }
+    }
+    return fallback();
+  }
+
+  function sendInput(payload: Record<string, unknown>): void {
+    const gateway = gatewayRef.current;
+    if (gateway !== null) {
+      void sendGatewayInput(gateway, payload);
+      return;
+    }
+    void postJson<OkResponse>('/api/browser/input', payload).catch(() => undefined);
+  }
+
   function postMouse(action: MouseAction, point: ViewportPoint, button?: MouseButton): void {
-    void postJson<OkResponse>('/api/browser/input', {
+    sendInput({
       type: 'mouse',
       action,
       x: point.x,
       y: point.y,
       ...(button !== undefined ? { button } : {}),
-    }).catch(() => {
-      // 输入失败不弹错：真断线时画面流会给提示，这里每帧再报一次只会刷屏。
     });
   }
 
@@ -768,18 +959,35 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
       // 但指针每像素抖动都会发事件，按取整后的坐标去重后再发。
       const last = lastMoveRef.current;
       if (last !== null && last.x === point.x && last.y === point.y) return;
+      const now = Date.now();
+      if (now - lastMoveAtRef.current < 30) return;
+      lastMoveAtRef.current = now;
       lastMoveRef.current = point;
     }
     postMouse(action, point, button);
+    if (action === 'up') {
+      /**
+       * ★ 点击链接会在远端触发导航，但服务端没有导航事件推给前端；
+       *   只靠 1 秒轮询会有明显"点了没反应"的错觉。
+       *   这里在点击后补两次刷新，命中大多数页面加载完成的时机。
+       */
+      for (const delay of [350, 900]) {
+        window.setTimeout(() => {
+          if (!aliveRef.current || bootStatusRef.current !== 'ready') return;
+          void refreshState();
+          void refreshTabs();
+        }, delay);
+      }
+    }
   }
 
   function sendText(text: string): void {
     if (text.length === 0) return;
-    void postJson<OkResponse>('/api/browser/input', { type: 'text', text }).catch(() => undefined);
+    sendInput({ type: 'text', text });
   }
 
   function sendKey(key: string): void {
-    void postJson<OkResponse>('/api/browser/input', { type: 'key', key }).catch(() => undefined);
+    sendInput({ type: 'key', key });
   }
 
   /**
@@ -815,7 +1023,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     el.style.top = `${Math.max(0, y)}px`;
   }
 
-  function handlePointerDown(event: ReactPointerEvent<HTMLImageElement>): void {
+  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>): void {
     const button = buttonOf(event.button);
     if (button === null) return;
     // 键盘输入依赖隐藏输入框的焦点：点画面就应该等于点浏览器窗口。
@@ -836,11 +1044,11 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     sendPointer('down', event.clientX, event.clientY, button);
   }
 
-  function handlePointerMove(event: ReactPointerEvent<HTMLImageElement>): void {
+  function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>): void {
     sendPointer('move', event.clientX, event.clientY);
   }
 
-  function handlePointerUp(event: ReactPointerEvent<HTMLImageElement>): void {
+  function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>): void {
     if (!dragRef.current.active) return;
     const button = dragRef.current.button;
     dragRef.current = { active: false, button: 'left' };
@@ -979,7 +1187,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     setDownloadsOpen(false);
     setRead({ status: 'loading' });
     try {
-      const res = await postJson<BrowserReadResponse>('/api/browser/read', {});
+      const res = await callBrowser<BrowserReadResponse>('read', {}, () => postJson<BrowserReadResponse>('/api/browser/read', {}));
       if (!aliveRef.current) return;
       setRead({ status: 'ready', page: res });
     } catch (err) {
@@ -1045,7 +1253,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   async function copySelection(): Promise<void> {
     setHint(null);
     try {
-      const res = await fetchJson<{ text?: unknown }>('/api/browser/selection');
+      const res = await callBrowser<{ text?: unknown }>('selection', {}, () => fetchJson<{ text?: unknown }>('/api/browser/selection'));
       if (!aliveRef.current) return;
       const text = typeof res.text === 'string' ? res.text : '';
       if (text.length === 0) {
@@ -1070,7 +1278,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   async function loadDownloads(): Promise<void> {
     setDownloads({ status: 'loading' });
     try {
-      const res = await fetchJson<DownloadsResponse>('/api/browser/downloads');
+      const res = await callBrowser<DownloadsResponse>('downloads', {}, () => fetchJson<DownloadsResponse>('/api/browser/downloads'));
       if (!aliveRef.current) return;
       setDownloads({ status: 'ready', items: parseDownloads(res.items) });
     } catch (err) {
@@ -1100,6 +1308,8 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   function enterImmersive(): void {
     setDownloadsOpen(false);
     setImmersive(true);
+    // ★ 全屏 = 面板占满主区域（原「展开」）+ 隐藏面板内部工具栏：只做后者会留下黑边
+    onMaximizedChange(true);
   }
 
   /**
@@ -1111,6 +1321,7 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
    */
   function exitImmersive(restoreFocus: boolean): void {
     setImmersive(false);
+    onMaximizedChange(false);
     if (!restoreFocus) return;
     window.requestAnimationFrame(() => {
       immersiveToggleRef.current?.focus();
@@ -1134,12 +1345,16 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
    */
   useEffect(() => {
     aliveRef.current = true;
-    void bootBrowser();
+    // 先拿网关地址（一次 Next 请求），之后的输入/画面都直连网关
+    void (async () => {
+      const gateway = await loadGatewayInfo();
+      if (!aliveRef.current) return;
+      if (gateway !== null) gatewayRef.current = gateway;
+      void bootBrowser();
+    })();
     return () => {
-      // 卸载时断开 SSE：否则切走页签后服务端还在往一条没人看的流里推帧。
       aliveRef.current = false;
-      streamRef.current?.close();
-      streamRef.current = null;
+      closeFrameStream();
     };
     // 只在挂载时启动一次；bootBrowser 只依赖 ref 与 setState，不需要进依赖表。
   }, []);
@@ -1222,16 +1437,43 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   useEffect(() => {
     const stage = stageRef.current;
     if (stage === null) return;
+
+    /**
+     * ★ 把屏幕上的滚动量换算成页面 CSS 像素：画面被缩小显示时，
+     *   屏幕上滚 100px 等于页面里滚 100/scale px，否则触控板会显得"滚不动"。
+     * ★ 按 rAF 合并：一帧内只发一次，触控板几十个事件不会变成几十个 POST。
+     */
+    const flush = (): void => {
+      const pending = wheelDeltaRef.current;
+      pending.timer = 0;
+      const dx = pending.x;
+      const dy = pending.y;
+      pending.x = 0;
+      pending.y = 0;
+      if (dx === 0 && dy === 0) return;
+      sendWheel(dx, dy);
+    };
+
     const onWheel = (event: WheelEvent): void => {
       event.preventDefault();
-      const now = Date.now();
-      if (now - wheelAtRef.current < WHEEL_INTERVAL_MS) return;
-      wheelAtRef.current = now;
-      // 服务端滚轮是固定滚动量（不用传 delta），所以这里只给坐标。
-      sendPointer('wheel', event.clientX, event.clientY);
+      wheelPointRef.current = { x: event.clientX, y: event.clientY };
+      const scale = drawnScale();
+      if (scale <= 0) return;
+      wheelDeltaRef.current.x += event.deltaX / scale;
+      wheelDeltaRef.current.y += event.deltaY / scale;
+      if (wheelDeltaRef.current.timer === 0) {
+        wheelDeltaRef.current.timer = window.setTimeout(flush, 30);
+      }
     };
+
     stage.addEventListener('wheel', onWheel, { passive: false });
-    return () => stage.removeEventListener('wheel', onWheel);
+    return () => {
+      stage.removeEventListener('wheel', onWheel);
+      if (wheelDeltaRef.current.timer !== 0) {
+        window.clearTimeout(wheelDeltaRef.current.timer);
+        wheelDeltaRef.current.timer = 0;
+      }
+    };
     // boot 从失败/启动中变成 ready 时画面容器会重新挂载，需要重新绑定。
   }, [boot.status]);
 
@@ -1298,6 +1540,14 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
   }, [immersive]);
 
   /**
+   * 外部把面板还原（切到文件/审查页签、关闭面板）时，内部沉浸也要退出：
+   * 否则工具栏还藏着，用户找不到任何按钮，只剩 Esc。
+   */
+  useEffect(() => {
+    if (!maximized) setImmersive(false);
+  }, [maximized]);
+
+  /**
    * 沉浸模式的全局 Esc。
    *
    * ★ 焦点不一定在舞台里（刚点完按钮、或停在浮钮上），只在舞台的 onKeyDown 里
@@ -1318,6 +1568,73 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [immersive, read.status, downloadsOpen]);
+
+  /**
+   * 面板尺寸变化 → 同步远端视口。
+   *
+   * ★ 为什么必须做：远端如果固定 1280×800，缩到 600 宽的面板里就只能
+   *   contain 缩放，文字变小、上下/左右留黑边；把视口改成面板尺寸后，
+   *   页面会像真实浏览器窗口一样重排，画面也能铺满。
+   * ★ 防抖 180ms + 4px 阈值：拖拽分栏时每秒几十次尺寸变化，不合并会把
+   *   串流反复重启。
+   */
+  useEffect(() => {
+    if (boot.status !== 'ready') return;
+    const stage = stageRef.current;
+    if (stage === null) return;
+
+    const push = (): void => {
+      const rect = stage.getBoundingClientRect();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      if (width < 200 || height < 150) return;
+      const last = lastResizeRef.current;
+      if (last !== null && Math.abs(last.width - width) < 4 && Math.abs(last.height - height) < 4) return;
+      lastResizeRef.current = { width, height };
+      if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = window.setTimeout(() => {
+        resizeTimerRef.current = null;
+        void callBrowser<OkResponse>('resize', { width, height }, () =>
+          postJson<OkResponse>('/api/browser/resize', { width, height }),
+        ).catch(() => {
+          // 尺寸同步失败不影响其它功能；下一轮 ResizeObserver 会再试
+        });
+      }, 180);
+    };
+
+    const observer = new ResizeObserver(push);
+    observer.observe(stage);
+    push();
+    return () => {
+      observer.disconnect();
+      if (resizeTimerRef.current !== null) {
+        window.clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = null;
+      }
+    };
+  }, [boot.status]);
+
+  /**
+   * 页面切到后台时断开画面流。
+   *
+   * ★ 后台没人看画面，但 SSE 不断开的话服务端会继续保持 screencast，
+   *   Edge 会持续截图编码；回来时再重连并补帧即可。
+   */
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.hidden) {
+        closeFrameStream();
+      } else if (
+        bootStatusRef.current === 'ready' &&
+        streamRef.current === null &&
+        gatewayAbortRef.current === null
+      ) {
+        openStream();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
 
   /**
    * 切会话时收起 AI 面板。
@@ -1720,9 +2037,9 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
             type="button"
             className="browser-icon-btn browser-immersive-toggle"
             onClick={toggleImmersive}
-            aria-pressed={immersive}
-            title={immersive ? '退出全屏' : '全屏'}
-            aria-label={immersive ? '退出全屏' : '全屏'}
+            aria-pressed={immersive || maximized}
+            title={immersive || maximized ? '退出全屏' : '全屏'}
+            aria-label={immersive || maximized ? '退出全屏' : '全屏'}
           >
             <Icon name="external" size={14} />
           </button>
@@ -1801,10 +2118,10 @@ export function BrowserPanel({ sessionId, onSendToButler }: BrowserPanelProps): 
             onFocus={handleStageFocus}
             onBlur={handleStageBlur}
           >
-            <img
-              ref={imgRef}
+            <canvas
+              ref={canvasRef}
               className={`browser-frame${hasFrame ? ' is-live' : ''}`}
-              alt="浏览器画面"
+              aria-label="浏览器画面"
               draggable={false}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
