@@ -20,6 +20,8 @@ export default [
     ignores: [
       'node_modules/**',
       '.next/**',
+      // 单独验证 production build 时用的临时构建目录（NEXT_DIST_DIR）
+      '.next-*/**',
       'dist/**',
       'coverage/**',
       '*.config.*',

@@ -54,3 +54,6 @@ __pycache__/
 !public/**/*.jpg
 !public/**/*.jpeg
 !public/**/*.webp
+
+# 单独验证 production build 的临时产物
+.next-verify/

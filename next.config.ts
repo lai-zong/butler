@@ -29,10 +29,26 @@ import type { NextConfig } from 'next';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
 
+  /**
+   * ★ 允许用环境变量换构建目录。
+   *   开发服务器默认占用 `.next`；要单独验证 production build 时，
+   *   用 `NEXT_DIST_DIR=.next-verify pnpm build` 就不会把开发中的产物搅坏。
+   */
+  distDir: process.env.NEXT_DIST_DIR ?? '.next',
+
   // 类型检查与 lint 由 `pnpm typecheck` / `pnpm lint` 单独跑，
   // 构建时不重复跑（它们在 CI 里是独立步骤，失败更易定位）
   eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: false },
+
+  /**
+   * ★ 运行期数据目录不能进构建追踪。
+   *   浏览器 profile 里有被浏览器本身锁住的 SQLite（Cookies 等），
+   *   构建时被扫到会直接 EBUSY 失败；而且这些文件本来也不该进产物。
+   */
+  outputFileTracingExcludes: {
+    '*': ['.butler-data/**'],
+  },
 
   webpack: (config) => {
     /**
