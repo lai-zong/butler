@@ -3,7 +3,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-import { BrowserError, goBack, goForward, reload, stopLoading } from '@/app/server/browserSession.js';
+import { goBack, goForward, reload, stopLoading, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     else return NextResponse.json({ error: '未知动作' }, { status: 400 });
     return NextResponse.json({ ok: true });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.code === 'not_started' ? 409 : 400 });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '操作失败' }, { status: 500 });

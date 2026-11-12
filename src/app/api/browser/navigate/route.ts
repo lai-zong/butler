@@ -8,7 +8,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-import { BrowserError, navigate } from '@/app/server/browserSession.js';
+import { navigate, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const result = await navigate(input);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.code === 'not_started' ? 409 : 400 });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '导航失败' }, { status: 500 });

@@ -10,7 +10,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-import { BrowserError, keyInput, mouseInput } from '@/app/server/browserSession.js';
+import { keyInput, mouseInput, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     return NextResponse.json({ error: '未知输入类型' }, { status: 400 });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.code === 'not_started' ? 409 : 400 });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '输入失败' }, { status: 500 });

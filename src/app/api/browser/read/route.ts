@@ -10,7 +10,7 @@
 
 import { NextResponse } from 'next/server';
 
-import { BrowserError, readPage } from '@/app/server/browserSession.js';
+import { readPage, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -20,7 +20,7 @@ export async function POST(): Promise<NextResponse> {
     const page = await readPage();
     return NextResponse.json({ ok: true, ...page });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.code === 'not_started' ? 409 : 500 });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '读取页面失败' }, { status: 500 });

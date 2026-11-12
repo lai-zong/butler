@@ -15,10 +15,12 @@
  *   代价是少数站点会检测无头环境。真需要可见窗口时把 HEADLESS 改成 false 即可。
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
 const HEADLESS = true;
@@ -32,6 +34,20 @@ export class BrowserError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * 跨 bundle 的 BrowserError 判断。
+ *
+ * ★ `next dev` 会为每个 API 路由单独打包，同一个模块出现多份实例，
+ *   `err instanceof BrowserError` 在路由 bundle 里会失效（类不是同一个），
+ *   错误于是被当成未知异常返回 500。按 name + code 判断才稳定。
+ */
+export function isBrowserError(err: unknown): err is BrowserError {
+  if (err instanceof BrowserError) return true;
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { name?: unknown; code?: unknown; message?: unknown };
+  return e.name === 'BrowserError' && typeof e.code === 'string' && typeof e.message === 'string';
 }
 
 /** 找一个可用的 Chromium：环境变量 → Chrome → Edge。 */
@@ -174,7 +190,7 @@ export interface BrowserFrame {
 
 interface BrowserSessionState {
   readonly executable: string;
-  readonly child: ChildProcess;
+  readonly child: ChildProcess | null;
   readonly cdp: CdpConnection;
   /** 当前正在串流的页面会话；弹窗打开时会切到新页面 */
   pageSessionId: string;
@@ -189,7 +205,26 @@ interface BrowserSessionState {
   lastUsedAt: number;
 }
 
-let session: BrowserSessionState | null = null;
+/**
+ * ★ 会话状态挂在 globalThis 上，而不是模块变量。
+ *
+ *   原因：`next dev` 里每个 API 路由是**各自打包**的，同一个模块在
+ *   start / state 两个路由里可能是两份实例；模块级变量在 A 里赋值，
+ *   B 里读到的还是 null —— 表现就是"浏览器启动成功，界面立刻显示未运行"。
+ *   挂到进程级的 globalThis 后，所有路由看到同一份；HMR 重载也不会丢。
+ */
+const BROWSER_GLOBAL = Symbol.for('butler.browser.session');
+type BrowserGlobal = typeof globalThis & {
+  [BROWSER_GLOBAL]?: BrowserSessionState | null;
+};
+
+function getSession(): BrowserSessionState | null {
+  return (globalThis as BrowserGlobal)[BROWSER_GLOBAL] ?? null;
+}
+
+function setSession(next: BrowserSessionState | null): void {
+  (globalThis as BrowserGlobal)[BROWSER_GLOBAL] = next;
+}
 
 /**
  * 等浏览器写出调试端点，并确认它**真的能连上**。
@@ -230,15 +265,237 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+interface PersistedBrowser {
+  readonly pid: number;
+  readonly wsUrl: string;
+  readonly executable: string;
+}
+
+const browserStateFile = (dataDir: string): string => join(dataDir, 'browser-session.json');
+
+/**
+ * 浏览器 profile 放系统本地目录，不放项目数据目录。
+ *
+ * ★ 两个原因：
+ *   1) profile 里有被浏览器锁住的 SQLite（Cookies 等），放在仓库里会让
+ *      `next build` 的文件追踪直接 EBUSY；
+ *   2) 它是机器级缓存（含登录态），不是该随数据目录导出/同步的用户数据。
+ *   用数据目录哈希隔离，多个数据目录各自一份。
+ */
+function browserProfileDir(dataDir: string): string {
+  const override = process.env.BUTLER_BROWSER_PROFILE_DIR;
+  if (typeof override === 'string' && override.length > 0) return override;
+  const hash = createHash('sha1').update(dataDir).digest('hex').slice(0, 12);
+  /**
+   * ★ 不要用 process.env.LOCALAPPDATA 拼路径：
+   *   Next 构建的文件追踪（@vercel/nft）会把环境变量的值当成目录根去 glob，
+   *   以 LOCALAPPDATA 为根做全目录扫描时会撞上 Windows 的 Application Data 联接并 EPERM，
+   *   整个 `next build` 直接失败。用 homedir 推导等价路径，或显式覆盖。
+   */
+  const base =
+    process.platform === 'win32'
+      ? join(homedir(), 'AppData', 'Local', 'butler', 'browser-profile')
+      : join(homedir(), '.cache', 'butler', 'browser-profile');
+  return join(base, hash);
+}
+
+async function readPersisted(dataDir: string): Promise<PersistedBrowser | null> {
+  try {
+    const raw = JSON.parse(await readFile(browserStateFile(dataDir), 'utf8')) as Partial<PersistedBrowser>;
+    if (typeof raw.pid === 'number' && typeof raw.wsUrl === 'string' && typeof raw.executable === 'string') {
+      return { pid: raw.pid, wsUrl: raw.wsUrl, executable: raw.executable };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function writePersisted(dataDir: string, value: PersistedBrowser): Promise<void> {
+  await writeFile(browserStateFile(dataDir), JSON.stringify(value), 'utf8').catch(() => undefined);
+}
+
+async function clearPersisted(dataDir: string): Promise<void> {
+  await rm(browserStateFile(dataDir), { force: true }).catch(() => undefined);
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** taskkill /T 才会带走渲染进程；只用 child.kill() 会留下孤儿。 */
+async function killProcessTree(pid: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => resolve());
+    setTimeout(resolve, 1500);
+  });
+}
+
+/** 连一下；连不上（端口已死 / 已退出）返回 null，不抛错。 */
+async function connectIfAlive(wsUrl: string): Promise<CdpConnection | null> {
+  try {
+    const cdp = await Promise.race([
+      CdpConnection.connect(wsUrl),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+    return cdp;
+  } catch {
+    return null;
+  }
+}
+
+async function endpointFromPortFile(profileDir: string): Promise<string | null> {
+  try {
+    const text = await readFile(join(profileDir, 'DevToolsActivePort'), 'utf8');
+    const port = Number(text.split('\n')[0]);
+    if (!Number.isInteger(port) || port <= 0) return null;
+    const version = await Promise.race([
+      fetchJson<{ webSocketDebuggerUrl?: string }>(`http://127.0.0.1:${port}/json/version`),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+    if (version !== null && typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl.length > 0) {
+      return version.webSocketDebuggerUrl;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 找"已经在跑"的浏览器。
+ *
+ * ★ 为什么需要：`next dev` 热重载 / 服务重启会丢掉模块里的 session，
+ *   但上一次拉起的 Edge 还活着。再 spawn 一个会撞同一个 profile，
+ *   Edge 直接以 code=21（profile in use）退出，表现为"浏览器无法启动"。
+ *   先接管旧进程，既不冲突，也保住登录状态和已打开的页面。
+ */
+async function findAdoptable(dataDir: string, profileDir: string): Promise<CdpConnection | null> {
+  const persisted = await readPersisted(dataDir);
+  if (persisted !== null && isProcessAlive(persisted.pid)) {
+    const cdp = await connectIfAlive(persisted.wsUrl);
+    if (cdp !== null) return cdp;
+  }
+  const wsUrl = await endpointFromPortFile(profileDir);
+  if (wsUrl !== null) return connectIfAlive(wsUrl);
+  return null;
+}
+
+/** 把连接装成会话：建页、附着、串流、下载、事件监听。 */
+async function finishSession(
+  cdp: CdpConnection,
+  executable: string,
+  child: ChildProcess | null,
+  dataDir: string,
+  downloadDir: string,
+  reused: boolean,
+): Promise<{ executable: string; reused: boolean }> {
+  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
+  await setupPageSession(cdp, sessionId);
+
+  await cdp.send('Browser.setDownloadBehavior', {
+    behavior: 'allow',
+    downloadPath: downloadDir,
+    eventsEnabled: true,
+  });
+
+  const state: BrowserSessionState = {
+    executable,
+    child,
+    cdp,
+    pageSessionId: sessionId,
+    targetId,
+    downloadDir,
+    dataDir,
+    pages: new Map([[targetId, { targetId, sessionId }]]),
+    pageOrder: [targetId],
+    frame: null,
+    frameSubscribers: new Set(),
+    lastUsedAt: Date.now(),
+  };
+
+  // 画面帧：必须逐帧 ack，否则 Chrome 会暂停串流
+  cdp.on('Page.screencastFrame', (params, eventSessionId) => {
+    const meta = params['metadata'] as { deviceWidth?: number; deviceHeight?: number } | undefined;
+    const frame: BrowserFrame = {
+      data: String(params['data'] ?? ''),
+      width: meta?.deviceWidth ?? VIEWPORT.width,
+      height: meta?.deviceHeight ?? VIEWPORT.height,
+      at: Date.now(),
+    };
+    state.frame = frame;
+    const frameSessionId = eventSessionId ?? sessionId;
+    const ackId = params['sessionId'];
+    if (typeof ackId === 'number') {
+      void cdp.send('Page.screencastFrameAck', { sessionId: ackId }, frameSessionId).catch(() => undefined);
+    }
+    for (const cb of state.frameSubscribers) {
+      try {
+        cb(frame);
+      } catch {
+        // 订阅者出错不影响其它订阅者
+      }
+    }
+  });
+
+  /**
+   * ★ 弹窗/OAuth：登录页常在新页面打开。
+   *   不处理的话用户点了"用 Google 登录"就什么都不发生。
+   *   这里监听新页面，自动把串流切过去（原标签仍开着，后退可回）。
+   */
+  await cdp.send('Target.setDiscoverTargets', { discover: true });
+  cdp.on('Target.targetCreated', (params) => {
+    const info = params['targetInfo'] as
+      | { type?: string; targetId?: string; openerId?: string }
+      | undefined;
+    if (
+      info?.type === 'page' &&
+      typeof info.targetId === 'string' &&
+      info.openerId === state.targetId &&
+      info.targetId !== state.targetId
+    ) {
+      void switchToTarget(state, info.targetId);
+    }
+  });
+
+  // 页面自己关掉（window.close / 崩溃）时把标签表同步掉
+  cdp.on('Target.targetDestroyed', (params) => {
+    const id = params['targetId'];
+    if (typeof id !== 'string' || !state.pages.has(id)) return;
+    state.pages.delete(id);
+    const index = state.pageOrder.indexOf(id);
+    if (index >= 0) state.pageOrder.splice(index, 1);
+    if (state.targetId === id) {
+      const next = state.pageOrder[0];
+      if (next !== undefined) void switchToTarget(state, next);
+    }
+  });
+
+  child?.once('exit', () => {
+    if (getSession() === state) setSession(null);
+    void clearPersisted(dataDir);
+  });
+  setSession(state);
+  return { executable, reused };
+}
+
 /**
  * 启动（或复用）浏览器。
  *
  * ★ 懒启动：第一次打开浏览器页签才启动，不用就不占内存。
  */
 export async function ensureBrowser(dataDir: string): Promise<{ executable: string; reused: boolean }> {
-  if (session !== null) {
-    session.lastUsedAt = Date.now();
-    return { executable: session.executable, reused: true };
+  const current = getSession();
+  if (current !== null) {
+    current.lastUsedAt = Date.now();
+    return { executable: current.executable, reused: true };
   }
 
   const executable = findBrowserExecutable();
@@ -249,10 +506,32 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
     );
   }
 
-  const profileDir = join(dataDir, 'browser-profile');
+  const profileDir = browserProfileDir(dataDir);
   await mkdir(profileDir, { recursive: true });
-  // 上次异常退出可能留下锁：删掉再启动（只影响我们的专用 profile）
-  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile', 'DevToolsActivePort']) {
+  const downloadDir = join(dataDir, 'browser-downloads');
+  await mkdir(downloadDir, { recursive: true });
+
+  // 1) 先接管：服务重启后旧浏览器还活着时，别再 spawn 一个撞 profile
+  const adopted = await findAdoptable(dataDir, profileDir);
+  if (adopted !== null) {
+    const persisted = await readPersisted(dataDir);
+    try {
+      return await finishSession(adopted, persisted?.executable ?? executable, null, dataDir, downloadDir, true);
+    } catch {
+      // 接管后半途失败：关掉这条连接，走全新启动
+      adopted.close();
+    }
+  }
+
+  // 2) 记录里的进程还活着但连不上（僵死）→ 连子进程一起清掉
+  const stale = await readPersisted(dataDir);
+  if (stale !== null) {
+    if (isProcessAlive(stale.pid)) await killProcessTree(stale.pid);
+    await clearPersisted(dataDir);
+  }
+
+  // 只清锁；DevToolsActivePort 留着也能被"验证可连"过滤掉，删了反而丢掉接管线索
+  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile']) {
     await rm(join(profileDir, lock), { force: true }).catch(() => undefined);
   }
 
@@ -270,127 +549,81 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
     'about:blank',
   ];
 
-  let child: ChildProcess;
-  try {
-    child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
-  } catch (err) {
-    throw new BrowserError(`启动浏览器失败：${err instanceof Error ? err.message : String(err)}`, 'launch_failed');
-  }
-
-  const exited = new Promise<never>((_, reject) => {
-    child.once('exit', (code) => reject(new BrowserError(`浏览器进程退出（code=${String(code)}）`, 'launch_failed')));
-  });
-
-  try {
-    const wsUrl = await Promise.race([waitForBrowserEndpoint(profileDir), exited]);
-    const cdp = await CdpConnection.connect(wsUrl);
-
-    // 新建一个页面并附着（flatten 模式：事件里带 sessionId）
-    const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
-    const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
-    await setupPageSession(cdp, sessionId);
-
-    // 下载：落到数据目录下的固定位置，避免散落在用户的"下载"文件夹里
-    const downloadDir = join(dataDir, 'browser-downloads');
-    await mkdir(downloadDir, { recursive: true });
-    await cdp.send('Browser.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: downloadDir,
-      eventsEnabled: true,
+  /**
+   * 拉一次浏览器并连上。
+   *
+   * ★ 单独抽出来是为了"code=21 重试一次"：刚关掉浏览器或上一个实例
+   *   还在收尾时，新实例会短暂报 profile in use；等 1.2 秒再拉通常就好了。
+   */
+  const launchOnce = async (): Promise<{ executable: string; reused: boolean }> => {
+    const child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
+    const exited = new Promise<never>((_, reject) => {
+      child.once('exit', (code) =>
+        reject(new BrowserError(`浏览器进程退出（code=${String(code)}）`, 'launch_failed')),
+      );
     });
-
-    const state: BrowserSessionState = {
-      executable,
-      child,
-      cdp,
-      pageSessionId: sessionId,
-      targetId,
-      downloadDir,
-      dataDir,
-      pages: new Map([[targetId, { targetId, sessionId }]]),
-      pageOrder: [targetId],
-      frame: null,
-      frameSubscribers: new Set(),
-      lastUsedAt: Date.now(),
-    };
-
-    // 画面帧：必须逐帧 ack，否则 Chrome 会暂停串流
-    cdp.on('Page.screencastFrame', (params, eventSessionId) => {
-      const meta = params['metadata'] as { deviceWidth?: number; deviceHeight?: number } | undefined;
-      const frame: BrowserFrame = {
-        data: String(params['data'] ?? ''),
-        width: meta?.deviceWidth ?? VIEWPORT.width,
-        height: meta?.deviceHeight ?? VIEWPORT.height,
-        at: Date.now(),
-      };
-      state.frame = frame;
-      const frameSessionId = eventSessionId ?? sessionId;
-      const ackId = params['sessionId'];
-      if (typeof ackId === 'number') {
-        void cdp.send('Page.screencastFrameAck', { sessionId: ackId }, frameSessionId).catch(() => undefined);
+    try {
+      const wsUrl = await Promise.race([waitForBrowserEndpoint(profileDir), exited]);
+      const cdp = await CdpConnection.connect(wsUrl);
+      await writePersisted(dataDir, { pid: child.pid ?? 0, wsUrl, executable });
+      return await finishSession(cdp, executable, child, dataDir, downloadDir, false);
+    } catch (err) {
+      try {
+        child.kill();
+      } catch {
+        // 忽略
       }
-      for (const cb of state.frameSubscribers) {
+      throw err;
+    }
+  };
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await launchOnce();
+    } catch (err) {
+      lastError = err;
+      // 撞上别的实例：先试着接管
+      const again = await findAdoptable(dataDir, profileDir);
+      if (again !== null) {
         try {
-          cb(frame);
+          return await finishSession(again, executable, null, dataDir, downloadDir, true);
         } catch {
-          // 订阅者出错不影响其它订阅者
+          again.close();
         }
       }
-    });
-
-    /**
-     * ★ 弹窗/OAuth：登录页常在新页面打开。
-     *   不处理的话用户点了"用 Google 登录"就什么都不发生。
-     *   这里监听新页面，自动把串流切过去（原标签仍开着，后退可回）。
-     */
-    await cdp.send('Target.setDiscoverTargets', { discover: true });
-    cdp.on('Target.targetCreated', (params) => {
-      const info = params['targetInfo'] as
-        | { type?: string; targetId?: string; openerId?: string }
-        | undefined;
-      if (
-        info?.type === 'page' &&
-        typeof info.targetId === 'string' &&
-        info.openerId === state.targetId &&
-        info.targetId !== state.targetId
-      ) {
-        void switchToTarget(state, info.targetId);
+      const inUse = err instanceof BrowserError && err.message.includes('code=21');
+      if (inUse && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1200));
+        continue;
       }
-    });
-
-    // 页面自己关掉（window.close / 崩溃）时把标签表同步掉
-    cdp.on('Target.targetDestroyed', (params) => {
-      const id = params['targetId'];
-      if (typeof id !== 'string' || !state.pages.has(id)) return;
-      state.pages.delete(id);
-      const index = state.pageOrder.indexOf(id);
-      if (index >= 0) state.pageOrder.splice(index, 1);
-      if (state.targetId === id) {
-        const next = state.pageOrder[0];
-        if (next !== undefined) void switchToTarget(state, next);
-      }
-    });
-
-    child.once('exit', () => {
-      if (session === state) session = null;
-    });
-    session = state;
-    return { executable, reused: false };
-  } catch (err) {
-    child.kill();
-    if (err instanceof BrowserError) throw err;
-    throw new BrowserError(`浏览器启动失败：${err instanceof Error ? err.message : String(err)}`, 'launch_failed');
+      break;
+    }
   }
+
+  if (lastError instanceof BrowserError && lastError.message.includes('code=21')) {
+    throw new BrowserError(
+      '浏览器的用户数据目录被另一个 Edge/Chrome 进程占用（通常是上次残留）。稍等几秒重试，或重启本应用后再开。',
+      'launch_failed',
+    );
+  }
+  if (lastError instanceof BrowserError) throw lastError;
+  throw new BrowserError(
+    `浏览器启动失败：${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    'launch_failed',
+  );
 }
 
 function requireSession(): BrowserSessionState {
-  if (session === null) throw new BrowserError('浏览器还没启动', 'not_started');
-  session.lastUsedAt = Date.now();
-  return session;
+  const current = getSession();
+  if (current === null) throw new BrowserError('浏览器还没启动', 'not_started');
+  current.lastUsedAt = Date.now();
+  return current;
 }
 
 export function browserStatus(): { running: boolean; executable: string | null } {
-  return { running: session !== null, executable: session?.executable ?? null };
+  const current = getSession();
+  return { running: current !== null, executable: current?.executable ?? null };
 }
 
 export async function navigate(input: string): Promise<{ url: string; kind: 'url' | 'search' }> {
@@ -493,19 +726,27 @@ export async function readPage(): Promise<{ url: string; title: string; text: st
 }
 
 export async function closeBrowser(): Promise<void> {
-  if (session === null) return;
-  const state = session;
-  session = null;
+  const current = getSession();
+  if (current === null) return;
+  const state = current;
+  setSession(null);
+
+  /**
+   * ★ 先让浏览器退出，再关 CDP 连接。
+   *   顺序反了的话 `Browser.close` 会在已关闭的 WebSocket 上发，
+   *   接管来的浏览器就永远关不掉（下次启动又把它接管回来）。
+   */
+  if (state.child !== null) {
+    await killProcessTree(state.child.pid ?? 0);
+  } else {
+    await state.cdp.send('Browser.close').catch(() => undefined);
+  }
   try {
     state.cdp.close();
   } catch {
     // 忽略
   }
-  try {
-    state.child.kill();
-  } catch {
-    // 忽略
-  }
+  await clearPersisted(state.dataDir);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -636,12 +877,12 @@ export function subscribeFrames(cb: (frame: BrowserFrame) => void): () => void {
 }
 
 export function latestFrame(): BrowserFrame | null {
-  return session?.frame ?? null;
+  return getSession()?.frame ?? null;
 }
 
 /** 测试用：把模块状态清掉（不杀进程）。 */
 export function __resetBrowserForTest(): void {
-  session = null;
+  setSession(null);
 }
 
 export { VIEWPORT };

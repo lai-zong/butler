@@ -10,7 +10,7 @@
  * 帧格式：`data: {"data":"<base64 jpeg>","width":1280,"height":800,"at":...}`
  */
 
-import { BrowserError, subscribeFrames } from '@/app/server/browserSession.js';
+import { subscribeFrames, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,7 +35,7 @@ export async function GET(): Promise<Response> {
           send(`data: ${JSON.stringify(frame)}\n\n`);
         });
       } catch (err) {
-        const code = err instanceof BrowserError ? err.code : 'cdp_error';
+        const code = isBrowserError(err) ? err.code : 'cdp_error';
         send(`event: error\ndata: ${JSON.stringify({ error: err instanceof Error ? err.message : '浏览器未启动', code })}\n\n`);
         controller.close();
         return;

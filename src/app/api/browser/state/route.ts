@@ -2,7 +2,7 @@
 
 import { NextResponse } from 'next/server';
 
-import { BrowserError, browserStatus, pageInfo } from '@/app/server/browserSession.js';
+import { browserStatus, pageInfo, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,7 +14,7 @@ export async function GET(): Promise<NextResponse> {
     const info = await pageInfo();
     return NextResponse.json({ ok: true, running: true, executable: status.executable, ...info });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       /**
        * ★ 进程还在，只是这一次 CDP 调用失败（切页/页面卡住）。
        *   回 `running:true + error`，让前端等下一轮轮询；

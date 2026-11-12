@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
-import { BrowserError, browserStatus, ensureBrowser } from '@/app/server/browserSession.js';
+import { browserStatus, ensureBrowser, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,7 +23,7 @@ export async function POST(): Promise<NextResponse> {
       engine: 'chromium',
     });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.code === 'no_browser' ? 409 : 500 });
     }
     return NextResponse.json(

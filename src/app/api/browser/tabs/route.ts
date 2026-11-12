@@ -8,13 +8,7 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
-import {
-  activateTab,
-  BrowserError,
-  closeTab,
-  listTabs,
-  newTab,
-} from '@/app/server/browserSession.js';
+import { activateTab, BrowserError, closeTab, listTabs, newTab, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,7 +26,7 @@ export async function GET(): Promise<NextResponse> {
     const tabs = await listTabs();
     return NextResponse.json({ ok: true, tabs });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ ok: true, tabs: [], code: err.code }, { status: 200 });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '读取标签失败' }, { status: 500 });
@@ -66,8 +60,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
     return NextResponse.json({ error: '未知动作' }, { status: 400 });
   } catch (err) {
-    if (err instanceof BrowserError) {
-      return NextResponse.json({ error: err.message, code: err.code }, { status: STATUS[err.code] });
+    if (isBrowserError(err)) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: STATUS[err.code] ?? 500 });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '标签操作失败' }, { status: 500 });
   }

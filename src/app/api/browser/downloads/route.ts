@@ -7,7 +7,7 @@
 
 import { NextResponse } from 'next/server';
 
-import { BrowserError, listDownloads } from '@/app/server/browserSession.js';
+import { listDownloads, isBrowserError } from '@/app/server/browserSession.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,7 +17,7 @@ export async function GET(): Promise<NextResponse> {
     const items = await listDownloads();
     return NextResponse.json({ ok: true, items });
   } catch (err) {
-    if (err instanceof BrowserError) {
+    if (isBrowserError(err)) {
       return NextResponse.json({ ok: true, items: [], code: err.code });
     }
     return NextResponse.json({ error: err instanceof Error ? err.message : '读取下载列表失败' }, { status: 500 });
