@@ -18,13 +18,47 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const VIEWPORT = { width: 1280, height: 800 } as const;
+const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
+const MIN_VIEWPORT = { width: 360, height: 240 } as const;
+const MAX_VIEWPORT = { width: 2400, height: 1600 } as const;
 const HEADLESS = true;
-const SCREENCAST = { format: 'jpeg', quality: 65, maxWidth: 1280, maxHeight: 800, everyNthFrame: 1 } as const;
+/** 画面推给前端的最高频率（25fps）；再快人眼收益很小，带宽和主线程却翻倍。 */
+const FRAME_MIN_INTERVAL_MS = 28;
+const SCREENCAST_QUALITY = 50;
+
+/**
+ * 新标签起始页。
+ *
+ * ★ 之前是 about:blank：一片纯白 + 黑边，用户不知道能干什么。
+ *   给一个中性的起始页，至少说明"这里可以输网址/搜索"。
+ */
+const START_PAGE = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>新标签页</title>
+<style>
+  html,body{height:100%;margin:0}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+    background:#faf8f3;color:#3c3a35;font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .mark{font-size:22px;font-weight:600;letter-spacing:.02em}
+  .hint{color:#8a8578}
+</style></head>
+<body><div class="mark">butler 浏览器</div><div class="hint">在上方地址栏输入网址或搜索词</div></body></html>`)}`;
+
+/**
+ * 视口尺寸夹取：面板可能被拖得极小或放到很大，超出范围的尺寸会让页面布局失真，
+ * 也会让截图尺寸失控。
+ */
+export function clampViewport(width: number, height: number): { width: number; height: number } {
+  const w = Number.isFinite(width) ? Math.round(width) : DEFAULT_VIEWPORT.width;
+  const h = Number.isFinite(height) ? Math.round(height) : DEFAULT_VIEWPORT.height;
+  return {
+    width: Math.min(MAX_VIEWPORT.width, Math.max(MIN_VIEWPORT.width, w)),
+    height: Math.min(MAX_VIEWPORT.height, Math.max(MIN_VIEWPORT.height, h)),
+  };
+}
 
 export class BrowserError extends Error {
   override readonly name = 'BrowserError';
@@ -197,6 +231,14 @@ interface BrowserSessionState {
   targetId: string;
   readonly downloadDir: string;
   readonly dataDir: string;
+  /** 远端页面视口：跟随面板尺寸变化（Emulation metrics） */
+  viewport: { width: number; height: number };
+  /** 帧节流：最近一次真正推给前端的时间 / 缓存的最新帧 / 待触发定时器 */
+  lastForwardAt: number;
+  /** 串流是否已开启：只在有订阅者时开，避免没人看还满速截图 */
+  screencastOn: boolean;
+  pendingFrame: BrowserFrame | null;
+  frameTimer: ReturnType<typeof setTimeout> | null;
   /** 打开过的页面（targetId → CDP 页面会话）；顺序即标签顺序 */
   readonly pages: Map<string, { targetId: string; sessionId: string }>;
   readonly pageOrder: string[];
@@ -226,17 +268,52 @@ function setSession(next: BrowserSessionState | null): void {
   (globalThis as BrowserGlobal)[BROWSER_GLOBAL] = next;
 }
 
+const START_GLOBAL = Symbol.for('butler.browser.start');
+
+/**
+ * ★ 并发的启动请求必须合并成一次。
+ *   React 开发模式会双次挂载 effect，面板首次打开常同时发两个 `/api/browser/start`；
+ *   第二个会在第一个的 Edge 还没被记录成会话时再 spawn 一个，撞 profile in use
+ *   以 code=21 退出 → 接口 500 → 界面显示"启动失败"，但浏览器其实已经起来了。
+ *   把启动过程做成共享 promise：后来的请求直接等同一个结果。
+ */
+function getStartPromise(): Promise<{ executable: string; reused: boolean }> | null {
+  return (globalThis as typeof globalThis & { [START_GLOBAL]?: Promise<{ executable: string; reused: boolean }> })[
+    START_GLOBAL
+  ] ?? null;
+}
+
+function setStartPromise(next: Promise<{ executable: string; reused: boolean }> | null): void {
+  const store = globalThis as typeof globalThis & {
+    [START_GLOBAL]?: Promise<{ executable: string; reused: boolean }>;
+  };
+  if (next === null) {
+    delete store[START_GLOBAL];
+  } else {
+    store[START_GLOBAL] = next;
+  }
+}
+
 /**
  * 等浏览器写出调试端点，并确认它**真的能连上**。
  *
  * ★ 必须验证：进程被杀后会留下上一次的 DevToolsActivePort，
  *   直接读会连到死端口（表现为启动失败 fetch failed）。
  */
-async function waitForBrowserEndpoint(profileDir: string, timeoutMs = 20_000): Promise<string> {
+async function waitForBrowserEndpoint(profileDir: string, spawnedAt: number, timeoutMs = 20_000): Promise<string> {
   const file = join(profileDir, 'DevToolsActivePort');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
+      /**
+       * ★ 只认本次 spawn 之后写出的端口文件。
+       *   上一轮残留的 DevToolsActivePort 指向已死端口，照读会让整个等待白等 20 秒。
+       */
+      const info = await stat(file);
+      if (info.mtimeMs < spawnedAt - 1000) {
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
       const text = await readFile(file, 'utf8');
       const port = Number(text.split('\n')[0]);
       if (Number.isInteger(port) && port > 0) {
@@ -332,9 +409,54 @@ function isProcessAlive(pid: number): boolean {
 /** taskkill /T 才会带走渲染进程；只用 child.kill() 会留下孤儿。 */
 async function killProcessTree(pid: number): Promise<void> {
   await new Promise<void>((resolve) => {
-    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => resolve());
-    setTimeout(resolve, 1500);
+    const timer = setTimeout(resolve, 1500);
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
+}
+
+/**
+ * 找出正在使用我们 profile 的 Edge 进程。
+ *
+ * ★ 为什么要按 profile 扫进程：`child.kill()` 只杀主进程，渲染/GPU 子进程
+ *   可能残留并继续占着 user-data-dir；下次启动时 Edge 会卡在"profile in use"
+ *   （无头模式下不弹窗、也不写 DevToolsActivePort），20 秒后超时 —— 然后再次
+ *   残留，形成自持的失败循环。只清理命令行里带我们 profile 路径的进程，不碰用户自己的 Edge。
+ */
+async function profileProcessIds(profileDir: string): Promise<number[]> {
+  if (process.platform !== 'win32') return [];
+  const escaped = profileDir.replace(/'/g, "''");
+  const script = `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -like '*${escaped}*' } | ForEach-Object { $_.ProcessId }`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return new Promise<number[]>((resolve) => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+      { windowsHide: true, timeout: 8000 },
+      (err, stdout) => {
+        if (err !== null) {
+          resolve([]);
+          return;
+        }
+        resolve(
+          String(stdout)
+            .split(/\r?\n/)
+            .map((line) => Number(line.trim()))
+            .filter((pid) => Number.isInteger(pid) && pid > 0),
+        );
+      },
+    );
+  });
+}
+
+/** 清掉所有占用我们 profile 的进程（含子进程）。 */
+async function killProcessesUsingProfile(profileDir: string): Promise<void> {
+  const ids = await profileProcessIds(profileDir);
+  for (const pid of ids) {
+    await killProcessTree(pid);
+  }
 }
 
 /** 连一下；连不上（端口已死 / 已退出）返回 null，不抛错。 */
@@ -387,6 +509,70 @@ async function findAdoptable(dataDir: string, profileDir: string): Promise<CdpCo
   return null;
 }
 
+async function ensureScreencast(state: BrowserSessionState): Promise<void> {
+  if (state.screencastOn) return;
+  state.screencastOn = true;
+  try {
+    await startPageScreencast(state.cdp, state.pageSessionId, state.viewport);
+  } catch {
+    state.screencastOn = false;
+  }
+}
+
+function stopScreencast(state: BrowserSessionState): void {
+  if (!state.screencastOn) return;
+  state.screencastOn = false;
+  if (state.frameTimer !== null) {
+    clearTimeout(state.frameTimer);
+    state.frameTimer = null;
+  }
+  state.pendingFrame = null;
+  void state.cdp.send('Page.stopScreencast', {}, state.pageSessionId).catch(() => undefined);
+}
+
+/**
+ * 把帧推给订阅者，但限制最高频率。
+ *
+ * ★ 为什么在这里节流而不是让 Chrome 少截：CDP 没有"目标帧率"参数，
+ *   页面每画一帧就发一帧（实测可达 90fps）。不节流时前端要把 7MB/s 的
+ *   base64 塞进主线程解码，滚轮和点击都会被拖死。这里只保留最新一帧，
+ *   高频时用定时器合并，带宽与主线程占用都降到 1/3 以下。
+ */
+function forwardFrame(state: BrowserSessionState, frame: BrowserFrame): void {
+  if (state.frameSubscribers.size === 0) return;
+  const emit = (value: BrowserFrame): void => {
+    state.lastForwardAt = Date.now();
+    for (const cb of state.frameSubscribers) {
+      try {
+        cb(value);
+      } catch {
+        // 订阅者出错不影响其它订阅者
+      }
+    }
+  };
+
+  const elapsed = Date.now() - state.lastForwardAt;
+  if (elapsed >= FRAME_MIN_INTERVAL_MS) {
+    state.pendingFrame = null;
+    if (state.frameTimer !== null) {
+      clearTimeout(state.frameTimer);
+      state.frameTimer = null;
+    }
+    emit(frame);
+    return;
+  }
+
+  state.pendingFrame = frame;
+  if (state.frameTimer === null) {
+    state.frameTimer = setTimeout(() => {
+      state.frameTimer = null;
+      const pending = state.pendingFrame;
+      state.pendingFrame = null;
+      if (pending !== null) emit(pending);
+    }, FRAME_MIN_INTERVAL_MS - elapsed);
+  }
+}
+
 /** 把连接装成会话：建页、附着、串流、下载、事件监听。 */
 async function finishSession(
   cdp: CdpConnection,
@@ -396,9 +582,10 @@ async function finishSession(
   downloadDir: string,
   reused: boolean,
 ): Promise<{ executable: string; reused: boolean }> {
-  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
+  const viewport = { ...DEFAULT_VIEWPORT };
+  const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: START_PAGE });
   const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true });
-  await setupPageSession(cdp, sessionId);
+  await preparePageSession(cdp, sessionId, viewport);
 
   await cdp.send('Browser.setDownloadBehavior', {
     behavior: 'allow',
@@ -414,6 +601,11 @@ async function finishSession(
     targetId,
     downloadDir,
     dataDir,
+    viewport,
+    lastForwardAt: 0,
+    screencastOn: false,
+    pendingFrame: null,
+    frameTimer: null,
     pages: new Map([[targetId, { targetId, sessionId }]]),
     pageOrder: [targetId],
     frame: null,
@@ -426,23 +618,18 @@ async function finishSession(
     const meta = params['metadata'] as { deviceWidth?: number; deviceHeight?: number } | undefined;
     const frame: BrowserFrame = {
       data: String(params['data'] ?? ''),
-      width: meta?.deviceWidth ?? VIEWPORT.width,
-      height: meta?.deviceHeight ?? VIEWPORT.height,
+      width: meta?.deviceWidth ?? state.viewport.width,
+      height: meta?.deviceHeight ?? state.viewport.height,
       at: Date.now(),
     };
     state.frame = frame;
     const frameSessionId = eventSessionId ?? sessionId;
     const ackId = params['sessionId'];
     if (typeof ackId === 'number') {
+      // 每帧都要 ack（即使不转发），否则 Chrome 会暂停串流
       void cdp.send('Page.screencastFrameAck', { sessionId: ackId }, frameSessionId).catch(() => undefined);
     }
-    for (const cb of state.frameSubscribers) {
-      try {
-        cb(frame);
-      } catch {
-        // 订阅者出错不影响其它订阅者
-      }
-    }
+    forwardFrame(state, frame);
   });
 
   /**
@@ -483,6 +670,7 @@ async function finishSession(
     void clearPersisted(dataDir);
   });
   setSession(state);
+  // ★ 串流不在这里开：等第一个 SSE 订阅者到来再开，没人看就完全不截图。
   return { executable, reused };
 }
 
@@ -492,6 +680,24 @@ async function finishSession(
  * ★ 懒启动：第一次打开浏览器页签才启动，不用就不占内存。
  */
 export async function ensureBrowser(dataDir: string): Promise<{ executable: string; reused: boolean }> {
+  const current = getSession();
+  if (current !== null) {
+    current.lastUsedAt = Date.now();
+    return { executable: current.executable, reused: true };
+  }
+
+  const pending = getStartPromise();
+  if (pending !== null) {
+    const result = await pending;
+    return { executable: result.executable, reused: true };
+  }
+
+  const started = startBrowser(dataDir).finally(() => setStartPromise(null));
+  setStartPromise(started);
+  return started;
+}
+
+async function startBrowser(dataDir: string): Promise<{ executable: string; reused: boolean }> {
   const current = getSession();
   if (current !== null) {
     current.lastUsedAt = Date.now();
@@ -530,8 +736,14 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
     await clearPersisted(dataDir);
   }
 
-  // 只清锁；DevToolsActivePort 留着也能被"验证可连"过滤掉，删了反而丢掉接管线索
-  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile']) {
+  /**
+   * 2.5) 把还占着 profile 的残留进程清干净。
+   *   接管失败的常见原因就是上一轮只杀了主进程、渲染进程还活着占着 user-data-dir；
+   *   此时新实例会卡在 profile in use（不写端口、也不退出），只能在 20 秒后超时。
+   *   只清命令行里带我们 profile 路径的 msedge，不碰用户自己的浏览器。
+   */
+  await killProcessesUsingProfile(profileDir);
+  for (const lock of ['SingletonLock', 'SingletonCookie', 'lockfile', 'DevToolsActivePort']) {
     await rm(join(profileDir, lock), { force: true }).catch(() => undefined);
   }
 
@@ -544,7 +756,7 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
     '--disable-component-update',
     '--disable-sync',
     '--disable-features=Translate,MediaRouter,OptimizationHints',
-    `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
+    `--window-size=${DEFAULT_VIEWPORT.width},${DEFAULT_VIEWPORT.height}`,
     ...(HEADLESS ? ['--headless=new', '--hide-scrollbars'] : []),
     'about:blank',
   ];
@@ -556,6 +768,7 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
    *   还在收尾时，新实例会短暂报 profile in use；等 1.2 秒再拉通常就好了。
    */
   const launchOnce = async (): Promise<{ executable: string; reused: boolean }> => {
+    const spawnedAt = Date.now();
     const child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
     const exited = new Promise<never>((_, reject) => {
       child.once('exit', (code) =>
@@ -563,15 +776,17 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
       );
     });
     try {
-      const wsUrl = await Promise.race([waitForBrowserEndpoint(profileDir), exited]);
+      const wsUrl = await Promise.race([waitForBrowserEndpoint(profileDir, spawnedAt), exited]);
       const cdp = await CdpConnection.connect(wsUrl);
       await writePersisted(dataDir, { pid: child.pid ?? 0, wsUrl, executable });
       return await finishSession(cdp, executable, child, dataDir, downloadDir, false);
     } catch (err) {
-      try {
-        child.kill();
-      } catch {
-        // 忽略
+      /**
+       * ★ 必须杀整棵树：child.kill() 只结束主进程，GPU/渲染进程会残留占住 profile，
+       *   下一轮启动就卡在 profile in use，形成"每次启动都超时"的死循环。
+       */
+      if (child.pid !== undefined) {
+        await killProcessTree(child.pid);
       }
       throw err;
     }
@@ -593,7 +808,10 @@ export async function ensureBrowser(dataDir: string): Promise<{ executable: stri
         }
       }
       const inUse = err instanceof BrowserError && err.message.includes('code=21');
-      if (inUse && attempt === 0) {
+      const timedOut = err instanceof BrowserError && err.code === 'timeout';
+      if ((inUse || timedOut) && attempt === 0) {
+        // 重试前再清一次：这一轮可能刚留下新的子进程
+        await killProcessesUsingProfile(profileDir);
         await new Promise((r) => setTimeout(r, 1200));
         continue;
       }
@@ -749,6 +967,55 @@ export async function closeBrowser(): Promise<void> {
   await clearPersisted(state.dataDir);
 }
 
+/**
+ * 统一处理一条输入事件（HTTP 单发与长连接流共用）。
+ *
+ * ★ 抽出来是为了让输入通道可以换成"一次连接发所有事件"，
+ *   而校验与 CDP 分发只保留一份。
+ */
+export interface InputPayload {
+  readonly type?: unknown;
+  readonly action?: unknown;
+  readonly x?: unknown;
+  readonly y?: unknown;
+  readonly button?: unknown;
+  readonly deltaX?: unknown;
+  readonly deltaY?: unknown;
+  readonly text?: unknown;
+  readonly key?: unknown;
+}
+
+export async function applyInput(payload: InputPayload): Promise<void> {
+  const type = String(payload.type ?? '');
+  if (type === 'mouse') {
+    const x = Number(payload.x);
+    const y = Number(payload.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new BrowserError('缺少坐标', 'cdp_error');
+    const action = String(payload.action ?? '');
+    const button = payload.button;
+    const deltaX = Number(payload.deltaX);
+    const deltaY = Number(payload.deltaY);
+    await mouseInput({
+      type: action === 'down' ? 'down' : action === 'up' ? 'up' : action === 'wheel' ? 'wheel' : 'move',
+      x,
+      y,
+      ...(button === 'left' || button === 'right' || button === 'middle' ? { button } : {}),
+      ...(Number.isFinite(deltaX) ? { deltaX } : {}),
+      ...(Number.isFinite(deltaY) ? { deltaY } : {}),
+    });
+    return;
+  }
+  if (type === 'text') {
+    await keyInput({ type: 'text', text: String(payload.text ?? '') });
+    return;
+  }
+  if (type === 'key') {
+    await keyInput({ type: 'key', key: String(payload.key ?? '') });
+    return;
+  }
+  throw new BrowserError('未知输入类型', 'cdp_error');
+}
+
 // ═══════════════════════════════════════════════════════════
 // 输入转发
 // ═══════════════════════════════════════════════════════════
@@ -760,13 +1027,27 @@ export async function mouseInput(event: {
   readonly x: number;
   readonly y: number;
   readonly button?: 'left' | 'middle' | 'right';
+  /** 滚轮增量（CSS px）；不传时按 120 处理，兼容旧调用 */
+  readonly deltaX?: number;
+  readonly deltaY?: number;
 }): Promise<void> {
   const state = requireSession();
   const button = event.button ?? 'left';
   if (event.type === 'wheel') {
+    /**
+     * ★ 必须用调用方给的真实增量：以前写死 deltaY: 120，
+     *   结果向上滚也会把页面往下滚，触控板的小增量也被抹平。
+     */
+    const clamp = (value: number): number => Math.max(-2000, Math.min(2000, Math.round(value)));
     await state.cdp.send(
       'Input.dispatchMouseEvent',
-      { type: 'mouseWheel', x: event.x, y: event.y, deltaX: 0, deltaY: 120 },
+      {
+        type: 'mouseWheel',
+        x: event.x,
+        y: event.y,
+        deltaX: clamp(event.deltaX ?? 0),
+        deltaY: clamp(event.deltaY ?? 120),
+      },
       state.pageSessionId,
     );
     return;
@@ -869,11 +1150,64 @@ export async function readSelection(): Promise<string> {
 }
 
 /** 订阅画面帧；返回取消函数。 */
+/**
+ * 跟随面板尺寸调整远端视口。
+ *
+ * ★ 固定 1280×800 再 contain 缩放，必然出现黑边、文字也小；
+ *   把远端视口改成面板实际尺寸，页面像真正被拉伸的浏览器窗口一样重排。
+ */
+export async function resizeViewport(width: number, height: number): Promise<{ width: number; height: number }> {
+  const state = requireSession();
+  const next = clampViewport(width, height);
+  if (next.width === state.viewport.width && next.height === state.viewport.height) return next;
+
+  state.viewport = next;
+  await state.cdp.send(
+    'Emulation.setDeviceMetricsOverride',
+    { width: next.width, height: next.height, deviceScaleFactor: 1, mobile: false },
+    state.pageSessionId,
+  );
+
+  // 截图上限跟着视口走；重启串流才能让新尺寸生效
+  if (state.screencastOn) {
+    stopScreencast(state);
+    await ensureScreencast(state);
+    await seedFrame(state);
+  }
+  return next;
+}
+
 export function subscribeFrames(cb: (frame: BrowserFrame) => void): () => void {
   const state = requireSession();
+  const firstSubscriber = state.frameSubscribers.size === 0;
   state.frameSubscribers.add(cb);
-  if (state.frame !== null) cb(state.frame);
-  return () => state.frameSubscribers.delete(cb);
+
+  if (state.frame !== null) {
+    cb(state.frame);
+  }
+  /**
+   * 首个订阅者总是补一帧：面板关闭期间页面可能已变化（AI 导航、resize），
+   * 先推缓存帧再刷新一张，避免用户看到关闭前的旧画面。
+   */
+  if (firstSubscriber || state.frame === null) {
+    void seedFrame(state);
+  }
+
+  /**
+   * ★ 没人看就不截图：面板关掉 / 页签切走 / 窗口在后台时 SSE 会断开，
+   *   这时如果还保持 screencast，Edge 会持续 90fps 截图编码（实测 4~5 核），
+   *   整个应用都会跟着卡。
+   */
+  if (firstSubscriber) {
+    void ensureScreencast(state);
+  }
+
+  return () => {
+    state.frameSubscribers.delete(cb);
+    if (state.frameSubscribers.size === 0) {
+      stopScreencast(state);
+    }
+  };
 }
 
 export function latestFrame(): BrowserFrame | null {
@@ -885,22 +1219,83 @@ export function __resetBrowserForTest(): void {
   setSession(null);
 }
 
-export { VIEWPORT };
+export { DEFAULT_VIEWPORT };
 
-/**
- * 给一个页面会话装好：启用 Page/Runtime、固定视口、开始串流。
- *
- * ★ 抽出来是因为弹窗（OAuth 登录等）打开时要复用同一套初始化。
- */
-async function setupPageSession(cdp: CdpConnection, sessionId: string): Promise<void> {
+/** 页面初始化：启用 Page/Runtime、应用视口（不含串流）。 */
+/** 页面初始化（不含串流）：启用 Page/Runtime、固定视口。 */
+async function preparePageSession(
+  cdp: CdpConnection,
+  sessionId: string,
+  viewport: { width: number; height: number },
+): Promise<void> {
   await cdp.send('Page.enable', {}, sessionId);
   await cdp.send('Runtime.enable', {}, sessionId);
   await cdp.send(
     'Emulation.setDeviceMetricsOverride',
-    { width: VIEWPORT.width, height: VIEWPORT.height, deviceScaleFactor: 1, mobile: false },
+    { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: false },
     sessionId,
   );
-  await cdp.send('Page.startScreencast', SCREENCAST, sessionId);
+}
+
+/**
+ * ★ 必须先注册 `Page.screencastFrame` 监听，再调这里。
+ *   反了的话首帧会丢、也永远不会被 ack，Chrome 会直接暂停串流 ——
+ *   表现就是面板一直停在"等待画面…，页面还没有产生新帧"。
+ */
+async function startPageScreencast(
+  cdp: CdpConnection,
+  sessionId: string,
+  viewport: { width: number; height: number },
+): Promise<void> {
+  await cdp.send(
+    'Page.startScreencast',
+    {
+      format: 'jpeg',
+      quality: SCREENCAST_QUALITY,
+      maxWidth: viewport.width,
+      maxHeight: viewport.height,
+      /**
+       * 每帧都截，由服务端按 30fps 合并转发。
+       * 取 2 会先丢掉一半再限流，滚动时容易出现 40ms+ 的间隔；
+       * 面板尺寸下编码成本可接受，换来更稳的帧间隔。
+       */
+      everyNthFrame: 1,
+    },
+    sessionId,
+  );
+}
+
+/**
+ * 主动截一帧作为初始画面。
+ *
+ * ★ about:blank 不一定会触发 screencast 帧；没有这一帧，面板会白等。
+ *   截一张当前画面，订阅者一连上就能看到内容。
+ */
+async function seedFrame(state: BrowserSessionState): Promise<void> {
+  try {
+    const shot = await state.cdp.send<{ data?: string }>(
+      'Page.captureScreenshot',
+      { format: 'jpeg', quality: 65 },
+      state.pageSessionId,
+    );
+    if (typeof shot.data !== 'string' || shot.data.length === 0) return;
+    const frame: BrowserFrame = {
+      data: shot.data,
+      width: state.viewport.width,
+      height: state.viewport.height,
+      at: Date.now(),
+    };
+    state.frame = frame;
+    for (const cb of state.frameSubscribers) {
+      try {
+        cb(frame);
+      } catch {
+        // 订阅者出错不影响其它订阅者
+      }
+    }
+  } catch {
+    // 页面还在切换/已关闭：下一次订阅或下一帧会补上
+  }
 }
 
 /** 把串流切到某个标签页；不存在就先附着（弹窗场景会先注册）。 */
@@ -912,7 +1307,7 @@ async function switchToTarget(state: BrowserSessionState, targetId: string): Pro
         targetId,
         flatten: true,
       });
-      await setupPageSession(state.cdp, sessionId);
+      await preparePageSession(state.cdp, sessionId, state.viewport);
       entry = { targetId, sessionId };
       state.pages.set(targetId, entry);
       if (!state.pageOrder.includes(targetId)) state.pageOrder.push(targetId);
@@ -921,9 +1316,14 @@ async function switchToTarget(state: BrowserSessionState, targetId: string): Pro
     const previousSession = state.pageSessionId;
     // 先停掉旧页面的串流，避免两个页面同时推帧（弹窗里播视频时尤其明显）
     await state.cdp.send('Page.stopScreencast', {}, previousSession).catch(() => undefined);
+    state.screencastOn = false;
 
     try {
-      await setupPageSession(state.cdp, entry.sessionId);
+      await preparePageSession(state.cdp, entry.sessionId, state.viewport);
+      if (state.frameSubscribers.size > 0) {
+        await startPageScreencast(state.cdp, entry.sessionId, state.viewport);
+        state.screencastOn = true;
+      }
     } catch {
       /**
        * 会话失效（比如页面被挂起后旧 session 不再接受命令）：
@@ -935,12 +1335,17 @@ async function switchToTarget(state: BrowserSessionState, targetId: string): Pro
       });
       entry = { targetId: entry.targetId, sessionId };
       state.pages.set(targetId, entry);
-      await setupPageSession(state.cdp, sessionId);
+      await preparePageSession(state.cdp, sessionId, state.viewport);
+      if (state.frameSubscribers.size > 0) {
+        await startPageScreencast(state.cdp, sessionId, state.viewport);
+        state.screencastOn = true;
+      }
     }
 
     state.pageSessionId = entry.sessionId;
     state.targetId = targetId;
     state.frame = null;
+    if (state.frameSubscribers.size > 0) void seedFrame(state);
   } catch {
     // 目标已经关掉：保持当前页面不动
   }
@@ -979,14 +1384,8 @@ export async function listTabs(): Promise<readonly BrowserTab[]> {
 /** 新建标签页并切过去。 */
 export async function newTab(): Promise<{ id: string }> {
   const state = requireSession();
-  const { targetId } = await state.cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank' });
-  const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
-    targetId,
-    flatten: true,
-  });
-  await setupPageSession(state.cdp, sessionId);
-  state.pages.set(targetId, { targetId, sessionId });
-  state.pageOrder.push(targetId);
+  const { targetId } = await state.cdp.send<{ targetId: string }>('Target.createTarget', { url: START_PAGE });
+  // switchToTarget 会负责附着、初始化、开串流与补帧，这里不重复做
   await switchToTarget(state, targetId);
   return { id: targetId };
 }
