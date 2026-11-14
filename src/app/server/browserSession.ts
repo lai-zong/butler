@@ -39,13 +39,9 @@ const SCREENCAST_QUALITY = 50;
 const START_PAGE = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>新标签页</title>
 <style>
-  html,body{height:100%;margin:0}
-  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
-    background:#faf8f3;color:#3c3a35;font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-  .mark{font-size:22px;font-weight:600;letter-spacing:.02em}
-  .hint{color:#8a8578}
+  html,body{height:100%;margin:0;background:#faf8f3}
 </style></head>
-<body><div class="mark">butler 浏览器</div><div class="hint">在上方地址栏输入网址或搜索词</div></body></html>`)}`;
+<body></body></html>`)}`;
 
 /**
  * 视口尺寸夹取：面板可能被拖得极小或放到很大，超出范围的尺寸会让页面布局失真，
@@ -185,13 +181,44 @@ class CdpConnection {
     return new CdpConnection(ws);
   }
 
-  send<T = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<T> {
+  /**
+   * 发一条 CDP 命令。
+   *
+   * ★ 必须有超时：页面切换/关闭后，发往旧 session 的命令可能永远等不到响应；
+   *   没有超时的话，一次切标签就会把 tabBusy 卡死，后续点击全部被忽略，
+   *   表现就是"点了很久没反应，然后突然恢复"。
+   */
+  send<T = Record<string, unknown>>(
+    method: string,
+    params: Record<string, unknown> = {},
+    sessionId?: string,
+    timeoutMs = 10_000,
+  ): Promise<T> {
     if (this.closed) return Promise.reject(new BrowserError('浏览器连接已断开', 'cdp_error'));
     this.seq += 1;
     const id = this.seq;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId !== undefined ? { sessionId } : {}) }));
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(new BrowserError(`CDP 调用超时：${method}`, 'timeout'));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (value: unknown) => {
+          clearTimeout(timer);
+          resolve(value as T);
+        },
+        reject: (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      try {
+        this.ws.send(JSON.stringify({ id, method, params, ...(sessionId !== undefined ? { sessionId } : {}) }));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new BrowserError('CDP 发送失败', 'cdp_error'));
+      }
     });
   }
 
@@ -642,14 +669,38 @@ async function finishSession(
     const info = params['targetInfo'] as
       | { type?: string; targetId?: string; openerId?: string }
       | undefined;
-    if (
-      info?.type === 'page' &&
-      typeof info.targetId === 'string' &&
-      info.openerId === state.targetId &&
-      info.targetId !== state.targetId
-    ) {
-      void switchToTarget(state, info.targetId);
-    }
+    if (info?.type !== 'page' || typeof info.targetId !== 'string') return;
+    const targetId = info.targetId;
+    if (targetId === state.targetId) return;
+    void (async () => {
+      /**
+       * ★ 先把目标登记进 pages：弹窗链接不一定带 openerId，
+       *   只按 opener 判断会让新标签页根本不进标签表，界面要等很久的轮询。
+       * ★ 只有 opener 真的是当前页时才自动切过去；其它页面只登记，等用户点。
+       */
+      if (!state.pages.has(targetId)) {
+        try {
+          const { sessionId } = await cdp.send<{ sessionId: string }>(
+            'Target.attachToTarget',
+            { targetId, flatten: true },
+            undefined,
+            5_000,
+          );
+          state.pages.set(targetId, { targetId, sessionId });
+          if (!state.pageOrder.includes(targetId)) state.pageOrder.push(targetId);
+        } catch {
+          return;
+        }
+      }
+      /**
+       * opener 匹配就切；noopener 链接没有 openerId，也切过去——
+       * 这是用户主动点出来的新页面，不切会表现为"点了链接没反应"。
+       * 其它后台页面只登记，等用户点标签。
+       */
+      if (info.openerId === state.targetId || info.openerId === undefined) {
+        await switchToTarget(state, targetId);
+      }
+    })();
   });
 
   // 页面自己关掉（window.close / 崩溃）时把标签表同步掉
@@ -943,6 +994,47 @@ export async function readPage(): Promise<{ url: string; title: string; text: st
   };
 }
 
+/** 当前页面的标题/URL（浏览器未运行时返回 null）；被动上下文只取这一小块。 */
+export async function browserPageSummary(): Promise<{ title: string; url: string } | null> {
+  const state = getSession();
+  if (state === null) return null;
+  try {
+    const info = await pageInfo();
+    return { title: info.title, url: info.url };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 只取当前页正文，不截图。
+ *
+ * ★ 工具/被动上下文只要文字；readPage() 会额外截一张 PNG，
+ *   对每轮对话来说是白付的编码与内存成本。
+ */
+export async function readPageText(maxChars = 12_000): Promise<{
+  title: string;
+  url: string;
+  text: string;
+}> {
+  const state = requireSession();
+  const info = await pageInfo();
+  const evalResult = await state.cdp.send<{ result: { value?: unknown } }>(
+    'Runtime.evaluate',
+    {
+      expression: `(() => {
+        const body = document.body;
+        if (!body) return '';
+        const text = (body.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
+        return text.slice(0, ${Math.max(500, Math.round(maxChars))});
+      })()`,
+      returnByValue: true,
+    },
+    state.pageSessionId,
+  );
+  return { title: info.title, url: info.url, text: String(evalResult.result.value ?? '') };
+}
+
 export async function closeBrowser(): Promise<void> {
   const current = getSession();
   if (current === null) return;
@@ -981,6 +1073,7 @@ export interface InputPayload {
   readonly button?: unknown;
   readonly deltaX?: unknown;
   readonly deltaY?: unknown;
+  readonly buttons?: unknown;
   readonly text?: unknown;
   readonly key?: unknown;
 }
@@ -995,11 +1088,13 @@ export async function applyInput(payload: InputPayload): Promise<void> {
     const button = payload.button;
     const deltaX = Number(payload.deltaX);
     const deltaY = Number(payload.deltaY);
+    const buttons = Number(payload.buttons);
     await mouseInput({
       type: action === 'down' ? 'down' : action === 'up' ? 'up' : action === 'wheel' ? 'wheel' : 'move',
       x,
       y,
       ...(button === 'left' || button === 'right' || button === 'middle' ? { button } : {}),
+      ...(Number.isFinite(buttons) ? { buttons } : {}),
       ...(Number.isFinite(deltaX) ? { deltaX } : {}),
       ...(Number.isFinite(deltaY) ? { deltaY } : {}),
     });
@@ -1030,6 +1125,11 @@ export async function mouseInput(event: {
   /** 滚轮增量（CSS px）；不传时按 120 处理，兼容旧调用 */
   readonly deltaX?: number;
   readonly deltaY?: number;
+  /**
+   * 鼠标按键掩码（左 1 / 右 2 / 中 4）。
+   * ★ 拖选靠它：move 事件若始终传 0，远端只会认为指针在悬停。
+   */
+  readonly buttons?: number;
 }): Promise<void> {
   const state = requireSession();
   const button = event.button ?? 'left';
@@ -1059,8 +1159,8 @@ export async function mouseInput(event: {
       type,
       x: event.x,
       y: event.y,
-      button: event.type === 'move' ? 'none' : button,
-      buttons: event.type === 'move' ? 0 : BUTTON_MASK[button],
+      button: event.type === 'move' ? ((event.buttons ?? 0) > 0 ? button : 'none') : button,
+      buttons: event.type === 'move' ? (event.buttons ?? 0) : BUTTON_MASK[button],
       clickCount: event.type === 'move' ? 0 : 1,
     },
     state.pageSessionId,
@@ -1228,12 +1328,14 @@ async function preparePageSession(
   sessionId: string,
   viewport: { width: number; height: number },
 ): Promise<void> {
-  await cdp.send('Page.enable', {}, sessionId);
-  await cdp.send('Runtime.enable', {}, sessionId);
+  // 页面可能已被关闭/挂起：短超时，避免切标签时无限等待。
+  await cdp.send('Page.enable', {}, sessionId, 5_000);
+  await cdp.send('Runtime.enable', {}, sessionId, 5_000);
   await cdp.send(
     'Emulation.setDeviceMetricsOverride',
     { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: false },
     sessionId,
+    5_000,
   );
 }
 
@@ -1299,14 +1401,16 @@ async function seedFrame(state: BrowserSessionState): Promise<void> {
 }
 
 /** 把串流切到某个标签页；不存在就先附着（弹窗场景会先注册）。 */
-async function switchToTarget(state: BrowserSessionState, targetId: string): Promise<void> {
+async function switchToTarget(state: BrowserSessionState, targetId: string): Promise<boolean> {
   try {
     let entry = state.pages.get(targetId);
     if (entry === undefined) {
-      const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
-        targetId,
-        flatten: true,
-      });
+      const { sessionId } = await state.cdp.send<{ sessionId: string }>(
+        'Target.attachToTarget',
+        { targetId, flatten: true },
+        undefined,
+        5_000,
+      );
       await preparePageSession(state.cdp, sessionId, state.viewport);
       entry = { targetId, sessionId };
       state.pages.set(targetId, entry);
@@ -1315,7 +1419,7 @@ async function switchToTarget(state: BrowserSessionState, targetId: string): Pro
 
     const previousSession = state.pageSessionId;
     // 先停掉旧页面的串流，避免两个页面同时推帧（弹窗里播视频时尤其明显）
-    await state.cdp.send('Page.stopScreencast', {}, previousSession).catch(() => undefined);
+    await state.cdp.send('Page.stopScreencast', {}, previousSession, 2_000).catch(() => undefined);
     state.screencastOn = false;
 
     try {
@@ -1329,10 +1433,12 @@ async function switchToTarget(state: BrowserSessionState, targetId: string): Pro
        * 会话失效（比如页面被挂起后旧 session 不再接受命令）：
        * 重新附着一个会话再初始化，而不是直接放弃切换。
        */
-      const { sessionId } = await state.cdp.send<{ sessionId: string }>('Target.attachToTarget', {
-        targetId: entry.targetId,
-        flatten: true,
-      });
+      const { sessionId } = await state.cdp.send<{ sessionId: string }>(
+        'Target.attachToTarget',
+        { targetId: entry.targetId, flatten: true },
+        undefined,
+        5_000,
+      );
       entry = { targetId: entry.targetId, sessionId };
       state.pages.set(targetId, entry);
       await preparePageSession(state.cdp, sessionId, state.viewport);
@@ -1346,8 +1452,10 @@ async function switchToTarget(state: BrowserSessionState, targetId: string): Pro
     state.targetId = targetId;
     state.frame = null;
     if (state.frameSubscribers.size > 0) void seedFrame(state);
+    return true;
   } catch {
-    // 目标已经关掉：保持当前页面不动
+    // 目标已经关掉/会话失效：保持当前页面不动，交给调用方提示。
+    return false;
   }
 }
 
@@ -1384,7 +1492,12 @@ export async function listTabs(): Promise<readonly BrowserTab[]> {
 /** 新建标签页并切过去。 */
 export async function newTab(): Promise<{ id: string }> {
   const state = requireSession();
-  const { targetId } = await state.cdp.send<{ targetId: string }>('Target.createTarget', { url: START_PAGE });
+  const { targetId } = await state.cdp.send<{ targetId: string }>(
+    'Target.createTarget',
+    { url: START_PAGE },
+    undefined,
+    5_000,
+  );
   // switchToTarget 会负责附着、初始化、开串流与补帧，这里不重复做
   await switchToTarget(state, targetId);
   return { id: targetId };
@@ -1395,8 +1508,7 @@ export async function activateTab(id: string): Promise<boolean> {
   const state = requireSession();
   if (!state.pages.has(id)) return false;
   if (id === state.targetId) return true;
-  await switchToTarget(state, id);
-  return true;
+  return await switchToTarget(state, id);
 }
 
 /** 关闭标签页；关的是当前页就切到相邻页（都关完了就新开一个）。 */

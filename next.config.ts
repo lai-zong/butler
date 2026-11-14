@@ -42,6 +42,12 @@ const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: false },
 
   /**
+   * node-pty 是原生模块（带 .node 二进制），不能让 Next 把它打进 bundle：
+   * 交给 Node require 解析，构建产物才能找到编译好的 PTY 二进制。
+   */
+  serverExternalPackages: ['node-pty'],
+
+  /**
    * ★ 运行期数据目录不能进构建追踪。
    *   浏览器 profile 里有被浏览器本身锁住的 SQLite（Cookies 等），
    *   构建时被扫到会直接 EBUSY 失败；而且这些文件本来也不该进产物。

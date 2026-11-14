@@ -52,6 +52,13 @@ export interface SessionPathGuardOptions {
    *   · 主对话的工具作用域**不会**传这个字段。
    */
   readonly commandRoot?: string;
+  /**
+   * 本会话显式授权的工作区外路径（外部文件面板打开并授权后写入）。
+   *
+   * ★ 只对 `workspace` 档生效：`full` 本来就允许工作区外；`read-only` 仍只读。
+   * ★ 授权是路径级的，受保护路径检查先于它执行，所以授权也读不到 .butler-data。
+   */
+  readonly allowedPaths?: readonly string[];
 }
 
 /** 审查沙箱里允许的可执行文件（只覆盖"跑测试 / 构建 / 看状态"）。 */
@@ -101,6 +108,13 @@ export async function sessionPathGuard(
   const workspace = resolve(options.workspace);
   const realWorkspace = await realpath(workspace).catch(() => workspace);
 
+  const allowedEntries: { literal: string; real: string | null }[] = [];
+  for (const raw of options.allowedPaths ?? []) {
+    const literal = resolve(raw);
+    const real = await realpath(literal).catch(() => null);
+    allowedEntries.push({ literal, real });
+  }
+
   const protectedEntries: ProtectedEntry[] = [];
   for (const raw of options.protectedPaths) {
     const literal = resolve(raw);
@@ -129,12 +143,23 @@ export async function sessionPathGuard(
     return null;
   };
 
+  /** 用户逐文件授权的外部路径：字面与真实路径都必须落在授权项内。 */
+  const allowedByGrant = (literal: string, real: string): boolean => {
+    for (const entry of allowedEntries) {
+      if (!isPathInside(entry.literal, literal)) continue;
+      if (entry.real !== null && !isPathInside(entry.real, real)) continue;
+      return true;
+    }
+    return false;
+  };
+
   const deniedByWorkspace = (
     literal: string,
     real: string,
     shown: string,
   ): string | null => {
     if (options.permission === 'full') return null;
+    if (allowedByGrant(literal, real)) return null;
     if (!isPathInside(workspace, literal) || !isPathInside(realWorkspace, real)) {
       return (
         `工作区权限拒绝：${shown} 不在本对话工作区 ${workspace} 内` +

@@ -32,6 +32,7 @@ import type { ClockPort } from '@/core/ports/clock.js';
 import { ToolFramework } from '@/core/tools/framework.js';
 import { documentSearchTool } from '@/core/tools/builtin/documents.js';
 import { fileTools } from '@/core/tools/builtin/file.js';
+import { browserTools } from './browserTools.js';
 import { planTaskTool, type TaskPlanState } from '@/core/tools/builtin/plan.js';
 import { NodeFileSystem } from '@/adapters/fs/node.js';
 import { SessionPermissionPolicy } from './sessionPermission.js';
@@ -78,6 +79,13 @@ export interface CreateChatToolScopeInput {
    *   权限、白名单与 cwd 校验都在 `sessionPathGuard` 里，这里只是透传。
    */
   readonly commandRoot?: string | undefined;
+  /**
+   * 本会话显式授权的工作区外文件路径（来自外部文件面板）。
+   *
+   * ★ 只传给 pathGuard，不改变 fs root：文件工具仍以工作区为基准，
+   *   但绝对路径命中授权项时允许读写。受保护路径优先级更高。
+   */
+  readonly allowedPaths?: readonly string[] | undefined;
 }
 
 export interface ChatToolScope {
@@ -99,6 +107,9 @@ const OWNED_TOOL_NAMES: readonly string[] = [
   'remove_path',
   'stat_path',
   'run_command',
+  'browser_read',
+  'browser_tabs',
+  'browser_selection',
   'document_search',
   'plan_task',
 ];
@@ -133,6 +144,9 @@ export async function createChatToolScope(
     permission: input.permission,
     protectedPaths,
     ...(input.commandRoot !== undefined ? { commandRoot: input.commandRoot } : {}),
+    ...(input.allowedPaths !== undefined && input.allowedPaths.length > 0
+      ? { allowedPaths: input.allowedPaths }
+      : {}),
   });
   const tools = new ToolFramework({
     log: input.log,
@@ -154,6 +168,8 @@ export async function createChatToolScope(
   });
 
   tools.registerAll(fileTools(fsPort));
+  // 浏览器只读工具：读当前内嵌页面/标签/选区，不碰文件系统，不需要 pathGuard。
+  tools.registerAll(browserTools());
   if (input.taskPlan !== undefined) {
     tools.register(planTaskTool(input.taskPlan));
   }

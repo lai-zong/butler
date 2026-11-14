@@ -25,6 +25,8 @@ import type { NextRequest } from 'next/server';
 import { DATA_DIR, getRuntime } from '@/app/runtime';
 import { acquireSessionTurn, trackActiveTurn } from '@/app/server/activeTurns.js';
 import { createChatToolScope } from '@/app/server/chatToolScope.js';
+import { externalGrantsFor } from '@/app/server/externalFiles.js';
+import { browserPageSummary } from '@/app/server/browserSession.js';
 import { getMarkedPetSessionId, latestNormalSessionOrCreate } from '@/app/server/petSession.js';
 import { buildPetUsageContext } from '@/app/server/petUsageContext.js';
 import { loadPetConfig } from '@/app/server/petConfig.js';
@@ -313,6 +315,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       workspace: turnSettings.effectiveWorkspace,
       permission: turnSettings.effectivePermission,
       dataDir: dataDirOf(rt),
+      // 外部文件面板授权的路径：只影响本会话本轮的工具作用域。
+      allowedPaths: externalGrantsFor(session.id),
       // config/ 与 .env.local 的受保护根必须跟随应用根，而不是用户工作区；
       // 否则设置 BUTLER_WORKSPACE 后 config/AGENTS.md 会落到保护区之外。
       appRoot: process.cwd(),
@@ -501,6 +505,17 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       rt.activeTurns += 1;
       try {
+        // 浏览器被动上下文：默认开启；只放标题/URL，正文由 browser_read 工具按需读取。
+        const browserPage = await browserPageSummary().catch(() => null);
+        const browserContext =
+          browserPage === null
+            ? undefined
+            : [
+                '[浏览器上下文] 用户当前正在看的内嵌浏览器页面：',
+                `标题：${browserPage.title || '（无标题）'}`,
+                `URL：${browserPage.url}`,
+                '需要正文时调用 browser_read；需要标签或选区时用 browser_tabs / browser_selection。',
+              ].join('\n');
         const result = await runTurn({
           sessionId: session.id,
           userText: text,
@@ -509,6 +524,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           //   全部来自这里，执行中 PATCH 不影响当前轮。
           settings: turnSettings,
           ...(petContext !== undefined && petContext.length > 0 ? { petContext } : {}),
+          ...(browserContext !== undefined ? { browserContext } : {}),
           // ★ 本轮图片（只这一次有效，不落历史）
           ...(images.length > 0 ? { images } : {}),
           // ★ 本轮询问通道（C6）：仅调用方声明能处理时才有，否则退回"立即拒绝"

@@ -98,6 +98,13 @@ export interface RunTurnArgs {
    */
   readonly petContext?: string;
   /**
+   * 浏览器被动上下文（当前标签页标题/URL）。
+   *
+   * ★ 只放页面标识，不放正文：正文由模型按需调用 browser_read。
+   *   这样每轮只多几十 token，却能让它知道“用户说的是哪个页面”。
+   */
+  readonly browserContext?: string;
+  /**
    * Web 聊天使用可选契约：闲聊不写，任务由模型按需调用 plan_task。
    * 定时任务/验证脚本不传，保持原有严格契约流程。
    */
@@ -370,6 +377,10 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
   if (args.petContext !== undefined && args.petContext.trim().length > 0) {
     // 只作为桌宠会话的附加 system 上下文；不写入对话历史。
     history.push(msg.system(args.petContext));
+  }
+  if (args.browserContext !== undefined && args.browserContext.trim().length > 0) {
+    // 浏览器上下文同样不写历史：它只描述“此刻屏幕上是什么”，下一轮会重新生成。
+    history.push(msg.system(args.browserContext));
   }
   const domainHistory = buildDomainHistoryMessages(priorMessages);
 

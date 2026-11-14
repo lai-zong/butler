@@ -65,7 +65,7 @@ afterEach(async () => {
 async function scopeFor(
   workspace: string,
   permission: 'read-only' | 'workspace' | 'full',
-  options: { readonly baseTools?: ToolFramework } = {},
+  options: { readonly baseTools?: ToolFramework; readonly allowedPaths?: readonly string[] } = {},
 ) {
   return await createChatToolScope({
     log,
@@ -76,6 +76,7 @@ async function scopeFor(
     appRoot,
     documentSearch: { search: async () => [] },
     ...(options.baseTools !== undefined ? { baseTools: options.baseTools } : {}),
+    ...(options.allowedPaths !== undefined ? { allowedPaths: options.allowedPaths } : {}),
   });
 }
 
@@ -408,5 +409,53 @@ describe('⑤ 作用域组装细节', () => {
     expect(scope.tools.get('read_file')).toBeDefined();
     expect(scope.tools.get('run_command')).toBeUndefined();
     expect(scope.protectedPaths).toContain(configDir);
+  });
+});
+
+describe('⑥ 外部文件授权：只放行显式路径，受保护路径仍拒绝', () => {
+  it('授权的文件可读写，未授权/受保护路径仍拒绝', async () => {
+    const outside = join(outsideDir, 'outside-secret.txt');
+    const scope = await scopeFor(wsA, 'workspace', { allowedPaths: [outside] });
+
+    const read = await execute(scope, 'read_file', { path: outside });
+    expect(read.ok).toBe(true);
+    expect(read.output).toContain('工作区外的秘密');
+
+    const write = await execute(scope, 'write_file', {
+      path: outside,
+      content: '由 AI 写入',
+    });
+    expect(write.ok).toBe(true);
+    expect(await readFile(outside, 'utf8')).toBe('由 AI 写入');
+
+    await expect(
+      execute(scope, 'read_file', { path: join(outsideDir, 'not-granted.txt') }),
+    ).rejects.toThrow(/工作区权限拒绝/);
+  });
+
+  it('授权指向受保护路径也不放行', async () => {
+    const secret = join(dataDir, 'events.jsonl');
+    await writeFile(secret, '{}', 'utf8');
+    const scope = await scopeFor(wsA, 'workspace', { allowedPaths: [secret] });
+    await expect(execute(scope, 'read_file', { path: secret })).rejects.toThrow(/受保护路径/);
+  });
+});
+
+describe('⑦ 浏览器只读工具：已注册，浏览器未启动时给出可读错误', () => {
+  it('browser_read / browser_tabs / browser_selection 都在作用域里', async () => {
+    const scope = await scopeFor(wsA, 'workspace');
+    for (const name of ['browser_read', 'browser_tabs', 'browser_selection']) {
+      expect(scope.tools.get(name)).toBeDefined();
+    }
+    const result = await execute(scope, 'browser_read', {});
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain('浏览器还没启动');
+  });
+
+  it('read-only 档也可用（它们本身是只读的）', async () => {
+    const scope = await scopeFor(wsA, 'read-only');
+    const result = await execute(scope, 'browser_tabs', {});
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain('浏览器还没启动');
   });
 });
