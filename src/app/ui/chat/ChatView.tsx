@@ -65,13 +65,6 @@ import type {
   MemoryTarget,
 } from '../lib/types.js';
 import { type ModelChoice, type PickableProfile } from './ModelPicker';
-import {
-  parsePetFocusPayload,
-  petFocusOriginChanged,
-  withSessionParam,
-  type PendingPetFocus,
-  type PetFocusTarget,
-} from './petFocus.js';
 import { SessionControls } from './SessionControls';
 import { SessionSettingsSheet } from './SessionSettingsSheet';
 import { ApprovalCard } from './ApprovalCard';
@@ -521,9 +514,6 @@ const IMAGE_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
  */
 const SEND_PENDING_TIMEOUT_MS = 20_000;
 
-/** 桌宠聚焦请求的一次性 TTL 很短（约 15s），2s 轮询能在过期前取走。 */
-const PET_FOCUS_POLL_MS = 2_000;
-
 /**
  * 判定“已经贴底”的剩余距离。
  *
@@ -564,24 +554,6 @@ const JUMP_LATEST_STYLE: CSSProperties = {
  *   保留别名，是因为调用处读起来仍然要表达"这是被 memo 的 Markdown"。
  */
 const MemoizedMarkdown = Markdown;
-
-/**
- * 把 ?session=<id> 写回地址栏，保留 hash（#/chat）。
- *
- * ★ 用 replaceState 而不是 location.assign/open：同一个标签页、不新增历史、
- *   不触发页面重载。更新地址失败也不影响已经加载好的会话。
- */
-function replaceSessionParam(sessionId: string): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const next = withSessionParam(window.location.href, sessionId);
-    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (next === current) return;
-    window.history.replaceState(window.history.state, '', next);
-  } catch {
-    // 地址栏只是展示投影：写不进去不影响会话本身。
-  }
-}
 
 function patchLast(turns: readonly LiveTurn[], fn: (a: LiveAssistant) => LiveAssistant): LiveTurn[] {
   if (turns.length === 0) return [...turns];
@@ -1067,9 +1039,6 @@ export function ChatView({
     null,
   );
   const bootDoneRef = useRef(false);
-  const pendingPetFocusRef = useRef<PendingPetFocus | null>(null);
-  const petFocusSeqRef = useRef(0);
-  const petFocusDrainingRef = useRef(false);
 
   /**
    * 只有“面板开着 + 点了展开”才进入浮窗布局。
@@ -1221,8 +1190,8 @@ export function ChatView({
   /**
    * streaming 同时写进 ref。
    *
-   * ★ 轮询与排空桌宠聚焦用的是稳定闭包：不能等 React 下一次渲染才知道
-   *   当前是否在流式执行，否则可能在流式中途把页面切走。
+   * ★ 用稳定闭包：不能等 React 下一次渲染才知道当前是否在流式执行，
+   *   否则「steer 失败后重发」等回调会在流式中途把页面状态弄乱。
    */
   const updateStreaming = useCallback((value: boolean): void => {
     streamingRef.current = value;
@@ -2770,112 +2739,6 @@ export function ChatView({
     return () => window.removeEventListener('butler:open-session', onOpenSession);
   }, [loadSession]);
 
-  /**
-   * 应用一次桌宠聚焦请求（只在当前页跳转，不新开窗口）。
-   *
-   * 竞态保护分三层：
-   *   1. seq：后到的桌宠请求会让更早的请求失效；
-   *   2. originSessionId：收到请求后用户手动切过会话，旧请求不再覆盖；
-   *   3. loadSession 自己的 loadSeqRef token：加载期间又被切走时，旧结果不会落盘。
-   */
-  const applyPetFocus = useCallback(
-    async (pending: PendingPetFocus): Promise<void> => {
-      const targetId = pending.sessionId;
-      if (pending.seq !== petFocusSeqRef.current) return;
-      if (petFocusOriginChanged(pending, sessionIdRef.current)) return;
-      if (targetId === sessionIdRef.current) return;
-
-      // 目标不在列表里：先刷新一次。刷新失败或仍不存在就放弃，绝不调用
-      // loadSession —— 它会把当前页清空后再显示错误，等于破坏了用户正看的内容。
-      if (!sessionsRef.current.some((s) => s.id === targetId)) {
-        const latest = await refreshSessions();
-        if (latest === null || !latest.some((s) => s.id === targetId)) return;
-        if (pending.seq !== petFocusSeqRef.current) return;
-        if (petFocusOriginChanged(pending, sessionIdRef.current)) return;
-      }
-
-      // 等待期间用户开了新一轮：把请求放回队列，等这一轮结束后再应用，
-      // 不打断正在执行的轮次，也不静默丢掉。
-      if (streamingRef.current) {
-        if (pendingPetFocusRef.current === null && pending.seq === petFocusSeqRef.current) {
-          pendingPetFocusRef.current = pending;
-        }
-        return;
-      }
-
-      // 预读一次详情。loadSession 会先把当前页清空再发请求；如果目标读不到，
-      // 用户正在看的内容就变成错误页了。先确认可读，失败就保持现状。
-      try {
-        await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(targetId)}`);
-      } catch {
-        return;
-      }
-      if (pending.seq !== petFocusSeqRef.current) return;
-      if (petFocusOriginChanged(pending, sessionIdRef.current)) return;
-      if (streamingRef.current) {
-        if (pendingPetFocusRef.current === null && pending.seq === petFocusSeqRef.current) {
-          pendingPetFocusRef.current = pending;
-        }
-        return;
-      }
-
-      const outcome = await loadSession(targetId);
-      if (!outcome.ok) return;
-      if (pending.seq !== petFocusSeqRef.current) return;
-      if (sessionIdRef.current !== targetId) return;
-      replaceSessionParam(targetId);
-    },
-    [loadSession, refreshSessions],
-  );
-
-  /**
-   * 排空待处理的聚焦请求。
-   *
-   * 串行执行：同一时刻只应用一个；流式执行中/首屏还没就绪就直接返回，
-   * 由对应状态变化的 effect 再次调用，不静默丢弃。
-   */
-  const drainPetFocus = useCallback((): void => {
-    if (petFocusDrainingRef.current) return;
-    if (!bootDoneRef.current) return;
-    petFocusDrainingRef.current = true;
-    void (async () => {
-      try {
-        for (;;) {
-          if (!bootDoneRef.current) break;
-          if (streamingRef.current) break;
-          const pending = pendingPetFocusRef.current;
-          if (pending === null) break;
-          pendingPetFocusRef.current = null;
-          if (pending.seq !== petFocusSeqRef.current) continue;
-          if (petFocusOriginChanged(pending, sessionIdRef.current)) continue;
-          if (pending.sessionId === sessionIdRef.current) continue;
-          try {
-            await applyPetFocus(pending);
-          } catch {
-            // 单次聚焦失败不影响当前页面，也不让整个轮询循环卡死。
-          }
-        }
-      } finally {
-        petFocusDrainingRef.current = false;
-      }
-    })();
-  }, [applyPetFocus]);
-
-  /** 轮询拿到请求：当前会话直接忽略；流式中先排队，其余立即应用。 */
-  const acceptPetFocus = useCallback(
-    (focus: PetFocusTarget): void => {
-      if (focus.sessionId === sessionIdRef.current) return;
-      pendingPetFocusRef.current = {
-        sessionId: focus.sessionId,
-        seq: ++petFocusSeqRef.current,
-        originSessionId: sessionIdRef.current,
-        fromBeforeBoot: !bootDoneRef.current,
-      };
-      drainPetFocus();
-    },
-    [drainPetFocus],
-  );
-
   const refreshCancellations = useCallback(async (id: string): Promise<void> => {
     try {
       const res = await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(id)}`);
@@ -3074,10 +2937,8 @@ export function ChatView({
           // 一个会话都没有：composer 属于「无会话」，恢复兜底草稿。
           setInput(readDraftText(draftStorageKey(null)));
         }
-        // 首屏会话落位之后才允许桌宠聚焦生效，否则会和首屏的 loadSession 抢同一个页面。
         bootDoneRef.current = true;
         onBootState({ state: 'ready' });
-        drainPetFocus();
       } catch (err) {
         if (cancelled) return;
         const message = errorMessage(err);
@@ -3089,7 +2950,7 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [drainPetFocus, loadSession, onBootState, refreshSessionIndex]);
+  }, [loadSession, onBootState, refreshSessionIndex]);
 
   // 数据被替换（导入备份）→ 旧会话 id 已失效，重新读取
   useEffect(() => {
@@ -3124,58 +2985,6 @@ export function ChatView({
       }
     })();
   }, [dataResetNonce, loadSession, refreshSessionIndex, setCurrentId, updateStreaming]);
-
-  // 流式执行结束（或被用户停止）后，再应用排队中的桌宠聚焦，避免打断当前轮。
-  useEffect(() => {
-    if (!streaming) drainPetFocus();
-  }, [drainPetFocus, streaming]);
-
-  // 桌宠 → Web 聚焦：每 ~2s 取一次一次性请求。
-  //
-  // ★ 轮询只写 ref / 调稳定回调，不 setState，不会每 2s 触发一次重渲染。
-  // ★ 端点不存在（旧构建/404）时安静停用；其它失败下一轮继续，不打印错误。
-  // ★ 首次轮询放在 2s 后：React StrictMode 会立即卸载重挂 effect，
-  //   立即发请求可能在第一次挂载里把一次性请求取走又丢掉。
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    let disposed = false;
-    let stopped = false;
-    let timer: number | null = null;
-
-    const schedule = (delay: number): void => {
-      if (disposed || stopped) return;
-      timer = window.setTimeout(() => {
-        void poll();
-      }, delay);
-    };
-
-    const poll = async (): Promise<void> => {
-      timer = null;
-      if (disposed || stopped) return;
-      try {
-        const payload = await fetchJson<unknown>('/api/pet/focus', {
-          signal: AbortSignal.timeout(8_000),
-        });
-        if (disposed || stopped) return;
-        const focus = parsePetFocusPayload(payload);
-        if (focus !== null) acceptPetFocus(focus);
-        schedule(PET_FOCUS_POLL_MS);
-      } catch (err) {
-        if (disposed) return;
-        if (err instanceof ApiError && err.status === 404) {
-          stopped = true;
-          return;
-        }
-        schedule(PET_FOCUS_POLL_MS);
-      }
-    };
-
-    schedule(PET_FOCUS_POLL_MS);
-    return () => {
-      disposed = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [acceptPetFocus]);
 
   // 回到对话时，若本来就在底部就贴到底
   useEffect(() => {

@@ -1,7 +1,7 @@
 /**
  * 桌宠固定会话。
  *
- * 桌面 Tk 桌宠和 Web 悬浮桌宠共用这一条会话：
+ * 网页桌宠使用这一条固定会话：
  *   - 优先使用 pet-config.sessionId；
  *   - 兼容迁移旧的 pet-state.sessionId；
  *   - 都没有时创建一条，并写回 pet-config。

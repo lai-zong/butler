@@ -56,9 +56,7 @@
     "validate:15": "node node_modules/tsx/dist/cli.mjs src/validate/15-desktop.ts",
     "validate:16": "node --env-file-if-exists=.env.local node_modules/tsx/dist/cli.mjs src/validate/16-vision.ts",
     "validate:17": "node node_modules/tsx/dist/cli.mjs src/validate/17-attachment.ts",
-    "validate:18": "node node_modules/tsx/dist/cli.mjs src/validate/18-mcp-wiring.ts",
-    "pet": "python scripts/desktop_pet.py",
-    "pet:preview": "python scripts/pet_preview.py"
+    "validate:18": "node node_modules/tsx/dist/cli.mjs src/validate/18-mcp-wiring.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",

@@ -12,8 +12,8 @@
  *
  * ★ 分区按需挂载：除模型接入外，面板只在被选中时渲染。
  *   以前七个分区用 hidden 常驻，进设置页就同时打出模型 / MCP / 文档 / 桌宠 /
- *   权限五个请求，桌宠面板还会在后台每 5 秒轮询 /api/pet/status——用户看不见，
- *   机器却一直在干活。请求都发在面板自己的 useEffect 里，不渲染就不发。
+ *   权限五个请求——用户看不见，机器却一直在干活。请求都发在面板自己的
+ *   useEffect 里，不渲染就不发。
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -57,7 +57,7 @@ const SETTINGS_NAV: readonly {
     items: [
       { id: 'model', label: '模型接入' },
       { id: 'automation', label: '自动化' },
-      { id: 'pet', label: '桌面宠物' },
+      { id: 'pet', label: '网页桌宠' },
     ],
   },
   {
@@ -303,13 +303,13 @@ export function SettingsView({
             </div>
           )}
 
-          {/* ── 桌面宠物 ── */}
+          {/* ── 网页桌宠 ── */}
           {settingsPage === 'pet' && (
             <div className="settings-page-view">
               <SettingsPageHead
                 eyebrow="PET"
-                title="桌面宠物"
-                description="桌宠可以显示在桌面窗口或 Web 页面里；这里保存它读取的形象、模型与人格偏好。"
+                title="网页桌宠"
+                description="网页桌宠显示在页面右下角；这里保存它读取的形象、大小、模型与人格偏好。"
               />
               <PetSettingsPanel notify={notify} />
             </div>

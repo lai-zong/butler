@@ -1719,12 +1719,9 @@ export interface ModelChoicesResponse {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 桌面宠物（GET / PUT /api/pet/config，GET /api/pet/status，
-//           POST /api/pet/start）
+// 网页桌宠（GET / PUT /api/pet/config）
 //
-// 设置页读写这些偏好，并可通过固定的服务端接口启动 / 重新打开
-// 桌宠进程；但不会结束进程 —— 退出仍由桌宠右键菜单或托盘完成。
-// 进程状态只信 PID 文件 + 进程存活，不看“设置页点过按钮”。
+// 设置页读写这些偏好；桌宠只存在于 Web 页面内，不再有独立进程。
 // ═══════════════════════════════════════════════════════════
 
 export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
@@ -1741,14 +1738,6 @@ export interface PetProactiveScenarios {
   readonly return: boolean;
 }
 
-/**
- * 显示位置。
- *
- * - `desktop`：独立桌面 Tk 进程（有托盘/置顶/贴边/系统语音）
- * - `web`：Web 页面内嵌悬浮桌宠（不启动 Tk，也没有系统级能力）
- */
-export type PetDisplayMode = 'desktop' | 'web';
-
 /** 桌宠用的模型；null = 跟随主界面当前对话模型。 */
 export interface PetModelChoice {
   readonly profileId: string;
@@ -1758,16 +1747,11 @@ export interface PetModelChoice {
 
 export interface PetConfigView {
   readonly version: 1;
-  /** 配置存在，不代表进程正在运行。 */
+  /** 是否在 Web 界面显示桌宠。 */
   readonly enabled: boolean;
-  /** 显示位置；默认 desktop。 */
-  readonly displayMode: PetDisplayMode;
-  /** 第一版只记录偏好，由启动器接入。 */
-  readonly autoStart: boolean;
   /** 显示高度，120–480。 */
   readonly size: number;
   readonly sprite: string;
-  readonly alwaysOnTop: boolean;
   readonly model: PetModelChoice | null;
   readonly thinkingLevel: PetThinkingLevel;
   /** 空字符串 = 默认管家；前端不回填默认提示词。 */
@@ -1796,38 +1780,13 @@ export interface PetConfigResponse {
   readonly assets: readonly PetAssetView[];
 }
 
-/** 桌宠进程状态；`pid` 为 null 表示没有存活的进程。 */
-export interface PetRuntimeView {
-  readonly running: boolean;
-  readonly pid: number | null;
-  readonly script: string;
-}
-
-/** GET /api/pet/status：状态读取失败时走 HTTP 500 + `{ error }`。 */
-export interface PetStatusResponse extends PetRuntimeView {
-  readonly ok: boolean;
-}
-
-/** POST /api/pet/start：`alreadyRunning` 为 true 时不会产生第二个实例。 */
-export interface PetStartResponse {
-  readonly ok: boolean;
-  readonly alreadyRunning: boolean;
-  readonly status: PetRuntimeView;
-}
-
 /**
- * GET /api/pet/session：桌面 Tk 桌宠与 Web 悬浮桌宠共用的固定会话。
+ * GET /api/pet/session：网页桌宠的固定会话。
  * 首次调用时由服务端创建并写回 pet-config。
  */
 export interface PetSessionResponse {
   readonly ok: boolean;
   readonly sessionId: string;
-}
-
-/** POST /api/pet/stop：返回停止后的真实进程状态（可能仍存活）。 */
-export interface PetStopResponse {
-  readonly ok: boolean;
-  readonly status: PetRuntimeView;
 }
 
 /**

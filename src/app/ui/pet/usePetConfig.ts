@@ -18,7 +18,7 @@ import { errorMessage } from '../lib/api.js';
 import type { PetAssetView, PetConfigResponse, PetConfigView } from '../lib/types.js';
 import { fetchPetConfig } from './petChat.js';
 
-/** 设置页保存显示位置后派发的同标签页事件。 */
+/** 设置页保存启用/配置后派发的同标签页事件。 */
 export const PET_CONFIG_EVENT = 'butler:pet-config';
 
 const CHANNEL_NAME = 'butler.webpet.config';
@@ -34,7 +34,6 @@ export interface PetConfigState {
 function asConfig(value: unknown): PetConfigView | null {
   if (typeof value !== 'object' || value === null) return null;
   const rec = value as Record<string, unknown>;
-  if (rec['displayMode'] !== 'desktop' && rec['displayMode'] !== 'web') return null;
   if (typeof rec['enabled'] !== 'boolean') return null;
   return value as PetConfigView;
 }
@@ -64,8 +63,8 @@ function applyResponse(res: PetConfigResponse): {
 /**
  * 广播一次配置变化。
  *
- * 设置页保存 displayMode 后调用；WebPet 自己也会收到同一事件。
- * 不依赖返回的配置对象是否完整 —— 接收方只读 displayMode / enabled 等字段。
+ * 设置页保存启用/配置后调用；WebPet 自己也会收到同一事件。
+ * 不依赖返回的配置对象是否完整 —— 接收方只读 enabled / size / sprite 等字段。
  */
 export function publishPetConfig(config: PetConfigView): void {
   if (typeof window === 'undefined') return;

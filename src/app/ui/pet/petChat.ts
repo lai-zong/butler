@@ -8,8 +8,13 @@
  * ★ 这里只保留**最终答复**（reply）与**里程碑摘要**（milestone）：
  *   旧的 progress / narration / stage 一律丢弃 —— 桌宠不展示
  *   “写任务契约”“开始执行”这类内部阶段，也不展示推理与工具细节。
+ *
+ * ★ 唯一的例外是 `approval`：它不是过程展示，而是一次**必须答复的请求**。
+ *   桌板已经复用普通对话的确认卡，所以这条事件不能在这里丢掉 ——
+ *   丢掉就等于“声明能处理、实际没处理”，工具调用会被挂到流结束。
  */
 
+import { approvalFromEvent, type ApprovalItem } from '../chat/approvalQueue.js';
 import { isReasoningLevel, modelRefOf, settingsOf, type SessionModelRef } from '../chat/sessionSettings.js';
 import { errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
 import type {
@@ -70,6 +75,7 @@ export type PetEvent =
   | { readonly kind: 'session'; readonly sessionId: string }
   | { readonly kind: 'milestone'; readonly text: string }
   | { readonly kind: 'reply'; readonly text: string }
+  | { readonly kind: 'approval'; readonly approval: ApprovalItem }
   | { readonly kind: 'settings'; readonly reasoning: ReasoningLevel }
   | { readonly kind: 'error'; readonly message: string }
   | { readonly kind: 'done' };
@@ -77,6 +83,35 @@ export type PetEvent =
 // ═══════════════════════════════════════════════════════════
 // SSE 解析
 // ═══════════════════════════════════════════════════════════
+
+/**
+ * `approval` 事件 → 队列项。
+ *
+ * ★ 为什么逐字段校验而不是直接强转：
+ *   这张卡上有「允许一次」按钮，用户会照着 summary 做决定。
+ *   缺 id 就答不回去（POST 没有目标），缺 summary 就只剩一个没有内容的
+ *   “需要确认的操作”；两种都只能伪造成一张会点错的卡，不如整条丢掉。
+ * ★ 只走 approvalFromEvent 的白名单：事件里多带的 timeoutMs / receivedAt
+ *   之类旧字段不进界面状态，免得以后又长出一个倒计时。
+ */
+function petApprovalFrom(rec: Record<string, unknown>): ApprovalItem | null {
+  const id = rec['id'];
+  if (typeof id !== 'string' || id.trim().length === 0) return null;
+  const toolName = rec['toolName'];
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) return null;
+  const tier = rec['tier'];
+  if (typeof tier !== 'string' || tier.trim().length === 0) return null;
+  const summary = rec['summary'];
+  if (typeof summary !== 'string' || summary.trim().length === 0) return null;
+  const preview = rec['preview'];
+  return approvalFromEvent({
+    id,
+    toolName,
+    tier,
+    summary: summary.trim(),
+    ...(typeof preview === 'string' && preview.length > 0 ? { preview } : {}),
+  });
+}
 
 /** 把一条 `data: {...}` 事件收窄成桌宠事件；不是可展示事件时返回 null。 */
 export function toPetEvent(raw: unknown): PetEvent | null {
@@ -101,6 +136,11 @@ export function toPetEvent(raw: unknown): PetEvent | null {
     return typeof text === 'string' ? { kind: 'reply', text } : null;
   }
 
+  if (type === 'approval') {
+    const approval = petApprovalFrom(rec);
+    return approval === null ? null : { kind: 'approval', approval };
+  }
+
   if (type === 'error') {
     const message = rec['message'];
     return {
@@ -120,7 +160,8 @@ export function toPetEvent(raw: unknown): PetEvent | null {
   if (type === 'done') return { kind: 'done' };
 
   // progress（阶段名）/ narration（叙述）/ stage 等内部过程不再进入桌宠；
-  // agent / reasoning / tool / approval / usage / verdict 同样丢弃。
+  // agent / reasoning / tool / usage / verdict 同样丢弃。
+  // （approval 是例外：见上方 petApprovalFrom。）
   return null;
 }
 
@@ -208,6 +249,8 @@ export function applyPetEvent(turn: PetTurn, event: PetEvent): PetTurn {
     }
     case 'session':
     case 'settings':
+    case 'approval':
+      // 确认请求不进轮次文本：它由 WebPet 放进 approvalQueue，答完就消失。
       return turn;
     default:
       return turn;
@@ -393,7 +436,7 @@ export async function sendPetProactiveFeedback(
   return postJson<PetProactiveFeedbackResponse>('/api/pet/proactive/feedback', { action });
 }
 
-/** 桌面桌宠与 Web 桌宠共用的固定会话。 */
+/** 网页桌宠的固定会话。 */
 export async function fetchPetSession(): Promise<string> {
   const res = await fetchJson<PetSessionResponse>('/api/pet/session');
   return res.sessionId;
@@ -409,7 +452,7 @@ export async function fetchPetHistory(sessionId: string): Promise<readonly Messa
 //
 // ★ Web 桌宠与主对话共用同一条固定会话，所以模型/强度必须读写
 //   `/api/sessions/<id>` 的**会话设置**，而不是 pet-config：
-//   pet-config 的模型/思考只服务桌面 Tk 桌宠。
+//   模型/思考强度以会话设置为准，不再有独立的桌面进程配置。
 // ═══════════════════════════════════════════════════════════
 
 export interface PetSessionSettings {
@@ -473,8 +516,11 @@ function errorFromPayload(payload: unknown, fallback: string): string {
 /**
  * 发一轮对话并拿回 SSE 流。
  *
- * ⚠️ `supportsApproval: false`：桌宠没有确认 UI，需要确认的工具调用
- *    会被服务端**立即拒绝**，而不是挂到超时。这是刻意的能力协商。
+ * ★ `supportsApproval: true`：桌板已经复用普通对话的确认卡
+ *   （ApprovalCard + approvalQueue），收到 `{ type:'approval' }` 会展示，
+ *   并用 `POST /api/approval { id, allow }` 答复。
+ *   能力协商仍然是“能处理才声明”：一旦这样声明，服务端就会把需要确认的
+ *   工具调用**挂住等用户答复**；声明了却没人答，那一轮只能一直等。
  */
 export async function openPetChat(input: OpenPetChatInput): Promise<Response> {
   let res: Response;
@@ -488,7 +534,7 @@ export async function openPetChat(input: OpenPetChatInput): Promise<Response> {
       body: JSON.stringify({
         sessionId: input.sessionId,
         text: input.text,
-        supportsApproval: false,
+        supportsApproval: true,
         ...(input.images.length > 0 ? { images: input.images.map((url) => ({ url })) } : {}),
       }),
       signal: input.signal,

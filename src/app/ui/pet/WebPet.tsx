@@ -31,9 +31,16 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from 'react';
 
+import { ApprovalCard } from '../chat/ApprovalCard';
+import {
+  currentApproval,
+  enqueueApproval,
+  removeApproval,
+  type ApprovalItem,
+} from '../chat/approvalQueue.js';
 import { Icon } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
-import { errorMessage } from '../lib/api.js';
+import { errorMessage, isApiError, postJson } from '../lib/api.js';
 import { formatClock } from '../lib/format.js';
 import type { PetMessage, PetTurn } from './petChat.js';
 import {
@@ -238,6 +245,16 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const [sessionRetry, setSessionRetry] = useState(0);
   const [history, setHistory] = useState<readonly PetMessage[]>([]);
   const [turn, setTurn] = useState<PetTurn | null>(null);
+  /**
+   * 本轮的确认请求队列。
+   *
+   * ★ 直接复用普通对话的 approvalQueue / ApprovalCard：桌板不再把 SSE 的
+   *   `approval` 事件丢掉，否则需要确认的工具调用会被服务端按“调用方不能
+   *   处理”立即拒绝，用户只能去完整对话里重做一遍。
+   */
+  const [approvals, setApprovals] = useState<readonly ApprovalItem[]>([]);
+  const [answering, setAnswering] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const [input, setInput] = useState('');
@@ -273,6 +290,24 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
   const historyLoadedRef = useRef<string | null>(null);
   const historyTouchedRef = useRef(false);
   const storedProbedRef = useRef(false);
+  /** 供流式回调判断“桌板现在是不是已经展开”，不受闭包里的旧 open 影响。 */
+  const openRef = useRef(false);
+  openRef.current = open;
+  /**
+   * 审批到达时自动展开桌板，但**不把焦点从用户手上抢走**。
+   * 展开会触发输入框自动聚焦的那条 effect，用它跳过一次。
+   */
+  const skipAutoFocusRef = useRef(false);
+
+  /**
+   * 清空确认队列：本轮结束、被取消、换会话或组件卸载后，卡片不能留在屏幕上。
+   * 队列为空时不产生新数组，避免触发无意义的重渲染。
+   */
+  const clearApprovals = useCallback((): void => {
+    setApprovals((prev) => (prev.length === 0 ? prev : []));
+    setAnswering(false);
+    setApprovalError(null);
+  }, []);
 
   // ── 唯一标签页 ─────────────────────────────────────────
 
@@ -371,8 +406,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
   // ── 会话与历史 ─────────────────────────────────────────
 
-  const webConfigured =
-    config !== null && config.enabled && config.displayMode === 'web';
+  const webConfigured = config !== null && config.enabled;
 
   useEffect(() => {
     if (webConfigured) return;
@@ -512,6 +546,11 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
   useEffect(() => {
     if (!open) return;
+    // 审批自动展开时不聚焦：用户可能正在页面别处打字，弹一张卡不该打断他。
+    if (skipAutoFocusRef.current) {
+      skipAutoFocusRef.current = false;
+      return;
+    }
     const timer = window.setTimeout(() => textareaRef.current?.focus(), 60);
     return () => window.clearTimeout(timer);
   }, [open]);
@@ -602,8 +641,10 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
     return () => {
       abortRef.current?.abort();
       recognitionRef.current?.abort();
+      // 卸载后没有任何按钮能答复这些确认；留着只会在内存里挂一张看不见的卡。
+      clearApprovals();
     };
-  }, []);
+  }, [clearApprovals]);
 
   // ── 发送 / 停止 ────────────────────────────────────────
 
@@ -635,6 +676,10 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
         pickedDocs.map((doc) => ({ name: doc.name, text: doc.text })),
       );
       if (outgoing.length === 0) return;
+
+      // 新一轮开始：上一轮残留的确认已经不可能生效（服务端按轮清理 pending），
+      // 留在桌板上只会让人对着点不开的卡反复点。
+      clearApprovals();
 
       const display =
         typed.length > 0
@@ -677,13 +722,30 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
         });
         for await (const event of readPetEvents(res)) {
           if (event.kind === 'session') {
-            if (event.sessionId !== id) setSessionId(event.sessionId);
+            if (event.sessionId !== id) {
+              setSessionId(event.sessionId);
+              // 换了会话：上一条会话的确认请求不再属于这块桌板。
+              clearApprovals();
+            }
             continue;
           }
           if (event.kind === 'settings') {
             // 本轮设置快照不再展示“本轮/下一轮”提示。
             continue;
           }
+          if (event.kind === 'approval') {
+            setApprovals((prev) => enqueueApproval(prev, event.approval));
+            setApprovalError(null);
+            // 确认请求必须有地方答复：桌板收起时自动展开（用户已选方案 1）。
+            // 不抢焦点、不替他点“允许”，只保证这张卡看得见。
+            if (!openRef.current) {
+              skipAutoFocusRef.current = true;
+              setOpen(true);
+            }
+            continue;
+          }
+          // 本轮结束/失败后，还挂着的确认已经作废：把卡片收掉再显示结果。
+          if (event.kind === 'done' || event.kind === 'error') clearApprovals();
           setTurn((prev) => (prev === null ? prev : applyPetEvent(prev, event)));
         }
         setTurn((prev) => {
@@ -700,11 +762,13 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
         }
       } finally {
         if (abortRef.current === controller) abortRef.current = null;
+        // 流一结束，服务端就把本轮 pending 全部作废；卡片留着也答不出去。
+        clearApprovals();
       }
     } finally {
       sendingRef.current = false;
     }
-  }, [active, webConfigured, leader, turn, input, images, docs, sessionId]);
+  }, [active, webConfigured, leader, turn, input, images, docs, sessionId, clearApprovals]);
 
   const stopTurn = useCallback((): void => {
     const controller = abortRef.current;
@@ -715,7 +779,38 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
       prev === null || prev.status !== 'running' ? prev : { ...prev, status: 'cancelled' },
     );
     setHint('已停止这一轮；取消会写入会话事件。');
-  }, []);
+    clearApprovals();
+  }, [clearApprovals]);
+
+  /**
+   * 答复队首的确认请求。
+   *
+   * ★ 走 `POST /api/approval { id, allow }`（与完整对话同一个端点，
+   *   只是那边还会顺带提交 steer 文本；桌板没有这个需求）。
+   * · 成功：只按 id 移出刚答的这张，等待期间新到的保持不动；
+   * · 409：这一条已经失效（别处答过/本轮结束），同样移出，否则同一张卡
+   *   每点一次都会再弹一次“已失效”；
+   * · 其它错误：卡片留着，错误显示在输入区上方，用户可以重试。
+   */
+  async function answerApproval(allow: boolean): Promise<void> {
+    const target = currentApproval(approvals);
+    if (target === null || answering) return;
+    setAnswering(true);
+    setApprovalError(null);
+    try {
+      await postJson<{ ok?: boolean }>('/api/approval', { id: target.id, allow });
+      setApprovals((prev) => removeApproval(prev, target.id));
+    } catch (err) {
+      if (isApiError(err) && err.status === 409) {
+        setApprovals((prev) => removeApproval(prev, target.id));
+        setApprovalError('这个确认已经失效（可能已答复或这一轮已结束）。');
+      } else {
+        setApprovalError(errorMessage(err));
+      }
+    } finally {
+      setAnswering(false);
+    }
+  }
 
   /** 回应主动气泡；mute 由服务端关闭 proactiveEnabled，随后重新读配置。 */
   async function answerProactive(action: 'dismiss' | 'snooze' | 'mute'): Promise<void> {
@@ -955,6 +1050,8 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
   const isRunning = turn !== null && turn.status === 'running';
   const longRunning = isRunning && turn !== null && now - turn.startedAt >= 20_000;
+  /** 一次只展示队首；没有待确认时是 null（不渲染空卡）。 */
+  const activeApproval = currentApproval(approvals);
 
   const transcript = useMemo<readonly PetMessage[]>(() => {
     if (turn === null) return history;
@@ -1069,7 +1166,7 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
 
   if (!active) return null;
   if (configLoading || config === null) return null;
-  if (!config.enabled || config.displayMode !== 'web') return null;
+  if (!config.enabled) return null;
   if (!leader) {
     if (!leaderSettled) return null;
     return (
@@ -1352,6 +1449,27 @@ export function WebPet({ active }: WebPetProps): JSX.Element | null {
           </div>
 
           <div className="webpet-composer">
+            {/*
+              确认卡贴在输入框上方，一次只显示队首：
+              卡片本身（.approval-card）与完整对话共用，webpet.css 只补包裹层间距。
+            */}
+            {activeApproval !== null && (
+              <div className="webpet-approval">
+                <ApprovalCard
+                  approval={activeApproval}
+                  pendingCount={approvals.length}
+                  answering={answering}
+                  onAnswer={(allow) => void answerApproval(allow)}
+                />
+              </div>
+            )}
+
+            {approvalError !== null && (
+              <div className="webpet-attach-error" role="alert">
+                {approvalError}
+              </div>
+            )}
+
             {attachError !== null && <div className="webpet-attach-error">{attachError}</div>}
 
             {(images.length > 0 || docs.length > 0 || extracting) && (

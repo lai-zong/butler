@@ -2,12 +2,11 @@
  * 桌宠配置 —— 独立于聊天/任务数据的用户偏好。
  *
  * ★ 为什么单独一个文件：
- *   桌宠是一个会在主界面之外独立运行的 Python 进程，它需要稳定读取
- *   “用哪张形象、多大、哪个模型、什么人格”；把这些混进 events.jsonl
- *   会让一个外观偏好也变成不可清理的聊天事件。
+ *   Web 桌宠需要稳定读取“用哪张形象、多大、哪个模型、什么人格”；
+ *   把这些混进 events.jsonl 会让一个外观偏好也变成不可清理的聊天事件。
  *
- * ★ 位置状态（x/y、隐藏、当前 sessionId）由 Python 进程写 `pet-state.json`；
- *   这里只保存用户可编辑的配置，避免设置页与桌宠同时写同一个文件。
+ * ★ 位置状态（x/y、隐藏）由 WebPet 存在浏览器 localStorage；
+ *   这里只保存用户可编辑的配置。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -15,10 +14,8 @@ import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promi
 import { join } from 'node:path';
 
 export const PET_CONFIG_FILE = 'pet-config.json';
-export const PET_STATE_FILE = 'pet-state.json';
 
 export type PetThinkingLevel = 'default' | 'low' | 'medium' | 'high';
-export type PetDisplayMode = 'desktop' | 'web';
 export type PetProactiveFrequency = 'rare' | 'normal' | 'often';
 
 export interface PetProactiveScenarios {
@@ -35,21 +32,12 @@ export interface PetModelChoice {
 
 export interface PetConfig {
   readonly version: 1;
-  /** 安装配置存在；不代表进程正在运行。 */
+  /** 是否在 Web 界面显示桌宠。 */
   readonly enabled: boolean;
-  /**
-   * 显示位置：
-   * desktop = 独立桌面 Tk 进程
-   * web     = Web 页面内嵌悬浮桌宠（不启动 Tk）
-   */
-  readonly displayMode: PetDisplayMode;
-  /** 主应用启动时是否尝试拉起桌宠（第一版只记录，启动器后续接入）。 */
-  readonly autoStart: boolean;
   /** 人物显示高度，120–480。 */
   readonly size: number;
   /** `public/pet/<sprite>/base.png` 的目录名。 */
   readonly sprite: string;
-  readonly alwaysOnTop: boolean;
   /** 为空表示跟随主界面当前聊天模型。 */
   readonly model: PetModelChoice | null;
   readonly thinkingLevel: PetThinkingLevel;
@@ -87,11 +75,8 @@ export interface PetConfigPayload {
 
 export interface PetConfigUpdate {
   readonly enabled?: boolean;
-  readonly displayMode?: PetDisplayMode;
-  readonly autoStart?: boolean;
   readonly size?: number;
   readonly sprite?: string;
-  readonly alwaysOnTop?: boolean;
   readonly model?: PetModelChoice | null;
   readonly thinkingLevel?: PetThinkingLevel;
   readonly persona?: string;
@@ -117,10 +102,6 @@ export function petConfigPath(dir = resolveDataDir()): string {
   return join(dir, PET_CONFIG_FILE);
 }
 
-export function petStatePath(dir = resolveDataDir()): string {
-  return join(dir, PET_STATE_FILE);
-}
-
 export function petAssetsDir(): string {
   return join(process.cwd(), 'public', 'pet');
 }
@@ -129,11 +110,8 @@ export function defaultPetConfig(now = Date.now()): PetConfig {
   return {
     version: 1,
     enabled: true,
-    displayMode: 'desktop',
-    autoStart: false,
     size: 220,
     sprite: 'butler',
-    alwaysOnTop: true,
     model: null,
     thinkingLevel: 'default',
     persona: '',
@@ -176,10 +154,6 @@ function normalizeThinking(value: unknown, fallback: PetThinkingLevel): PetThink
     : fallback;
 }
 
-function normalizeDisplayMode(value: unknown, fallback: PetDisplayMode): PetDisplayMode {
-  return value === 'desktop' || value === 'web' ? value : fallback;
-}
-
 export function isPetProactiveFrequency(value: unknown): value is PetProactiveFrequency {
   return value === 'rare' || value === 'normal' || value === 'often';
 }
@@ -214,11 +188,8 @@ function normalize(raw: unknown, fallback: PetConfig, now: number): PetConfig {
   return {
     version: 1,
     enabled: bool(v['enabled'], fallback.enabled),
-    displayMode: normalizeDisplayMode(v['displayMode'], fallback.displayMode),
-    autoStart: bool(v['autoStart'], fallback.autoStart),
     size: clampSize(v['size'], fallback.size),
     sprite,
-    alwaysOnTop: bool(v['alwaysOnTop'], fallback.alwaysOnTop),
     model: normalizeModel(v['model']),
     thinkingLevel: normalizeThinking(v['thinkingLevel'], fallback.thinkingLevel),
     persona,
@@ -289,6 +260,3 @@ export function isPetThinkingLevel(value: unknown): value is PetThinkingLevel {
   return value === 'default' || value === 'low' || value === 'medium' || value === 'high';
 }
 
-export function isPetDisplayMode(value: unknown): value is PetDisplayMode {
-  return value === 'desktop' || value === 'web';
-}

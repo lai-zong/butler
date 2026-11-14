@@ -631,6 +631,23 @@
   background: var(--surface-2);
 }
 
+/* ─────────────────────────────────────────────
+   确认卡包裹层
+   ─────────────────────────────────────────────
+   卡片本体（.approval-card / 标题 / 按钮）与完整对话共用 chat.css，
+   全局已加载；这里只管它在输入区里的位置与宽度约束，不复制任何外观。
+*/
+
+.webpet-approval {
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+/* 卡片自带 8px 下边距，叠上包裹层会变成 16px；这里压平成一层。 */
+.webpet-approval > .approval-card {
+  margin-bottom: 0;
+}
+
 .webpet-compose-row {
   display: flex;
   align-items: flex-end;

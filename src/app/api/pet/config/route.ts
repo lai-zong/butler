@@ -1,15 +1,13 @@
 /**
  * 桌宠配置：设置页读取/保存用户偏好。
  *
- * Python 桌宠进程也会直接读取同一个 JSON；这里不启动/控制进程，
- * 避免一个 HTTP 设置页拥有静默结束用户桌宠进程的权力。
+ * 只有 Web 桌宠读取这份配置；设置页不启动/控制任何外部进程。
  */
 
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
 import {
-  isPetDisplayMode,
   isPetProactiveFrequency,
   isPetThinkingLevel,
   listPetAssets,
@@ -42,11 +40,8 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
 
   const patch: PetConfigUpdate = {
     ...(typeof body['enabled'] === 'boolean' ? { enabled: body['enabled'] } : {}),
-    ...(isPetDisplayMode(body['displayMode']) ? { displayMode: body['displayMode'] } : {}),
-    ...(typeof body['autoStart'] === 'boolean' ? { autoStart: body['autoStart'] } : {}),
     ...(typeof body['size'] === 'number' ? { size: body['size'] } : {}),
     ...(typeof body['sprite'] === 'string' ? { sprite: body['sprite'] } : {}),
-    ...(typeof body['alwaysOnTop'] === 'boolean' ? { alwaysOnTop: body['alwaysOnTop'] } : {}),
     ...(body['model'] === null
       ? { model: null }
       : typeof body['model'] === 'object' && body['model'] !== null
