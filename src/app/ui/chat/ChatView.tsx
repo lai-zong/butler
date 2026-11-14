@@ -14,14 +14,14 @@
  *   切去看一眼记忆不该把正在跑的任务掐掉。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
 
-import { Icon } from '../components/Icon';
+import { Icon, type IconName } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
 import { Badge, Collapse, InlineError, Skeleton } from '../components/Common';
 import { primaryPathOf } from '@/core/tools/pathFields.js';
@@ -129,6 +129,8 @@ import {
 import { QuizSection } from './Quiz';
 import { WorkPanel, type WorkPanelAiOp } from './WorkPanel';
 import { BrowserPanel } from './BrowserPanel';
+import { ExternalFilePanel, type ExternalFileHandleDto } from './ExternalFilePanel';
+import { TerminalPanel, type TerminalSessionInfo } from './TerminalPanel';
 
 /**
  * 草稿 key 前缀。
@@ -198,6 +200,66 @@ interface ChatViewProps {
   readonly onBootState: (state: ChatBootState) => void;
   readonly onReviewModeChange: (open: boolean) => void;
 }
+
+/**
+ * 右栏面板类型：工作区 / 外部文件 / 终端可多开，浏览器 / 审查各单实例。
+ * ★ 用实例数组（而不是一个 paneTab 单值）记录，多个面板才能同时活着、
+ *   各自保留目录、文件草稿与终端会话；当前显示哪一个由 activePaneId 决定。
+ * ★ 内部 kind 仍叫 files（= 工作区）：改名只改用户看到的文案，
+ *   这样后端、测试和已有实例判断都不用跟着连锁改动。
+ */
+type PaneKind = 'files' | 'browser' | 'review' | 'external-file' | 'terminal';
+
+interface PaneInstance {
+  readonly id: string;
+  readonly kind: PaneKind;
+  readonly label: string;
+  /** 外部文件句柄；仅 kind === 'external-file' 时存在。 */
+  readonly externalFile?: ExternalFileHandleDto;
+  /** 终端信息；kind === 'terminal' 且启动成功时存在。 */
+  readonly terminal?: TerminalSessionInfo;
+  /** 终端启动失败的原因；此时没有 terminal，但面板要留下一个可见的错误落点。 */
+  readonly terminalError?: string;
+}
+
+/** 面板 kind → 图标。二级菜单的「新建」项与已打开面板行共用一份映射，避免两处各写一份后走样。 */
+const PANE_KIND_ICON: Record<PaneKind, IconName> = {
+  files: 'file',
+  browser: 'console',
+  review: 'eye',
+  // 图标集里没有 terminal，用同义的 console 表示终端。
+  'external-file': 'file',
+  terminal: 'console',
+};
+
+/** 初始就有一个工作区面板：右栏默认关着，但一打开就该有东西可看。 */
+const INITIAL_PANES: readonly PaneInstance[] = [
+  { id: 'pane-1', kind: 'files', label: '工作区 1' },
+];
+const INITIAL_ACTIVE_PANE_ID = 'pane-1';
+
+/** POST /api/files/open-dialog 的返回：file 就是后续所有请求要带的句柄。 */
+interface OpenExternalFileResponse {
+  readonly ok: boolean;
+  readonly file: ExternalFileHandleDto;
+}
+
+/** POST /api/terminal 的返回。 */
+interface StartTerminalResponse {
+  readonly ok: boolean;
+  readonly terminal: TerminalSessionInfo;
+}
+
+/**
+ * 浮层几何：主列表从按钮下方展开；「新建」的二级菜单仍从该行左侧展开。
+ * ★ 11px 是二级卡片相对「新建」行内容盒的间距，不是两层卡片的可见缝隙：
+ *   行左缘本身距卡片左缘还有 5px（1px 边框 + 4px 内边距），所以 11 = 5 + 6。
+ * ★ 11px 与 190px 卡片宽度和 chat.css 是同一份约定，改宽度/间距时两边要一起改。
+ */
+const PANEL_FLYOUT_GAP = 11;
+const PANEL_MENU_WIDTH = 190;
+/** 离视口左缘至少留 8px：贴边时卡片阴影不会被裁掉。 */
+const PANEL_VIEWPORT_EDGE = 8;
 
 interface SpeechResultLike {
   readonly isFinal: boolean;
@@ -586,6 +648,19 @@ function aiOpOfToolCall(name: string, argsText: string): WorkPanelAiOp | null {
   return primaryPathOf(name, args);
 }
 
+/**
+ * 从 ApiError 的数据里取后端错误码。
+ * ★ 用户取消外部文件选择框和真正的失败都是 HTTP 400，只有 code=dialog_failed
+ *   能区分；只看状态码会把“用户点了取消”也报成错误。
+ */
+function apiErrorCodeOf(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  const data = err.data;
+  if (typeof data !== 'object' || data === null) return null;
+  const code = (data as Record<string, unknown>)['code'];
+  return typeof code === 'string' ? code : null;
+}
+
 function statusLabel(a: LiveAssistant): string {
   if (a.status === 'waiting') return '正在读取上下文';
   if (a.status === 'streaming') return a.stages[a.stages.length - 1] ?? '正在处理';
@@ -843,10 +918,46 @@ export function ChatView({
   /** 当前展示的历史 run id；实时审查完成后也用它高亮列表。 */
   const [reviewActiveId, setReviewActiveId] = useState<string | null>(null);
   /**
-   * 右栏页签：文件（工作区）/ 浏览器 / 审查。
-   * 三块内容共用同一个 review-pane、同一个拖拽宽度与 reviewOpen 开关。
+   * 右栏已打开的面板实例。
+   * ★ 原来只有一个 paneTab 单值；多开后工作区面板各自保留目录/文件/草稿，
+   *   当前显示哪一个由 activePaneId 决定，reviewOpen 只表示右栏整体是否可见。
    */
-  const [paneTab, setPaneTab] = useState<'files' | 'browser' | 'review'>('review');
+  const [panes, setPanes] = useState<readonly PaneInstance[]>(INITIAL_PANES);
+  const [activePaneId, setActivePaneId] = useState<string>(INITIAL_ACTIVE_PANE_ID);
+  /**
+   * panes / activePaneId 的同步副本。
+   * ★ SSE 回调是发送那一刻的旧闭包，读 state 拿不到用户中途新建的面板；
+   *   ref 在每次写状态时同步更新，异步路径（AI 写文件自动开面板）才有最新列表。
+   */
+  const panesRef = useRef<readonly PaneInstance[]>(INITIAL_PANES);
+  const activePaneRef = useRef<string>(INITIAL_ACTIVE_PANE_ID);
+  /** 实例 id / 工作区编号：只增不减，关掉中间一个也不会和现有面板撞号。 */
+  const paneSeqRef = useRef(1);
+  const filePaneSeqRef = useRef(1);
+  /** 外部文件 / 终端编号：各自递增；工作区编号语义不同，不能共用。 */
+  const externalFileSeqRef = useRef(0);
+  const terminalSeqRef = useRef(0);
+  /** 选择框 / 启动请求在途：防止连点菜单重复弹框、重复起进程。 */
+  const externalFileOpeningRef = useRef(false);
+  const terminalOpeningRef = useRef(false);
+  /**
+   * 头部「面板」浮层菜单是否展开。
+   * ★ 它只是菜单的显隐，与右栏 reviewOpen 解耦：菜单开着不代表面板开着。
+   */
+  const [panelMenuOpen, setPanelMenuOpen] = useState(false);
+  /**
+   * 「新建」的二级浮层是否展开。
+   * ★ 默认收起：新建是低频操作；展开后是「新建」行左侧的第二层卡片，不再往第三层飞。
+   */
+  const [panelCreateOpen, setPanelCreateOpen] = useState(false);
+  /**
+   * 二级浮层被视口左缘挤回来时向右推的像素数。
+   * ★ 窗口够宽时恒为 0；窄窗口下把卡片整体往右挪，宁可压住主列表也不越出屏幕。
+   */
+  const [panelSubShift, setPanelSubShift] = useState(0);
+  /** 菜单 id：只在展开时挂到 aria-controls 上，读屏能回到同一块弹层。 */
+  const panelMenuId = useId();
+  const panelCreateMenuId = useId();
   /** AI 最近一次完整工具调用碰到的文件；只用于工作区面板的自动打开/高亮。 */
   const [aiOp, setAiOp] = useState<WorkPanelAiOp | null>(null);
 
@@ -872,6 +983,18 @@ export function ChatView({
   /** 抽屉开关按钮 / 抽屉关闭按钮：用于打开时送入焦点、关闭后还回焦点。 */
   const reviewHistoryToggleRef = useRef<HTMLButtonElement | null>(null);
   const reviewHistoryCloseRef = useRef<HTMLButtonElement | null>(null);
+  /** 面板浮层菜单：容器用来判断点击是否落在菜单外，按钮用于关闭后归还焦点。 */
+  const panelMenuRef = useRef<HTMLDivElement | null>(null);
+  const panelMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  /** 「新建」行：二级浮层收起后把焦点还给它，键盘用户不会掉回 body。 */
+  const panelCreateButtonRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * 这次展开是否由键盘触发（Enter/Space 合成的 click，detail 为 0）。
+   * ★ 只有键盘打开才把焦点送进第一项：鼠标打开也抢焦点的话，
+   *   第一项（工作区 1）会亮起绿色 focus ring，看起来像“已被默认选中”，
+   *   和右侧表示当前面板的 ✓ 混淆。
+   */
+  const panelMenuKeyboardOpenRef = useRef(false);
   /**
    * 工具参数分片按 callId 累积。
    * 完成事件只带空 argsDelta，必须靠这份拼接结果才能解析出完整参数。
@@ -999,6 +1122,34 @@ export function ChatView({
   }, []);
   const reviewableTurns = reviewTurns.filter(isReviewableTurn);
   const lastReviewable = reviewableTurns[reviewableTurns.length - 1] ?? null;
+  /**
+   * 没有任何可审查 / 可展示的审查内容。
+   *
+   * ★ 旧版头部按钮还要兼作“关闭”，所以只在面板关着时禁用；现在收起只由头部 × 负责，
+   *   面板开着也不该留一个点了只弹提示的死入口——有没有内容才决定能不能点。
+   */
+  const reviewUnavailable =
+    lastReviewable === null &&
+    reviewHistory.length === 0 &&
+    reviewRun === null &&
+    !reviewBusy &&
+    !reviewStopped &&
+    reviewError === null;
+  /**
+   * 当前激活的面板实例。
+   * ★ activePaneId 可能指向一个刚被关掉的 id，所以回退到列表第一项；
+   *   列表为空时才是 null（此时 reviewOpen 一定是 false）。
+   */
+  const activePane = panes.find((pane) => pane.id === activePaneId) ?? panes[0] ?? null;
+  /**
+   * 当前激活面板的 kind：CSS 的 is-work / is-browser / is-review 仍按它切换。
+   * ★ 只作为派生值，不再有 setPaneTab —— 否则多开面板又会退回“全局一个页签”的旧逻辑。
+   */
+  const paneTab: PaneKind = activePane?.kind ?? 'files';
+  /*
+   * ★ 分体按钮不再派生面板名：文案会随「工作区 10」变长而挤压标题，
+   *   当前在哪一栏改由列表里的勾选表达，按钮只负责“显隐”这一件事。
+   */
   const reviewRangeText =
     reviewRange === null
       ? '选择轮次'
@@ -1159,6 +1310,69 @@ export function ChatView({
       window.cancelAnimationFrame(frame);
     };
   }, [reviewHistoryOpen]);
+
+  /**
+   * 面板浮层菜单：点击菜单外部关闭，Esc 关闭并把焦点还给触发按钮。
+   * ★ Esc 必须归还焦点：菜单项随菜单一起卸载，否则焦点掉回 body，
+   *   键盘用户要重新 Tab 一整圈才能回到头部。
+   * ★ 点外用 mousedown 而不是 click：点在别的按钮上时先关菜单，
+   *   那一次点击仍然落在用户真正点的元素上，不会被弹层吃掉。
+   */
+  useEffect(() => {
+    if (!panelMenuOpen) return;
+    const onPointerDown = (event: MouseEvent): void => {
+      if (
+        panelMenuRef.current !== null &&
+        event.target instanceof Node &&
+        !panelMenuRef.current.contains(event.target)
+      ) {
+        setPanelMenuOpen(false);
+        // 二级浮层跟着整个列表一起收：下次打开仍从「新建」收起态开始。
+        setPanelCreateOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      // Esc 只关菜单、不动右栏：焦点回到箭头，键盘用户不用重新 Tab 一圈。
+      setPanelMenuOpen(false);
+      setPanelCreateOpen(false);
+      panelMenuButtonRef.current?.focus();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [panelMenuOpen]);
+
+  /**
+   * 只有键盘打开（Enter/Space，click detail === 0）才把焦点送进第一个可用项。
+   * ★ 鼠标打开不抢焦点：焦点留在触发按钮上，第一项不会亮起绿色 focus ring，
+   *   用户直接点菜单项即可。Esc 的归焦逻辑不依赖这里，保持不变。
+   */
+  useEffect(() => {
+    if (!panelMenuOpen) return;
+    if (!panelMenuKeyboardOpenRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      panelMenuRef.current
+        ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+        ?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [panelMenuOpen]);
+
+  /**
+   * 二级浮层开着时窗口变窄：重新算一次“向内收”的距离。
+   * ★ 只监听窗口 resize（不用 ResizeObserver）：浮层尺寸由 CSS 固定，
+   *   位置只跟视口有关，监听窗口足够，也不会自己触发自己。
+   */
+  useEffect(() => {
+    if (!panelMenuOpen || !panelCreateOpen) return;
+    const onResize = (): void => updatePanelSubShift();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [panelMenuOpen, panelCreateOpen]);
 
   // 关闭后重新打开：内存里没有结果时，恢复最近一条 completed。
   useEffect(() => {
@@ -1369,7 +1583,7 @@ export function ChatView({
 
   /**
    * AI 操作提示只保留一个短窗口：横幅由面板自己计时，这里把状态也清掉，
-   * 避免用户几分钟后才切到「文件」页签时看到一条早已结束的「AI 正在…」。
+   * 避免用户几分钟后才切到「工作区」页签时看到一条早已结束的「AI 正在…」。
    */
   useEffect(() => {
     if (aiOp === null) return;
@@ -1882,37 +2096,157 @@ export function ChatView({
     resizeReviewTo(reviewRatio + (event.key === 'ArrowLeft' ? 0.02 : -0.02));
   }
 
-  function openReview(): void {
+  /**
+   * 把面板列表写入 state，同时同步 ref。
+   * ★ 所有写入都走这里，异步回调（SSE）才总能读到最新列表。
+   */
+  function commitPanes(next: readonly PaneInstance[]): void {
+    panesRef.current = next;
+    setPanes(next);
+  }
+
+  /** 新建一个工作区 / 浏览器 / 审查实例（只构造对象，不写状态）。 */
+  function createPane(kind: 'files' | 'browser' | 'review'): PaneInstance {
+    paneSeqRef.current += 1;
+    if (kind === 'files') {
+      filePaneSeqRef.current += 1;
+      return {
+        id: `pane-${paneSeqRef.current}`,
+        kind,
+        label: `工作区 ${filePaneSeqRef.current}`,
+      };
+    }
+    return {
+      id: `pane-${paneSeqRef.current}`,
+      kind,
+      label: kind === 'browser' ? '浏览器' : '审查',
+    };
+  }
+
+  /** 新建外部文件实例：编号「文件 1、文件 2…」递增。 */
+  function createExternalFilePane(file: ExternalFileHandleDto): PaneInstance {
+    paneSeqRef.current += 1;
+    externalFileSeqRef.current += 1;
+    return {
+      id: `pane-${paneSeqRef.current}`,
+      kind: 'external-file',
+      label: `文件 ${externalFileSeqRef.current}`,
+      externalFile: file,
+    };
+  }
+
+  /**
+   * 新建终端实例。
+   * ★ 启动失败也建实例：错误要留在面板里，而不是一条会自动消失的 toast。
+   */
+  function createTerminalPane(
+    terminal: TerminalSessionInfo | null,
+    errorText: string | null,
+  ): PaneInstance {
+    paneSeqRef.current += 1;
+    terminalSeqRef.current += 1;
+    const pane = {
+      id: `pane-${paneSeqRef.current}`,
+      kind: 'terminal' as const,
+      label: `终端 ${terminalSeqRef.current}`,
+    };
+    return terminal !== null
+      ? { ...pane, terminal }
+      : { ...pane, terminalError: errorText ?? '终端启动失败' };
+  }
+
+  /**
+   * 激活一个面板实例（不在列表里就先加入），并显示右栏。
+   * ★ 浏览器/审查“单实例”由调用方保证；这里只负责“实例存在 + 选中 + 右栏可见”。
+   */
+  function showPane(pane: PaneInstance): void {
+    if (!panesRef.current.some((item) => item.id === pane.id)) {
+      commitPanes([...panesRef.current, pane]);
+    }
+    activePaneRef.current = pane.id;
+    setActivePaneId(pane.id);
+    setReviewOpen(true);
+  }
+
+  /**
+   * 找“当前该用的工作区面板”：激活的本来就是工作区面板时沿用，否则用第一个，都没有才新建。
+   * ★ AI 写文件时要落到用户当前看的工作区面板里，而不是永远跳回工作区 1。
+   */
+  function ensureFilesPane(): PaneInstance {
+    const current = panesRef.current;
+    const active = current.find((pane) => pane.id === activePaneRef.current);
+    return active?.kind === 'files'
+      ? active
+      : (current.find((pane) => pane.kind === 'files') ?? createPane('files'));
+  }
+
+  /**
+   * 进入审查面板前补一次范围 / 历史恢复。
+   *
+   * ★ “收起右栏”会重置 reviewAutoRestoreRef；重新激活已有实例时如果只 showPane，
+   *   那次落在历史列表上的恢复就再也不会发生。新建与重新激活都走这里，行为才一致。
+   * ★ 不负责“能不能进”：已有面板即使暂时没有内容也要能进去看空态，
+   *   可用性判断留给新建分支。
+   */
+  function prepareReviewRestore(): void {
     const hasReviewView =
       reviewRun !== null ||
       reviewBusy ||
       reviewStopped ||
       reviewError !== null ||
       reviewProcess.rounds.length > 0;
-    if (!hasReviewView) {
-      if (lastReviewable === null && reviewHistory.length === 0) {
-        notify('还没有可审查的完成或中断轮次', 'warning');
-        return;
-      }
-      // 关闭再打开时优先显示内存里的结果；没有才从历史恢复最近一条 completed。
-      reviewAutoRestoreRef.current = true;
-      if (sessionId !== null) void loadReviewHistory(sessionId);
-      const target =
-        reviewRange ??
-        (lastReviewable !== null
-          ? { start: lastReviewable.index, end: lastReviewable.index }
-          : null);
-      if (target !== null) {
-        setReviewRange(target);
-        setReviewAnchor(null);
-      }
+    if (hasReviewView) return;
+    reviewAutoRestoreRef.current = true;
+    if (sessionId !== null) void loadReviewHistory(sessionId);
+    const target =
+      reviewRange ??
+      (lastReviewable !== null
+        ? { start: lastReviewable.index, end: lastReviewable.index }
+        : null);
+    if (target !== null) {
+      setReviewRange(target);
+      setReviewAnchor(null);
     }
-    setReviewPickerOpen(false);
-    setPanelMax(false);
-    setPaneTab('review');
-    setReviewOpen(true);
   }
 
+  /**
+   * 打开审查面板。
+   *
+   * ★ 单实例：已有实例时直接进入，即使暂时没有可审查内容，也让它显示空态；
+   *   只有真的要新建实例时才做“没有内容就提示”的判断。
+   */
+  function openReview(): void {
+    const existing = panesRef.current.find((pane) => pane.kind === 'review');
+    if (existing !== undefined) {
+      setReviewPickerOpen(false);
+      setPanelMax(false);
+      // 手动打开时不重放上一次 AI 操作（与原 openWorkspace 的语义一致）。
+      if (!reviewOpen) setAiOp(null);
+      prepareReviewRestore();
+      showPane(existing);
+      return;
+    }
+    const hasReviewView =
+      reviewRun !== null ||
+      reviewBusy ||
+      reviewStopped ||
+      reviewError !== null ||
+      reviewProcess.rounds.length > 0;
+    if (!hasReviewView && lastReviewable === null && reviewHistory.length === 0) {
+      notify('还没有可审查的完成或中断轮次', 'warning');
+      return;
+    }
+    prepareReviewRestore();
+    setReviewPickerOpen(false);
+    setPanelMax(false);
+    if (!reviewOpen) setAiOp(null);
+    showPane(createPane('review'));
+  }
+
+  /**
+   * 收起右栏（分体按钮主体、关掉最后一个面板都走这里）。
+   * ★ 只改 reviewOpen：面板实例与审查结果都保留，下次打开原样回来。
+   */
   function closeReview(): void {
     // ★ 只收起面板：不清结果/过程/历史，也不 abort 仍在跑的审查。
     reviewAutoRestoreRef.current = false;
@@ -1923,35 +2257,360 @@ export function ChatView({
     setReviewOpen(false);
   }
 
-  /** 打开「文件」页签；已经停在文件页签时再点一次就收起面板。 */
+  /**
+   * 打开工作区：优先激活已有的工作区面板，没有才新建。
+   * ★ 多开后“打开工作区”不再等于新建；要再加一个工作区走 openNewWorkspacePane。
+   * ★ AI 自动打开不走这里（这里会清 aiOp），而是 ensureFilesPane + showPane。
+   */
   function openWorkspace(): void {
-    if (reviewOpen && paneTab === 'files') {
-      closeReview();
-      return;
-    }
     // 手动打开时不重放上一次 AI 操作：只有面板开着时收到的 aiOp 才用于自动打开。
     if (!reviewOpen) setAiOp(null);
-    // 文件面板没有全屏入口：从浏览器最大化切过来时必须还原，否则缩不回去
+    // 工作区面板没有全屏入口：从浏览器最大化切过来时必须还原，否则缩不回去。
     setPanelMax(false);
-    setPaneTab('files');
-    setReviewOpen(true);
+    showPane(ensureFilesPane());
+  }
+
+  /** 新建工作区面板：总是新建一个实例（工作区 1、工作区 2…编号递增），并激活。 */
+  function openNewWorkspacePane(): void {
+    if (!reviewOpen) setAiOp(null);
+    // 新面板从普通分栏开始：浏览器全屏状态下新建工作区面板，用户会看不到它。
+    setPanelMax(false);
+    showPane(createPane('files'));
   }
 
   /**
-   * 打开「浏览器」页签。
-   *
-   * ★ 为什么页签栏里已有入口，头部还要一个按钮：
-   *   页签栏只在 reviewOpen 时渲染。没有这个入口，面板关着时用户根本点不到「浏览器」，
-   *   “点了就打开面板并选中浏览器”这条也就无从触发。
+   * 打开浏览器：单实例 —— 已有就激活，没有才创建。
+   * ★ 这里不重置 panelMax：浏览器最大化由面板自己的全屏按钮控制，保持现状。
    */
   function openBrowser(): void {
-    if (reviewOpen && paneTab === 'browser') {
+    if (!reviewOpen) setAiOp(null);
+    const existing = panesRef.current.find((pane) => pane.kind === 'browser');
+    showPane(existing ?? createPane('browser'));
+  }
+
+  /**
+   * 打开工作区外的文件。
+   * ★ 原生选择框由服务端弹（浏览器拿不到真实路径），用户取消时回 400
+   *   code=dialog_failed：这是用户意图，不是错误——只给一句轻提示，不建面板、不弹错误框。
+   * ★ 选择框是窗口模态的，期间用户可能切走会话：旧会话的句柄不能挂到新会话界面上。
+   */
+  async function openExternalFile(): Promise<void> {
+    if (externalFileOpeningRef.current) return;
+    externalFileOpeningRef.current = true;
+    try {
+      const currentSessionId = sessionIdRef.current;
+      const targetSessionId = currentSessionId ?? (await ensureSession('无法打开外部文件'));
+      if (targetSessionId === null) return;
+      if (!reviewOpen) setAiOp(null);
+      setPanelMax(false);
+      try {
+        const res = await postJson<OpenExternalFileResponse>('/api/files/open-dialog', {
+          sessionId: targetSessionId,
+        });
+        if (sessionIdRef.current !== targetSessionId) {
+          void postJson('/api/files/close', {
+            handle: res.file.id,
+            sessionId: targetSessionId,
+          }).catch(() => {});
+          notify('会话已切换，文件没有打开', 'warning');
+          return;
+        }
+        showPane(createExternalFilePane(res.file));
+      } catch (err) {
+        if (apiErrorCodeOf(err) === 'dialog_failed') {
+          notify('已取消选择文件', 'default');
+          return;
+        }
+        notify(errorMessage(err), 'danger');
+      }
+    } finally {
+      externalFileOpeningRef.current = false;
+    }
+  }
+
+  /**
+   * 打开终端：可多开，每次起一个独立的 shell 会话。
+   * ★ 启动失败也要有可见落点：创建一个带错误态的终端面板，原因留在面板里，
+   *   而不是一条会自动消失、用户可能没看见的提示。
+   */
+  async function openTerminal(): Promise<void> {
+    if (terminalOpeningRef.current) return;
+    terminalOpeningRef.current = true;
+    try {
+      const currentSessionId = sessionIdRef.current;
+      const targetSessionId = currentSessionId ?? (await ensureSession('无法启动终端'));
+      if (targetSessionId === null) return;
+      if (!reviewOpen) setAiOp(null);
+      setPanelMax(false);
+      try {
+        const res = await postJson<StartTerminalResponse>('/api/terminal', {
+          sessionId: targetSessionId,
+        });
+        if (sessionIdRef.current !== targetSessionId) {
+          void postJson('/api/terminal/close', {
+            id: res.terminal.id,
+            sessionId: targetSessionId,
+          }).catch(() => {});
+          notify('会话已切换，终端没有打开', 'warning');
+          return;
+        }
+        showPane(createTerminalPane(res.terminal, null));
+      } catch (err) {
+        if (sessionIdRef.current !== targetSessionId) {
+          notify(errorMessage(err), 'danger');
+          return;
+        }
+        showPane(createTerminalPane(null, errorMessage(err)));
+      }
+    } finally {
+      terminalOpeningRef.current = false;
+    }
+  }
+
+  /**
+   * 切换当前面板（列表里的实例项）。
+   * ★ 切去非浏览器面板时退出浏览器全屏，否则 .is-panel-max 会把布局留在浮窗模式。
+   * ★ 审查要额外补范围 / 历史恢复，统一走 openReview；已经停在当前项则什么都不做。
+   */
+  function activatePane(id: string): void {
+    const pane = panesRef.current.find((item) => item.id === id);
+    if (pane === undefined) return;
+    // 等价旧版菜单项对“当前视图”的提前返回：点自己不会重放恢复逻辑。
+    if (reviewOpen && activePaneRef.current === pane.id) return;
+    if (!reviewOpen) setAiOp(null);
+    if (pane.kind === 'review') {
+      openReview();
+      return;
+    }
+    if (pane.kind !== 'browser') setPanelMax(false);
+    showPane(pane);
+  }
+
+  /**
+   * 关闭一个面板实例。
+   * ★ 关掉当前激活项时自动切到相邻项（优先左边那个）；关完最后一个等价于收起右栏。
+   * ★ 不 abort 正在跑的审查：和收起一样，已收到的结果/过程保留在内存里，重新打开还能看。
+   */
+  function closePane(id: string): void {
+    const current = panesRef.current;
+    const index = current.findIndex((pane) => pane.id === id);
+    if (index < 0) return;
+    const closing = current[index];
+    const next = current.filter((pane) => pane.id !== id);
+    // 一个实例都不剩时编号归零：下次打开还是工作区 1，不会留下一个突兀的工作区 3。
+    if (next.length === 0) {
+      paneSeqRef.current = 0;
+      filePaneSeqRef.current = 0;
+      externalFileSeqRef.current = 0;
+      terminalSeqRef.current = 0;
+    }
+    commitPanes(next);
+    if (closing?.kind === 'browser') setPanelMax(false);
+    if (activePaneRef.current !== id) {
+      refocusPanelMenuAfterClose(activePaneRef.current);
+      return;
+    }
+    const candidate = next[Math.max(0, index - 1)] ?? next[0];
+    if (candidate === undefined) {
+      closeReview();
+      refocusPanelMenuAfterClose(null);
+      return;
+    }
+    activePaneRef.current = candidate.id;
+    setActivePaneId(candidate.id);
+    refocusPanelMenuAfterClose(candidate.id);
+  }
+
+  /**
+   * 关闭面板后 × 按钮会随行卸载：把焦点交给新的激活项（没有就交给列表第一项），
+   * 键盘用户不会因为一次关闭掉回 body、再 Tab 一整圈才能回来。
+   */
+  function refocusPanelMenuAfterClose(paneId: string | null): void {
+    window.requestAnimationFrame(() => {
+      const root = panelMenuRef.current;
+      const target =
+        root === null
+          ? // 菜单没开（例如点了面板头部自带的关闭按钮）：把焦点交给分体按钮，
+            // 不让它掉回 body；菜单开着时优先落到相邻面板，其次第一项。
+            panelMenuButtonRef.current
+          : (paneId === null
+              ? null
+              : root.querySelector<HTMLButtonElement>(`[data-pane-id="${paneId}"]`)) ??
+            root.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)');
+      target?.focus();
+    });
+  }
+
+  /**
+   * 分体按钮主体：切换右栏显隐。
+   * ★ 收起只改 reviewOpen，面板实例留在列表里；再点开还是原来那一栏。
+   * ★ 一个实例都没有时先建工作区面板，避免打开一条什么都没有的空栏。
+   */
+  function togglePaneVisibility(): void {
+    // 主体按钮会改变右栏显隐，浮层没必要继续压着内容。
+    setPanelMenuOpen(false);
+    setPanelCreateOpen(false);
+    if (reviewOpen) {
       closeReview();
       return;
     }
-    if (!reviewOpen) setAiOp(null);
-    setPaneTab('browser');
-    setReviewOpen(true);
+    const target =
+      panesRef.current.find((pane) => pane.id === activePaneRef.current) ?? panesRef.current[0];
+    if (target === undefined) {
+      openWorkspace();
+      return;
+    }
+    // 手动打开不重放上一次 AI 操作；浏览器全屏状态只属于浏览器面板。
+    setAiOp(null);
+    if (target.kind !== 'browser') setPanelMax(false);
+    showPane(target);
+  }
+
+  /**
+   * 切换会话时的面板重置。
+   * ★ 浏览器 / 审查是“上一个会话的现场”（标签页、审查结果），切走后删除实例；
+   *   外部文件 / 终端按会话登记（句柄与进程），也必须删除——组件卸载时会调 close。
+   *   工作区面板保留：用户可能只是换个会话继续看同一批文件，删掉会丢目录状态。
+   * ★ 至少留一个工作区面板，下次打开右栏不会是一条空栏。
+   */
+  function resetPanesForSession(): void {
+    const current = panesRef.current;
+    const files = current.filter((pane) => pane.kind === 'files');
+    // 外部文件 / 终端编号跟着实例一起归零，新会话里从 1 开始。
+    externalFileSeqRef.current = 0;
+    terminalSeqRef.current = 0;
+    // 一个工作区都没留下时编号也归零，新会话里第一个面板才是「工作区 1」。
+    if (files.length === 0) filePaneSeqRef.current = 0;
+    const next = files.length > 0 ? files : [createPane('files')];
+    commitPanes(next);
+    const active = next.find((pane) => pane.id === activePaneRef.current) ?? next[0];
+    if (active !== undefined) {
+      activePaneRef.current = active.id;
+      setActivePaneId(active.id);
+    }
+    setPanelMax(false);
+  }
+
+  /**
+   * 菜单项的统一收尾：先关菜单、把焦点还给触发按钮，再执行动作。
+   * ★ 菜单项会随菜单卸载，不先归还焦点的话焦点会掉回 body，键盘用户丢失位置。
+   */
+  function runPanelMenuItem(action: () => void): void {
+    setPanelMenuOpen(false);
+    // 二级浮层也一起收：否则下次打开列表会直接停在展开态。
+    setPanelCreateOpen(false);
+    panelMenuButtonRef.current?.focus();
+    action();
+  }
+
+  /**
+   * 算二级浮层要不要往右让：它从「新建」行左侧展开，窄窗口会顶出视口左缘。
+   * ★ 基准位置用「新建」行的矩形算，不量二级浮层自己的 rect：
+   *   已经推过的位置再量会把偏移算进去，推一次、收一次来回抖。
+   */
+  function updatePanelSubShift(): void {
+    const row = panelMenuRef.current?.querySelector<HTMLElement>('.panel-menu-new');
+    if (row === null || row === undefined) {
+      setPanelSubShift(0);
+      return;
+    }
+    const baseLeft = row.getBoundingClientRect().left - PANEL_FLYOUT_GAP - PANEL_MENU_WIDTH;
+    setPanelSubShift(Math.max(0, Math.ceil(PANEL_VIEWPORT_EDGE - baseLeft)));
+  }
+
+  /** 展开二级浮层后把焦点送进第一个可用项（工作区永远可用，禁用的审查会被跳过）。 */
+  function focusFirstCreateItem(): void {
+    window.requestAnimationFrame(() => {
+      panelMenuRef.current
+        ?.querySelector<HTMLButtonElement>('.panel-menu-sub [role="menuitem"]:not(:disabled)')
+        ?.focus();
+    });
+  }
+
+  /**
+   * 「新建」行：展开 / 收起二级浮层。
+   * ★ 鼠标展开不抢焦点（detail > 0），键盘展开（Enter/Space，detail === 0）才把焦点送进第一项：
+   *   鼠标点一下就亮起 focus ring，会让人误以为「工作区」已经被选中。
+   */
+  function togglePanelCreateMenu(focusFirst: boolean): void {
+    if (panelCreateOpen) {
+      setPanelCreateOpen(false);
+      return;
+    }
+    // 先算位置再挂载：第一帧就落在视口内，不会先溢出再跳回来。
+    updatePanelSubShift();
+    setPanelCreateOpen(true);
+    if (focusFirst) focusFirstCreateItem();
+  }
+
+  /**
+   * 「新建」行的键盘操作：→ 展开并进第一项，← 收起。
+   * ★ Enter/Space 走 button 自带的 click（detail === 0），由 onClick 统一判断，
+   *   这里不重复处理，否则一次按键会展开后立刻又被收起。
+   */
+  function handlePanelCreateKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>): void {
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      if (!panelCreateOpen) {
+        updatePanelSubShift();
+        setPanelCreateOpen(true);
+      }
+      focusFirstCreateItem();
+      return;
+    }
+    if (event.key === 'ArrowLeft' && panelCreateOpen) {
+      event.preventDefault();
+      setPanelCreateOpen(false);
+    }
+  }
+
+  /**
+   * 二级浮层里的 ← ：收起并把焦点还给「新建」行。
+   * ★ 先聚焦再收起：二级项会随状态卸载，顺序反过来焦点就掉回 body。
+   */
+  function handlePanelCreateSubKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (event.key !== 'ArrowLeft') return;
+    event.preventDefault();
+    panelCreateButtonRef.current?.focus();
+    setPanelCreateOpen(false);
+  }
+
+  /**
+   * role="menu" 的键盘约定：上下键在可用项间循环，Home/End 跳到首尾。
+   * ★ 打开时焦点已在第一项（见上面的 effect），这里只负责在菜单内部移动；
+   *   二级浮层展开后它的五项也在同一串里，↓ 可以从「新建」直接走进「工作区」。
+   * ★ 禁用的「审查」不参与循环，避免焦点停在一个点不动的项上。
+   */
+  function handlePanelMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (
+      event.key !== 'ArrowDown' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'Home' &&
+      event.key !== 'End'
+    ) {
+      return;
+    }
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      ),
+    );
+    if (items.length === 0) return;
+    event.preventDefault();
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowDown'
+            ? current < 0
+              ? 0
+              : (current + 1) % items.length
+            : current < 0
+              ? items.length - 1
+              : (current - 1 + items.length) % items.length;
+    items[next]?.focus();
   }
 
   /**
@@ -1961,6 +2620,24 @@ export function ChatView({
    * ★ 展开模式下对话是浮窗、还可能被收成气泡：先把它还原出来，
    *   否则文字填进的是一个看不见的输入框，用户会以为按钮没反应。
    */
+  /**
+   * 浏览器截图 → 图片附件 + 提问草稿。
+   * ★ 只填不发：截图可能包含隐私内容，发不发由用户按发送键决定。
+   */
+  function attachBrowserScreenshot(dataUrl: string, text: string): void {
+    setAttachments((prev) =>
+      prev.length >= MAX_IMAGES
+        ? prev
+        : [...prev, { name: `浏览器截图-${Date.now()}.png`, url: dataUrl }],
+    );
+    if (input.trim().length === 0) setInput(text);
+    if (panelExpanded && chatFloat.collapsed) {
+      chatFloat.restore();
+      return;
+    }
+    textareaRef.current?.focus();
+  }
+
   function sendBrowserPageToButler(text: string): void {
     setInput(text);
     if (panelExpanded && chatFloat.collapsed) {
@@ -1976,22 +2653,6 @@ export function ChatView({
   function closeReviewHistory(): void {
     setReviewHistoryOpen(false);
     reviewHistoryToggleRef.current?.focus();
-  }
-
-  function toggleReview(): void {
-    if (reviewOpen && paneTab === 'review') closeReview();
-    else openReview();
-  }
-
-  /**
-   * 切换右栏页签。
-   *
-   * ★ 最大化现在由浏览器面板的「全屏」按钮控制；切到文件/审查时必须还原，
-   *   否则用户离开浏览器后没有任何按钮能把面板缩回去（展开按钮已删除）。
-   */
-  function selectPaneTab(next: 'files' | 'browser' | 'review'): void {
-    if (next !== 'browser') setPanelMax(false);
-    setPaneTab(next);
   }
 
   useAutoResize(textareaRef, input);
@@ -2034,6 +2695,8 @@ export function ChatView({
     setReviewPickerOpen(false);
     // 工作区面板跟会话走：切换会话后不能还显示上一个工作区的 AI 操作。
     setAiOp(null);
+    // 浏览器 / 审查是上一个会话的现场：删除实例；工作区面板保留（见函数注释）。
+    resetPanesForSession();
     setNavTurn(null);
     resetReview();
     // 历史属于会话：切走时立即作废旧列表，等新会话的 GET 回来再填。
@@ -2268,6 +2931,8 @@ export function ChatView({
       setReviewPickerOpen(false);
       // 新对话是新的工作区，不能继承上一个会话的 AI 操作提示。
       setAiOp(null);
+      // 浏览器 / 审查属于上一个会话的现场：新会话里不保留实例；工作区面板保留。
+      resetPanesForSession();
       setNavTurn(null);
       resetReview();
       reviewHistorySeqRef.current += 1;
@@ -2865,10 +3530,13 @@ export function ChatView({
              * 只对「写文件」自动展开右栏：
              * 读文件在一次回答里可能发生十几次，每次都把对话挤成半宽会打断阅读；
              * 写入是用户最需要当场看到结果的动作，值得主动让出空间。
+             *
+             * ★ 走 ensureFilesPane 而不是 openWorkspace：后者会清掉刚设置的 aiOp，
+             *   提示就被吞了；这里用 ref 读最新列表，落到用户当前看的工作区面板上。
              */
             if (op.writing) {
-              setPaneTab('files');
-              setReviewOpen(true);
+              setPanelMax(false);
+              showPane(ensureFilesPane());
             }
           }
         }
@@ -3466,7 +4134,9 @@ export function ChatView({
     <div
       className={`chat-view ${active ? 'is-active' : ''} ${reviewOpen ? 'is-review' : ''}${
         reviewOpen && paneTab === 'files' ? ' is-work' : ''
-      }${reviewOpen && paneTab === 'browser' ? ' is-browser' : ''}${panelExpanded ? ' is-panel-max' : ''}${
+      }${reviewOpen && paneTab === 'browser' ? ' is-browser' : ''}${
+        reviewOpen && paneTab === 'external-file' ? ' is-external-file' : ''
+      }${reviewOpen && paneTab === 'terminal' ? ' is-terminal' : ''}${panelExpanded ? ' is-panel-max' : ''}${
         panelExpanded && chatFloat.collapsed ? ' is-chat-collapsed' : ''
       }`}
     >
@@ -3481,57 +4151,209 @@ export function ChatView({
           </div>
         </div>
         <div className="chat-head-actions">
-          <button
-            type="button"
-            className={`btn btn-ghost btn-sm is-work-toggle${
-              reviewOpen && paneTab === 'files' ? ' is-active' : ''
-            }`}
-            onClick={openWorkspace}
-            aria-pressed={reviewOpen && paneTab === 'files'}
-            title={reviewOpen && paneTab === 'files' ? '关闭工作区' : '打开工作区'}
-          >
-            <Icon name="file" size={15} /> 工作区
-          </button>
-          <button
-            type="button"
-            className={`btn btn-ghost btn-sm is-browser-toggle${
-              reviewOpen && paneTab === 'browser' ? ' is-active' : ''
-            }`}
-            onClick={openBrowser}
-            aria-pressed={reviewOpen && paneTab === 'browser'}
-            title={reviewOpen && paneTab === 'browser' ? '关闭浏览器面板' : '打开内嵌浏览器'}
-          >
-            <Icon name="console" size={15} /> 浏览器
-          </button>
-          <button
-            type="button"
-            className={`btn btn-ghost btn-sm is-review-toggle${
-              reviewOpen && paneTab === 'review' ? ' is-active' : ''
-            }`}
-            disabled={
-              !reviewOpen &&
-              lastReviewable === null &&
-              reviewHistory.length === 0 &&
-              reviewRun === null &&
-              !reviewBusy &&
-              !reviewStopped &&
-              reviewError === null
-            }
-            onClick={toggleReview}
-            aria-pressed={reviewOpen && paneTab === 'review'}
-            title={
-              reviewOpen && paneTab === 'review'
-                ? '关闭审查'
-                : lastReviewable === null && reviewHistory.length === 0
-                  ? '还没有可审查的完成或中断轮次'
-                  : '打开审查'
-            }
-          >
-            <Icon name="eye" size={15} /> 审查
-          </button>
           <button type="button" className="btn btn-primary btn-sm" onClick={() => void createNewChat()}>
             <Icon name="plus" size={15} /> 新对话
           </button>
+          {/*
+            右栏入口：纯图标分体按钮 + 左侧浮层菜单。
+            ★ 主体只切换右栏显隐、不打开列表：想收起侧栏时不会手滑展开菜单。
+            ★ 按钮不再写面板名：文案会随「工作区 10」变长而挤压标题；当前在哪一栏由列表里的勾选表达。
+            ★ 箭头只开列表；列表从按钮下方展开、右对齐，不把头部撑高。
+          */}
+          <div className="panel-menu" ref={panelMenuRef}>
+            <div className="panel-split">
+              <button
+                type="button"
+                className="panel-split-main"
+                aria-label={reviewOpen ? '收起侧栏' : '展开侧栏'}
+                aria-pressed={reviewOpen}
+                title={reviewOpen ? '收起侧栏' : '展开侧栏'}
+                onClick={togglePaneVisibility}
+              >
+                <Icon name="panelLeft" size={15} />
+              </button>
+              <button
+                ref={panelMenuButtonRef}
+                type="button"
+                className="panel-split-arrow"
+                aria-haspopup="menu"
+                aria-expanded={panelMenuOpen}
+                aria-controls={panelMenuOpen ? panelMenuId : undefined}
+                aria-label="侧栏面板列表"
+                title="侧栏面板列表"
+                onClick={(event) => {
+                  // click.detail：键盘（Enter/Space）触发为 0，真实指针点击 > 0。
+                  // 只记录“怎么打开的”，真正聚焦在第一项的 effect 里判断。
+                  panelMenuKeyboardOpenRef.current = event.detail === 0;
+                  setPanelCreateOpen(false);
+                  setPanelMenuOpen(!panelMenuOpen);
+                }}
+                onKeyDown={(event) => {
+                  // ↓ 直接展开列表：role="menu" 的键盘惯例，省掉一次 Tab。
+                  if (event.key !== 'ArrowDown') return;
+                  event.preventDefault();
+                  panelMenuKeyboardOpenRef.current = true;
+                  if (!panelMenuOpen) {
+                    setPanelCreateOpen(false);
+                    setPanelMenuOpen(true);
+                    return;
+                  }
+                  // 列表已经开着（Esc 只会关掉它）：把焦点送进第一项，而不是原地不动。
+                  panelMenuRef.current
+                    ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+                    ?.focus();
+                }}
+              >
+                <Icon name="chevronDown" size={12} className="panel-menu-caret" />
+              </button>
+            </div>
+
+            {panelMenuOpen ? (
+              <div
+                className="panel-menu-pop"
+                id={panelMenuId}
+                role="menu"
+                aria-label="侧栏面板"
+                onKeyDown={handlePanelMenuKeyDown}
+              >
+                {/* 「新建」行 + 二级浮层：主列表向下展开，二级仍从该行左侧弹出。 */}
+                <div className="panel-menu-new" role="none">
+                  <button
+                    ref={panelCreateButtonRef}
+                    type="button"
+                    role="menuitem"
+                    className="panel-menu-item"
+                    aria-expanded={panelCreateOpen}
+                    aria-controls={panelCreateOpen ? panelCreateMenuId : undefined}
+                    title={panelCreateOpen ? '收起新建菜单' : '新建面板'}
+                    onClick={(event) => togglePanelCreateMenu(event.detail === 0)}
+                    onKeyDown={handlePanelCreateKeyDown}
+                  >
+                    <Icon name="plus" size={14} />
+                    <span>新建</span>
+                    <Icon
+                      name="chevronDown"
+                      size={11}
+                      className={`panel-menu-new-caret${panelCreateOpen ? ' is-open' : ''}`}
+                    />
+                  </button>
+                  {panelCreateOpen ? (
+                    <div
+                      className="panel-menu-sub"
+                      id={panelCreateMenuId}
+                      role="group"
+                      aria-label="新建面板"
+                      style={
+                        panelSubShift > 0
+                          ? { right: `calc(100% + ${PANEL_FLYOUT_GAP}px - ${panelSubShift}px)` }
+                          : undefined
+                      }
+                      onKeyDown={handlePanelCreateSubKeyDown}
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="panel-menu-item"
+                        title="新建一个工作区面板（总是新实例）"
+                        onClick={() => runPanelMenuItem(openNewWorkspacePane)}
+                      >
+                        <Icon name={PANE_KIND_ICON.files} size={13} />
+                        <span>工作区</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="panel-menu-item"
+                        title="打开工作区外的文件（原生选择框）"
+                        onClick={() => runPanelMenuItem(() => void openExternalFile())}
+                      >
+                        <Icon name={PANE_KIND_ICON['external-file']} size={13} />
+                        <span>文件</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="panel-menu-item"
+                        title="打开内嵌浏览器（已打开时直接切换）"
+                        onClick={() => runPanelMenuItem(openBrowser)}
+                      >
+                        <Icon name={PANE_KIND_ICON.browser} size={13} />
+                        <span>浏览器</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="panel-menu-item"
+                        disabled={reviewUnavailable}
+                        title={
+                          reviewUnavailable
+                            ? '还没有可审查的完成或中断轮次'
+                            : '打开审查面板（已打开时直接切换）'
+                        }
+                        onClick={() => runPanelMenuItem(openReview)}
+                      >
+                        <Icon name={PANE_KIND_ICON.review} size={13} />
+                        <span>审查</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="panel-menu-item"
+                        title="新建一个终端面板（可多开）"
+                        onClick={() => runPanelMenuItem(() => void openTerminal())}
+                      >
+                        <Icon name={PANE_KIND_ICON.terminal} size={13} />
+                        <span>终端</span>
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* 没有已打开面板时（右栏刚关到空）不画分隔线：下面没有内容，留一条空线更怪。 */}
+                {panes.length > 0 ? (
+                  <div className="panel-menu-separator" role="separator" />
+                ) : null}
+
+                {panes.map((pane) => {
+                  const active = reviewOpen && pane.id === activePane?.id;
+                  return (
+                    <div
+                      key={pane.id}
+                      role="none"
+                      className={`panel-menu-row${active ? ' is-active' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        data-pane-id={pane.id}
+                        className={`panel-menu-item${active ? ' is-active' : ''}`}
+                        aria-current={active ? 'true' : undefined}
+                        title={active ? '当前面板' : `切换到${pane.label}`}
+                        onClick={() => runPanelMenuItem(() => activatePane(pane.id))}
+                      >
+                        <Icon name={PANE_KIND_ICON[pane.kind]} size={14} />
+                        <span>{pane.label}</span>
+                        {active ? <Icon name="check" size={12} className="panel-menu-check" /> : null}
+                      </button>
+                      <button
+                        type="button"
+                        className="panel-menu-close"
+                        aria-label={`关闭${pane.label}`}
+                        title={`关闭${pane.label}`}
+                        onClick={(event) => {
+                          // × 只关闭自己：不让点击冒泡成一次“切换面板”。
+                          event.stopPropagation();
+                          closePane(pane.id);
+                        }}
+                      >
+                        <Icon name="close" size={11} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -3905,79 +4727,70 @@ export function ChatView({
       ) : null}
       </div>
 
-      {reviewOpen && (
-        <>
-          {/* 展开时右栏占满主区域，分隔条没有意义，直接不渲染。 */}
-          {!panelExpanded ? (
-            <div
-              className="review-splitter"
-              role="separator"
-              aria-label="调整主对话与右栏宽度"
-              aria-orientation="vertical"
-              aria-valuemin={35}
-              aria-valuemax={65}
-              aria-valuenow={Math.round(reviewRatio * 100)}
-              tabIndex={0}
-              onPointerDown={handleReviewSplitterPointerDown}
-              onKeyDown={handleReviewSplitterKeyDown}
-            />
-          ) : null}
-          <section className="review-pane" aria-label="工作区、浏览器与审查">
-            <div className="review-tabs" role="group" aria-label="右栏视图">
-              <button
-                type="button"
-                className={`review-tab${paneTab === 'files' ? ' is-active' : ''}`}
-                aria-pressed={paneTab === 'files'}
-                onClick={() => selectPaneTab('files')}
-              >
-                <Icon name="file" size={13} /> 文件
-              </button>
-              <button
-                type="button"
-                className={`review-tab${paneTab === 'browser' ? ' is-active' : ''}`}
-                aria-pressed={paneTab === 'browser'}
-                onClick={() => {
-                  // 页签本身就在面板里，面板必然是开的；仍然显式打开一次，
-                  // 以后若从别处复用这个入口（比如头部按钮）也不会点了没反应。
-                  selectPaneTab('browser');
-                  setReviewOpen(true);
-                }}
-              >
-                <Icon name="console" size={13} /> 浏览器
-              </button>
-              <button
-                type="button"
-                className={`review-tab${paneTab === 'review' ? ' is-active' : ''}`}
-                aria-pressed={paneTab === 'review'}
-                onClick={() => selectPaneTab('review')}
-              >
-                <Icon name="eye" size={13} /> 审查
-              </button>
-            </div>
+      {/* 展开时右栏占满主区域，分隔条没有意义，直接不渲染。 */}
+      {reviewOpen && !panelExpanded ? (
+        <div
+          className="review-splitter"
+          role="separator"
+          aria-label="调整主对话与右栏宽度"
+          aria-orientation="vertical"
+          aria-valuemin={35}
+          aria-valuemax={65}
+          aria-valuenow={Math.round(reviewRatio * 100)}
+          tabIndex={0}
+          onPointerDown={handleReviewSplitterPointerDown}
+          onKeyDown={handleReviewSplitterKeyDown}
+        />
+      ) : null}
+      {/*
+        ★ 右栏整体收起时只 hidden、不卸载：外部文件与终端实例还留在面板列表里，
+          真正的实例关闭发生在列表 × / 切会话。如果跟着收起一起卸载，组件的卸载清理
+          会关闭服务端句柄与终端进程，再展开同一个实例就只剩“句柄已失效”。
+        ★ 工作区 / 浏览器 / 审查仍只在右栏打开时挂载，保持原有开销与现场语义。
+      */}
+      <section
+        className="review-pane"
+        aria-label="工作区、外部文件、浏览器、审查与终端"
+        hidden={!reviewOpen}
+      >
             {/*
-              文件页签保持挂载，只用 hidden 收起来：
-              切去审查再回来时，文件树、正在编辑的草稿和滚动手位都还在，
-              不会因为一次页签切换丢掉未保存的修改。
+              工作区面板可以多开：每个实例都保持挂载，非激活的只用 hidden 收起来。
+              ★ 各自保留文件树、打开的文件和未保存草稿，切换面板不会丢状态；
+                hidden 有全局 [hidden]{display:none!important} 兜底，不占布局。
+              ★ aiOp 只给当前激活的面板：隐藏面板不该在后台悄悄打开 AI 改的文件。
             */}
-            <div className="work-panel-slot" hidden={paneTab !== 'files'}>
-              <WorkPanel sessionId={sessionId} open={reviewOpen} aiOp={aiOp} />
-            </div>
+            {reviewOpen && panes
+              .filter((pane) => pane.kind === 'files')
+              .map((pane) => (
+                <div
+                  key={pane.id}
+                  className="work-panel-slot"
+                  hidden={pane.id !== activePane?.id}
+                >
+                  <WorkPanel
+                    sessionId={sessionId}
+                    open={reviewOpen}
+                    aiOp={pane.id === activePane?.id ? aiOp : null}
+                  />
+                </div>
+              ))}
             {/*
-              浏览器页签只在选中时挂载：没选中就不发 /api/browser/start，也不占一条 SSE 连接。
+              浏览器面板只在激活时挂载：没激活就不发 /api/browser/start，也不占一条 SSE 连接。
               画面尺寸全部交给 flex（.browser-stage 是 flex:1），
               因此展开成浮窗时画面会跟着面板缩放，不依赖任何写死的高度。
             */}
-            {paneTab === 'browser' ? (
+            {reviewOpen && paneTab === 'browser' && activePane !== null ? (
               <div className="browser-panel-slot">
                 <BrowserPanel
                   sessionId={sessionId}
                   onSendToButler={sendBrowserPageToButler}
+                  onAttachScreenshot={attachBrowserScreenshot}
                   maximized={panelMax}
                   onMaximizedChange={setPanelMax}
                 />
               </div>
             ) : null}
-            {paneTab === 'review' ? (
+            {reviewOpen && paneTab === 'review' && activePane !== null ? (
               <>
             <header className="review-head">
               <div className="review-head-main">
@@ -4001,9 +4814,6 @@ export function ChatView({
                   ) : reviewHistory.length > 0 ? (
                     <b className="review-history-badge">{reviewHistory.length}</b>
                   ) : null}
-                </button>
-                <button type="button" className="review-close" aria-label="关闭审查" onClick={closeReview}>
-                  <Icon name="close" size={14} />
                 </button>
               </div>
             </header>
@@ -4376,9 +5186,56 @@ export function ChatView({
             </div>
               </>
             ) : null}
-          </section>
-        </>
-      )}
+        {/*
+          外部文件与终端实例在收起右栏时也保持挂载（见上方说明），非激活实例 hidden。
+          ★ 句柄 / 终端会话跟着实例走：列表里关掉（或切会话移除）才卸载并调 close。
+        */}
+        {panes
+          .filter((pane) => pane.kind === 'external-file')
+          .map((pane) => (
+            <div
+              key={pane.id}
+              className="external-file-slot"
+              hidden={pane.id !== activePane?.id}
+            >
+              {pane.externalFile !== undefined ? (
+                <ExternalFilePanel
+                  sessionId={pane.externalFile.sessionId}
+                  file={pane.externalFile}
+                  onClose={() => closePane(pane.id)}
+                />
+              ) : null}
+            </div>
+          ))}
+        {panes
+          .filter((pane) => pane.kind === 'terminal')
+          .map((pane) => (
+            <div
+              key={pane.id}
+              className="terminal-slot"
+              hidden={pane.id !== activePane?.id}
+            >
+              {pane.terminal !== undefined ? (
+                <TerminalPanel
+                  sessionId={pane.terminal.sessionId}
+                  terminal={pane.terminal}
+                  onClose={() => closePane(pane.id)}
+                />
+              ) : (
+                <div className="terminal-panel is-failed" role="alert">
+                  <div className="terminal-failed">
+                    <Icon name="alert" size={22} />
+                    <h3>终端启动失败</h3>
+                    <p>{pane.terminalError ?? '服务端没有返回原因'}</p>
+                    <p className="terminal-failed-hint">
+                      关掉这个面板后可以从「新建 → 终端」再试一次。
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+      </section>
 
       {/* 收起后的入口：位置/尺寸仍留在 chatFloat.rect 里，点一下原样恢复。 */}
       {panelExpanded && chatFloat.collapsed ? (

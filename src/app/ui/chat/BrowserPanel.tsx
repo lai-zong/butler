@@ -64,6 +64,8 @@ interface BrowserPanelProps {
   readonly sessionId: string | null;
   /** 把整理好的问题填进对话输入框；实现方只填空、不发送。 */
   readonly onSendToButler: (text: string) => void;
+  /** 把当前页面截图作为图片附件放进对话输入框；实现方只填空、不发送。 */
+  readonly onAttachScreenshot: (dataUrl: string, text: string) => void;
   /** 面板是否已占满主区域（由 ChatView 持有；全屏按钮会切换它） */
   readonly maximized: boolean;
   /** 切换占满/还原；全屏与「展开」现在是同一个状态机 */
@@ -384,6 +386,7 @@ function formatMtime(mtimeMs: number): string {
 export function BrowserPanel({
   sessionId,
   onSendToButler,
+  onAttachScreenshot,
   maximized,
   onMaximizedChange,
 }: BrowserPanelProps): JSX.Element {
@@ -833,17 +836,34 @@ export function BrowserPanel({
     tabBusyRef.current = true;
     setTabBusy(true);
     setActionError(null);
+    /**
+     * ★ 点标签先本地切高亮/地址：服务端切页要重新附着、初始化并补帧，
+     *   这期间如果界面完全不动，用户会以为点击没生效，于是反复点。
+     */
+    if (action === 'activate' && id !== undefined) {
+      const target = tabs.find((tab) => tab.id === id);
+      setTabs((prev) => prev.map((tab) => ({ ...tab, active: tab.id === id })));
+      if (target !== undefined && target.url.length > 0 && !target.url.startsWith('data:text/html')) {
+        setAddress(target.url);
+      }
+    }
     try {
-      await callBrowser<OkResponse>(
+      const result = await callBrowser<{ ok?: boolean }>(
         'tab',
         { action, ...(id !== undefined ? { id } : {}) },
         () =>
-          postJson<OkResponse>('/api/browser/tabs', {
+          postJson<{ ok?: boolean }>('/api/browser/tabs', {
             action,
             ...(id !== undefined ? { id } : {}),
           }),
       );
       if (!aliveRef.current) return;
+      // 服务端明确说切不过去（标签已关闭/会话失效）：别让乐观高亮骗着用户。
+      if (action === 'activate' && result.ok === false) {
+        setActionError('这个标签页已经不可用，正在刷新标签列表');
+        void refreshTabs();
+        return;
+      }
       void refreshTabs();
       void refreshState();
     } catch (err) {
@@ -940,17 +960,29 @@ export function BrowserPanel({
     void postJson<OkResponse>('/api/browser/input', payload).catch(() => undefined);
   }
 
-  function postMouse(action: MouseAction, point: ViewportPoint, button?: MouseButton): void {
+  function postMouse(
+    action: MouseAction,
+    point: ViewportPoint,
+    button?: MouseButton,
+    buttons?: number,
+  ): void {
     sendInput({
       type: 'mouse',
       action,
       x: point.x,
       y: point.y,
       ...(button !== undefined ? { button } : {}),
+      ...(buttons !== undefined ? { buttons } : {}),
     });
   }
 
-  function sendPointer(action: MouseAction, clientX: number, clientY: number, button?: MouseButton): void {
+  function sendPointer(
+    action: MouseAction,
+    clientX: number,
+    clientY: number,
+    button?: MouseButton,
+    buttons?: number,
+  ): void {
     const point = toViewportPoint(clientX, clientY);
     if (point === null) return;
     lastPointRef.current = point;
@@ -964,14 +996,14 @@ export function BrowserPanel({
       lastMoveAtRef.current = now;
       lastMoveRef.current = point;
     }
-    postMouse(action, point, button);
+    postMouse(action, point, button, buttons);
     if (action === 'up') {
       /**
        * ★ 点击链接会在远端触发导航，但服务端没有导航事件推给前端；
        *   只靠 1 秒轮询会有明显"点了没反应"的错觉。
        *   这里在点击后补两次刷新，命中大多数页面加载完成的时机。
        */
-      for (const delay of [350, 900]) {
+      for (const delay of [120, 450, 1000]) {
         window.setTimeout(() => {
           if (!aliveRef.current || bootStatusRef.current !== 'ready') return;
           void refreshState();
@@ -1045,7 +1077,18 @@ export function BrowserPanel({
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>): void {
-    sendPointer('move', event.clientX, event.clientY);
+    /**
+     * ★ 拖选必须告诉远端"左键仍按着"：只发 mouseMoved、buttons=0 时，
+     *   Chromium 认为指针只是悬停，不会扩展选区，于是页面里无法拖蓝选字。
+     */
+    const buttons = dragRef.current.active
+      ? dragRef.current.button === 'right'
+        ? 2
+        : dragRef.current.button === 'middle'
+          ? 4
+          : 1
+      : 0;
+    sendPointer('move', event.clientX, event.clientY, undefined, buttons);
   }
 
   function handlePointerUp(event: ReactPointerEvent<HTMLCanvasElement>): void {
@@ -1211,6 +1254,25 @@ export function BrowserPanel({
       page.text.slice(0, READ_SEND_CHARS),
     ].join('\n');
     onSendToButler(text);
+    setRead({ status: 'idle' });
+  }
+
+  /**
+   * 把可见区域截图作为图片附件放进对话。
+   *
+   * ★ 截图和正文分开：视觉任务用图片，文本任务用文字；
+   *   两者都塞进去既浪费 token，也容易让模型忽略其中一份。
+   */
+  function sendScreenshotToButler(page: BrowserReadResponse): void {
+    if (page.screenshot.length === 0) return;
+    const text = [
+      '请看我附上的浏览器截图。',
+      `URL: ${page.url}`,
+      '标题: ' + (page.title.length > 0 ? page.title : '（无标题）'),
+      '',
+      '我的问题：',
+    ].join('\n');
+    onAttachScreenshot(`data:image/png;base64,${page.screenshot}`, text);
     setRead({ status: 'idle' });
   }
 
@@ -1805,14 +1867,24 @@ export function BrowserPanel({
                 </pre>
               </div>
               <footer className="browser-read-foot">
-                <span>只读预览 · 点「发给管家」只填进输入框，不会自动发送</span>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => sendPageToButler(read.page)}
-                >
-                  发给管家
-                </button>
+                <span>只读预览 · 两个按钮都只填进输入框，不会自动发送</span>
+                <div className="browser-read-actions">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => sendScreenshotToButler(read.page)}
+                    disabled={read.page.screenshot.length === 0}
+                  >
+                    插入截图
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => sendPageToButler(read.page)}
+                  >
+                    插入页面文字
+                  </button>
+                </div>
               </footer>
             </>
           )}

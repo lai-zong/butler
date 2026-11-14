@@ -16,7 +16,11 @@
 
 .chat-head {
   position: relative;
-  z-index: 6;
+  /*
+   * 7 而不是 6：审查历史抽屉也是 z-index: 6、且在 DOM 里更靠后，
+   * 头部浮层菜单必须压得住它，否则抽屉打开时菜单下半截会被盖住。
+   */
+  z-index: 7;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -62,6 +66,338 @@
   align-items: center;
   gap: 7px;
   flex: none;
+}
+
+/*
+ * 右栏入口：对话头部一个纯图标分体按钮 + 下方菜单。
+ * ★ 主体管右栏显隐、箭头只管开列表；头部仍只占一个按钮位，也不会因为想换面板而误收起右栏。
+ * ★ 主菜单从按钮下方展开并右对齐（right: 0），「新建」的二级卡片仍从该行左侧弹出：
+ *   两层都脱离文档流，不挤走「新对话」，也不会让头部换行。
+ */
+.panel-menu {
+  position: relative;
+  flex: none;
+}
+
+/*
+ * 分体按钮外框：高度与旧版单按钮一致（32px），两段共享一条边线。
+ * ★ overflow: hidden 让两段的 hover 底色都收在圆角里，不出现方角压边。
+ */
+.panel-split {
+  display: inline-flex;
+  align-items: stretch;
+  height: 32px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  transition:
+    background 0.18s var(--ease),
+    border-color 0.18s var(--ease);
+}
+
+/* 整组按钮亮着就说明它在激活状态：鼠标在任一段上或焦点在组内都提亮边框。 */
+.panel-split:hover,
+.panel-split:focus-within {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+/*
+ * 主体段：只有一个图标（30×30），不再写面板名。
+ * ★ 写名字会把按钮宽度绑在「文件 10」这类最长文案上，窄窗口下还会挤压标题；
+ *   当前在哪一栏交给列表里的勾选表达。
+ * ★ 固定宽度 + 无内边距：两段之间的边线位置稳定，整组宽度恒为 30 + 24 + 2 = 56px。
+ */
+.panel-split-main {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background 0.18s var(--ease),
+    color 0.18s var(--ease);
+}
+
+.panel-split-main:hover {
+  color: var(--ink);
+}
+
+/*
+ * 右栏开着时给一个轻微 active 态：底色 + 图标同时变深，
+ * 不出现文字也能看出“这一栏现在是开的”。
+ * ★ 放在 .panel-split:hover 之后：同特异性下压过它的浅底，active 色不会被 hover 盖掉。
+ */
+.panel-split-main[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.panel-split-main > svg {
+  flex: none;
+}
+
+/* 箭头段：只开列表、不收起右栏；比主体窄，整个入口不占更多头部空间。 */
+.panel-split-arrow {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-4);
+  cursor: pointer;
+  transition:
+    background 0.18s var(--ease),
+    color 0.18s var(--ease);
+}
+
+.panel-split-arrow:hover,
+.panel-split-arrow[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.panel-split-main:focus-visible,
+.panel-split-arrow:focus-visible,
+.panel-menu-item:focus-visible,
+.panel-menu-close:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* 小箭头只提示“能展开”：展开时翻上去，方向与列表一致。 */
+.panel-menu-caret {
+  color: var(--ink-4);
+  transition: transform 0.18s var(--ease);
+}
+
+.panel-split-arrow[aria-expanded="true"] .panel-menu-caret {
+  transform: rotate(180deg);
+}
+
+/*
+ * 「新建」行：+ 在左、文字居中、小箭头推到最右。
+ * ★ 箭头指向左侧的二级浮层（chevronDown 顺时针转 90° 即朝左）；
+ *   展开后转回右侧，表示“再点一次就收回来”。
+ */
+.panel-menu-new {
+  position: relative;
+}
+
+.panel-menu-new-caret {
+  margin-left: auto;
+  color: var(--ink-4);
+  /* 二级菜单从左侧弹出：关闭时指向左侧，展开后翻转 */
+  transform: rotate(90deg);
+  transition: transform 0.18s var(--ease);
+}
+
+.panel-menu-new-caret.is-open {
+  transform: rotate(-90deg);
+}
+
+/*
+ * 主列表卡片：190px、描边 + 浅阴影，从分体按钮**下方**展开并右对齐。
+ * ★ 只在头部层内绝对定位：不参与头部高度，也不会把正文挤下去。
+ * ★ 动画改为向下 4px + 淡入，与“下拉”方向一致。
+ */
+.panel-menu-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  width: 190px;
+  max-width: calc(100vw - 24px);
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  animation: panelDropIn 0.12s var(--ease-out) both;
+}
+
+/*
+ * 二级菜单：仍从「新建」行左侧弹出独立卡片。
+ * ★ 11px = 行左缘到卡片左缘的 5px（1px 边框 + 4px 内边距）+ 6px 可见缝隙；
+ *   只写 6px 时两张卡片的边框几乎贴在一起。
+ * ★ 窄窗口靠组件里的 panelSubShift 往右让，避免顶出视口左缘。
+ */
+.panel-menu-sub {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 11px);
+  z-index: 1;
+  display: flex;
+  width: 190px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  animation: panelFlyoutIn 0.12s var(--ease-out) both;
+}
+
+.panel-menu-sub > .panel-menu-item {
+  height: 28px;
+}
+
+@keyframes panelFlyoutIn {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes panelDropIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.panel-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.panel-menu-item:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/*
+ * 面板行：条目 + 右侧 × 共用一条 hover 底色。
+ * ★ 行本身不是 menuitem（role="none"）：× 是行内第二个按钮，点它只关闭面板，
+ *   不会触发整行“切换面板”。行底色让 × 区域看起来仍属于这一项。
+ */
+.panel-menu-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-xs);
+}
+
+.panel-menu-row:hover,
+.panel-menu-row:focus-within {
+  background: var(--surface-2);
+}
+
+/* 当前面板：整行浅底（含右侧 × 区域），条目本身不再叠一层，避免两段颜色深浅不一。 */
+.panel-menu-row.is-active {
+  background: var(--surface-2);
+}
+
+/* 行内切换按钮让出 × 的位置：文字仍靠左，对勾对齐按钮自己的右端。 */
+.panel-menu-row > .panel-menu-item {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+/* 面板名可能到「文件 10」：窄列表里只省略文字，不撑破 190px。 */
+.panel-menu-row > .panel-menu-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 关闭 ×：平时透明，鼠标指到这一行（或键盘焦点进来）才显形。
+ * ★ 用 opacity 而不是 display/visibility：按钮始终可聚焦，读屏也能读到 aria-label。
+ */
+.panel-menu-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-4);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 0.15s var(--ease),
+    background 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.panel-menu-row:hover .panel-menu-close,
+.panel-menu-row:focus-within .panel-menu-close,
+.panel-menu-close:focus-visible {
+  opacity: 1;
+}
+
+.panel-menu-close:hover {
+  background: var(--line-soft);
+  color: var(--ink);
+}
+
+/* 当前面板：行底色负责整行高亮，条目本身保持透明，避免两段颜色深浅不一。 */
+.panel-menu-item.is-active {
+  background: transparent;
+  color: var(--ink);
+}
+
+.panel-menu-item:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.panel-menu-item > svg {
+  flex: none;
+}
+
+.panel-menu-item.is-active > svg:first-of-type {
+  color: var(--accent);
+}
+
+.panel-menu-check {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+/* 分隔线用极浅的线：菜单内部不需要第二条强调边框。 */
+.panel-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line-soft);
 }
 
 .model-pill {
@@ -2538,14 +2874,14 @@
 }
 
 /**
- * ★ 工作区文件页签要保留输入框。
+ * ★ 工作区页签要保留输入框。
  *
- *   审查模式隐藏输入框是对的（审查时不聊天），但文件面板是"边看边聊"的工作台：
+ *   审查模式隐藏输入框是对的（审查时不聊天），但工作区面板是"边看边聊"的工作台：
  *   用户在改文件的同时还要能继续对话，否则这个面板只能二选一。
  */
 .chat-view.is-review.is-work .chat-composer-wrap {
   display: block;
-  /* 只占左栏：横跨到右栏会跑到浏览器/文件面板下面（用户报的"输入框没缩小"） */
+  /* 只占左栏：横跨到右栏会跑到浏览器/工作区面板下面（用户报的"输入框没缩小"） */
   grid-column: 1;
 }
 
@@ -2558,6 +2894,16 @@
 .chat-view.is-review.is-browser .chat-composer-wrap {
   display: block;
   /* 同上：输入框跟着主对话一起缩到左栏 */
+  grid-column: 1;
+}
+
+/**
+ * ★ 外部文件 / 终端也是"边看边聊"的工作台，与工作区、浏览器一样保留输入框。
+ *   审查模式默认把 composer 藏掉，这里按同样的做法显式放回来，只占左栏。
+ */
+.chat-view.is-review.is-external-file .chat-composer-wrap,
+.chat-view.is-review.is-terminal .chat-composer-wrap {
+  display: block;
   grid-column: 1;
 }
 
@@ -2904,24 +3250,6 @@
   50% {
     opacity: 0.3;
   }
-}
-
-.review-close {
-  display: grid;
-  place-items: center;
-  width: 27px;
-  height: 27px;
-  flex: none;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--ink-3);
-  cursor: pointer;
-}
-
-.review-close:hover {
-  border-color: var(--line-strong);
-  color: var(--ink);
 }
 
 /* ── 历史审查入口 / 右侧抽屉 ─────────────────────────────── */
@@ -4018,22 +4346,6 @@
   cursor: pointer;
 }
 
-/* 审查 / 工作区 / 浏览器开关 */
-.chat-head-actions .btn.is-review-toggle,
-.chat-head-actions .btn.is-work-toggle,
-.chat-head-actions .btn.is-browser-toggle {
-  border-color: var(--line-strong);
-  background: var(--surface-2);
-  color: var(--ink);
-}
-
-.chat-head-actions .btn.is-review-toggle.is-active,
-.chat-head-actions .btn.is-work-toggle.is-active,
-.chat-head-actions .btn.is-browser-toggle.is-active {
-  border-color: #b6cbc0;
-  background: var(--accent-soft);
-}
-
 @media (max-width: 980px) {
   .review-head {
     padding: 13px 16px 12px;
@@ -5004,80 +5316,10 @@
 }
 
 /* ═══════════════════════════════════════════════════════════
-   右栏页签：文件（工作区）/ 审查
+   右栏内容：文件（工作区）/ 浏览器 / 审查
+   ★ 视图入口已全部移到对话头部的分体按钮（.panel-menu），
+     面板内部不再有 43px 的页签行，内容直接从面板顶部开始。
    ═══════════════════════════════════════════════════════════ */
-
-.review-tabs {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  background: rgba(245, 243, 238, 0.55);
-}
-
-.review-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  color: var(--ink-3);
-  font-size: 11.5px;
-  font-weight: 500;
-  white-space: nowrap;
-  transition:
-    background 0.18s var(--ease),
-    border-color 0.18s var(--ease),
-    color 0.18s var(--ease);
-}
-
-.review-tab:hover {
-  background: var(--surface);
-  color: var(--ink);
-}
-
-.review-tab.is-active {
-  border-color: var(--line);
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: var(--shadow-sm);
-}
-
-/* 展开 / 还原：放在页签最右侧，和页签同一行但视觉上更轻。 */
-.review-expand {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 5px;
-  height: 28px;
-  margin-left: auto;
-  padding: 0 9px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  color: var(--ink-3);
-  font-size: 11px;
-  white-space: nowrap;
-  transition:
-    background 0.18s var(--ease),
-    border-color 0.18s var(--ease),
-    color 0.18s var(--ease);
-}
-
-.review-expand:hover {
-  border-color: var(--line);
-  background: var(--surface);
-  color: var(--ink);
-}
-
-.review-expand.is-active {
-  border-color: var(--line);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
 
 /* 文件页签挂载后常驻，hidden 只负责藏起来，状态不丢。 */
 .work-panel-slot {
@@ -5952,7 +6194,7 @@ button.work-crumb:hover {
   color: var(--ink);
 }
 
-/* 活动态和 .review-tab 用同一套「描边 + 纸面底 + 轻阴影」，一眼认出当前页。 */
+/* 活动态用「描边 + 纸面底 + 轻阴影」，一眼认出当前页。 */
 .browser-tab.is-active {
   border-color: var(--line);
   background: var(--surface);
@@ -6650,16 +6892,6 @@ button.work-crumb:hover {
   display: none;
 }
 
-/*
- * 右栏页签条（文件 / 浏览器 / 审查）属于 ChatView 的 DOM，不在本组件里；
- * 但沉浸时它就是画面正上方最后一条栏。用 :has 从样式侧临时收起，
- * 不必改 ChatView 的 JSX；选择器只在浏览器面板沉浸时命中，
- * 不影响文件 / 审查页签的布局。
- */
-.review-pane:has(.browser-panel.is-immersive) > .review-tabs {
-  display: none;
-}
-
 /* 工具栏与状态栏都没了之后，画面区自然吃满整个面板（.browser-body 本来就是 flex:1）。 */
 .browser-panel.is-immersive .browser-body {
   flex: 1 1 auto;
@@ -6844,6 +7076,12 @@ button.work-crumb:hover {
   word-break: break-word;
 }
 
+.browser-read-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .browser-read-foot {
   display: flex;
   flex: none;
@@ -6877,4 +7115,685 @@ button.work-crumb:hover {
   .browser-status-dot.is-busy {
     animation: none;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   右栏：工作区外的文件 / 终端
+   ★ 两种面板都占满 .review-pane 的内容区（flex:1 + height:100%），
+     内部各自滚动；右栏被拖窄、展开成浮窗时都不依赖写死的高度。
+   ═══════════════════════════════════════════════════════════ */
+
+/* 实例挂载后常驻，hidden 只负责藏起来（全局 [hidden] 是 display:none!important）。 */
+.external-file-slot,
+.terminal-slot {
+  display: flex;
+  flex: 1 1 auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── 外部文件面板 ─────────────────────────────────────────── */
+
+.external-file-panel {
+  display: flex;
+  flex: 1 1 auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--paper);
+}
+
+.external-file-head {
+  display: flex;
+  flex: none;
+  /* 右栏可以拖得很窄：放不下时让 meta / 授权行换行，而不是把文件名挤没。 */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(245, 243, 238, 0.82);
+}
+
+.external-file-title {
+  display: flex;
+  flex: 1 1 210px;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.external-file-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-file-path {
+  overflow: hidden;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.external-file-meta {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.external-file-etag {
+  overflow: hidden;
+  max-width: 130px;
+  text-overflow: ellipsis;
+}
+
+.external-file-ai {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.external-file-ai-label {
+  color: var(--ink-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* 授权徽标必须和开关同时可见：用户要能一眼看出 AI 现在到底有没有权限。 */
+.external-file-ai-badge {
+  padding: 1px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.external-file-ai-badge.is-granted {
+  border-color: #cfe0d5;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.external-file-ai-badge.is-revoked {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
+.external-file-ai-badge.is-granting,
+.external-file-ai-badge.is-revoking {
+  border-color: #e7d2b6;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.external-file-close,
+.terminal-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-4);
+  cursor: pointer;
+}
+
+.external-file-close:hover,
+.terminal-close:hover {
+  background: var(--line-soft);
+  color: var(--ink);
+}
+
+/* 面板内错误/冲突条幅：不弹窗，问题和两个选项都留在原地。 */
+.external-file-banner {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+}
+
+.external-file-banner > svg {
+  flex: none;
+}
+
+.external-file-banner.is-warn {
+  border-bottom-color: #e7d2b6;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.external-file-banner.is-danger {
+  border-bottom-color: #ecd2c9;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.external-file-banner.is-info {
+  border-bottom-color: #d6dfe9;
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.external-file-banner-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.external-file-banner .btn {
+  flex: none;
+  height: 24px;
+  padding: 0 9px;
+  font-size: 10.5px;
+}
+
+.external-file-banner-close,
+.terminal-banner-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.external-file-banner-close:hover,
+.terminal-banner-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  opacity: 1;
+}
+
+/* 文本工具栏：dirty / 大小 / etag / 保存。 */
+.external-file-toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface);
+}
+
+.external-file-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-4);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.external-file-state::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-4);
+}
+
+.external-file-state.is-dirty {
+  color: var(--warn);
+}
+
+.external-file-state.is-dirty::before {
+  background: var(--warn);
+}
+
+.external-file-size,
+.external-file-etag {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.external-file-readonly {
+  color: var(--danger);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.external-file-shortcut {
+  margin-left: auto;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.external-file-toolbar .btn {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 10.5px;
+}
+
+/* 文本编辑器：等宽、占满剩余高度、自己滚动；readonly 用浅底表达“只能读”。 */
+.external-file-textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px 24px;
+  overflow: auto;
+  border: 0;
+  outline: none;
+  background: var(--surface);
+  color: var(--ink);
+  caret-color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  resize: none;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.external-file-textarea[readonly] {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+/* Office 解出来的纯文本：只读、可换行，不能被当成代码横向撑开。 */
+.external-file-note {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--ink-4);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.external-file-note > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.external-file-text {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px 24px;
+  overflow: auto;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 空 / 加载 / 错误态。 */
+.external-file-placeholder {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.external-file-placeholder > svg {
+  color: var(--ink-4);
+}
+
+.external-file-placeholder h3 {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.external-file-placeholder p {
+  max-width: 360px;
+  color: var(--ink-4);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.external-file-placeholder.is-error > svg {
+  color: var(--danger);
+}
+
+.external-file-placeholder.is-error h3 {
+  color: var(--danger);
+}
+
+.external-file-placeholder-path {
+  font-family: var(--font-mono);
+  font-size: 10px !important;
+  word-break: break-all;
+}
+
+.external-file-placeholder .btn {
+  margin-top: 4px;
+  height: 30px;
+  font-size: 11px;
+}
+
+/* 图片：contain 缩放，容器内滚动；不把面板撑出右栏。 */
+.external-file-image {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow: auto;
+  background: var(--paper-deep);
+}
+
+.external-file-image img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  object-fit: contain;
+}
+
+/* PDF：浏览器内置查看器 + 永远留一条新标签页兜底。 */
+.external-file-pdf-bar {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.external-file-pdf {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: var(--surface);
+}
+
+/* docx / xlsx 的只读表格：行列都可能很长，容器内双向滚动。 */
+.external-file-table-wrap {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.external-file-table-caption {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.external-file-table-readonly {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 400;
+}
+
+.external-file-table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.external-file-table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.external-file-table td {
+  padding: 5px 10px;
+  border-right: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-2);
+  vertical-align: top;
+  white-space: pre;
+}
+
+.external-file-table td:last-child {
+  border-right: 0;
+}
+
+.external-file-table-empty {
+  padding: 16px;
+  color: var(--ink-4);
+  font-size: 11px;
+}
+
+.external-file-table-foot {
+  flex: none;
+  padding: 7px 14px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--ink-4);
+  font-size: 10px;
+}
+
+/* ── 终端面板 ─────────────────────────────────────────────── */
+
+.terminal-panel {
+  display: flex;
+  flex: 1 1 auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  /* 终端本体用深色，外壳头部仍是浅色：与工作区/浏览器面板并排时不突兀。 */
+  background: var(--code-bg);
+}
+
+/* 启动失败没有终端本体：回到浅色错误页，深底上的深字会读不出来。 */
+.terminal-panel.is-failed {
+  background: var(--paper);
+}
+
+.terminal-head {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(245, 243, 238, 0.92);
+}
+
+.terminal-title {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.terminal-shell {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+/* cwd 可能很深：只允许在头部这一行里省略，完整路径放 title。 */
+.terminal-cwd {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-status {
+  flex: none;
+  color: var(--accent);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.terminal-status.is-exited {
+  color: var(--danger);
+}
+
+.terminal-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.terminal-actions .btn {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 10.5px;
+}
+
+.terminal-banner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 11px;
+}
+
+.terminal-banner.is-warn {
+  border-bottom-color: #e7d2b6;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.terminal-banner.is-danger {
+  border-bottom-color: #ecd2c9;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.terminal-banner > svg {
+  flex: none;
+}
+
+.terminal-banner > span {
+  flex: 1;
+  min-width: 0;
+}
+
+/*
+ * xterm 挂载点：必须给出确定高度，FitAddon 才能算出 cols/rows。
+ * ★ 这里用 flex:1 + min-height:0，而不是 vh：展开成浮窗、右栏拖高拖矮时
+ *   终端跟着容器走，ResizeObserver 再补一次 fit。
+ */
+.terminal-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+
+.terminal-body .xterm {
+  height: 100%;
+}
+
+/* xterm.css 默认把 viewport 涂黑；换成主题底色，滚动条区域才不会出现一条纯黑边。 */
+.terminal-body .xterm .xterm-viewport {
+  background-color: #24231e;
+}
+
+.terminal-failed {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.terminal-failed > svg {
+  color: var(--danger);
+}
+
+.terminal-failed h3 {
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.terminal-failed p {
+  max-width: 380px;
+  color: var(--ink-4);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.terminal-failed-hint {
+  font-family: var(--font-mono);
+  font-size: 10px !important;
 }
