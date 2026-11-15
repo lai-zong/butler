@@ -1,0 +1,792 @@
+/* ═══════════════════════════════════════════════════════════
+   本地登录 —— /login、/setup 与设置页「登录与安全」
+   ═══════════════════════════════════════════════════════════
+   视觉延续暖纸底 + 墨色字 + 苔绿点缀：
+   · 登录页只有一张窄卡，不做营销区、不放插画
+   · 找回问题用暖琥珀底抬一层，让“忘记密码时靠它”一眼可见
+   · 设置面板沿用紧凑的表单尺度，不改变现有设置页布局
+*/
+
+/* ─────────────────────────────────────────────
+   登录 / 设置页外壳
+   ───────────────────────────────────────────── */
+
+.auth-screen {
+  position: relative;
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(30px, 7vh, 72px) 20px 34px;
+  /* 窄屏内容可能比视口高：允许纵向滚动，只裁掉横向纹理溢出。 */
+  overflow-x: hidden;
+  overflow-y: auto;
+  background:
+    radial-gradient(880px 520px at 50% -8%, rgba(255, 255, 255, 0.82), transparent 64%),
+    radial-gradient(680px 420px at 92% 108%, rgba(47, 91, 76, 0.07), transparent 70%),
+    var(--paper);
+}
+
+.auth-texture {
+  position: fixed;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle, rgba(30, 29, 25, 0.16) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.16;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 36%, #000 0%, transparent 62%);
+  mask-image: radial-gradient(ellipse at 50% 36%, #000 0%, transparent 62%);
+}
+
+.auth-wrap {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: min(440px, 100%);
+  flex-direction: column;
+  gap: 16px;
+  animation: authRise 0.46s var(--ease-out) both;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.auth-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #f4f1e8;
+  box-shadow:
+    0 7px 18px rgba(47, 91, 76, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.auth-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.15;
+}
+
+.auth-brand-text strong {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.auth-brand-text span {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.auth-card {
+  padding: 26px 26px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, #fffdf9 0%, #fbf9f4 100%);
+  box-shadow:
+    0 1px 2px rgba(30, 29, 25, 0.04),
+    0 18px 48px rgba(30, 29, 25, 0.08);
+}
+
+.auth-head {
+  margin-bottom: 20px;
+}
+
+.auth-eyebrow {
+  margin-bottom: 7px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.auth-head h1 {
+  color: var(--ink);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.auth-desc {
+  margin-top: 7px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.auth-footer {
+  display: flex;
+  justify-content: center;
+}
+
+/* ─────────────────────────────────────────────
+   表单与字段
+   ───────────────────────────────────────────── */
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-field label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.auth-input {
+  position: relative;
+}
+
+.auth-input input {
+  width: 100%;
+  height: 42px;
+  padding: 0 42px 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  outline: none;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  transition:
+    border-color 0.16s var(--ease),
+    background 0.16s var(--ease),
+    box-shadow 0.16s var(--ease);
+}
+
+.auth-input input::placeholder {
+  color: var(--ink-4);
+}
+
+.auth-input input:focus {
+  border-color: #9fb9a7;
+  background: var(--surface);
+  box-shadow: 0 0 0 3px rgba(47, 91, 76, 0.09);
+}
+
+.auth-input input:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+/* 只保留我们自己的 .auth-reveal：
+   Edge / Chromium 会往密码框里塞原生“显示密码/清除”按钮，
+   和自定义眼睛叠在一起就是两个眼睛。 */
+.auth-input input[type='password']::-ms-reveal {
+  display: none;
+}
+
+.auth-input input[type='password']::-ms-clear {
+  display: none;
+}
+
+.auth-input input[type='password']::-webkit-credentials-auto-fill-button {
+  position: absolute;
+  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.auth-input input[type='password']::-webkit-strong-password-auto-fill-button {
+  position: absolute;
+  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 答案不是密码：不需要给右侧眼睛留位置。 */
+.auth-input input.auth-answer-input {
+  padding-right: 13px;
+}
+
+/* 找回问题下拉：和输入框同一套尺度，箭头由外层画，避免各浏览器原生样式不一。 */
+.auth-select-wrap {
+  position: relative;
+}
+
+.auth-select-wrap::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 15px;
+  width: 6px;
+  height: 6px;
+  transform: translateY(-70%) rotate(45deg);
+  border-right: 1.5px solid var(--ink-4);
+  border-bottom: 1.5px solid var(--ink-4);
+  pointer-events: none;
+}
+
+.auth-select {
+  width: 100%;
+  height: 42px;
+  padding: 0 38px 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  outline: none;
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.16s var(--ease),
+    background 0.16s var(--ease),
+    box-shadow 0.16s var(--ease);
+}
+
+.auth-select:focus {
+  border-color: #9fb9a7;
+  background: var(--surface);
+  box-shadow: 0 0 0 3px rgba(47, 91, 76, 0.09);
+}
+
+.auth-select:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.auth-field.is-invalid .auth-select {
+  border-color: #dcb0a5;
+  background: #fdf7f4;
+}
+
+.auth-field.is-invalid .auth-select:focus {
+  box-shadow: 0 0 0 3px rgba(164, 65, 47, 0.09);
+}
+
+/* 登录页上的找回问题只读展示：暖琥珀底，和表单输入区分开。 */
+.auth-question {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid #e2d2af;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fdf9ee 0%, #f9f2e1 100%);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.auth-field.is-invalid .auth-input input {
+  border-color: #dcb0a5;
+  background: #fdf7f4;
+}
+
+.auth-field.is-invalid .auth-input input:focus {
+  box-shadow: 0 0 0 3px rgba(164, 65, 47, 0.09);
+}
+
+.auth-reveal {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  transform: translateY(-50%);
+  border-radius: 8px;
+  color: var(--ink-4);
+  transition:
+    color 0.16s var(--ease),
+    background 0.16s var(--ease);
+}
+
+.auth-reveal:hover:not(:disabled) {
+  background: var(--paper-deep);
+  color: var(--ink-2);
+}
+
+.auth-reveal:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-field-note {
+  margin-top: 5px;
+  color: var(--ink-4);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.auth-field-note.is-error {
+  color: var(--danger);
+}
+
+.auth-submit {
+  width: 100%;
+  height: 44px;
+  margin-top: 2px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  text-decoration: none;
+}
+
+.auth-submit:hover {
+  text-decoration: none;
+}
+
+.auth-form-note {
+  margin-top: -3px;
+  color: var(--ink-4);
+  font-size: 10.5px;
+  line-height: 1.65;
+  text-align: center;
+}
+
+.auth-alt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.auth-link {
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: rgba(47, 91, 76, 0.34);
+  text-underline-offset: 3px;
+  transition: color 0.16s var(--ease);
+}
+
+.auth-link:hover {
+  color: var(--accent-ink);
+  text-decoration-color: currentColor;
+}
+
+/* ─────────────────────────────────────────────
+   提示条
+   ───────────────────────────────────────────── */
+
+.auth-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.auth-notice svg {
+  margin-top: 1px;
+  flex: none;
+}
+
+.auth-notice strong {
+  font-weight: 600;
+}
+
+.auth-notice.is-info {
+  border-color: #ccd8e5;
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.auth-notice.is-warn {
+  border-color: #e8d3b4;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.auth-notice.is-error {
+  border-color: #e8c8bf;
+  background: var(--danger-soft);
+  color: #7d3224;
+}
+
+/* ─────────────────────────────────────────────
+   检查中 / 失败
+   ───────────────────────────────────────────── */
+
+.auth-checking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.auth-spinner {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border: 1.5px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.auth-fatal {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.auth-fatal-lead {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.7;
+}
+
+.auth-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.85;
+}
+
+.auth-steps li::marker {
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+}
+
+.auth-code {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper-deep);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.auth-fatal-note {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.75;
+}
+
+@keyframes authRise {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────
+   设置页 · 登录与安全
+   ───────────────────────────────────────────── */
+
+.localauth-head-badges {
+  display: flex;
+  max-width: min(420px, 46vw);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.localauth-facts {
+  margin: 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.localauth-fact {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 14px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.localauth-fact dt {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.localauth-fact dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.localauth-block {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.localauth-block-title {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.localauth-block-desc {
+  margin-top: 4px;
+  margin-bottom: 12px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.localauth-form {
+  display: flex;
+  max-width: 460px;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.localauth-passwords {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.localauth-form .auth-field label {
+  margin-bottom: 5px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.localauth-form .auth-input input {
+  height: 36px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.localauth-form .auth-select {
+  height: 36px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+
+.localauth-form .auth-select-wrap::after {
+  right: 12px;
+}
+
+.localauth-form .auth-reveal {
+  width: 28px;
+  height: 28px;
+}
+
+.localauth-form .auth-field-note {
+  font-size: 10px;
+}
+
+.localauth-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.localauth-hint {
+  color: var(--ink-4);
+  font-size: 10.5px;
+}
+
+.localauth-security-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.localauth-security-state.is-missing {
+  border-color: #e8d3b4;
+  background: var(--warn-soft);
+}
+
+.localauth-security-label {
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.localauth-security-question {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.localauth-signout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.localauth-signout p {
+  margin-top: 3px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.localauth-signout .btn {
+  flex: none;
+}
+
+.localauth-expired {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px 13px;
+  border: 1px solid #e8c8bf;
+  border-radius: 12px;
+  background: var(--danger-soft);
+  color: #7d3224;
+}
+
+.localauth-expired-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+  background: rgba(164, 65, 47, 0.12);
+  color: var(--danger);
+}
+
+.localauth-expired strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.localauth-expired p {
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.localauth-expired .btn {
+  margin-left: auto;
+  flex: none;
+}
+
+.localauth-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 11px 13px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  color: var(--ink-3);
+}
+
+.localauth-footnote svg {
+  margin-top: 1px;
+  flex: none;
+  color: var(--ink-4);
+}
+
+.localauth-footnote p {
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+
+/* ─────────────────────────────────────────────
+   窄屏
+   ───────────────────────────────────────────── */
+
+@media (max-width: 560px) {
+  .auth-screen {
+    padding: 24px 14px 28px;
+  }
+
+  .auth-card {
+    padding: 22px 18px 20px;
+    border-radius: 18px;
+  }
+
+  .auth-head h1 {
+    font-size: 19px;
+  }
+
+  .localauth-passwords {
+    grid-template-columns: 1fr;
+  }
+
+  .localauth-fact {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .localauth-signout {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .localauth-expired {
+    flex-wrap: wrap;
+  }
+
+  .localauth-expired .btn {
+    margin-left: 36px;
+  }
+}

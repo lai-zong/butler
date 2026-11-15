@@ -10,10 +10,10 @@
  *   导入导出调用 /api/transfer/*，MCP 面板调用 /api/mcp，
  *   不放“看起来像设置”的摆设。
  *
- * ★ 分区按需挂载：除模型接入外，面板只在被选中时渲染。
- *   以前七个分区用 hidden 常驻，进设置页就同时打出模型 / MCP / 文档 / 桌宠 /
- *   权限五个请求——用户看不见，机器却一直在干活。请求都发在面板自己的
- *   useEffect 里，不渲染就不发。
+ * ★ 分区按需挂载 + 访问后保留：
+ *   模型接入常驻；其它分区第一次被选中才挂载，之后只 hidden、不卸载。
+ *   这样进设置页不会同时打出所有请求，切走再回来也不会重新 loading。
+ *   请求都发在面板自己的 useEffect 里，第一次渲染才发。
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -26,6 +26,7 @@ import { PetSettingsPanel } from './PetSettingsPanel';
 import { PermissionsPanel } from './PermissionsPanel';
 import { McpPanel } from './McpPanel';
 import { DocumentsPanel } from './DocumentsPanel';
+import { LocalAuthPanel } from './LocalAuthPanel';
 import { ModelProviderPanel } from './ModelProviderPanel';
 import { TrashPanel } from './TrashPanel';
 import { errorMessage, fetchJson } from '../lib/api.js';
@@ -46,7 +47,8 @@ type SettingsPage =
   | 'knowledge'
   | 'transfer'
   | 'trash'
-  | 'mcp';
+  | 'mcp'
+  | 'localauth';
 
 const SETTINGS_NAV: readonly {
   readonly label: string;
@@ -75,6 +77,8 @@ const SETTINGS_NAV: readonly {
       // 两者都属于"数据去哪了"这一族问题，但回收站处理的是磁盘文件，不是可迁移的数据。
       { id: 'trash', label: '回收站' },
       { id: 'mcp', label: 'MCP 扩展' },
+      // 登录放在「系统」组末尾：它属于访问边界，不和模型/知识这些运行配置混在一起。
+      { id: 'localauth', label: '登录与安全' },
     ],
   },
 ];
@@ -87,7 +91,7 @@ function SettingsPageHead({
 }: {
   readonly eyebrow?: string;
   readonly title: string;
-  readonly description: string;
+  readonly description?: string;
   readonly actions?: JSX.Element;
 }): JSX.Element {
   return (
@@ -95,7 +99,7 @@ function SettingsPageHead({
       <div>
         {eyebrow !== undefined && <p className="settings-content-eyebrow">{eyebrow}</p>}
         <h2>{title}</h2>
-        <p>{description}</p>
+        {description !== undefined && description.length > 0 && <p>{description}</p>}
       </div>
       {actions !== undefined && <div className="settings-content-actions">{actions}</div>}
     </header>
@@ -144,6 +148,14 @@ export function SettingsView({
   onDataReset,
 }: SettingsViewProps): JSX.Element {
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('model');
+  /**
+   * 访问过的分区保持挂载：只 hidden，不卸载。
+   * 这样第一次进入才请求，切走再回来不会重新 loading；
+   * 没访问过的分区仍然不渲染，避免进设置页同时打满所有请求。
+   */
+  const [visitedPages, setVisitedPages] = useState<ReadonlySet<SettingsPage>>(
+    () => new Set<SettingsPage>(['model']),
+  );
   const settingsPageRef = useRef<HTMLDivElement | null>(null);
   const settingsPageMountedRef = useRef(false);
 
@@ -160,6 +172,16 @@ export function SettingsView({
     }
     settingsPageRef.current?.scrollIntoView({ block: 'start', behavior: 'auto' });
   }, [settingsPage]);
+
+  const selectPage = (next: SettingsPage): void => {
+    setSettingsPage(next);
+    setVisitedPages((prev) => {
+      if (prev.has(next)) return prev;
+      const updated = new Set(prev);
+      updated.add(next);
+      return updated;
+    });
+  };
 
   async function exportData(): Promise<void> {
     if (exporting) return;
@@ -259,7 +281,6 @@ export function SettingsView({
     <div className="page settings-page" ref={settingsPageRef}>
       <PageHeader
         title="设置"
-        description="本地优先。记忆、对话与事件都在这台电脑上；密钥不会出现在任何界面与导出文件里。"
       />
 
       <div className="settings-layout">
@@ -273,7 +294,7 @@ export function SettingsView({
                   type="button"
                   className={`settings-nav-item${settingsPage === item.id ? ' is-active' : ''}`}
                   aria-current={settingsPage === item.id ? 'page' : undefined}
-                  onClick={() => setSettingsPage(item.id)}
+                  onClick={() => selectPage(item.id)}
                 >
                   <span className="settings-nav-dot" />
                   {item.label}
@@ -284,11 +305,8 @@ export function SettingsView({
         </nav>
 
         <div className="settings-content">
-          {/* ★ 模型接入是唯一保留常驻的分区：面板内部是一张跨步骤的连接编辑表，
-              从选预设、填 Base URL / API Key 到勾选模型都在组件自己的 state 里。
-              切走再切回如果重新挂载，用户填了一半的草稿会静默消失（Key 还要重贴）；
-              而它又是设置页的默认分区，进设置本来就要请求 /api/model，
-              常驻不会多出请求，面板内也没有轮询。 */}
+          {/* ★ 模型接入是默认分区，进入设置本来就要请求 /api/model；常驻不会多请求。
+              其它分区访问过之后也保留挂载，避免每次切回都重新 loading。 */}
           <div className="settings-page-view" hidden={settingsPage !== 'model'}>
             <SettingsPageHead
               title="模型接入"
@@ -297,17 +315,16 @@ export function SettingsView({
             <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
           </div>
 
-          {settingsPage === 'automation' && (
-            <div className="settings-page-view">
+          {visitedPages.has('automation') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'automation'}>
               <AutomationPanel />
             </div>
           )}
 
           {/* ── 网页桌宠 ── */}
-          {settingsPage === 'pet' && (
-            <div className="settings-page-view">
+          {visitedPages.has('pet') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'pet'}>
               <SettingsPageHead
-                eyebrow="PET"
                 title="网页桌宠"
                 description="网页桌宠显示在页面右下角；这里保存它读取的形象、大小、模型与人格偏好。"
               />
@@ -315,10 +332,9 @@ export function SettingsView({
             </div>
           )}
 
-          {settingsPage === 'security' && (
-            <div className="settings-page-view">
+          {visitedPages.has('security') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'security'}>
               <SettingsPageHead
-                eyebrow="ACCESS"
                 title="权限与自主"
                 description="决定 butler 能在本机做到哪一层；切换立即生效并持久化。"
               />
@@ -326,10 +342,9 @@ export function SettingsView({
             </div>
           )}
 
-          {settingsPage === 'knowledge' && (
-            <div className="settings-page-view">
+          {visitedPages.has('knowledge') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'knowledge'}>
               <SettingsPageHead
-                eyebrow="KNOWLEDGE"
                 title="知识库"
                 description="上传文档用于检索；检索模式、嵌入模型与索引在文档库的「检索设置」里管理。"
               />
@@ -338,10 +353,9 @@ export function SettingsView({
           )}
 
           {/* ── 数据 ── */}
-          {settingsPage === 'transfer' && (
-            <div className="settings-page-view">
+          {visitedPages.has('transfer') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'transfer'}>
               <SettingsPageHead
-                eyebrow="TRANSFER"
                 title="数据迁移"
                 description="导出是单文件 JSON；导入会用文件里的历史替换当前事件流。"
               />
@@ -418,10 +432,9 @@ export function SettingsView({
           {/* ── 回收站 ── */}
           {/* ★ 与「数据迁移」相邻但语义不同：回收站里的文件不进导出、不参与迁移，
               所以不给它一个"备份"的暗示，描述里只说恢复与原路径。 */}
-          {settingsPage === 'trash' && (
-            <div className="settings-page-view">
+          {visitedPages.has('trash') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'trash'}>
               <SettingsPageHead
-                eyebrow="TRASH"
                 title="回收站"
                 description="模型替你删除的工作区文件先放在这里；恢复会放回原路径，彻底删除不可恢复。"
               />
@@ -430,9 +443,19 @@ export function SettingsView({
           )}
 
           {/* ── MCP 扩展 ── */}
-          {settingsPage === 'mcp' && (
-            <div className="settings-page-view">
+          {visitedPages.has('mcp') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'mcp'}>
               <McpPanel notify={notify} />
+            </div>
+          )}
+
+          {/* ── 登录与安全 ── */}
+          {/* ★ 这里只有“改密码 / 退出 / 看边界”，没有关闭登录的开关：
+              本地登录由 middleware 强制，设置页不提供停用入口。 */}
+          {visitedPages.has('localauth') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'localauth'}>
+              <SettingsPageHead title="登录与安全" />
+              <LocalAuthPanel notify={notify} />
             </div>
           )}
         </div>

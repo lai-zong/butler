@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 
 import './styles/base.css';
+import './styles/auth.css';
 import './styles/boot.css';
 import './styles/shell.css';
 import './styles/chat.css';

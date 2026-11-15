@@ -118,8 +118,9 @@ export function eventsFile(customDir?: string): string {
 
 /** 默认用户 id。
  *
- * ⚠️ 现在是固定的单用户 —— 方案 § 5.5 的「轻量本地账号」尚未实现。
- *    所有记忆都归属这一个 id，所以"多用户隔离"当前不成立，
+ * ⚠️ 仍是固定的单用户 —— 本地登录（src/app/server/localAuth.ts）只做本机
+ *    访问控制，不改变数据归属；所有记忆都归属这一个 id，
+ *    所以"多用户隔离"当前不成立，
  *    不能对外宣称支持多用户。
  */
 export const DEFAULT_USER_ID = process.env['BUTLER_USER_ID'] ?? 'local';

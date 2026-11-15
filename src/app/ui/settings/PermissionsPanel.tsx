@@ -129,7 +129,7 @@ export function PermissionsPanel({
         description="决定 butler 能在本机做到哪一层；切换立即生效并持久化。"
         actions={
           <Badge tone="outline">
-            <Icon name="shield" size={12} /> 本机 · 无账号
+            <Icon name="shield" size={12} /> 本机 · 单用户
           </Badge>
         }
       />
