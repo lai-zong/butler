@@ -21,7 +21,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { Icon } from '../components/Icon';
-import { AuthBootGate } from './AuthBootGate';
 import { AuthFatalView, authFatalFrom, type AuthFatal } from './AuthFatalView';
 import { AuthShell } from './AuthShell';
 import { PasswordField } from './PasswordField';
@@ -36,7 +35,6 @@ import {
   passwordRuleError,
   resetAuthWithAnswer,
   safeNextPath,
-  withAuthHandoff,
   type SecurityQuestion,
 } from './authClient.js';
 import { useRetryCountdown } from './useRetryCountdown.js';
@@ -51,9 +49,6 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
   const nextPath = safeNextPath(initialNext ?? null);
 
   const [mode, setMode] = useState<LoginMode>('login');
-  const [checking, setChecking] = useState(true);
-  const [bootReady, setBootReady] = useState(false);
-  const [showBoot, setShowBoot] = useState(true);
   const [fatal, setFatal] = useState<AuthFatal | null>(null);
   const [securityQuestion, setSecurityQuestion] = useState<SecurityQuestion | null>(null);
 
@@ -96,17 +91,13 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
           return;
         }
         if (status.authenticated) {
-          window.location.replace(withAuthHandoff(nextPath));
+          window.location.replace(nextPath);
           return;
         }
         setSecurityQuestion(status.securityQuestion);
-        setChecking(false);
-        setBootReady(true);
       } catch (err) {
         if (cancelled) return;
         setFatal(authFatalFrom(asAuthError(err)));
-        setChecking(false);
-        setBootReady(true);
       }
     })();
     return () => {
@@ -116,10 +107,10 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
 
   // 模式切换后把焦点放到第一个可输入项，键盘用户不用 Tab 找。
   useEffect(() => {
-    if (checking || fatal !== null) return;
+    if (fatal !== null) return;
     if (mode === 'login') passwordRef.current?.focus();
     else if (securityQuestion !== null) answerRef.current?.focus();
-  }, [mode, checking, fatal, securityQuestion]);
+  }, [mode, fatal, securityQuestion]);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -137,7 +128,7 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
     try {
       await loginWithPassword(password);
       // 整页跳转：确保 middleware 与新 cookie 一起生效，不用客户端缓存赌一次。
-      window.location.assign(withAuthHandoff(nextPath));
+      window.location.assign(nextPath);
     } catch (err) {
       const authError = asAuthError(err);
       if (authError.status === 401) {
@@ -236,7 +227,7 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
       setNewPasswordError(null);
       setConfirmPasswordError(null);
       // 重置成功会 Set-Cookie：直接进入应用，不再要求用新密码登录一次。
-      window.location.assign(withAuthHandoff(nextPath));
+      window.location.assign(nextPath);
     } catch (err) {
       const authError = asAuthError(err);
       if (authError.status === 401 || authError.code === 'invalid_answer') {
@@ -293,16 +284,6 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
             title: '欢迎回来',
             description: '输入这台电脑上设置的密码。这里没有用户名，只有你自己。',
           };
-
-  if (showBoot) {
-    return (
-      <AuthBootGate
-        checking={checking}
-        ready={bootReady}
-        onDone={() => setShowBoot(false)}
-      />
-    );
-  }
 
   return (
     <AuthShell eyebrow={head.eyebrow} title={head.title} description={head.description}>

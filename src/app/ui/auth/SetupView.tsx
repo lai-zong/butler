@@ -13,7 +13,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { Icon } from '../components/Icon';
-import { AuthBootGate } from './AuthBootGate';
 import { AuthFatalView, authFatalFrom, type AuthFatal } from './AuthFatalView';
 import { AuthShell } from './AuthShell';
 import { PasswordField } from './PasswordField';
@@ -26,7 +25,6 @@ import {
   getAuthStatus,
   passwordRuleError,
   safeNextPath,
-  withAuthHandoff,
   setupAuth,
 } from './authClient.js';
 import { useRetryCountdown } from './useRetryCountdown.js';
@@ -40,9 +38,7 @@ interface SetupViewProps {
 export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
   const nextPath = safeNextPath(initialNext ?? null);
 
-  const [phase, setPhase] = useState<SetupPhase>('checking');
-  const [bootReady, setBootReady] = useState(false);
-  const [showBoot, setShowBoot] = useState(true);
+  const [phase, setPhase] = useState<SetupPhase>('form');
   const [fatal, setFatal] = useState<AuthFatal | null>(null);
 
   const [password, setPassword] = useState('');
@@ -70,19 +66,16 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
         if (cancelled) return;
         if (status.configured) {
           setPhase('redirecting');
-          setBootReady(true);
           timer = window.setTimeout(() => {
             window.location.replace(`/login?next=${encodeURIComponent(nextPath)}`);
           }, 1200);
           return;
         }
         setPhase('form');
-        setBootReady(true);
       } catch (err) {
         if (cancelled) return;
         setFatal(authFatalFrom(asAuthError(err)));
         setPhase('form');
-        setBootReady(true);
       }
     })();
 
@@ -138,7 +131,7 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
       setAnswer('');
       setPhase('entering');
       // 整页跳转：确保新 cookie 与 middleware 一起生效。
-      window.location.assign(withAuthHandoff(nextPath));
+      window.location.assign(nextPath);
     } catch (err) {
       const authError = asAuthError(err);
       if (authError.code === 'invalid_password') {
@@ -171,12 +164,6 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
         title: '无法完成设置',
         description: '本地认证不可用；页面不会提供任何绕过入口。',
       }
-    : phase === 'checking'
-      ? {
-          eyebrow: '首次启动',
-          title: '正在准备…',
-          description: '正在确认这台电脑是否已经设置过登录。',
-        }
       : phase === 'redirecting'
         ? {
             eyebrow: '已经设置过',
@@ -194,16 +181,6 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
               title: '设置密码与找回问题',
               description: null,
             };
-
-  if (showBoot) {
-    return (
-      <AuthBootGate
-        checking={phase === 'checking'}
-        ready={bootReady}
-        onDone={() => setShowBoot(false)}
-      />
-    );
-  }
 
   return (
     <AuthShell eyebrow={head.eyebrow} title={head.title} description={head.description}>
