@@ -94,9 +94,21 @@ function normalizePath(path: string): string {
   return process.platform === 'win32' ? abs.toLowerCase() : abs;
 }
 
-const handles = new Map<string, HandleRecord>();
+/**
+ * 句柄/授权表挂到 globalThis。
+ *
+ * ★ Next dev 会重新求值路由模块；若把它们放在模块变量里，
+ *   open-dialog 与 preview 可能各拿到一份新 Map，刚打开的句柄在下一个请求里就“失效”。
+ *   进程级共享后，所有路由看到同一份，HMR 也不会丢。
+ */
+type ExternalGlobal = typeof globalThis & {
+  __butlerExternalHandles?: Map<string, HandleRecord>;
+  __butlerExternalGrants?: Map<string, Set<string>>;
+};
+const externalGlobal = globalThis as ExternalGlobal;
+const handles = (externalGlobal.__butlerExternalHandles ??= new Map<string, HandleRecord>());
 /** 会话 → 已授权路径（规范化绝对路径）。 */
-const grants = new Map<string, Set<string>>();
+const grants = (externalGlobal.__butlerExternalGrants ??= new Map<string, Set<string>>());
 
 export function externalGrantsFor(sessionId: string): readonly string[] {
   return [...(grants.get(sessionId) ?? [])];

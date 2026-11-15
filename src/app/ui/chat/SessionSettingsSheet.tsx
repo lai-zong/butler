@@ -1,7 +1,11 @@
 'use client';
 
 /**
- * 对话设置弹窗
+ * 对话设置
+ *
+ * ★ 两种呈现：
+ *   普通对话里套居中 Modal；专注空间里 embedded=true，直接嵌进 AI 抽屉，
+ *   不再另开一个中间窗口。
  *
  * ★ 范围：
  *   ① 这段对话的 AI 人格（只写本会话，≤8000 字）
@@ -59,6 +63,8 @@ interface SessionSettingsSheetProps {
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly onClose: () => void;
   readonly onSaved: (session: SessionSummary) => void;
+  /** true = 不套居中 Modal，直接嵌进专注空间的 AI 抽屉。 */
+  readonly embedded?: boolean;
 }
 
 interface Baseline {
@@ -74,6 +80,7 @@ export function SessionSettingsSheet({
   notify,
   onClose,
   onSaved,
+  embedded = false,
 }: SessionSettingsSheetProps): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -95,14 +102,11 @@ export function SessionSettingsSheet({
     setLoadError(null);
     setSaveError(null);
     try {
-      const res = await fetchJson<SessionDetailResponse>(
-        `/api/sessions/${encodeURIComponent(id)}`,
-      );
+      const res = await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(id)}`);
       if (token !== tokenRef.current) return;
       const settings = res.session.settings;
       const nextPersona = typeof settings.persona === 'string' ? settings.persona : '';
-      const nextMemory: SessionMemoryMode =
-        settings.memoryMode === 'off' ? 'off' : 'on';
+      const nextMemory: SessionMemoryMode = settings.memoryMode === 'off' ? 'off' : 'on';
       const nextScope = scopeOf(res.session);
       setPersona(nextPersona);
       setMemoryMode(nextMemory);
@@ -162,9 +166,7 @@ export function SessionSettingsSheet({
       const patch: SessionSettingsPatch = {
         persona: nextPersona,
         memoryMode,
-        ...(nextScope.workspace !== baseline.workspace
-          ? { workspace: nextScope.workspace }
-          : {}),
+        ...(nextScope.workspace !== baseline.workspace ? { workspace: nextScope.workspace } : {}),
         ...(nextScope.permission !== baseline.permission
           ? { permission: nextScope.permission }
           : {}),
@@ -200,7 +202,18 @@ export function SessionSettingsSheet({
         setSaving(false);
       }
     },
-    [baseline, memoryMode, notify, onClose, onSaved, permission, persona, saving, sessionId, workspace],
+    [
+      baseline,
+      memoryMode,
+      notify,
+      onClose,
+      onSaved,
+      permission,
+      persona,
+      saving,
+      sessionId,
+      workspace,
+    ],
   );
 
   const detailLoaded = baseline !== null && !loading && loadError === null;
@@ -211,194 +224,207 @@ export function SessionSettingsSheet({
   const effectivePermission = scope?.effectivePermission ?? 'read-only';
   const fullWarning = permission === 'full' || effectivePermission === 'full';
 
+  const footer = (
+    <div className="session-sheet-foot">
+      <button
+        type="button"
+        className="text-btn session-sheet-reset"
+        disabled={resetDisabled}
+        onClick={() => {
+          setPersona('');
+          void submit('');
+        }}
+      >
+        重置为空
+      </button>
+      <div className="session-sheet-actions">
+        <button type="button" className="btn btn-ghost btn-sm" disabled={saving} onClick={onClose}>
+          取消
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={loading || saving || loadError !== null || (!dirty && !personaChanged)}
+          onClick={() => void submit()}
+        >
+          {saving ? '保存中…' : '保存'}
+        </button>
+      </div>
+    </div>
+  );
+
+  const body =
+    session === null ? null : (
+      <div className="session-sheet">
+        <p className="session-sheet-context">
+          <Icon name="chat" size={14} />
+          <span>{session.title}</span>
+        </p>
+
+        {saveError !== null && (
+          <div className="session-sheet-error" role="alert">
+            <InlineError message={saveError} />
+          </div>
+        )}
+
+        {loading && (
+          <div className="session-sheet-loading">
+            <Skeleton rows={2} height={14} />
+            <Skeleton rows={3} height={12} />
+          </div>
+        )}
+
+        {loadError !== null && !loading && (
+          <InlineError
+            message={loadError}
+            onRetry={() => {
+              if (sessionId !== null) void load(sessionId);
+            }}
+          />
+        )}
+
+        {detailLoaded && (
+          <>
+            <section className="session-sheet-section" aria-labelledby="session-workspace-label">
+              <div className="session-sheet-head">
+                <div>
+                  <h3 id="session-workspace-label">工作区</h3>
+                </div>
+              </div>
+              <label className="task-field">
+                <input
+                  className="task-input mono"
+                  value={workspace}
+                  disabled={saving}
+                  spellCheck={false}
+                  placeholder={`跟随应用默认：${scope?.effectiveWorkspace ?? ''}`}
+                  aria-label="本对话的工作区路径"
+                  onChange={(event) => setWorkspace(event.target.value)}
+                />
+              </label>
+            </section>
+
+            <section className="session-sheet-section" aria-labelledby="session-permission-label">
+              <div className="session-sheet-head">
+                <div>
+                  <h3 id="session-permission-label">
+                    权限
+                    <span
+                      className="session-perm-info"
+                      title={PERMISSION_TIP}
+                      aria-label={PERMISSION_TIP}
+                      role="img"
+                      tabIndex={0}
+                    >
+                      <Icon name="info" size={13} />
+                    </span>
+                  </h3>
+                </div>
+              </div>
+              <label className="task-field">
+                <select
+                  className="task-select"
+                  value={permission}
+                  disabled={saving}
+                  aria-label="本对话的工具权限"
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setPermission(isSessionPermission(value) ? value : '');
+                  }}
+                >
+                  <option value="">
+                    跟随应用（当前：
+                    {SESSION_PERMISSION_LABEL[effectivePermission]}）
+                  </option>
+                  <option value="read-only">只读</option>
+                  <option value="workspace">工作区</option>
+                  <option value="full">完全</option>
+                </select>
+              </label>
+
+              {fullWarning && (
+                <p className="session-sheet-warn" role="alert">
+                  <Icon name="shield" size={13} />
+                  <span>
+                    「完全」允许工具读写本对话工作区之外的路径。系统数据 <code>.butler-data</code>
+                    、密钥 <code>.env.local</code> 与全局规则 <code>config/</code>{' '}
+                    始终拒绝；移动等高风险需逐次确认； 命令执行工具不提供（没有 OS
+                    沙箱）。这是高风险选择，请只在你信任的对话里使用。
+                  </span>
+                </p>
+              )}
+            </section>
+
+            <section className="session-sheet-section" aria-labelledby="session-persona-label">
+              <div className="session-sheet-head">
+                <div>
+                  <h3 id="session-persona-label">AI 人格</h3>
+                  <p>只对这段对话生效。留空即使用默认管家。</p>
+                </div>
+                <span className="session-sheet-count mono">
+                  {persona.length}/{PERSONA_MAX}
+                </span>
+              </div>
+              <textarea
+                className="session-sheet-textarea"
+                rows={7}
+                maxLength={PERSONA_MAX}
+                value={persona}
+                disabled={saving}
+                placeholder="例如：称呼我“老王”；先给结论，再给依据；不要用感叹号。"
+                aria-label="本对话的 AI 人格"
+                onChange={(event) => setPersona(event.target.value.slice(0, PERSONA_MAX))}
+              />
+              <p className="session-sheet-hint">
+                人格只影响答复与叙述，不会改写任务契约、记忆提取或监督记录。
+              </p>
+            </section>
+
+            <section className="session-sheet-section" aria-labelledby="session-memory-label">
+              <div className="session-sheet-switch-row">
+                <div>
+                  <h3 id="session-memory-label">使用记忆</h3>
+                  <p>这段对话是否召回与写入记忆。</p>
+                </div>
+                <Switch
+                  checked={memoryMode === 'on'}
+                  disabled={saving}
+                  label="本对话使用记忆"
+                  onChange={(next) => setMemoryMode(next ? 'on' : 'off')}
+                />
+              </div>
+            </section>
+
+            {(saving || dirty) && (
+              <p className="session-sheet-dirty" role="status">
+                {saving ? '正在保存…' : '有未保存的修改'}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    );
+
+  if (embedded) {
+    return (
+      <div className="session-sheet-embedded">
+        <div className="session-sheet-embedded-scroll">{body}</div>
+        <footer className="session-sheet-embedded-foot">{footer}</footer>
+      </div>
+    );
+  }
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="对话设置"
-      description="模型与思考强度在输入框右侧调整。"
+      description="模型与思考强度在对话输入区或专注空间的对话设置中调整。"
       variant="settings"
-      footer={
-        <div className="session-sheet-foot">
-          <button
-            type="button"
-            className="text-btn session-sheet-reset"
-            disabled={resetDisabled}
-            onClick={() => {
-              setPersona('');
-              void submit('');
-            }}
-          >
-            重置为空
-          </button>
-          <div className="session-sheet-actions">
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={saving}
-              onClick={onClose}
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              disabled={loading || saving || loadError !== null || (!dirty && !personaChanged)}
-              onClick={() => void submit()}
-            >
-              {saving ? '保存中…' : '保存'}
-            </button>
-          </div>
-        </div>
-      }
+      rootClassName="modal-root--session-settings"
+      footer={footer}
     >
-      {session !== null && (
-        <div className="session-sheet">
-          <p className="session-sheet-context">
-            <Icon name="chat" size={14} />
-            <span>{session.title}</span>
-          </p>
-
-          {saveError !== null && (
-            <div className="session-sheet-error" role="alert">
-              <InlineError message={saveError} />
-            </div>
-          )}
-
-          {loading && (
-            <div className="session-sheet-loading">
-              <Skeleton rows={2} height={14} />
-              <Skeleton rows={3} height={12} />
-            </div>
-          )}
-
-          {loadError !== null && !loading && (
-            <InlineError
-              message={loadError}
-              onRetry={() => {
-                if (sessionId !== null) void load(sessionId);
-              }}
-            />
-          )}
-
-          {detailLoaded && (
-            <>
-              <section className="session-sheet-section" aria-labelledby="session-workspace-label">
-                <div className="session-sheet-head">
-                  <div>
-                    <h3 id="session-workspace-label">工作区</h3>
-                  </div>
-                </div>
-                <label className="task-field">
-                  <input
-                    className="task-input mono"
-                    value={workspace}
-                    disabled={saving}
-                    spellCheck={false}
-                    placeholder={`跟随应用默认：${scope?.effectiveWorkspace ?? ''}`}
-                    aria-label="本对话的工作区路径"
-                    onChange={(event) => setWorkspace(event.target.value)}
-                  />
-                </label>
-              </section>
-
-              <section className="session-sheet-section" aria-labelledby="session-permission-label">
-                <div className="session-sheet-head">
-                  <div>
-                    <h3 id="session-permission-label">
-                      权限
-                      <span
-                        className="session-perm-info"
-                        title={PERMISSION_TIP}
-                        aria-label={PERMISSION_TIP}
-                        role="img"
-                        tabIndex={0}
-                      >
-                        <Icon name="info" size={13} />
-                      </span>
-                    </h3>
-                  </div>
-                </div>
-                <label className="task-field">
-                  <select
-                    className="task-select"
-                    value={permission}
-                    disabled={saving}
-                    aria-label="本对话的工具权限"
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setPermission(isSessionPermission(value) ? value : '');
-                    }}
-                  >
-                    <option value="">跟随应用（当前：{SESSION_PERMISSION_LABEL[effectivePermission]}）</option>
-                    <option value="read-only">只读</option>
-                    <option value="workspace">工作区</option>
-                    <option value="full">完全</option>
-                  </select>
-                </label>
-
-                {fullWarning && (
-                  <p className="session-sheet-warn" role="alert">
-                    <Icon name="shield" size={13} />
-                    <span>
-                      「完全」允许工具读写本对话工作区之外的路径。系统数据{' '}
-                      <code>.butler-data</code>、密钥 <code>.env.local</code> 与全局规则{' '}
-                      <code>config/</code> 始终拒绝；移动等高风险需逐次确认；
-                      命令执行工具不提供（没有 OS 沙箱）。这是高风险选择，请只在你信任的对话里使用。
-                    </span>
-                  </p>
-                )}
-              </section>
-
-              <section className="session-sheet-section" aria-labelledby="session-persona-label">
-                <div className="session-sheet-head">
-                  <div>
-                    <h3 id="session-persona-label">AI 人格</h3>
-                    <p>只对这段对话生效。留空即使用默认管家。</p>
-                  </div>
-                  <span className="session-sheet-count mono">
-                    {persona.length}/{PERSONA_MAX}
-                  </span>
-                </div>
-                <textarea
-                  className="session-sheet-textarea"
-                  rows={7}
-                  maxLength={PERSONA_MAX}
-                  value={persona}
-                  disabled={saving}
-                  placeholder="例如：称呼我“老王”；先给结论，再给依据；不要用感叹号。"
-                  aria-label="本对话的 AI 人格"
-                  onChange={(event) => setPersona(event.target.value.slice(0, PERSONA_MAX))}
-                />
-                <p className="session-sheet-hint">
-                  人格只影响答复与叙述，不会改写任务契约、记忆提取或监督记录。
-                </p>
-              </section>
-
-              <section className="session-sheet-section" aria-labelledby="session-memory-label">
-                <div className="session-sheet-switch-row">
-                  <div>
-                    <h3 id="session-memory-label">使用记忆</h3>
-                    <p>这段对话是否召回与写入记忆。</p>
-                  </div>
-                  <Switch
-                    checked={memoryMode === 'on'}
-                    disabled={saving}
-                    label="本对话使用记忆"
-                    onChange={(next) => setMemoryMode(next ? 'on' : 'off')}
-                  />
-                </div>
-              </section>
-
-              {(saving || dirty) && (
-                <p className="session-sheet-dirty" role="status">
-                  {saving ? '正在保存…' : '有未保存的修改'}
-                </p>
-              )}
-            </>
-          )}
-        </div>
-      )}
+      {body}
     </Modal>
   );
 }

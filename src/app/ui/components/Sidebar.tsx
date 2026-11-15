@@ -30,6 +30,8 @@ interface NavItem {
 }
 
 const NAV_TOP: readonly NavItem[] = [
+  // 专注空间是一层独立画面：只有时间、日期、当前安排，其余全部默认收起。
+  { id: 'focus', label: '专注空间', icon: 'target' },
   // 定时任务是用户自己的提醒与工作；放在对话与控制台之间，属于工作台而不是治理层。
   { id: 'tasks', label: '定时任务', icon: 'calendar' },
 ];

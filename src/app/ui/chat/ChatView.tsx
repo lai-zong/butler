@@ -184,6 +184,19 @@ function fallbackModelChoice(profiles: readonly PickableProfile[]): ModelChoice 
 interface ChatViewProps {
   readonly active: boolean;
   readonly focusEnabled: boolean;
+  /**
+   * 专注空间的左抽屉模式。
+   *
+   * ★ 不是另一份对话：仍是同一个 ChatView 实例、同一个会话与同一条流。
+   *   只把头部换成抽屉头、隐藏模型选择与统计，保留输入 / 发送 / 停止 / 附件 / 审批。
+   */
+  readonly focusMode?: boolean;
+  /** 专注左抽屉当前是否真的打开；用于抽屉被收起时关掉内部设置浮层。 */
+  readonly focusDrawerOpen?: boolean;
+  /** 专注抽屉的关闭按钮；由外层收起左抽屉。 */
+  readonly onFocusClose?: () => void;
+  /** 审批数量变化；外层据此在专注空间里把抽屉自动露出来。 */
+  readonly onApprovalCountChange?: (count: number) => void;
   readonly overview: Overview | null;
   readonly dataResetNonce: number;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
@@ -799,6 +812,10 @@ function reconcileLiveTurns(
 export function ChatView({
   active,
   focusEnabled,
+  focusMode = false,
+  focusDrawerOpen,
+  onFocusClose,
+  onApprovalCountChange,
   overview,
   dataResetNonce,
   onOpenMemory,
@@ -840,6 +857,11 @@ export function ChatView({
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsTargetId, setSettingsTargetId] = useState<string | null>(null);
+  /** 专注空间里的对话设置浮层：会话列表 + 每段对话的内嵌配置。 */
+  const [focusSettingsOpen, setFocusSettingsOpen] = useState(false);
+  const [focusSettingsView, setFocusSettingsView] = useState<'list' | 'config'>('list');
+  const [focusConfigSessionId, setFocusConfigSessionId] = useState<string | null>(null);
+  const focusSettingsRef = useRef<HTMLDivElement | null>(null);
   const [streaming, setStreaming] = useState(false);
   /**
    * 是否贴底。ref 给滚动逻辑用（不触发渲染），state 只给「回到最新」浮标用；
@@ -3018,6 +3040,79 @@ export function ChatView({
     textareaRef.current?.focus();
   }, [active, focusEnabled]);
 
+  /**
+   * 进入专注抽屉时收起右栏与浮层菜单。
+   *
+   * ★ 专注抽屉只保留对话本身：工作区 / 浏览器 / 审查这些面板
+   *   在 460px 的抽屉里没有意义，也会破坏“只有时间和当前安排”的画面。
+   */
+  useEffect(() => {
+    if (!focusMode) return;
+    setReviewOpen(false);
+    setPanelMax(false);
+    setPanelMenuOpen(false);
+    setPanelCreateOpen(false);
+    setReviewHistoryOpen(false);
+    setReviewPickerOpen(false);
+    setFocusSettingsOpen(false);
+    recognitionRef.current?.abort();
+    setListening(false);
+  }, [focusMode]);
+
+  // 专注设置浮层里按 Esc 只关它，不继续冒泡去关抽屉或退出专注。
+  useEffect(() => {
+    if (!focusSettingsOpen) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !event.isComposing) {
+        event.preventDefault();
+        event.stopPropagation();
+        setFocusSettingsOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const root = focusSettingsRef.current;
+      if (root === null) return;
+      const focusables = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) return;
+      const active = document.activeElement;
+      // 模型浮层 portal 在 root 之外，Tab 交给它自己处理。
+      if (active instanceof Element && active.closest('.session-controls-pop') !== null) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (first === undefined || last === undefined) return;
+      if (event.shiftKey && (active === first || !root.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [focusSettingsOpen]);
+
+  // 浮层收起后回到会话列表，下次打开不直接落在某段对话的配置里。
+  useEffect(() => {
+    if (focusSettingsOpen) return;
+    setFocusSettingsView('list');
+    setFocusConfigSessionId(null);
+  }, [focusSettingsOpen]);
+
+  // 左抽屉被外层收起（点空白、切到日程等）时，内部的设置浮层不能留着。
+  useEffect(() => {
+    if (focusMode && focusDrawerOpen === false) setFocusSettingsOpen(false);
+  }, [focusDrawerOpen, focusMode]);
+
+  // 审批数量交给外层：专注空间里一旦出现待审批工具，就把左抽屉露出来。
+  useEffect(() => {
+    onApprovalCountChange?.(approvals.length);
+  }, [approvals.length, onApprovalCountChange]);
+
   useEffect(() => {
     setVoiceSupported(speechRecognitionCtor() !== null);
     setTtsSupported(typeof window !== 'undefined' && 'speechSynthesis' in window);
@@ -3889,6 +3984,50 @@ export function ChatView({
 
   const activeApproval = currentApproval(approvals);
 
+  /** 专注抽屉里的最近会话：当前草稿也保留，其余空会话不占位置。 */
+  const focusSessionList = sessions
+    .filter(
+      (session) =>
+        session.isPet !== true && (session.messageCount > 0 || session.id === sessionId),
+    )
+    .slice(0, 20);
+  const focusConfigSession =
+    focusConfigSessionId !== null
+      ? (sessions.find((session) => session.id === focusConfigSessionId) ?? null)
+      : null;
+  const focusConfigReady = focusConfigSessionId !== null && focusConfigSessionId === sessionId;
+
+  function switchFocusSession(id: string): void {
+    setFocusSettingsOpen(false);
+    if (id === sessionId) return;
+    void loadSession(id);
+  }
+
+  function openFocusSettingsList(): void {
+    setFocusSettingsView('list');
+    setFocusConfigSessionId(null);
+    setFocusSettingsOpen(true);
+  }
+
+  /**
+   * 打开某段对话的配置。
+   *
+   * ★ 模型/思考沿用当前会话的保存路径；因此先把这段对话切为当前，
+   *   配置页里的两个控件才真正写回这段对话。
+   * ★ 不关闭浮层：loadSession 完成后仍停在配置页。
+   */
+  function openFocusConfig(id: string): void {
+    setFocusSettingsView('config');
+    setFocusConfigSessionId(id);
+    setFocusSettingsOpen(true);
+    if (id !== sessionId) void loadSession(id);
+  }
+
+  function backToFocusSettingsList(): void {
+    setFocusSettingsView('list');
+    setFocusConfigSessionId(null);
+  }
+
   const suggestionNodes = useMemo(
     () =>
       SUGGESTIONS.map((s, i) => (
@@ -3941,7 +4080,7 @@ export function ChatView({
 
   return (
     <div
-      className={`chat-view ${active ? 'is-active' : ''} ${reviewOpen ? 'is-review' : ''}${
+      className={`chat-view${focusMode ? ' is-focus' : ''} ${active ? 'is-active' : ''} ${reviewOpen ? 'is-review' : ''}${
         reviewOpen && paneTab === 'files' ? ' is-work' : ''
       }${reviewOpen && paneTab === 'browser' ? ' is-browser' : ''}${
         reviewOpen && paneTab === 'external-file' ? ' is-external-file' : ''
@@ -3952,6 +4091,37 @@ export function ChatView({
       <p className="sr-only" role="status" aria-live="polite">
         {announcement}
       </p>
+      {focusMode ? (
+        <header className="chat-head chat-head--focus">
+          <div className="chat-head-main">
+            <div className="chat-head-title">
+              <p className="chat-head-eyebrow">AI 对话</p>
+              <h1 title={derivedTitle}>{derivedTitle}</h1>
+            </div>
+          </div>
+          <div className="focus-chat-head-actions">
+            <button
+              type="button"
+              className="focus-chat-close"
+              onClick={openFocusSettingsList}
+              aria-label="对话设置"
+              title="对话设置"
+              aria-expanded={focusSettingsOpen}
+            >
+              <Icon name="settings" size={16} />
+            </button>
+            <button
+              type="button"
+              className="focus-chat-close"
+              onClick={onFocusClose}
+              aria-label="收起 AI 对话"
+              title="收起"
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        </header>
+      ) : (
       <header className="chat-head">
         <div className="chat-head-main">
           <div className="chat-head-title">
@@ -4165,6 +4335,7 @@ export function ChatView({
           </div>
         </div>
       </header>
+      )}
 
       <div
         className="chat-body"
@@ -4208,6 +4379,16 @@ export function ChatView({
       <div className="chat-scroll" ref={scrollRef} onScroll={onScroll} aria-busy={streaming}>
         <div className="chat-column">
           {!hasContent && !loadingSession && sessionError === null && (
+            focusMode ? (
+              <section className="focus-chat-empty">
+                <p className="focus-chat-empty-kicker">当前会话</p>
+                <h2>接着聊。</h2>
+                <p>
+                  你在这里说的话，会回到同一个会话里。需要动手时，
+                  审批会出现在输入框上方，等你看过才会继续。
+                </p>
+              </section>
+            ) : (
             <section className="chat-hero">
               <div className="hero-orbit" aria-hidden="true">
                 <span className="hero-orbit-ring hero-orbit-ring--1" />
@@ -4248,6 +4429,7 @@ export function ChatView({
                 <span> · 数据只在这台电脑上</span>
               </p>
             </section>
+            )
           )}
 
           {loadingSession && (
@@ -4431,23 +4613,25 @@ export function ChatView({
                 >
                   <Icon name="paperclip" size={18} />
                 </button>
-                <button
-                  type="button"
-                  className={`icon-btn voice-btn ${listening ? 'is-listening' : ''}`}
-                  onClick={toggleVoice}
-                  disabled={!voiceSupported}
-                  title={
-                    voiceSupported
-                      ? listening
-                        ? '停止语音输入'
-                        : '用语音输入（浏览器需要麦克风权限）'
-                      : '当前浏览器不支持语音输入'
-                  }
-                  aria-label={listening ? '停止语音输入' : '语音输入'}
-                  aria-pressed={listening}
-                >
-                  <Icon name="mic" size={17} />
-                </button>
+                {!focusMode && (
+                  <button
+                    type="button"
+                    className={`icon-btn voice-btn ${listening ? 'is-listening' : ''}`}
+                    onClick={toggleVoice}
+                    disabled={!voiceSupported}
+                    title={
+                      voiceSupported
+                        ? listening
+                          ? '停止语音输入'
+                          : '用语音输入（浏览器需要麦克风权限）'
+                        : '当前浏览器不支持语音输入'
+                    }
+                    aria-label={listening ? '停止语音输入' : '语音输入'}
+                    aria-pressed={listening}
+                  >
+                    <Icon name="mic" size={17} />
+                  </button>
+                )}
                 {(listening || attachments.length > 0 || imageProcessing) && (
                   <span className="composer-hint" aria-live="polite">
                     {listening
@@ -4459,19 +4643,21 @@ export function ChatView({
                 )}
               </div>
 
-              <SessionControls
-                profiles={modelCatalog}
-                model={chatModel}
-                reasoning={activeReasoning}
-                saving={settingsSaving}
-                catalogLoading={modelCatalogLoading}
-                catalogError={modelCatalogError}
-                settingsError={settingsError}
-                onRefreshCatalog={() => void loadModelCatalog()}
-                onSelectModel={selectChatModel}
-                onSelectReasoning={selectReasoning}
-                onOpenSettings={onOpenSettings}
-              />
+              {!focusMode && (
+                <SessionControls
+                  profiles={modelCatalog}
+                  model={chatModel}
+                  reasoning={activeReasoning}
+                  saving={settingsSaving}
+                  catalogLoading={modelCatalogLoading}
+                  catalogError={modelCatalogError}
+                  settingsError={settingsError}
+                  onRefreshCatalog={() => void loadModelCatalog()}
+                  onSelectModel={selectChatModel}
+                  onSelectReasoning={selectReasoning}
+                  onOpenSettings={onOpenSettings}
+                />
+              )}
               {streaming ? (
                 <>
                   {input.trim().length > 0 && (
@@ -5115,6 +5301,163 @@ export function ChatView({
       </div>
 
       {/* 历史只在侧栏；这里不再保留抽屉，也不重复加载会话列表。 */}
+      {focusMode && focusSettingsOpen && (
+        <div
+          ref={focusSettingsRef}
+          className="focus-chat-settings"
+          role="dialog"
+          aria-modal="true"
+          aria-label={focusSettingsView === 'config' ? '修改对话配置' : '对话设置'}
+        >
+          <header className="focus-chat-settings-head">
+            {focusSettingsView === 'config' && (
+              <button
+                type="button"
+                className="focus-chat-settings-back"
+                onClick={backToFocusSettingsList}
+                aria-label="返回会话列表"
+                title="返回"
+              >
+                <Icon name="arrowLeft" size={16} />
+              </button>
+            )}
+            <div className="focus-chat-settings-heading">
+              <p className="focus-chat-settings-eyebrow">
+                {focusSettingsView === 'config' ? '修改配置' : '对话设置'}
+              </p>
+              <h2>
+                {focusSettingsView === 'config'
+                  ? (focusConfigSession?.title ?? '这段对话')
+                  : (currentSession?.title ?? derivedTitle)}
+              </h2>
+              <small>
+                {focusSettingsView === 'config'
+                  ? '模型、思考、人格、工作区、权限与记忆只对这段对话生效。'
+                  : '切换会话，或点每段对话右侧的按钮修改配置。'}
+              </small>
+            </div>
+            <button
+              type="button"
+              className="focus-chat-close"
+              onClick={() => setFocusSettingsOpen(false)}
+              aria-label="关闭对话设置"
+              title="关闭"
+              autoFocus
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </header>
+
+          {focusSettingsView === 'config' ? (
+            <div className="focus-chat-config">
+              <div className="focus-chat-config-model">
+                <div className="focus-chat-settings-section-head">
+                  <span>模型与思考</span>
+                  <small>{settingsSaving ? '保存中…' : '修改即保存'}</small>
+                </div>
+                {focusConfigReady ? (
+                  <div className="focus-chat-settings-model">
+                    <SessionControls
+                      profiles={modelCatalog}
+                      model={chatModel}
+                      reasoning={activeReasoning}
+                      saving={settingsSaving}
+                      catalogLoading={modelCatalogLoading}
+                      catalogError={modelCatalogError}
+                      settingsError={settingsError}
+                      onRefreshCatalog={() => void loadModelCatalog()}
+                      onSelectModel={selectChatModel}
+                      onSelectReasoning={selectReasoning}
+                      popoverClassName="is-focus-popover"
+                    />
+                  </div>
+                ) : (
+                  <p className="focus-chat-settings-empty">正在打开这段对话…</p>
+                )}
+                {settingsError !== null && (
+                  <p className="focus-chat-settings-error" role="alert">
+                    {settingsError}
+                  </p>
+                )}
+              </div>
+
+              {focusConfigSession !== null ? (
+                <SessionSettingsSheet
+                  embedded
+                  open
+                  session={focusConfigSession}
+                  notify={notify}
+                  onClose={backToFocusSettingsList}
+                  onSaved={handleSessionSaved}
+                />
+              ) : (
+                <p className="focus-chat-settings-empty">这段对话已经不存在。</p>
+              )}
+            </div>
+          ) : (
+            <div className="focus-chat-settings-body">
+              <section className="focus-chat-settings-section">
+                <div className="focus-chat-settings-section-head">
+                  <span>会话</span>
+                  <button
+                    type="button"
+                    className="focus-chat-settings-new"
+                    onClick={() => {
+                      setFocusSettingsOpen(false);
+                      void createNewChat();
+                    }}
+                  >
+                    <Icon name="plus" size={14} /> 新对话
+                  </button>
+                </div>
+                <div className="focus-chat-session-list">
+                  {focusSessionList.map((session) => {
+                    const isCurrent = session.id === sessionId;
+                    return (
+                      <div
+                        key={session.id}
+                        className={`focus-chat-session-row${isCurrent ? ' is-current' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className={`focus-chat-session${isCurrent ? ' is-current' : ''}`}
+                          onClick={() => switchFocusSession(session.id)}
+                          aria-current={isCurrent ? 'true' : undefined}
+                        >
+                          <span className="focus-chat-session-copy">
+                            <strong>{session.title.length > 0 ? session.title : '新对话'}</strong>
+                            <small>
+                              {session.turnCount} 次对话 · {relativeTime(session.updatedAt, now)}
+                            </small>
+                          </span>
+                          {isCurrent && <Icon name="check" size={14} />}
+                        </button>
+                        <button
+                          type="button"
+                          className="focus-chat-session-config"
+                          onClick={() => openFocusConfig(session.id)}
+                          aria-label={`修改「${session.title.length > 0 ? session.title : '新对话'}」的配置`}
+                          title="修改配置"
+                        >
+                          <Icon name="settings" size={15} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {focusSessionList.length === 0 && (
+                    <p className="focus-chat-settings-empty">还没有对话，点「新对话」开始。</p>
+                  )}
+                </div>
+              </section>
+
+              <p className="focus-chat-settings-note">
+                每段对话右侧的设置按钮里，可以单独修改模型、思考、人格、工作区、权限和记忆。
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       <SessionSettingsSheet
         open={settingsTargetId !== null && settingsTarget !== null}
         session={settingsTarget}

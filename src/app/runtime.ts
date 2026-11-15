@@ -100,6 +100,7 @@ import {
 import { TaskPermissionPolicy } from './server/taskPermission.js';
 import { assertWorkspaceDirectory, workspacePathGuard } from './server/taskWorkspace.js';
 import { loadSessionPersonas } from './server/sessionSettingsStore.js';
+import { FocusScheduleService } from '@/core/focus/index.js';
 
 // ═══════════════════════════════════════════════════════════
 // 配置
@@ -211,6 +212,13 @@ export interface ButlerRuntime {
   readonly activityRuntime: ActivityRuntime;
   /** 用户自建的提醒 / 工作 */
   readonly userTasks: UserTaskService;
+  /**
+   * 专注空间自己的日程。
+   *
+   * ⚠️ 与 `userTasks` 没有任何读写交叉：不进调度器、不触发 AI。
+   *    它只是专注界面背后的一个小型配置仓储。
+   */
+  readonly focusSchedules: FocusScheduleService;
   /** MCP 配置文件路径（管理界面写回用） */
   readonly mcpConfigPath: string;
 }
@@ -842,6 +850,8 @@ async function initRuntime(): Promise<ButlerRuntime> {
   }
 
   const userTasks = new UserTaskService(DATA_DIR, clock, runUserWorkTask, bootstrapped.log);
+  // 专注日程是独立文件、独立服务：不注册调度器，也不读取 user-tasks.json。
+  const focusSchedules = new FocusScheduleService(DATA_DIR, clock);
   startUserTaskLoop({
     service: userTasks,
     onError: (err) => {
@@ -893,6 +903,7 @@ async function initRuntime(): Promise<ButlerRuntime> {
     activityObserver,
     activityRuntime,
     userTasks,
+    focusSchedules,
     mcpConfigPath,
   };
 }

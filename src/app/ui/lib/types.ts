@@ -6,10 +6,10 @@
  *   的投影，再同步这里 —— 这条边界让“服务端重构”不会把界面一起拖下水。
  */
 
-export type ViewId = 'chat' | 'tasks' | 'memory' | 'growth' | 'settings';
+export type ViewId = 'chat' | 'focus' | 'tasks' | 'memory' | 'growth' | 'settings';
 
-/** 主界面：对话、定时任务、设置；治理视图移入控制台。 */
-export type MainView = 'chat' | 'tasks' | 'settings';
+/** 主界面：对话、专注空间、定时任务、设置；治理视图移入控制台。 */
+export type MainView = 'chat' | 'focus' | 'tasks' | 'settings';
 
 /** 控制台分区：记忆、演化，以及本程序自己的使用节奏。 */
 export type ConsoleSection = 'memory' | 'growth' | 'usage';
@@ -1172,6 +1172,41 @@ export interface SchedulesResponse {
     readonly usage?: { readonly inputTokens: number; readonly outputTokens: number } | null;
   }[];
 }
+
+// ═══════════════════════════════════════════════════════════
+// 专注空间 · 日程（GET/POST /api/focus/schedules，
+//               PATCH/DELETE /api/focus/schedules/:id，
+//               POST /api/focus/current）
+//
+// ★ 与 `/api/tasks` 的 UserTaskView 完全独立：
+//   没有 kind / repeat / 执行结果，也不会触发 AI。
+// ═══════════════════════════════════════════════════════════
+
+export interface FocusScheduleDto {
+  readonly id: string;
+  readonly title: string;
+  readonly note: string;
+  readonly startAt: number;
+  readonly endAt: number;
+  readonly remind: boolean;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface FocusSchedulesResponse {
+  readonly ok: boolean;
+  readonly now: number;
+  readonly currentId: string | null;
+  readonly schedules: readonly FocusScheduleDto[];
+}
+
+export type FocusSchedulePayload = {
+  readonly title?: string;
+  readonly note?: string;
+  readonly startAt?: number;
+  readonly endAt?: number;
+  readonly remind?: boolean;
+};
 
 export interface Overview {
   readonly ok: boolean;

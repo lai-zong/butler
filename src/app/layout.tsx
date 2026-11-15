@@ -12,6 +12,7 @@ import './styles/console.css';
 import './styles/memory.css';
 import './styles/changes.css';
 import './styles/usage.css';
+import './styles/focus.css';
 
 export const metadata: Metadata = {
   title: 'butler · 记忆治理',

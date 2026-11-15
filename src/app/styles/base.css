@@ -1256,6 +1256,11 @@ svg {
   z-index: 130;
 }
 
+/* 对话设置要压在专注空间的左侧抽屉（z-index 110）之上。 */
+.modal-root--session-settings {
+  z-index: 120;
+}
+
 .modal-backdrop {
   position: absolute;
   inset: 0;

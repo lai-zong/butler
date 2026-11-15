@@ -27,6 +27,7 @@ import { TasksView } from './tasks/TasksView';
 import { DueReminderBanner } from './tasks/DueReminderBanner';
 import { ConsoleTransition } from './console/ConsoleTransition';
 import { computeConsoleBootStatus, type ConsoleBootMode } from './console/consoleBoot.js';
+import { FocusSpace } from './focus/FocusSpace';
 import { WebPet } from './pet/WebPet';
 import { UsageReporter } from './usage/UsageReporter';
 import { errorMessage, fetchJson } from './lib/api.js';
@@ -53,6 +54,7 @@ type Surface = 'main' | 'console';
 
 const MAIN_TITLES: Record<MainView, string> = {
   chat: '对话',
+  focus: '专注空间',
   tasks: '定时任务',
   settings: '设置',
 };
@@ -99,6 +101,7 @@ function parseHash(): Route {
 
   if (raw === 'settings') return { surface: 'main', view: 'settings', section: 'memory' };
   if (raw === 'tasks') return { surface: 'main', view: 'tasks', section: 'memory' };
+  if (raw === 'focus') return { surface: 'main', view: 'focus', section: 'memory' };
   return { surface: 'main', view: 'chat', section: 'memory' };
 }
 
@@ -119,6 +122,20 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
   const { theme, toggleTheme } = useTheme();
   const [surface, setSurface] = useState<Surface>('main');
   const [view, setView] = useState<MainView>('chat');
+  /**
+   * 专注空间的两层浮层状态。
+   *
+   * ★ 左抽屉装的是**同一个 ChatView 实例**（见下面 view-frame--chat），
+   *   所以这里只控制显隐，不复制会话或流式状态。
+   * ★ 默认收起；进入专注、退出专注与外层路由回退都会复位。
+   */
+  const [focusChatOpen, setFocusChatOpen] = useState(false);
+  const [focusApprovalCount, setFocusApprovalCount] = useState(0);
+  const [focusLeaving, setFocusLeaving] = useState(false);
+  const appMainRef = useRef<HTMLElement | null>(null);
+  const chatFrameRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusApprovalRef = useRef(0);
+  const wasFocusActiveRef = useRef(false);
   /**
    * 一级页面也做“访问过就保留”：第一次打开才挂载，之后 hidden。
    * 控制台不在这里；控制台自己的 consoleMounted 仍是首次打开才挂载、之后常驻。
@@ -148,6 +165,9 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
   const appShellRef = useRef<HTMLDivElement | null>(null);
 
   const [toasts, setToasts] = useState<readonly ToastMessage[]>([]);
+
+  /** 专注空间是否覆盖在主界面上；退场动画期间仍为 true。 */
+  const focusActive = surface === 'main' && view === 'focus';
 
   const [memoryPreset, setMemoryPreset] = useState<MemoryPreset>({ nonce: 0 });
   const [dataResetNonce, setDataResetNonce] = useState(0);
@@ -290,6 +310,29 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
     };
   }, [booting]);
 
+  // 专注空间的左抽屉打开后，把焦点送进对话输入框；收起时由 FocusSpace 还给入口。
+  useEffect(() => {
+    if (!focusActive || !focusChatOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      chatFrameRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusActive, focusChatOpen]);
+
+  // 专注空间里出现待审批工具：把左抽屉露出来。审批是阻塞动作，不能藏在收起状态里。
+  useEffect(() => {
+    if (focusActive && !wasFocusActiveRef.current) {
+      if (focusApprovalCount > 0) setFocusChatOpen(true);
+      lastFocusApprovalRef.current = focusApprovalCount;
+    } else if (focusActive && focusApprovalCount > lastFocusApprovalRef.current) {
+      setFocusChatOpen(true);
+      lastFocusApprovalRef.current = focusApprovalCount;
+    } else {
+      lastFocusApprovalRef.current = focusApprovalCount;
+    }
+    wasFocusActiveRef.current = focusActive;
+  }, [focusActive, focusApprovalCount]);
+
   // 真实加载迟迟不完成时给一个可恢复的错误，而不是无限等待。
   useEffect(() => {
     if (!booting || bootStatus.ready || bootStatus.error !== null) return;
@@ -323,6 +366,9 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
       setConsoleTransition(false);
       setConsoleTransitionLeaving(false);
       setConsoleLeaving(false);
+      // 浏览器前进/后退视为直接落位：专注空间的浮层状态复位为默认收起。
+      setFocusLeaving(false);
+      setFocusChatOpen(false);
       if (route.surface === 'console') {
         // 深链直接落位：不播转场，但控制台需要挂载并开始取数。
         setConsoleMounted(true);
@@ -369,21 +415,61 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
     return () => document.body.classList.remove('console-mode');
   }, [surface, consoleLeaving]);
 
-  // 控制台是覆盖层：主界面仍在挂载，但不该被 Tab 键或读屏摸到。
+  // 覆盖层下面的主界面不该被 Tab 或读屏摸到。
+  // 专注空间：侧栏始终锁住；左抽屉收起时连主界面一起锁住，
+  // 抽屉打开时只放开主界面（对话层就在里面）。
   useEffect(() => {
-    const targets = [document.querySelector('.sidebar'), document.getElementById('view-scroll')];
-    for (const el of targets) {
-      if (!(el instanceof HTMLElement)) continue;
-      if (surface === 'console') el.setAttribute('inert', '');
-      else el.removeAttribute('inert');
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar instanceof HTMLElement) {
+      sidebar.toggleAttribute('inert', surface === 'console' || focusActive);
     }
-  }, [surface]);
+    const main = appMainRef.current;
+    if (main !== null) {
+      main.toggleAttribute(
+        'inert',
+        surface === 'console' || (focusActive && !focusChatOpen),
+      );
+    }
+    return () => {
+      sidebar?.removeAttribute('inert');
+      main?.removeAttribute('inert');
+    };
+  }, [surface, focusActive, focusChatOpen]);
 
   const pushHash = useCallback((hash: string): void => {
     if (window.location.hash !== hash) {
       window.history.pushState({ hash }, '', hash);
     }
   }, []);
+
+  /**
+   * 退出专注空间。
+   *
+   * ★ 先播放 280ms 的退场（画面淡出、左抽屉滑回），再换视图；
+   *   期间 focusActive 仍为 true，覆盖层不会闪一下再出现。
+   * ★ 减少动效偏好下直接落位。
+   */
+  const exitFocus = useCallback(
+    (target: MainView = 'chat'): void => {
+      if (!focusActive) {
+        setView(target);
+        pushHash(hashOfMain(target));
+        return;
+      }
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const delay = reduce ? 0 : 280;
+      setFocusLeaving(true);
+      setFocusChatOpen(false);
+      pushHash(hashOfMain(target));
+      if (leaveTimer.current !== null) window.clearTimeout(leaveTimer.current);
+      leaveTimer.current = window.setTimeout(() => {
+        setView(target);
+        setFocusLeaving(false);
+        leaveTimer.current = null;
+      }, delay);
+    },
+    [focusActive, pushHash],
+  );
 
   const handleConsoleShellMounted = useCallback((): void => {
     setConsoleShellMounted(true);
@@ -411,7 +497,9 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
       ? consoleSection === 'usage'
         ? null
         : consoleSection
-      : view;
+      : view === 'focus'
+        ? 'chat'
+        : view;
 
   // 就绪后至少展示完整动画（首次 1.2s / 二次约 0.5s），再淡出。
   // ★ 不能把 consoleTransitionLeaving 放进依赖：它一变成 true 会触发 cleanup，
@@ -453,6 +541,12 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
         window.clearTimeout(leaveTimer.current);
         leaveTimer.current = null;
       }
+      // 从专注空间点“看记忆 / 控制台”视为离开专注：回来时停在普通对话。
+      if (focusActive) {
+        setFocusChatOpen(false);
+        setFocusLeaving(false);
+        setView('chat');
+      }
       setConsoleLeaving(false);
       setConsoleSection(section);
       pushHash(hashOfConsole(section));
@@ -479,13 +573,17 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
         setConsoleDataReady(true);
       }
     },
-    [surface, pushHash, consoleMounted],
+    [surface, pushHash, consoleMounted, focusActive],
   );
 
   const closeConsole = useCallback(
     (target?: MainView): void => {
       const nextView = target ?? view;
       if (surface !== 'console') {
+        if (focusActive && nextView !== 'focus') {
+          exitFocus(nextView);
+          return;
+        }
         setView(nextView);
         pushHash(hashOfMain(nextView));
         return;
@@ -502,8 +600,21 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
         leaveTimer.current = null;
       }, 280);
     },
-    [surface, view, pushHash],
+    [exitFocus, focusActive, surface, view, pushHash],
   );
+
+  const enterFocus = useCallback((): void => {
+    if (surface === 'console') {
+      setFocusLeaving(false);
+      closeConsole('focus');
+      return;
+    }
+    if (focusActive) return;
+    setFocusLeaving(false);
+    setFocusChatOpen(false);
+    setView('focus');
+    pushHash(hashOfMain('focus'));
+  }, [closeConsole, focusActive, pushHash, surface]);
 
   const navigate = useCallback(
     (next: ViewId): void => {
@@ -511,15 +622,27 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
         openConsole(next);
         return;
       }
+      if (next === 'focus') {
+        enterFocus();
+        return;
+      }
+      if (focusActive) {
+        exitFocus(next);
+        return;
+      }
       closeConsole(next);
     },
-    [openConsole, closeConsole],
+    [enterFocus, exitFocus, focusActive, openConsole, closeConsole],
   );
 
   /** 从侧栏会话区进对话：只切视图，不额外开新会话。 */
   const ensureChatView = useCallback((): void => {
+    if (focusActive) {
+      exitFocus('chat');
+      return;
+    }
     if (view !== 'chat') closeConsole('chat');
-  }, [closeConsole, view]);
+  }, [closeConsole, exitFocus, focusActive, view]);
 
   /**
    * “对话”导航的点击语义：
@@ -573,7 +696,12 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
    */
   return (
     <SessionIndexProvider notify={notify}>
-      <div className={`app-shell${hydrated ? '' : ' is-boot-pending'}${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}`} ref={appShellRef}>
+      <div
+        className={`app-shell${hydrated ? '' : ' is-boot-pending'}${
+          sidebarCollapsed ? ' is-sidebar-collapsed' : ''
+        }${focusActive ? ' is-focus-space' : ''}${focusLeaving ? ' is-focus-leaving' : ''}`}
+        ref={appShellRef}
+      >
         <Sidebar
           view={view}
           collapsed={sidebarCollapsed}
@@ -588,7 +716,7 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
           onNavigateToChat={ensureChatView}
         />
 
-        <main className="app-main" id="view-scroll">
+        <main className="app-main" id="view-scroll" ref={appMainRef}>
           {overviewError !== null && (
             <div className="global-banner" role="alert">
               <span className="global-banner-icon">
@@ -607,17 +735,32 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
             </div>
           )}
 
-          {/* 全局到期提醒：细条放在主区域顶部、聊天头部下方，不压输入框；控制台里不渲染。 */}
+          {/* 全局到期提醒：细条放在主区域顶部、聊天头部下方，不压输入框；控制台与专注空间里不渲染。 */}
           <DueReminderBanner
-            active={surface === 'main' && !booting && view !== 'tasks'}
+            active={surface === 'main' && !booting && view !== 'tasks' && view !== 'focus'}
             notify={notify}
             onOpenTasks={() => navigate('tasks')}
           />
 
-          <div className="view-frame view-frame--chat" hidden={surface !== 'main' || view !== 'chat'}>
+          {/*
+            ★ 专注空间复用这一个 ChatView 实例：
+              进入专注时不卸载、不重挂，流式与草稿都原样保留；
+              它只是被 CSS 固定到左侧抽屉里（关闭时移出画面并 inert）。
+          */}
+          <div
+            ref={chatFrameRef}
+            className={`view-frame view-frame--chat${focusActive ? ' is-focus-drawer' : ''}${
+              focusActive && focusChatOpen ? ' is-focus-chat-open' : ''
+            }${focusLeaving ? ' is-focus-leaving' : ''}`}
+            hidden={surface !== 'main' || (view !== 'chat' && view !== 'focus')}
+          >
             <ChatView
-              active={surface === 'main' && view === 'chat'}
+              active={surface === 'main' && (view === 'chat' || view === 'focus')}
               focusEnabled={!booting && surface === 'main' && view === 'chat'}
+              focusMode={focusActive}
+              focusDrawerOpen={focusChatOpen}
+              onFocusClose={() => setFocusChatOpen(false)}
+              onApprovalCountChange={setFocusApprovalCount}
               overview={overview}
               dataResetNonce={dataResetNonce}
               onOpenMemory={openMemory}
@@ -652,6 +795,19 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
           )}
         </main>
 
+        {focusActive && (
+          <FocusSpace
+            leaving={focusLeaving}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+            onExit={() => exitFocus('chat')}
+            chatOpen={focusChatOpen}
+            onChatOpenChange={setFocusChatOpen}
+            approvalCount={focusApprovalCount}
+            notify={notify}
+          />
+        )}
+
         {consoleMounted && (
           <div className="console-host" hidden={surface !== 'console'}>
             <ConsoleShell
@@ -676,7 +832,7 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
          * 进入控制台时传 active=false 隐藏；它自己读 pet-config 决定显示与否。
          * 启动动画期间不挂载，避免桌宠从启动页背后露出来。
          */}
-        {!booting && <WebPet active={surface === 'main'} />}
+        {!booting && <WebPet active={surface === 'main' && !focusActive} />}
 
         {/* 使用节奏心跳：只在页面可见、窗口聚焦、应用就绪时打点。 */}
         <UsageReporter page={usagePage} active={!booting} />

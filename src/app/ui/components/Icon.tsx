@@ -65,7 +65,12 @@ export type IconName =
   | 'more'
   | 'pin'
   | 'pencil'
-  | 'pulse';
+  | 'pulse'
+  | 'image'
+  | 'music'
+  | 'bell'
+  | 'chevronUp'
+  | 'layers';
 
 const ICONS: Record<IconName, ReactNode> = {
   chat: (
@@ -339,6 +344,33 @@ const ICONS: Record<IconName, ReactNode> = {
   pulse: (
     <>
       <path d="M2.8 12.4h3.5l2.2-6.1 3.4 11.4 2.7-7.1 1.7 3.6h4.9" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
+      <circle cx="8.6" cy="9.6" r="1.6" />
+      <path d="m4.4 17.2 4.6-4.5 3.3 3.2 2.6-2.6 4.7 4.5" />
+    </>
+  ),
+  music: (
+    <>
+      <path d="M9 17.2V6.4l8.4-1.8v10.6" />
+      <circle cx="6.8" cy="17.8" r="2.3" />
+      <circle cx="15.2" cy="15.8" r="2.3" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M6.4 9.8a5.6 5.6 0 0 1 11.2 0v3.1l1.4 2.7H5l1.4-2.7V9.8Z" />
+      <path d="M10 19a2.1 2.1 0 0 0 4 0" />
+    </>
+  ),
+  chevronUp: <path d="m6 15 6-6 6 6" />,
+  layers: (
+    <>
+      <rect x="3.6" y="7.6" width="12.8" height="12.8" rx="2.4" />
+      <path d="M7.6 4.6h10a2 2 0 0 1 2 2v10" />
     </>
   ),
 };
