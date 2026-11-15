@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { Icon } from '../components/Icon';
+import { AuthBootGate } from './AuthBootGate';
 import { AuthFatalView, authFatalFrom, type AuthFatal } from './AuthFatalView';
 import { AuthShell } from './AuthShell';
 import { PasswordField } from './PasswordField';
@@ -25,6 +26,7 @@ import {
   getAuthStatus,
   passwordRuleError,
   safeNextPath,
+  withAuthHandoff,
   setupAuth,
 } from './authClient.js';
 import { useRetryCountdown } from './useRetryCountdown.js';
@@ -39,6 +41,8 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
   const nextPath = safeNextPath(initialNext ?? null);
 
   const [phase, setPhase] = useState<SetupPhase>('checking');
+  const [bootReady, setBootReady] = useState(false);
+  const [showBoot, setShowBoot] = useState(true);
   const [fatal, setFatal] = useState<AuthFatal | null>(null);
 
   const [password, setPassword] = useState('');
@@ -66,15 +70,19 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
         if (cancelled) return;
         if (status.configured) {
           setPhase('redirecting');
+          setBootReady(true);
           timer = window.setTimeout(() => {
             window.location.replace(`/login?next=${encodeURIComponent(nextPath)}`);
           }, 1200);
           return;
         }
         setPhase('form');
+        setBootReady(true);
       } catch (err) {
         if (cancelled) return;
         setFatal(authFatalFrom(asAuthError(err)));
+        setPhase('form');
+        setBootReady(true);
       }
     })();
 
@@ -130,7 +138,7 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
       setAnswer('');
       setPhase('entering');
       // 整页跳转：确保新 cookie 与 middleware 一起生效。
-      window.location.assign(nextPath);
+      window.location.assign(withAuthHandoff(nextPath));
     } catch (err) {
       const authError = asAuthError(err);
       if (authError.code === 'invalid_password') {
@@ -187,15 +195,20 @@ export function SetupView({ initialNext }: SetupViewProps): JSX.Element {
               description: null,
             };
 
+  if (showBoot) {
+    return (
+      <AuthBootGate
+        checking={phase === 'checking'}
+        ready={bootReady}
+        onDone={() => setShowBoot(false)}
+      />
+    );
+  }
+
   return (
     <AuthShell eyebrow={head.eyebrow} title={head.title} description={head.description}>
       {fatal !== null ? (
         <AuthFatalView fatal={fatal} />
-      ) : phase === 'checking' ? (
-        <div className="auth-checking" role="status" aria-live="polite">
-          <span className="auth-spinner" aria-hidden="true" />
-          正在确认本地登录状态…
-        </div>
       ) : phase === 'redirecting' ? (
         <div className="auth-form">
           <p className="auth-notice is-info" role="status">

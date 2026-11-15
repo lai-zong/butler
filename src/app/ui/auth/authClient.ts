@@ -294,3 +294,17 @@ export function safeNextPath(raw: string | null | undefined): string {
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
+
+/**
+ * 登录/设置成功后的工作台跳转。
+ *
+ * 认证检查已经由登录页的启动门完成；带 fromAuth=1 让工作台跳过自己的
+ * 第二次 BootScreen，避免“启动动画 → 登录 → 又启动动画”。
+ */
+export function withAuthHandoff(nextPath: string): string {
+  const hashAt = nextPath.indexOf('#');
+  const beforeHash = hashAt >= 0 ? nextPath.slice(0, hashAt) : nextPath;
+  const hash = hashAt >= 0 ? nextPath.slice(hashAt) : '';
+  const separator = beforeHash.includes('?') ? '&' : '?';
+  return `${beforeHash}${separator}fromAuth=1${hash}`;
+}

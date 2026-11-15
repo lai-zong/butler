@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { Icon } from '../components/Icon';
+import { AuthBootGate } from './AuthBootGate';
 import { AuthFatalView, authFatalFrom, type AuthFatal } from './AuthFatalView';
 import { AuthShell } from './AuthShell';
 import { PasswordField } from './PasswordField';
@@ -35,6 +36,7 @@ import {
   passwordRuleError,
   resetAuthWithAnswer,
   safeNextPath,
+  withAuthHandoff,
   type SecurityQuestion,
 } from './authClient.js';
 import { useRetryCountdown } from './useRetryCountdown.js';
@@ -50,6 +52,8 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
 
   const [mode, setMode] = useState<LoginMode>('login');
   const [checking, setChecking] = useState(true);
+  const [bootReady, setBootReady] = useState(false);
+  const [showBoot, setShowBoot] = useState(true);
   const [fatal, setFatal] = useState<AuthFatal | null>(null);
   const [securityQuestion, setSecurityQuestion] = useState<SecurityQuestion | null>(null);
 
@@ -92,14 +96,17 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
           return;
         }
         if (status.authenticated) {
-          window.location.replace(nextPath);
+          window.location.replace(withAuthHandoff(nextPath));
           return;
         }
         setSecurityQuestion(status.securityQuestion);
         setChecking(false);
+        setBootReady(true);
       } catch (err) {
         if (cancelled) return;
         setFatal(authFatalFrom(asAuthError(err)));
+        setChecking(false);
+        setBootReady(true);
       }
     })();
     return () => {
@@ -130,7 +137,7 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
     try {
       await loginWithPassword(password);
       // 整页跳转：确保 middleware 与新 cookie 一起生效，不用客户端缓存赌一次。
-      window.location.assign(nextPath);
+      window.location.assign(withAuthHandoff(nextPath));
     } catch (err) {
       const authError = asAuthError(err);
       if (authError.status === 401) {
@@ -229,7 +236,7 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
       setNewPasswordError(null);
       setConfirmPasswordError(null);
       // 重置成功会 Set-Cookie：直接进入应用，不再要求用新密码登录一次。
-      window.location.assign(nextPath);
+      window.location.assign(withAuthHandoff(nextPath));
     } catch (err) {
       const authError = asAuthError(err);
       if (authError.status === 401 || authError.code === 'invalid_answer') {
@@ -269,12 +276,6 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
         title: '暂时无法登录',
         description: '本地认证不可用；页面不会提供任何绕过入口。',
       }
-    : checking
-      ? {
-          eyebrow: '本地登录',
-          title: '正在检查…',
-          description: '正在确认这台电脑的登录状态。',
-        }
       : mode === 'reset'
         ? securityQuestion === null
           ? {
@@ -293,15 +294,20 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
             description: '输入这台电脑上设置的密码。这里没有用户名，只有你自己。',
           };
 
+  if (showBoot) {
+    return (
+      <AuthBootGate
+        checking={checking}
+        ready={bootReady}
+        onDone={() => setShowBoot(false)}
+      />
+    );
+  }
+
   return (
     <AuthShell eyebrow={head.eyebrow} title={head.title} description={head.description}>
       {fatal !== null ? (
         <AuthFatalView fatal={fatal} />
-      ) : checking ? (
-        <div className="auth-checking" role="status" aria-live="polite">
-          <span className="auth-spinner" aria-hidden="true" />
-          正在确认登录状态…
-        </div>
       ) : mode === 'reset' ? (
         securityQuestion === null ? (
           <div className="auth-form">

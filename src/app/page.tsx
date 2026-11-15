@@ -8,6 +8,13 @@ import { ButlerApp } from './ui/ButlerApp';
  *   路由切换会卸载对话组件；这里用 hash 保留深链与前进后退，
  *   同时让对话层常驻。
  */
-export default function HomePage(): React.JSX.Element {
-  return <ButlerApp />;
+interface HomePageProps {
+  readonly searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function HomePage({ searchParams }: HomePageProps): Promise<React.JSX.Element> {
+  const params = await searchParams;
+  const raw = params['fromAuth'];
+  const fromAuth = Array.isArray(raw) ? raw[0] : raw;
+  return <ButlerApp skipBoot={fromAuth === '1'} />;
 }

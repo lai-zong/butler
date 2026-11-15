@@ -109,7 +109,12 @@ function hashOfConsole(section: ConsoleSection): string {
   return `#/console/${section}`;
 }
 
-export function ButlerApp(): JSX.Element {
+interface ButlerAppProps {
+  /** 登录页已经播过启动门时，工作台不再重复播一次。 */
+  readonly skipBoot?: boolean;
+}
+
+export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
   const [surface, setSurface] = useState<Surface>('main');
   const [view, setView] = useState<MainView>('chat');
   /**
@@ -134,7 +139,7 @@ export function ButlerApp(): JSX.Element {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
 
-  const [booting, setBooting] = useState(true);
+  const [booting, setBooting] = useState(!skipBoot);
   const [hydrated, setHydrated] = useState(false);
   const [chatBoot, setChatBoot] = useState<ChatBootState>({ state: 'loading', phase: 'sessions' });
   const [bootTimedOut, setBootTimedOut] = useState(false);
@@ -196,6 +201,18 @@ export function ButlerApp(): JSX.Element {
 
   useEffect(() => {
     setHydrated(true);
+  }, []);
+
+  // 登录页已经把启动门播完；进入工作台后把交接参数从地址栏清掉。
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('fromAuth') !== '1') return;
+    url.searchParams.delete('fromAuth');
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}${url.hash}`,
+    );
   }, []);
 
   // 侧栏收起是界面偏好，存在本地；首帧保持展开，避免 SSR 不一致。
