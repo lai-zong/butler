@@ -33,6 +33,19 @@
     padding 0.18s var(--ease);
 }
 
+.brand-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* 品牌按钮仍占满剩余宽度；主题开关是品牌行里的兄弟节点，不嵌套 button。 */
+.brand-row .brand {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -41,6 +54,28 @@
   padding: 3px 7px 22px;
   text-align: left;
   transition: opacity 0.16s var(--ease);
+}
+
+/* 品牌行右侧的主题开关：28px 图标按钮，与 logo 中心对齐。 */
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  margin-top: 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink-3);
+  transition:
+    background 0.16s var(--ease),
+    border-color 0.16s var(--ease),
+    color 0.16s var(--ease);
+}
+
+.theme-toggle:hover {
+  background: var(--paper-deep);
+  color: var(--ink);
 }
 
 /* 品牌区整块是折叠开关：右侧小箭头只在悬停/聚焦时露出来。 */
@@ -700,6 +735,11 @@
   display: none;
 }
 
+/* 收起后 78px 宽放不下品牌 + 主题两个按钮：只保留品牌，避免溢出。 */
+.app-shell.is-sidebar-collapsed .theme-toggle {
+  display: none;
+}
+
 .app-shell.is-sidebar-collapsed .side-caption,
 .app-shell.is-sidebar-collapsed .nav-chevron {
   display: none;
@@ -762,6 +802,11 @@
   }
 
   .brand-text {
+    display: none;
+  }
+
+  /* 窄窗口侧栏自动变成 78px 图标栏，品牌行同样放不下主题按钮。 */
+  .brand-row .theme-toggle {
     display: none;
   }
 
@@ -863,4 +908,90 @@
   .stat-grid--4 {
     grid-template-columns: 1fr;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   第一界面 · 深色外壳
+   ═══════════════════════════════════════════════════════════
+   画布保持近黑 #070707；侧栏、选中项、浮层靠 --surface / --surface-2 抬升。
+   body.console-mode 下全部失效，控制台不受影响。
+   ═══════════════════════════════════════════════════════════ */
+
+html[data-theme='dark'] body:not(.console-mode) .sidebar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 34%),
+    var(--paper);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .brand-mark {
+  color: #06120d;
+  box-shadow:
+    0 2px 5px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .brand:hover .brand-mark {
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.55);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .theme-toggle:hover {
+  background: var(--dk-hover-strong);
+  color: var(--ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .nav-item:hover {
+  background: var(--dk-hover);
+  color: var(--ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .nav-item.is-active {
+  background: var(--surface);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .nav-badge {
+  border-color: var(--dk-warn-line);
+  color: var(--warn);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .side-sessions-close:hover,
+html[data-theme='dark'] body:not(.console-mode) .side-session-more:hover {
+  background: var(--dk-hover-strong);
+  color: var(--ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .side-session-menu {
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .side-session-menu-item:hover {
+  background: var(--dk-hover-strong);
+  color: var(--ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .side-sessions-backdrop {
+  background: rgba(0, 0, 0, 0.56);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .side-sessions.is-flyout {
+  background: var(--surface);
+}
+
+/* 主区域就是画布：近黑，不用浅色径向光。 */
+html[data-theme='dark'] body:not(.console-mode) .app-main {
+  background: var(--paper);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .global-banner {
+  border-color: var(--dk-danger-line);
+  color: var(--dk-danger-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .global-banner .text-btn {
+  color: var(--danger);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .rename-error {
+  border-color: var(--dk-danger-line);
 }

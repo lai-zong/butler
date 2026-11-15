@@ -17,6 +17,8 @@ export type IconName =
   | 'audit'
   | 'growth'
   | 'settings'
+  | 'sun'
+  | 'moon'
   | 'plus'
   | 'minus'
   | 'target'
@@ -114,6 +116,14 @@ const ICONS: Record<IconName, ReactNode> = {
       <circle cx="13.5" cy="17" r="2.2" />
     </>
   ),
+  // 主题切换：太阳表示“切回浅色”，月亮表示“切到深色”。
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4.2" />
+      <path d="M12 2.8v2.2M12 19v2.2M4.5 4.5l1.6 1.6M17.9 17.9l1.6 1.6M2.8 12H5M19 12h2.2M4.5 19.5l1.6-1.6M17.9 6.1l1.6-1.6" />
+    </>
+  ),
+  moon: <path d="M20 14.2A8.2 8.2 0 0 1 9.8 4a8.4 8.4 0 1 0 10.2 10.2Z" />,
   plus: <path d="M12 5v14M5 12h14" />,
   minus: <path d="M5 12h14" />,
   target: (

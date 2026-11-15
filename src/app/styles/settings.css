@@ -4310,3 +4310,255 @@
   color: var(--accent);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   第一界面 · 深色设置
+   ═══════════════════════════════════════════════════════════
+   设置页与它的弹层都走同一套深色令牌：
+   表面抬起、发丝线加深、状态色换成暗底可读版本。
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── 开关 / 数据迁移 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .switch-knob {
+  background: #e8e5dc;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .import-result {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .import-result p {
+  color: var(--accent-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .import-backup {
+  color: var(--ink-3) !important;
+}
+
+/* ── 自动化 / MCP 状态条 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .auto-due {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .auto-action-error {
+  border-color: var(--dk-danger-line);
+  background: rgba(233, 143, 125, 0.08);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-rejected {
+  border-color: var(--dk-warn-line);
+  background: rgba(224, 176, 122, 0.07);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .perm-mode.is-on {
+  border-color: var(--dk-ok-line);
+  background: #0f1a14;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .perm-radio {
+  border-color: #6a655a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-danger.is-on {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-danger.is-on strong {
+  color: var(--warn);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-danger.is-on p {
+  color: var(--dk-warm-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-switch span {
+  background: #e8e5dc;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ── 操作记忆 / 产出物 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .ops-chip.is-on {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .ops-path {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .ops-failure,
+html[data-theme='dark'] body:not(.console-mode) .ops-content {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .ops-add,
+html[data-theme='dark'] body:not(.console-mode) .mcp-import-drop {
+  border-color: var(--dk-ok-line);
+  background: #0d1712;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-import-warning {
+  border-color: var(--dk-warn-line);
+  background: #1a140c;
+  color: var(--dk-warm-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-import-error,
+html[data-theme='dark'] body:not(.console-mode) .mcp-form-error {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-remote-warning {
+  border-color: var(--dk-info-line);
+  background: #0c141a;
+  color: #a9c4d8;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-remote-warning > span {
+  border-color: #3a4e5e;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .mcp-remote-warning strong {
+  color: var(--info);
+}
+
+/* ── 文档库 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .doc-hit:hover {
+  background: #191919;
+}
+
+/* ── 模型接入 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .model-provider-env-lock {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-provider-card.is-selected {
+  border-color: var(--dk-ok-line);
+  box-shadow: inset 0 0 0 1px rgba(134, 201, 168, 0.12);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-provider-radio {
+  border-color: #6a655a;
+  background: var(--surface);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-provider-validation {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+  color: var(--dk-ok-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .settings-nav-item:hover {
+  background: var(--dk-hover);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .settings-nav-item.is-active {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-type-tab.is-active {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-type-note.is-warning {
+  border-color: var(--dk-warn-line);
+  background: #1a140c;
+  color: var(--dk-warm-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-local-state.is-ready {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+  color: var(--dk-ok-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-current {
+  border-color: var(--dk-ok-line);
+  background: linear-gradient(180deg, #0d1a14, #0a120e);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-primary {
+  border-color: var(--accent);
+  color: #06120d;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-danger {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-profile.is-active {
+  border-color: var(--dk-ok-line);
+  background: #0d1712;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-form-card {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-field input:focus,
+html[data-theme='dark'] body:not(.console-mode) .model-field select:focus,
+html[data-theme='dark'] body:not(.console-mode) .model-search:focus {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-result {
+  border-bottom-color: var(--line-soft);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-add {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-cap.is-on {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+  color: var(--dk-ok-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-error {
+  border-color: var(--dk-danger-line);
+  background: #1d0f0c;
+  color: var(--danger);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-notice {
+  border-color: var(--dk-ok-line);
+  background: #0d1712;
+  color: var(--dk-ok-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-env-lock {
+  border-color: var(--dk-warn-line);
+  background: #1a140c;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-embedding-option.is-current {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .krs-warn {
+  border-color: var(--dk-warn-line);
+  background: #1a140c;
+  color: var(--dk-warm-ink);
+}
+
+/* ── 网页桌宠设置：焦点环 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .pet-size-number:focus,
+html[data-theme='dark'] body:not(.console-mode) .pet-select:focus,
+html[data-theme='dark'] body:not(.console-mode) .pet-textarea:focus,
+html[data-theme='dark'] body:not(.console-mode) .pet-time:focus {
+  border-color: var(--dk-ok-line);
+  box-shadow: 0 0 0 3px rgba(134, 201, 168, 0.09);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .pet-proactive-freq-option:focus-within,
+html[data-theme='dark'] body:not(.console-mode) .pet-scenario:focus-within {
+  outline-color: rgba(134, 201, 168, 0.46);
+}

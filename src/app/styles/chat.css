@@ -7893,3 +7893,529 @@ button.work-crumb:hover {
   font-family: var(--font-mono);
   font-size: 10px !important;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   第一界面 · 深色对话
+   ═══════════════════════════════════════════════════════════
+   画布是近黑 #070707；头部/气泡/输入框/面板逐级抬升到 #101010 / #161616。
+   消息、工具过程、右栏（文件/浏览器/终端/外部文件）与
+   模型/思考强度浮层都在这里统一修正硬编码的浅色。
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── 头部 / 空状态 / 流式叙述 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .chat-head {
+  background: rgba(7, 7, 7, 0.86);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .hero-orbit-ring--2 {
+  border-color: #2f3b34;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .hero-suggestion:hover {
+  border-color: var(--dk-ok-line);
+  background: #191919;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .live-narration {
+  border-left-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .live-error {
+  border-color: var(--dk-danger-line);
+  color: var(--dk-danger-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .live-error .text-btn {
+  color: var(--danger);
+}
+
+/* ── 输入区 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .chat-banner {
+  border-color: var(--dk-warn-line);
+  color: var(--warn);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .chat-banner code {
+  background: rgba(224, 176, 122, 0.12);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .chat-banner .text-btn {
+  color: var(--warn);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .attach-remove {
+  background: rgba(0, 0, 0, 0.72);
+  color: var(--ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .composer {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .composer:focus-within {
+  border-color: #2c5a48;
+  background: var(--dk-field);
+  box-shadow:
+    0 0 0 3px rgba(134, 201, 168, 0.09),
+    0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .composer.is-busy:not(:focus-within) {
+  border-color: #3a3228;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .voice-btn.is-listening {
+  border-color: #5a2e26;
+  animation-name: voicePulseDark;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .send-btn {
+  background: var(--accent);
+  color: #06120d;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .send-btn:hover:not(:disabled) {
+  background: var(--accent-bright);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .send-btn.send-btn--steer {
+  border-color: var(--dk-ok-line);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .send-btn.send-btn--steer:hover {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #06120d;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .send-btn--stop:hover {
+  border-color: var(--dk-danger-line);
+}
+
+/* ── 过程 / 契约 / 报告 / 测验 / 审批 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .process-head:hover,
+html[data-theme='dark'] body:not(.console-mode) .flow-line:hover,
+html[data-theme='dark'] body:not(.console-mode) .contract-head:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .flow-dot--ok {
+  background: #6fbf9a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .stage-trail li.is-current {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .seg button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .notice--warm {
+  border-color: var(--dk-warn-line);
+  color: #e6bd8a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .notice-confidence {
+  color: rgba(224, 176, 122, 0.72);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .contract-confidence.is-low {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .report-needs {
+  color: var(--warn);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .quiz-invite.is-open {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .quiz-option.is-picked,
+html[data-theme='dark'] body:not(.console-mode) .quiz-option.is-correct {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .quiz-option.is-wrong {
+  border-color: var(--dk-danger-line);
+  color: var(--dk-danger-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .quiz-option.is-picked .quiz-letter,
+html[data-theme='dark'] body:not(.console-mode) .quiz-option.is-correct .quiz-letter {
+  border-color: #2c5a48;
+  background: var(--surface);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .quiz-option.is-wrong .quiz-letter {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .approval-card {
+  border-color: var(--dk-warn-line);
+  background: #14110b;
+}
+
+/* ── 审查模式 / 浮窗 / 历史抽屉 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .chat-view.is-panel-max .chat-float {
+  background: var(--surface);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.66),
+    0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .chat-float-bar {
+  background: rgba(16, 16, 16, 0.9);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-head {
+  background: rgba(16, 16, 16, 0.9);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-status {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+  color: var(--dk-ok-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-status.is-busy,
+html[data-theme='dark'] body:not(.console-mode) .review-status.is-warn {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-history-scrim {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-history {
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.6);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-history-item.is-active {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-history-state.is-completed {
+  border-color: var(--dk-ok-line);
+  background: #0d1a14;
+  color: var(--dk-ok-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-history-state.is-failed {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-start {
+  border-color: var(--accent);
+  color: #06120d;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-stop {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-stop:hover {
+  border-color: #5a2e26;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-error {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-verdict.is-pass {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-verdict.is-fail {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-again {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-again:hover:not(:disabled) {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-picker {
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-step-dot {
+  background: var(--surface);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-step.is-selected .review-step-dot {
+  color: #06120d;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .review-apply {
+  border-color: var(--accent);
+  color: #06120d;
+}
+
+/* ── 轮次导轨 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .turn-rail-thumb {
+  background: var(--line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot {
+  background: var(--line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot:hover {
+  background: var(--line-strong);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot:focus-visible {
+  outline-color: #86c9a8;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot.is-running {
+  border-color: var(--line-strong);
+  background: var(--line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot.is-current {
+  background: var(--accent);
+  animation-name: turn-dot-pulse-dark;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot.is-current:hover {
+  background: var(--accent-bright);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .turn-dot.is-current.is-running {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* ── 已取消卡片 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-card {
+  border-color: var(--dk-warn-line);
+  background: linear-gradient(180deg, #16120c, #12100b);
+  box-shadow: var(--shadow-sm);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-title strong {
+  color: #e6bd8a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-title > span:last-child,
+html[data-theme='dark'] body:not(.console-mode) .cancel-label,
+html[data-theme='dark'] body:not(.console-mode) .cancel-grid small {
+  color: #b99a74;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-time {
+  color: #9c8264;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-grid > div {
+  border-color: #4a3a28;
+  background: #14110c;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-grid strong {
+  color: #f0d9b8;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .cancel-note {
+  color: #c9aa84;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .btn-ghost-warn {
+  border-color: #6a5238;
+}
+
+/* ── 模型 / 思考强度浮层 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .model-picker-pop {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-picker-option.is-active {
+  border-color: var(--dk-ok-line);
+  background: #101a14;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-controls-trigger.is-open {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-controls-pop {
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.66);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-controls-model.is-active {
+  border-color: var(--dk-ok-line);
+  background: #101a14;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-controls-reasoning-chip.is-active,
+html[data-theme='dark'] body:not(.console-mode) .session-controls-level.is-active {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-controls-error {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-controls-error-text {
+  border-top-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-sheet-textarea:focus {
+  border-color: #2c5a48;
+  box-shadow: 0 0 0 3px rgba(134, 201, 168, 0.09);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-sheet-warn {
+  border-color: var(--dk-danger-line);
+  color: var(--dk-danger-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .session-sheet-warn code {
+  background: rgba(233, 143, 125, 0.12);
+}
+
+/* ── 工作区面板 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .work-banner {
+  border-bottom-color: var(--dk-info-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-banner.is-write {
+  border-bottom-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-banner.is-blocked {
+  border-bottom-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-file-head {
+  background: rgba(16, 16, 16, 0.9);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-ai-flag {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-alert {
+  border-bottom-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-alert.is-warn {
+  border-bottom-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-draft-notice {
+  border-bottom-color: var(--dk-info-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .work-table-foot {
+  border-top-color: var(--dk-warn-line);
+}
+
+/* ── 内嵌浏览器 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .browser-toolbar {
+  background: rgba(16, 16, 16, 0.88);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .browser-tab-close:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .browser-tool-btn.is-active {
+  border-color: #2c5a48;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .browser-alert {
+  border-bottom-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .browser-alert.is-error {
+  border-bottom-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .browser-alert-close:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/* ── 外部文件 / 终端 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-head {
+  background: rgba(16, 16, 16, 0.9);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-ai-badge.is-granted {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-ai-badge.is-granting,
+html[data-theme='dark'] body:not(.console-mode) .external-file-ai-badge.is-revoking {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-banner.is-warn {
+  border-bottom-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-banner.is-danger {
+  border-bottom-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-banner.is-info {
+  border-bottom-color: var(--dk-info-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .external-file-banner-close:hover,
+html[data-theme='dark'] body:not(.console-mode) .terminal-banner-close:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .terminal-head {
+  background: rgba(16, 16, 16, 0.94);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .terminal-banner.is-warn {
+  border-bottom-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .terminal-banner.is-danger {
+  border-bottom-color: var(--dk-danger-line);
+}
+
+@keyframes voicePulseDark {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(233, 143, 125, 0.16);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(233, 143, 125, 0.04);
+  }
+}
+
+@keyframes turn-dot-pulse-dark {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(134, 201, 168, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(134, 201, 168, 0);
+  }
+}

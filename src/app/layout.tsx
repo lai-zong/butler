@@ -24,13 +24,27 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   themeColor: '#f5f3ee',
-  colorScheme: 'light',
+  colorScheme: 'light dark',
 };
+
+/**
+ * 主题首帧脚本 —— 必须小而阻塞，且只作用于第一界面。
+ *
+ * ★ 为什么放在 body 开头：App Router 不提供可编程的 <head>，
+ *   而放在 body 首个子节点同样会在工作台标记之前同步执行，
+ *   不会出现“先画暖纸色、再变黑”的闪烁。
+ * ★ 只认 pathname === '/'：登录页、首次设置页没有 .app-shell，
+ *   它们的 CSS 仍用 :root 的暖纸令牌，不会被 data-theme 影响。
+ * ★ 启动层自己会在深色下重置浅色令牌（见 base.css），
+ *   所以“刷新时启动动画保持浅色”与“刷新后直接深色”可以同时成立。
+ */
+const THEME_BOOT_SCRIPT = `(function(){try{if(window.location.pathname!=='/')return;var t=window.localStorage.getItem('butler.theme');if(t!=='dark')return;var r=document.documentElement;r.setAttribute('data-theme','dark');var m=document.querySelector('meta[name="theme-color"]');if(m){m.setAttribute('content','#070707');}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { readonly children: ReactNode }): React.JSX.Element {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
       <body>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
         {/* 无 JS 时不要把用户永久留在启动层里；工作台本身是服务端渲染的。 */}
         <noscript>
           <style>

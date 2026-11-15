@@ -18,7 +18,9 @@
 
 import { Icon, type IconName } from './Icon';
 import { SidebarSessions } from './SidebarSessions';
+import { ThemeToggle } from '../theme/ThemeToggle';
 import { useMediaQuery } from '../lib/hooks.js';
+import type { Theme } from '../theme/useTheme';
 import type { ViewId } from '../lib/types.js';
 
 interface NavItem {
@@ -40,9 +42,11 @@ interface SidebarProps {
   readonly view: ViewId;
   readonly collapsed: boolean;
   readonly sessionsOpen: boolean;
+  readonly theme: Theme;
   readonly onNavigate: (view: ViewId) => void;
   readonly onOpenConsole: () => void;
   readonly onToggleCollapse: () => void;
+  readonly onToggleTheme: () => void;
   /** 点“对话”：在对话页时展开/收起列表，不在对话页时先过去再展开。 */
   readonly onChatClick: () => void;
   readonly onCloseSessions: () => void;
@@ -53,9 +57,11 @@ export function Sidebar({
   view,
   collapsed,
   sessionsOpen,
+  theme,
   onNavigate,
   onOpenConsole,
   onToggleCollapse,
+  onToggleTheme,
   onChatClick,
   onCloseSessions,
   onNavigateToChat,
@@ -88,25 +94,28 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" aria-label="主导航">
-      <button
-        type="button"
-        className="brand"
-        onClick={onToggleCollapse}
-        aria-expanded={!collapsed}
-        aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
-        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
-      >
-        <span className="brand-mark">
-          <Icon name="memory" size={17} strokeWidth={1.7} />
-        </span>
-        <span className="brand-text">
-          <strong>butler</strong>
-          <small>记得你，也懂你</small>
-        </span>
-        <span className="brand-caret" aria-hidden="true">
-          <Icon name={collapsed ? 'chevronRight' : 'arrowLeft'} size={14} />
-        </span>
-      </button>
+      <div className="brand-row">
+        <button
+          type="button"
+          className="brand"
+          onClick={onToggleCollapse}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+          title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+        >
+          <span className="brand-mark">
+            <Icon name="memory" size={17} strokeWidth={1.7} />
+          </span>
+          <span className="brand-text">
+            <strong>butler</strong>
+            <small>记得你，也懂你</small>
+          </span>
+          <span className="brand-caret" aria-hidden="true">
+            <Icon name={collapsed ? 'chevronRight' : 'arrowLeft'} size={14} />
+          </span>
+        </button>
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+      </div>
 
       <nav className="side-nav">
         <p className="side-caption">工作台</p>

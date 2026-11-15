@@ -32,6 +32,7 @@ import { UsageReporter } from './usage/UsageReporter';
 import { errorMessage, fetchJson } from './lib/api.js';
 import { computeBootStatus, type ChatBootState } from './lib/boot.js';
 import { SessionIndexProvider } from './lib/sessionIndex.js';
+import { useTheme } from './theme/useTheme';
 import type {
   ConsoleSection,
   MainView,
@@ -115,6 +116,7 @@ interface ButlerAppProps {
 }
 
 export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
+  const { theme, toggleTheme } = useTheme();
   const [surface, setSurface] = useState<Surface>('main');
   const [view, setView] = useState<MainView>('chat');
   /**
@@ -351,10 +353,14 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
       surface === 'console'
         ? `butler · 控制台 · ${SECTION_TITLES[consoleSection]}`
         : `butler · ${MAIN_TITLES[view]}`;
+    // meta 以 DOM 上的 data-theme 为准：内联脚本已在首帧设置过，
+    // 这里等状态对齐会晚一帧，窗口边框可能闪一下浅色。
+    const mainColor =
+      document.documentElement.getAttribute('data-theme') === 'dark' ? '#070707' : '#f5f3ee';
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute('content', surface === 'console' ? '#0a0f0c' : '#f5f3ee');
-  }, [surface, view, consoleSection]);
+      ?.setAttribute('content', surface === 'console' ? '#0a0f0c' : mainColor);
+  }, [surface, view, consoleSection, theme]);
 
   // 控制台打开时给 portal 出来的 Modal / 命令面板一套深色变量。
   // 退场一开始就撤掉：控制台自己有独立变量，主界面则在淡出期间先回到暖色。
@@ -572,9 +578,11 @@ export function ButlerApp({ skipBoot = false }: ButlerAppProps): JSX.Element {
           view={view}
           collapsed={sidebarCollapsed}
           sessionsOpen={sessionsOpen}
+          theme={theme}
           onNavigate={navigate}
           onOpenConsole={() => openMemory()}
           onToggleCollapse={toggleSidebar}
+          onToggleTheme={toggleTheme}
           onChatClick={handleChatClick}
           onCloseSessions={() => applySessionsOpen(false)}
           onNavigateToChat={ensureChatView}

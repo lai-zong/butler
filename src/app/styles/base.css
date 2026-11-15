@@ -7,6 +7,10 @@
 */
 
 :root {
+  /* 浅色是默认；深色只在 data-theme=dark 时覆盖，并显式声明 color-scheme，
+     避免系统暗色模式下原生滚动条/表单控件在浅色界面里变黑。 */
+  color-scheme: light;
+
   --paper: #f5f3ee;
   --paper-deep: #eeebe4;
   --surface: #fffdf9;
@@ -1519,5 +1523,270 @@ svg {
   }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   第一界面 · 深色主题
+   ═══════════════════════════════════════════════════════════
+   近黑画布 + 抬升表面，不是把暖纸色压暗：
+     paper #070707 → surface #101010 → surface-2 #161616
+   深色令牌挂在 <html data-theme="dark">，portal 到 body 的浮层也能继承。
+   ★ 所有元素级覆盖都带 body:not(.console-mode)：
+     控制台打开时 body.console-mode 让这份主题整体失效，
+     控制台自己的 .console-layer / body.console-mode 令牌保持原样。
+   ★ 启动层单独重置回浅色令牌（见下方 .boot-screen），
+     所以刷新时动画仍是暖纸色，而工作台在动画后面已经是深色。
+   ═══════════════════════════════════════════════════════════ */
 
+:root[data-theme='dark'] {
+  color-scheme: dark;
 
+  --paper: #070707;
+  --paper-deep: #0a0a0a;
+  --surface: #101010;
+  --surface-2: #161616;
+
+  --ink: #f2f0e9;
+  --ink-2: #c9c5bb;
+  --ink-3: #9c978c;
+  --ink-4: #777267;
+
+  --line: #3f3f3f;
+  --line-strong: #585858;
+  --line-soft: #333333;
+
+  --accent: #86c9a8;
+  --accent-ink: #b9e8cf;
+  --accent-bright: #a9e6c8;
+  --accent-soft: #0f1f18;
+
+  --warn: #e0b07a;
+  --warn-soft: #1d160d;
+  --danger: #e98f7d;
+  --danger-soft: #24100d;
+  --info: #92bfdc;
+  --info-soft: #0e1820;
+
+  --code-bg: #131313;
+  --code-ink: #e8e3d7;
+
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.05);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.7);
+
+  /* 第一界面深色专用（控制台不引用） */
+  --dk-hover: rgba(255, 255, 255, 0.06);
+  --dk-hover-strong: #1c1c1c;
+  --dk-field: #0c0c0c;
+  --dk-ok-line: #2c5a48;
+  --dk-warn-line: #4a3826;
+  --dk-danger-line: #5a2e26;
+  --dk-info-line: #2f4250;
+  --dk-ok-ink: #9fd9bb;
+  --dk-danger-ink: #f0a696;
+  --dk-warm-ink: #d8b98f;
+}
+
+/* 启动动画不跟主题：把启动层及其子树重新钉回暖纸令牌。 */
+html[data-theme='dark'] .boot-screen {
+  color-scheme: light;
+
+  --paper: #f5f3ee;
+  --paper-deep: #eeebe4;
+  --surface: #fffdf9;
+  --surface-2: #faf8f3;
+
+  --ink: #1e1d19;
+  --ink-2: #565249;
+  --ink-3: #726c61;
+  --ink-4: #8a8478;
+
+  --line: #e4e0d5;
+  --line-strong: #d3cec1;
+  --line-soft: #efece4;
+
+  --accent: #2f5b4c;
+  --accent-ink: #234639;
+  --accent-bright: #3f7a62;
+  --accent-soft: #e8efe9;
+
+  --warn: #8f5520;
+  --warn-soft: #f7eddc;
+  --danger: #a4412f;
+  --danger-soft: #f8e8e3;
+  --info: #3d5570;
+  --info-soft: #e9eef4;
+
+  --code-bg: #24231e;
+  --code-ink: #ece7da;
+
+  --shadow-sm: 0 1px 2px rgba(30, 29, 25, 0.04);
+  --shadow-md: 0 10px 28px rgba(30, 29, 25, 0.07);
+  --shadow-lg: 0 24px 64px rgba(30, 29, 25, 0.16);
+}
+
+/* 焦点环：黑底上原来的深苔绿几乎不可见。 */
+html[data-theme='dark'] body:not(.console-mode) :focus-visible {
+  outline-color: rgba(134, 201, 168, 0.58);
+}
+
+html[data-theme='dark'] body:not(.console-mode) ::selection {
+  background: rgba(134, 201, 168, 0.3);
+  color: var(--ink);
+}
+
+/* 错误恢复页（整页替换时没有 .app-shell）。 */
+html[data-theme='dark'] body:not(.console-mode) .error-screen {
+  background:
+    radial-gradient(760px 440px at 50% -10%, rgba(134, 201, 168, 0.06), transparent 70%),
+    var(--paper);
+  color: var(--ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .error-mark {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .error-btn-primary {
+  color: #06120d;
+}
+
+/* ── 通用按钮：深色下强调色变亮，实心按钮改用黑字 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .btn-primary {
+  color: #06120d;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .btn-primary:hover:not(:disabled) {
+  border-color: var(--accent-bright);
+  background: var(--accent-bright);
+  color: #06120d;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .btn-danger {
+  color: #1b0d0a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .btn-danger:hover:not(:disabled) {
+  border-color: #f0a493;
+  background: #f0a493;
+  color: #1b0d0a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .btn-ghost-danger {
+  border-color: var(--dk-danger-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .btn-ghost-danger:hover:not(:disabled) {
+  border-color: var(--dk-danger-line);
+  background: var(--danger-soft);
+  color: var(--dk-danger-ink);
+}
+
+/* ── 统计卡 / 徽标 / 过滤片 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .stat-card--accent {
+  border-color: var(--dk-ok-line);
+  background: linear-gradient(170deg, rgba(134, 201, 168, 0.06) 0%, var(--surface) 55%);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .stat-card--warn {
+  border-color: var(--dk-warn-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .badge--accent {
+  border-color: var(--dk-ok-line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .badge--warn {
+  border-color: var(--dk-warn-line);
+  color: var(--warn);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .badge--danger {
+  border-color: var(--dk-danger-line);
+  color: var(--danger);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .badge--info {
+  border-color: var(--dk-info-line);
+  color: var(--info);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .filter-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #06120d;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .filter-chip.is-active .filter-chip-count {
+  color: rgba(6, 18, 13, 0.62);
+}
+
+/* ── 骨架屏 / 错误条 / 搜索框 / 代码 / Markdown ── */
+
+html[data-theme='dark'] body:not(.console-mode) .skeleton {
+  background: #1a1a1a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .inline-error {
+  border-color: var(--dk-danger-line);
+  color: var(--dk-danger-ink);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .inline-error .text-btn {
+  color: var(--danger);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .search-field:focus-within {
+  border-color: var(--dk-ok-line);
+  background: var(--dk-field);
+  box-shadow: 0 0 0 3px rgba(134, 201, 168, 0.09);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .kbd {
+  background: #1a1a1a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .code-block {
+  border-color: var(--line);
+}
+
+html[data-theme='dark'] body:not(.console-mode) .md code {
+  border-color: var(--line);
+  background: #1a1a1a;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .md blockquote {
+  border-left-color: var(--dk-ok-line);
+}
+
+/* ── 浮层遮罩：纯黑画布上原来的 32% 暖黑几乎看不见 ── */
+
+html[data-theme='dark'] body:not(.console-mode) .modal-backdrop {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+/* ── 主题切换过渡 ──
+   只在 240ms 的短暂窗口里给颜色类属性过渡；不常驻。
+   View Transitions 可用时走 ::view-transition-* 的整页交叉淡入。 */
+
+@media (prefers-reduced-motion: no-preference) {
+  html.is-theme-transition *,
+  html.is-theme-transition *::before,
+  html.is-theme-transition *::after {
+    transition-property: background-color, border-color, color, fill, stroke, box-shadow !important;
+    transition-duration: 240ms !important;
+    transition-timing-function: var(--ease) !important;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 240ms;
+    animation-timing-function: var(--ease);
+  }
+}
