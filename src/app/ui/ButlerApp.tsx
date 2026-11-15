@@ -112,6 +112,12 @@ function hashOfConsole(section: ConsoleSection): string {
 export function ButlerApp(): JSX.Element {
   const [surface, setSurface] = useState<Surface>('main');
   const [view, setView] = useState<MainView>('chat');
+  /**
+   * 一级页面也做“访问过就保留”：第一次打开才挂载，之后 hidden。
+   * 控制台不在这里；控制台自己的 consoleMounted 仍是首次打开才挂载、之后常驻。
+   */
+  const visitedMainRef = useRef<Set<MainView>>(new Set<MainView>(['chat']));
+  visitedMainRef.current.add(view);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(true);
   const [consoleSection, setConsoleSection] = useState<ConsoleSection>('memory');
@@ -598,8 +604,11 @@ export function ButlerApp(): JSX.Element {
             />
           </div>
 
-          {view === 'settings' && (
-            <div className="view-frame view-frame--page view-enter" key="settings">
+          {visitedMainRef.current.has('settings') && (
+            <div
+              className="view-frame view-frame--page view-enter"
+              hidden={surface !== 'main' || view !== 'settings'}
+            >
               <SettingsView
                 notify={notify}
                 onRefreshOverview={() => void refreshOverview()}
@@ -608,9 +617,12 @@ export function ButlerApp(): JSX.Element {
             </div>
           )}
 
-          {view === 'tasks' && (
-            <div className="view-frame view-frame--page view-enter" key="tasks">
-              <TasksView notify={notify} />
+          {visitedMainRef.current.has('tasks') && (
+            <div
+              className="view-frame view-frame--page view-enter"
+              hidden={surface !== 'main' || view !== 'tasks'}
+            >
+              <TasksView notify={notify} isActive={surface === 'main' && view === 'tasks'} />
             </div>
           )}
         </main>

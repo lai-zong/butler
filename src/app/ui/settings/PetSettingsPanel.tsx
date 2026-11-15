@@ -436,11 +436,11 @@ export function PetSettingsPanel({ notify }: PetSettingsPanelProps): JSX.Element
                 ))}
                 {spriteChoices.length === 0 && <option value={form.sprite}>未找到形象素材</option>}
               </select>
-              <span className="settings-muted">
-                {assets.length === 0
-                  ? 'public/pet 下没有可用形象；放入素材后回到这里选择。'
-                  : `来自 public/pet，共 ${assets.length} 个形象。`}
-              </span>
+              {assets.length === 0 && (
+                <span className="settings-muted">
+                  public/pet 下没有可用形象；放入素材后回到这里选择。
+                </span>
+              )}
             </span>
           </div>
         </div>

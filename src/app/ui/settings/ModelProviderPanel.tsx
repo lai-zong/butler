@@ -571,7 +571,6 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
         <div className="model-local-block">
           <div className="model-local-head">
             <span className="model-field-label">本地模型</span>
-            <p>随程序提供、只读资产；不需要 Base URL 或 API Key。</p>
           </div>
           <div className="model-local-list">
             {localModels.map((model) => (
@@ -583,7 +582,6 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
                     <span className="model-local-source">本地</span>
                     {model.dimension !== null && <span>{model.dimension} 维</span>}
                   </div>
-                  <p className="model-local-desc">{model.description}</p>
                 </div>
                 <span className={`model-local-state${model.available ? ' is-ready' : ''}`}>
                   {model.available ? '可用' : '不可用'}
@@ -633,11 +631,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
         </div>
       )}
 
-      {modelType === 'rerank' && (
-        <p className="model-type-note">
-          外部重排的连接信息与对话模型相同：Base URL + API Key + 模型 ID；精排由 LLM 完成，不调用专用 rerank 接口。
-        </p>
-      )}
+
     </section>
   );
 }

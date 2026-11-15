@@ -65,6 +65,8 @@ const ACTION_DONE: Record<TaskAction, string> = {
 
 interface TasksViewProps {
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
+  /** 页面是否处于前台；隐藏时停止轮询，但保留已加载数据。 */
+  readonly isActive?: boolean;
 }
 
 function byNextRun(a: UserTaskView, b: UserTaskView): number {
@@ -77,7 +79,7 @@ function byUpdated(a: UserTaskView, b: UserTaskView): number {
   return b.updatedAt - a.updatedAt;
 }
 
-export function TasksView({ notify }: TasksViewProps): JSX.Element {
+export function TasksView({ notify, isActive = true }: TasksViewProps): JSX.Element {
   const [tasks, setTasks] = useState<readonly UserTaskView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -97,6 +99,7 @@ export function TasksView({ notify }: TasksViewProps): JSX.Element {
   const [models, setModels] = useState<readonly TaskModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const loadedRef = useRef(false);
 
   const seqRef = useRef(0);
   const now = useNow(15_000);
@@ -143,8 +146,13 @@ export function TasksView({ notify }: TasksViewProps): JSX.Element {
   }, []);
 
   useEffect(() => {
-    void load();
-    void loadModels();
+    if (!isActive) return;
+    // 首次进入只加载一次；切走再回来直接显示已有数据，不重新骨架屏。
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      void load();
+      void loadModels();
+    }
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void load();
     }, POLL_MS);
@@ -156,7 +164,7 @@ export function TasksView({ notify }: TasksViewProps): JSX.Element {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [load, loadModels]);
+  }, [isActive, load, loadModels]);
 
   const act = async (task: UserTaskView, action: TaskAction): Promise<void> => {
     if (busyId !== null) return;

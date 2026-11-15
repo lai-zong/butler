@@ -44,6 +44,14 @@ import {
 } from './sessionSettings.js';
 
 const PERSONA_MAX = 8_000;
+const DANGER_PERMISSION_NOTE =
+  '危险档位（dangerous / remove_path）始终禁用，不会因为选「完全」而放开；Web 会话没有 OS 沙箱，因此不提供命令执行工具。';
+const PERMISSION_TIP = [
+  `只读：${SESSION_PERMISSION_NOTE['read-only']}`,
+  `工作区：${SESSION_PERMISSION_NOTE.workspace}`,
+  `完全：${SESSION_PERMISSION_NOTE.full}`,
+  DANGER_PERMISSION_NOTE,
+].join('\n');
 
 interface SessionSettingsSheetProps {
   readonly open: boolean;
@@ -279,11 +287,9 @@ export function SessionSettingsSheet({
                 <div className="session-sheet-head">
                   <div>
                     <h3 id="session-workspace-label">工作区</h3>
-                    <p>这段对话的工具根目录。文件读写与目录列举都从它出发；命令执行不提供。</p>
                   </div>
                 </div>
                 <label className="task-field">
-                  <span className="task-field-label">工作区路径</span>
                   <input
                     className="task-input mono"
                     value={workspace}
@@ -293,24 +299,27 @@ export function SessionSettingsSheet({
                     aria-label="本对话的工作区路径"
                     onChange={(event) => setWorkspace(event.target.value)}
                   />
-                  <small className="task-field-hint">
-                    当前实际：<span className="mono">{scope?.effectiveWorkspace ?? '—'}</span>
-                    <br />
-                    留空 = 跟随应用默认；填写时必须是已存在目录的绝对路径，保存时由服务端校验，
-                    不存在/不是目录/系统数据目录/config 都会被拒绝。
-                  </small>
                 </label>
               </section>
 
               <section className="session-sheet-section" aria-labelledby="session-permission-label">
                 <div className="session-sheet-head">
                   <div>
-                    <h3 id="session-permission-label">权限</h3>
-                    <p>这段对话能用哪些工具档位；只影响本会话，不改全局设置。</p>
+                    <h3 id="session-permission-label">
+                      权限
+                      <span
+                        className="session-perm-info"
+                        title={PERMISSION_TIP}
+                        aria-label={PERMISSION_TIP}
+                        role="img"
+                        tabIndex={0}
+                      >
+                        <Icon name="info" size={13} />
+                      </span>
+                    </h3>
                   </div>
                 </div>
                 <label className="task-field">
-                  <span className="task-field-label">权限档位</span>
                   <select
                     className="task-select"
                     value={permission}
@@ -326,27 +335,7 @@ export function SessionSettingsSheet({
                     <option value="workspace">工作区</option>
                     <option value="full">完全</option>
                   </select>
-                  <small className="task-field-hint">
-                    当前实际权限：
-                    {SESSION_PERMISSION_LABEL[effectivePermission]}（应用未配置默认权限时按只读）。
-                    写文件在 Web 上逐次确认；没有确认通道的客户端（如桌宠）按本档位授权。
-                    移动等高风险仅「完全」档且需确认；命令执行工具不提供；
-                    删除等危险档位始终禁用。
-                  </small>
                 </label>
-
-                <div className="task-perm">
-                  {(['read-only', 'workspace', 'full'] as const).map((tier) => (
-                    <p key={tier} className={effectivePermission === tier ? 'is-current' : undefined}>
-                      <strong>{SESSION_PERMISSION_LABEL[tier]}</strong>
-                      {SESSION_PERMISSION_NOTE[tier]}
-                    </p>
-                  ))}
-                  <p className="task-perm-foot">
-                    危险档位（dangerous / remove_path）始终禁用，不会因为选「完全」而放开；
-                    Web 会话没有 OS 沙箱，因此不提供命令执行工具。
-                  </p>
-                </div>
 
                 {fullWarning && (
                   <p className="session-sheet-warn" role="alert">
@@ -401,13 +390,11 @@ export function SessionSettingsSheet({
                 </div>
               </section>
 
-              <p className="session-sheet-dirty" role="status">
-                {saving
-                  ? '正在保存…'
-                  : dirty
-                    ? '有未保存的修改'
-                    : '已是最新设置'}
-              </p>
+              {(saving || dirty) && (
+                <p className="session-sheet-dirty" role="status">
+                  {saving ? '正在保存…' : '有未保存的修改'}
+                </p>
+              )}
             </>
           )}
         </div>

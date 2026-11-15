@@ -5165,6 +5165,23 @@
   gap: 12px;
 }
 
+.session-perm-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 5px;
+  color: var(--ink-4);
+  cursor: help;
+  vertical-align: -2px;
+  border-radius: 50%;
+}
+
+.session-perm-info:hover,
+.session-perm-info:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
 .session-sheet-head h3,
 .session-sheet-switch-row h3 {
   margin: 0;
