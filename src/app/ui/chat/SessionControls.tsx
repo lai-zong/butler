@@ -95,6 +95,7 @@ export function SessionControls({
   popoverClassName,
 }: SessionControlsProps): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [position, setPosition] = useState<PopoverPosition | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -210,6 +211,7 @@ export function SessionControls({
   useEffect(() => {
     if (!open) {
       setQuery('');
+      setReasoningOpen(false);
       return;
     }
     const timer = window.setTimeout(() => {
@@ -317,36 +319,50 @@ export function SessionControls({
             )}
           </div>
 
-          <div className="session-controls-section">
-            <div className="session-controls-label">
+          <div className="session-controls-section session-controls-reasoning-section">
+            <button
+              type="button"
+              className="session-controls-reasoning-toggle"
+              aria-expanded={reasoningOpen}
+              aria-controls="session-reasoning-options"
+              onClick={() => setReasoningOpen((value) => !value)}
+              disabled={saving}
+            >
               <span>思考强度</span>
-            </div>
-            <div className="session-controls-reasoning" role="radiogroup" aria-label="思考强度">
-              {REASONING_OPTIONS.map((option) => {
-                const active = option.value === reasoning;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    className={`session-controls-level${active ? ' is-active' : ''}`}
-                    disabled={saving}
-                    title={option.hint}
-                    onClick={() => {
-                      setOpen(false);
-                      onSelectReasoning(option.value);
-                    }}
-                  >
-                    <span className="session-controls-level-main">
-                      <code>{option.label}</code>
-                      <small>{option.hint}</small>
-                    </span>
-                    {active && <Icon name="check" size={14} />}
-                  </button>
-                );
-              })}
-            </div>
+              <code className="session-controls-reasoning-current">{reasoning}</code>
+              <Icon name={reasoningOpen ? 'chevronDown' : 'chevronRight'} size={12} />
+            </button>
+
+            {reasoningOpen ? (
+              <div
+                id="session-reasoning-options"
+                className="session-controls-reasoning-inline"
+                role="radiogroup"
+                aria-label="思考强度"
+              >
+                {REASONING_OPTIONS.map((option) => {
+                  const active = option.value === reasoning;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      className={`session-controls-reasoning-chip${active ? ' is-active' : ''}`}
+                      disabled={saving}
+                      title={option.hint}
+                      onClick={() => {
+                        setReasoningOpen(false);
+                        setOpen(false);
+                        onSelectReasoning(option.value);
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
 
           {settingsError !== null && (
