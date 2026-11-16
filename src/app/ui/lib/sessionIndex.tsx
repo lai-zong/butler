@@ -8,8 +8,8 @@
  *   现在列表、当前会话、置顶、生成标题只有这一处真相。
  *
  * ★ 数据源只用 GET /api/sessions：
- *   overview.sessions 不含 session-display sidecar（titleGenerated / pinnedAt /
- *   pinnedWorkspace 全是 null），拿它渲染侧栏会把图钉和生成标题全部丢掉。
+ *   overview 不再返回会话列表；侧栏要的 titleGenerated / pinnedAt /
+ *   pinnedWorkspace 只存在于 session-display sidecar。
  *
  * ★ “打开会话 / 打开会话设置”是向 ChatView 注册的句柄：
  *   切会话要清空消息、载入详情、重置审查状态，这些只有 ChatView 知道；

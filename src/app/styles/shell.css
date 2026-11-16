@@ -1006,3 +1006,52 @@ html[data-theme='dark'] body:not(.console-mode) .global-banner .text-btn {
 html[data-theme='dark'] body:not(.console-mode) .rename-error {
   border-color: var(--dk-danger-line);
 }
+
+/* 会话搜索：只过滤侧栏列表，不改变会话索引本身。 */
+.side-sessions-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-4);
+}
+
+.side-sessions-search:focus-within {
+  border-color: var(--line-strong);
+  color: var(--ink-3);
+}
+
+.side-sessions-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.side-sessions-search input::placeholder {
+  color: var(--ink-4);
+}
+
+.side-sessions-search-clear {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: -2px;
+  border-radius: 5px;
+  color: var(--ink-4);
+}
+
+.side-sessions-search-clear:hover {
+  background: var(--paper-deep);
+  color: var(--ink-2);
+}

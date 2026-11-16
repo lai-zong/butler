@@ -11,16 +11,13 @@
 import { NextResponse } from 'next/server';
 
 import { DATA_DIR, DEFAULT_USER_ID, getRuntime, WORKSPACE_ROOT, eventsFile } from '@/app/runtime';
-import { scopeDefaultsOf } from '@/app/server/sessionScope.js';
 import { normalSessions } from '@/app/server/petSession.js';
 import {
   computeMemoryStats,
   toEventDto,
   toMemoryDto,
-  toSessionDto,
   type EventDto,
   type MemoryDto,
-  type SessionDto,
 } from '@/app/server/uiData.js';
 
 export const dynamic = 'force-dynamic';
@@ -57,18 +54,20 @@ export async function GET(): Promise<NextResponse> {
   const memories = rt.bootstrapped.memory.all();
   const now = rt.clock.now();
 
-  const sessions: SessionDto[] = (await normalSessions(rt.bootstrapped.chat))
-    .map((s) =>
-      toSessionDto(
-        s,
-        rt.bootstrapped.chat.messagesOf(s.id),
-        rt.bootstrapped.chat.verdictsOf(s.id),
-        { scopeDefaults: scopeDefaultsOf(rt) },
-      ),
-    );
-
-  const messages = sessions.reduce((n, s) => n + s.messageCount, 0);
-  const verdicts = sessions.reduce((n, s) => n + s.verdictCount, 0);
+  /**
+   * 会话摘要不再塞进 overview。
+   *
+   * ★ 侧栏已经有 GET /api/sessions 作为唯一数据源；overview 再构建一份
+   *   SessionDto[] 会重复扫消息、重复传 JSON，而且不含 sidecar 的置顶/标题，
+   *   本来就不适合渲染侧栏。这里只保留 totals 需要的计数。
+   */
+  const activeSessions = await normalSessions(rt.bootstrapped.chat);
+  let messages = 0;
+  let verdicts = 0;
+  for (const s of activeSessions) {
+    messages += rt.bootstrapped.chat.messagesOf(s.id).length;
+    verdicts += rt.bootstrapped.chat.verdictsOf(s.id).length;
+  }
 
   // ── 近 14 天 ──
   const buckets = new Map<string, DailyPoint>();
@@ -216,9 +215,8 @@ export async function GET(): Promise<NextResponse> {
     ok: true,
     now,
     memory: computeMemoryStats(memories, now),
-    sessions,
     totals: {
-      sessions: sessions.length,
+      sessions: activeSessions.length,
       messages,
       verdicts,
       accepted,

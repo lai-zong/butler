@@ -270,8 +270,6 @@ export function ButlerApp(): JSX.Element {
 
   const bootStatus = computeBootStatus({
     hydrated,
-    overview: overview !== null ? 'ready' : overviewError !== null ? 'error' : 'loading',
-    overviewError,
     chat: chatBoot,
     timedOut: bootTimedOut,
   });

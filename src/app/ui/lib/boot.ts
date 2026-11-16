@@ -23,18 +23,22 @@ export interface BootStatus {
 
 export interface BootStatusInput {
   readonly hydrated: boolean;
-  readonly overview: 'loading' | 'ready' | 'error';
-  readonly overviewError?: string | null;
   readonly chat: ChatBootState;
   readonly timedOut?: boolean;
+  /**
+   * @deprecated 总览不再参与启动门。保留字段只为兼容旧调用方；
+   * 总览慢/失败不应阻止用户进入工作台。
+   */
+  readonly overview?: 'loading' | 'ready' | 'error';
+  /** @deprecated 同上。 */
+  readonly overviewError?: string | null;
 }
 
 const INITIAL_PROGRESS = 0.05;
 
 export function computeBootStatus(input: BootStatusInput): BootStatus {
+  // ★ 总览是旁路数据：它慢/失败只显示横幅，不阻塞启动门。
   const error =
-    input.overviewError ??
-    (input.overview === 'error' ? '无法读取运行概览' : null) ??
     (input.chat.state === 'error' ? input.chat.error : null) ??
     (input.timedOut === true ? '启动时间超过 30 秒，请重试' : null);
 
@@ -49,10 +53,6 @@ export function computeBootStatus(input: BootStatusInput): BootStatus {
 
   if (!input.hydrated) {
     return { progress: INITIAL_PROGRESS, stage: '正在加载界面', ready: false, error: null };
-  }
-
-  if (input.overview !== 'ready') {
-    return { progress: 0.15, stage: '正在读取记忆', ready: false, error: null };
   }
 
   if (input.chat.state === 'ready') {

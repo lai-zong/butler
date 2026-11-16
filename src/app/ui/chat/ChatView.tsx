@@ -14,6 +14,7 @@
  *   切去看一眼记忆不该把正在跑的任务掐掉。
  */
 
+import dynamic from 'next/dynamic';
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   CSSProperties,
@@ -122,11 +123,43 @@ import {
   ReportsPanel,
 } from './Cards';
 import { StudyPane } from './StudyPane';
+
+/**
+ * 重面板按需加载。
+ *
+ * 这些面板只在用户点开对应入口时才需要；静态引入会让首屏连 xterm、
+ * 浏览器控制、工作区树一起下载。动态导入把首次打开成本推迟到真正使用时。
+ */
+const WorkPanel = dynamic(() => import('./WorkPanel').then((m) => m.WorkPanel), {
+  ssr: false,
+  loading: PaneLoading,
+});
+const BrowserPanel = dynamic(() => import('./BrowserPanel').then((m) => m.BrowserPanel), {
+  ssr: false,
+  loading: PaneLoading,
+});
+const ExternalFilePanel = dynamic(
+  () => import('./ExternalFilePanel').then((m) => m.ExternalFilePanel),
+  { ssr: false, loading: PaneLoading },
+);
+const TerminalPanel = dynamic(() => import('./TerminalPanel').then((m) => m.TerminalPanel), {
+  ssr: false,
+  loading: PaneLoading,
+});
+
+/** 懒加载面板首次打开时的轻量占位，避免空白一块。 */
+function PaneLoading(): JSX.Element {
+  return (
+    <div className="pane-loading" role="status">
+      正在打开面板…
+    </div>
+  );
+}
 import { TtsBlobCache, ttsCacheKey } from './ttsCache.js';
-import { WorkPanel, type WorkPanelAiOp } from './WorkPanel';
-import { BrowserPanel } from './BrowserPanel';
-import { ExternalFilePanel, type ExternalFileHandleDto } from './ExternalFilePanel';
-import { TerminalPanel, type TerminalSessionInfo } from './TerminalPanel';
+import type { WorkPanelAiOp } from './WorkPanel';
+
+import type { ExternalFileHandleDto } from './ExternalFilePanel';
+import type { TerminalSessionInfo } from './TerminalPanel';
 
 /**
  * 草稿 key 前缀。

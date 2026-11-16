@@ -8766,3 +8766,11 @@ html[data-theme='dark'] body:not(.console-mode) .study-head {
   font-size: 10.5px;
   line-height: 1.5;
 }
+
+.pane-loading {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+  color: var(--ink-4);
+  font-size: 12px;
+}

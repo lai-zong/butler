@@ -8,7 +8,7 @@
  * ★ 当前会话变化（新建、切换、从桌宠跳转）后自动滚到可见位置。
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { EmptyState } from './Common';
@@ -16,6 +16,7 @@ import { Icon } from './Icon';
 import { SessionListItem } from './SessionListItem';
 import { useSessionIndex, listableSessions } from '../lib/sessionIndex.js';
 import { groupByWorkspace, isPinnedInWorkspace, partitionByTime } from '../lib/sessionSort.js';
+import { filterSessionsByQuery } from './sessionSearch.js';
 import type { SessionSummary } from '../lib/types.js';
 
 interface SidebarSessionsProps {
@@ -43,8 +44,9 @@ export function SidebarSessions({
     refresh,
   } = useSessionIndex();
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [query, setQuery] = useState('');
 
-  const visible = listableSessions(sessions);
+  const visible = filterSessionsByQuery(listableSessions(sessions), query);
 
   // 面板打开时补一次列表：桌宠等其它入口创建的会话也能及时出现。
   useEffect(() => {
@@ -161,13 +163,44 @@ export function SidebarSessions({
           )}
         </div>
 
+        <label className="side-sessions-search">
+          <Icon name="search" size={13} />
+          <input
+            type="text"
+            value={query}
+            placeholder="搜索对话…"
+            aria-label="搜索对话"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && query.length > 0) {
+                event.stopPropagation();
+                setQuery('');
+              }
+            }}
+          />
+          {query.length > 0 && (
+            <button
+              type="button"
+              className="side-sessions-search-clear"
+              aria-label="清空搜索"
+              onClick={() => setQuery('')}
+            >
+              <Icon name="close" size={12} />
+            </button>
+          )}
+        </label>
+
         <div className="side-sessions-scroll" ref={scrollRef}>
           {visible.length === 0 && (
             <EmptyState
               compact
               icon="history"
-              title="还没有对话"
-              description="第一次开口之后，这里会出现历史。"
+              title={query.trim().length > 0 ? '没有匹配的对话' : '还没有对话'}
+              description={
+                query.trim().length > 0
+                  ? '换个关键词试试，搜索范围是标题和最后一条消息。'
+                  : '第一次开口之后，这里会出现历史。'
+              }
             />
           )}
 
