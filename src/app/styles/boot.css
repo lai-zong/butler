@@ -111,7 +111,8 @@
   inset: 22px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
+  overflow: hidden;
+  border-radius: 12px;
   background: var(--accent);
   color: #f4f1e8;
   box-shadow:

@@ -19,6 +19,14 @@ export const metadata: Metadata = {
   description:
     '一个常驻在电脑里的管家式 AI：记得你、替你办事；干前写契约，干完逐条复核，而你拥有完全的可视、可改、可撤销权。',
   applicationName: 'butler',
+  /**
+   * 浏览器标签页 / 快捷方式图标。
+   * 只做 web 图标，不引入 PWA manifest 或桌面安装器。
+   */
+  icons: {
+    icon: [{ url: '/icon.png', type: 'image/png', sizes: '512x512' }],
+    shortcut: '/favicon.ico',
+  },
 };
 
 export const viewport: Viewport = {

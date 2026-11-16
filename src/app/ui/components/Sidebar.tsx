@@ -17,6 +17,7 @@
  */
 
 import { Icon, type IconName } from './Icon';
+import { BrandMark } from './BrandMark';
 import { SidebarSessions } from './SidebarSessions';
 import { ThemeToggle } from '../theme/ThemeToggle';
 import { useMediaQuery } from '../lib/hooks.js';
@@ -105,9 +106,7 @@ export function Sidebar({
           aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
           title={collapsed ? '展开侧边栏' : '收起侧边栏'}
         >
-          <span className="brand-mark">
-            <Icon name="memory" size={17} strokeWidth={1.7} />
-          </span>
+          <BrandMark className="brand-mark" size={17} />
           <span className="brand-text">
             <strong>butler</strong>
             <small>记得你，也懂你</small>

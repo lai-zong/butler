@@ -100,6 +100,7 @@
   width: 33px;
   height: 33px;
   flex: none;
+  overflow: hidden;
   border-radius: 10px;
   background: var(--accent);
   color: #f4f1e8;
@@ -107,6 +108,16 @@
     0 2px 5px rgba(35, 70, 57, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.14);
   transition: transform 0.24s var(--ease), box-shadow 0.24s var(--ease);
+}
+
+.brand-mark img,
+.auth-brand-mark img,
+.boot-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .brand:hover .brand-mark {

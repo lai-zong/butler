@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { Icon } from './Icon';
+import { BrandMark } from './BrandMark';
 
 interface BootScreenProps {
   readonly progress: number;
@@ -80,9 +80,7 @@ export function BootScreen({ progress, stage, ready, error, onRetry, onDone }: B
         <div className="boot-orbit" aria-hidden="true">
           <span className="boot-ring boot-ring--1" />
           <span className="boot-ring boot-ring--2" />
-          <span className="boot-mark">
-            <Icon name="memory" size={23} strokeWidth={1.7} />
-          </span>
+          <BrandMark className="boot-mark" size={23} />
         </div>
 
         <div className="boot-brand">

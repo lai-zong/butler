@@ -22,6 +22,7 @@ import type {
 } from 'react';
 
 import { Icon, type IconName } from '../components/Icon';
+import { BrandMark } from '../components/BrandMark';
 import { Markdown } from '../components/Markdown';
 import { Badge, InlineError, Skeleton } from '../components/Common';
 import { primaryPathOf } from '@/core/tools/pathFields.js';
@@ -4586,7 +4587,7 @@ export function ChatView({
                 <span className="hero-orbit-ring hero-orbit-ring--1" />
                 <span className="hero-orbit-ring hero-orbit-ring--2" />
                 <span className="hero-orbit-core">
-                  <Icon name="memory" size={22} />
+                  <BrandMark className="hero-orbit-mark" size={22} />
                 </span>
               </div>
               <p className="eyebrow eyebrow--brand">butler · 常驻在你的电脑里</p>

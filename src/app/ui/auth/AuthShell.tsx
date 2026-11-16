@@ -12,7 +12,7 @@
 
 import type { ReactNode } from 'react';
 
-import { Icon } from '../components/Icon';
+import { BrandMark } from '../components/BrandMark';
 
 interface AuthShellProps {
   readonly eyebrow: string;
@@ -34,9 +34,7 @@ export function AuthShell({
       <div className="auth-texture" aria-hidden="true" />
       <div className="auth-wrap">
         <div className="auth-brand">
-          <span className="auth-brand-mark" aria-hidden="true">
-            <Icon name="lock" size={18} strokeWidth={1.7} />
-          </span>
+          <BrandMark className="auth-brand-mark" size={18} />
           <span className="auth-brand-text">
             <strong>butler</strong>
             <span>本地访问控制</span>

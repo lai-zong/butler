@@ -24,7 +24,7 @@ export const runtime = 'nodejs';
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|icon.svg|pet/|api/auth/).*)',
+    '/((?!_next/static|_next/image|favicon.ico|icon.png|brand/|pet/|api/auth/).*)',
   ],
 };
 

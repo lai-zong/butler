@@ -65,6 +65,7 @@
   width: 38px;
   height: 38px;
   flex: none;
+  overflow: hidden;
   border-radius: 12px;
   background: var(--accent);
   color: #f4f1e8;

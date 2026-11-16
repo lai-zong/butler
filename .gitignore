@@ -51,6 +51,8 @@ __pycache__/
 *.jpeg
 *.webp
 !public/**/*.png
+# Next.js 文件约定图标必须进版本库
+!src/app/icon.png
 !public/**/*.jpg
 !public/**/*.jpeg
 !public/**/*.webp
