@@ -52,7 +52,7 @@ const T0 = 1_760_000_000_000;
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
 
 /**
- * ★ 这份响应**照抄真实模型给过的东西**：
+ * ★ 这份响应**复现真实模型给过的东西**：
  *   实测 `deepseek-flash` 对一张星巴克小票返回了
  *   `merchant` 与 `brand` 两个同义键 —— 于是旧代码产出两条"常购品牌"。
  */

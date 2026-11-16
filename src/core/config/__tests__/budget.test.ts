@@ -3,7 +3,7 @@
  *
  * ★ 这里守的不是"数字对不对"，而是**方案 §14 / D-26 / D-28 / D-30 的四条约束**：
  *   · 只有两档（简洁 / 标准），且每档都完整
- *   · 标准档 = 照抄 DSH；简洁档 = 标准档的一半（摘要目标按 ~4% 单独推算）
+ *   · 标准档 = 沿用 DSH；简洁档 = 标准档的一半（摘要目标按 ~4% 单独推算）
  *   · `maxOutputTokens` **按档位区分**（标准 256,000 / 简洁 128,000，D-28）
  *   · 历史单条消息不设上限（D-30）；工具轮次已从字段层彻底删除
  *
@@ -89,7 +89,7 @@ describe('预算档位 · D-28：maxOutputTokens 按档位区分', () => {
   });
 });
 
-describe('预算档位 · 标准档 = 照抄 DSH', () => {
+describe('预算档位 · 标准档 = 沿用 DSH', () => {
   it('标准档与 DSH 默认值逐项一致', () => {
     const s = budgetProfileOf('standard');
     expect(s.historyTokenBudget).toBe(160_000); // DSH retainRatio 0.16 x 1M

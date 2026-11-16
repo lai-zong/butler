@@ -63,7 +63,7 @@ import type { ChatMessage } from './types.js';
  *
  *   · 旧值 24K 是按"30—60 轮够用"估的 —— 但实测长会话在 60 轮之后
  *     更早的内容就被压成 1,200 字摘要，**细节全丢**。
- *   · 新值 160,000 = DSH `retainRatio 0.16` × 1M 窗口，**照抄成熟产品的默认值**。
+ *   · 新值 160,000 = DSH `retainRatio 0.16` × 1M 窗口，**参考成熟产品的默认值，并按本项目实测确认**。
  *   · 它是**天花板不是固定支出**：会话只有 5,000 token 时就只发 5,000。
  *
  *   ⚠️ 物理上限由 `CONTEXT_WINDOW_TOKENS` 与 `pressureOf` 管。
@@ -88,7 +88,7 @@ export const HISTORY_TOKEN_BUDGET = DEFAULT_HISTORY_TOKEN_BUDGET;
  */
 
 /**
- * 上下文压力参数 —— **照抄 `dsh-compaction-basic` 的默认值**。
+ * 上下文压力参数 —— **参考 `dsh-compaction-basic` 的默认值，并按本项目实测调整**。
  *
  * | 参数 | dsh 默认 | 含义 |
  * |---|---|---|

@@ -79,7 +79,7 @@ export interface HardCheckEvidence {
   /** 哪些仆人没有处理它 */
   readonly unhandledBy: readonly string[];
   readonly unhandledByLabels: readonly string[];
-  /** 是不是确定性判定（非模型）—— 这一点对答辩很重要 */
+  /** 是不是确定性判定（非模型）—— 这一点对说明与审计很重要 */
   readonly deterministic: boolean;
   readonly note: string;
 }

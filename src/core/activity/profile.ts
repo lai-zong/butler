@@ -222,7 +222,7 @@ export function diffProfiles(from: ProfileSnapshot, to: ProfileSnapshot): Profil
 /**
  * 渲染成并排文本（方案 § 3.3 的展示形式）。
  *
- * ⚠️ 这是给**终端与答辩材料**用的；界面会用它自己的渲染。
+ * ⚠️ 这是给**终端与说明材料**用的；界面会用它自己的渲染。
  *    放在核心层是因为"并排对比"这件事本身就是演示主张的一部分，
  *    不属于某个具体界面。
  */

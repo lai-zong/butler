@@ -459,7 +459,7 @@ async function cmdDoctor() {
     // ── 预留位提醒 ──
     //
     // ⚠️ 只在**与默认值不同**时提醒。
-    //    `.env.local` 通常是照抄 `.env.example` 来的，里面就有这些
+    //    `.env.local` 通常是从 `.env.example` 复制来的，里面就有这些
     //    预留位（且值等于默认值）。全报一遍会让这张表变成噪音，
     //    用户会学会忽略所有警告 —— 那比不报更糟。
     const reserved = Array.isArray(cfg.RESERVED_KEYS) ? cfg.RESERVED_KEYS : [];

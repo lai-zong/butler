@@ -52,7 +52,7 @@ import { HISTORY_TOKEN_BUDGET, planHistory } from './compaction.js';
  *     `planHistory` 从最新往前装，装不下就停，一条超长消息只会占掉它能占的部分，
  *     不会"把别的轮次全挤出去"。
  *
- * ⚠️ DSH 没有这个机制；我们照抄它的做法 —— 上限该来自真实约束，不来自拍脑袋。
+ * ⚠️ DSH 没有这个机制；我们沿用它的原则 —— 上限该来自真实约束，不来自拍脑袋。
  *
  * @deprecated 不再参与任何判断。删除调用点后本常量即可移除。
  */

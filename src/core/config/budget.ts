@@ -19,7 +19,7 @@
  *
  * ⚠️ 数值来源（见方案 §14「参数来源」）：
  *   · 标准档 = DSH `dsh-compaction-basic` / `dsh-compaction-tool-result-pruner` /
- *     `dsh-llm-deepseek` 的默认值，逐项照抄
+ *     `dsh-llm-deepseek` 的默认值，逐项参考
  *   · 简洁档 = 上一行的一半（摘要目标长度除外，见下）
  *   · 摘要目标 = 保留预算的 ~4%（摘要若接近保留预算，压缩就白做了）
  */
@@ -112,7 +112,7 @@ export const SHARED_BUDGET = {
  */
 const PROFILES: Record<BudgetTier, Omit<BudgetProfile, 'tier'>> = {
   standard: {
-    // 全部照抄 DSH 默认值
+    // 全部沿用 DSH 默认值
     historyTokenBudget: 160_000,
     toolOutputPruneChars: 8_192,
     toolOutputKeepHead: 4_096,

@@ -399,7 +399,7 @@ export function interruptAdvice(
   return { timing: 'unknown', reason: '画像中未覆盖当前时段，按默认时机提醒' };
 }
 
-/** 把规律集渲染成给用户看的清单（界面与答辩材料复用）。 */
+/** 把规律集渲染成给用户看的清单（界面与说明材料复用）。 */
 export function renderPatterns(patterns: readonly TemporalPattern[]): string {
   if (patterns.length === 0) return '（还没有提取出可用的规律）';
   return patterns.map((p) => `· ${patternGuidance(p)}`).join('\n');
