@@ -4562,3 +4562,234 @@ html[data-theme='dark'] body:not(.console-mode) .pet-proactive-freq-option:focus
 html[data-theme='dark'] body:not(.console-mode) .pet-scenario:focus-within {
   outline-color: rgba(134, 201, 168, 0.46);
 }
+
+/* ─────────────────────────────────────────────
+   语音模型 · 朗读角色
+   ───────────────────────────────────────────── */
+
+.tts-role-card {
+  margin: 16px 0 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.tts-role-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tts-role-head p {
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.tts-role-state {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.tts-role-state.is-ready {
+  border-color: #cfe0d4;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.tts-role-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.tts-role-fields .model-field {
+  min-width: 0;
+}
+
+.tts-role-card > .model-field {
+  margin-top: 10px;
+}
+
+.tts-role-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .tts-role-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+html[data-theme='dark'] body:not(.console-mode) .tts-role-card {
+  background: var(--surface);
+}
+
+/* ─────────────────────────────────────────────
+   模型接入 · 可读性基线
+   ─────────────────────────────────────────────
+   模型页原先大量使用 8–10px 的标签/说明，正常缩放几乎无法阅读。
+   这里统一把四个模型类型页的正文、标签、输入和按钮提升到可读字号；
+   只作用于模型接入，不影响设置页其它页面。 */
+.model-settings-page {
+  font-size: 13px;
+}
+
+.model-settings-page .model-type-tab {
+  height: 34px;
+  padding: 0 16px;
+  font-size: 13px;
+}
+
+.model-settings-page .model-type-head h3 {
+  font-size: 16px;
+}
+
+.model-settings-page .model-muted,
+.model-settings-page .model-type-note,
+.model-settings-page .model-local-head p {
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.model-settings-page .model-field > span,
+.model-settings-page .model-field-label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.model-settings-page .model-field input,
+.model-settings-page .model-field select,
+.model-settings-page .model-search {
+  height: 36px;
+  padding: 0 11px;
+  font-size: 14px;
+}
+
+.model-settings-page .model-field small,
+.model-settings-page .model-form-head p,
+.model-settings-page .model-model-head p {
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.model-settings-page .model-primary,
+.model-settings-page .model-ghost,
+.model-settings-page .model-danger,
+.model-settings-page .model-back {
+  min-height: 34px;
+  padding: 0 13px;
+  font-size: 12.5px;
+}
+
+.model-settings-page .model-type-head .model-primary {
+  min-height: 32px;
+}
+
+.model-settings-page .model-local-main > strong {
+  font-size: 14px;
+}
+
+.model-settings-page .model-local-desc,
+.model-settings-page .model-empty,
+.model-settings-page .model-empty-state p,
+.model-settings-page .model-empty-detail {
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.model-settings-page .model-local-tags,
+.model-settings-page .model-local-source,
+.model-settings-page .model-local-state,
+.model-settings-page .model-kind-badge,
+.model-settings-page .model-dimension,
+.model-settings-page .model-dimension small {
+  font-size: 10.5px;
+}
+
+.model-settings-page .model-profile-main strong {
+  font-size: 14px;
+}
+
+.model-settings-page .model-profile-main span {
+  font-size: 10px;
+}
+
+.model-settings-page .model-profile-meta,
+.model-settings-page .model-key-state {
+  font-size: 11px;
+}
+
+.model-settings-page .model-row-btn,
+.model-settings-page .model-key-edit,
+.model-settings-page .model-text-btn {
+  min-height: 28px;
+  font-size: 11.5px;
+}
+
+.model-settings-page .model-eyebrow {
+  font-size: 10px;
+}
+
+.model-settings-page .model-form-head h3 {
+  font-size: 20px;
+}
+
+.model-settings-page .model-result code,
+.model-settings-page .model-selected code,
+.model-settings-page .model-model-head code {
+  font-size: 12px;
+}
+
+.model-settings-page .model-result {
+  padding: 8px 10px;
+}
+
+.model-settings-page .model-selected-head {
+  font-size: 12px;
+}
+
+.model-settings-page .tts-role-card {
+  margin-top: 4px;
+}
+
+.model-settings-page .tts-role-head p,
+.model-settings-page .tts-role-fields + .model-field > span {
+  font-size: 12.5px;
+}
+
+.model-settings-page .tts-role-state {
+  font-size: 11px;
+}
+
+html[data-theme='dark'] body:not(.console-mode) .model-settings-page {
+  color: var(--ink);
+}
+
+.tts-role-hint {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.tts-role-hint.is-off {
+  border-color: #e9d6b8;
+  background: #fdf8ef;
+  color: #8a642f;
+}

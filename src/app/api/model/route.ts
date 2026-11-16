@@ -40,6 +40,7 @@ import {
 import { localModelViews } from '@/app/server/localModels.js';
 import { MODEL_PRESETS, presetById } from '@/app/server/modelPresets.js';
 import { loadModelRoles, saveModelRoles } from '@/app/server/modelRoles.js';
+import { TTS_VOICES_BY_PRESET, voicesForTtsPreset } from '@/app/server/ttsVoices.js';
 import {
   DEFAULT_KNOWLEDGE_CONFIG,
   getKnowledgeService,
@@ -63,6 +64,9 @@ interface Body {
   readonly modelId?: unknown;
   readonly activate?: unknown;
   readonly mode?: unknown;
+  readonly voice?: unknown;
+  readonly style?: unknown;
+  readonly format?: unknown;
 }
 
 async function profileView(profile: ModelProfile): Promise<Record<string, unknown>> {
@@ -122,6 +126,13 @@ export async function GET(): Promise<NextResponse> {
       lastReview: store.lastReview,
       memory: roles.memory,
       rerank: roles.rerank,
+      tts: roles.tts,
+      ttsVoices: voicesForTtsPreset(
+        roles.tts === null
+          ? undefined
+          : findProfile(store, roles.tts.profileId)?.presetId,
+      ),
+      ttsVoicesByPreset: TTS_VOICES_BY_PRESET,
       embedding: store.embedding,
       localModels: localModelViews(),
       presets: MODEL_PRESETS,
@@ -282,6 +293,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
       await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding: store.embedding });
+      // 编辑配置可能移除了 TTS 模型；失效的语音角色必须同步清掉，
+      // 否则设置页仍显示“已配置”，每次朗读都要先发一次必然失败的云端请求。
+      const roles = await loadModelRoles(DATA_DIR);
+      if (
+        roles.tts !== null &&
+        roles.tts.profileId === id &&
+        !updated.models.some((m) => m.id === roles.tts!.modelId && m.kind === 'tts')
+      ) {
+        await saveModelRoles(DATA_DIR, { ...roles, tts: null });
+      }
       const knowledge = await loadKnowledgeConfig(DATA_DIR);
       const embedding = knowledge.embedding;
       if (embedding.kind === 'profile' && embedding.profileId === id) {
@@ -349,11 +370,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     await deleteProfileSecret(existing);
     await saveProfileStore(DATA_DIR, { version: 1, profiles, active, lastChat, lastReview, embedding });
     const roles = await loadModelRoles(DATA_DIR);
-    if (roles.memory?.profileId === id || roles.rerank?.profileId === id) {
+    if (roles.memory?.profileId === id || roles.rerank?.profileId === id || roles.tts?.profileId === id) {
       await saveModelRoles(DATA_DIR, {
         ...roles,
         ...(roles.memory?.profileId === id ? { memory: null } : {}),
         ...(roles.rerank?.profileId === id ? { rerank: null } : {}),
+        ...(roles.tts?.profileId === id ? { tts: null } : {}),
       });
     }
     const knowledge = await loadKnowledgeConfig(DATA_DIR);
@@ -368,7 +390,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, active });
   }
 
-  if (action === 'clear-memory' || action === 'clear-rerank') {
+  if (action === 'clear-memory' || action === 'clear-rerank' || action === 'clear-tts') {
     const rt = await getRuntime();
     if (rt.activeTurns > 0) {
       return NextResponse.json(
@@ -376,14 +398,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         { status: 409 },
       );
     }
-    const role = action === 'clear-memory' ? 'memory' : 'rerank';
+    const role = action === 'clear-memory' ? 'memory' : action === 'clear-rerank' ? 'rerank' : 'tts';
     const roles = await loadModelRoles(DATA_DIR);
     await saveModelRoles(DATA_DIR, { ...roles, [role]: null });
     await resetRuntime();
     return NextResponse.json({ ok: true, [role]: null });
   }
 
-  if (action === 'set-memory' || action === 'set-rerank') {
+  if (action === 'set-memory' || action === 'set-rerank' || action === 'set-tts') {
     const rt = await getRuntime();
     if (rt.activeTurns > 0) {
       return NextResponse.json(
@@ -391,16 +413,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         { status: 409 },
       );
     }
-    const role = action === 'set-memory' ? 'memory' : 'rerank';
+    const role = action === 'set-memory' ? 'memory' : action === 'set-rerank' ? 'rerank' : 'tts';
     const profileId = typeof body.profileId === 'string' ? body.profileId : '';
     const modelId = typeof body.modelId === 'string' ? body.modelId : '';
     const profile = findProfile(store, profileId);
     const model = profile !== undefined ? findModel(profile, modelId) : undefined;
-    const expectedKind = role === 'memory' ? 'chat' : 'rerank';
+    const expectedKind = role === 'memory' ? 'chat' : role === 'rerank' ? 'rerank' : 'tts';
     if (profile === undefined || model === undefined || model.kind !== expectedKind) {
       return NextResponse.json({ error: '找不到这个模型' }, { status: 404 });
     }
     const roles = await loadModelRoles(DATA_DIR);
+    if (role === 'tts') {
+      const preset = presetById(profile.presetId);
+      if (preset?.kind !== 'tts') {
+        return NextResponse.json({ error: '这个连接不是语音模型预设' }, { status: 400 });
+      }
+      const voices = voicesForTtsPreset(profile.presetId);
+      const voiceRaw = typeof body.voice === 'string' ? body.voice.trim() : '';
+      const styleRaw = typeof body.style === 'string' ? body.style.trim() : '';
+      const format = body.format === 'wav' ? 'wav' : 'mp3';
+      if (voiceRaw.length > 100) return NextResponse.json({ error: 'voice 过长' }, { status: 400 });
+      if (styleRaw.length > 500) return NextResponse.json({ error: 'style 最多 500 字' }, { status: 400 });
+      const voice = voiceRaw.length > 0 ? voiceRaw : voices[0]?.id ?? '';
+      if (voice.length === 0) return NextResponse.json({ error: '没有可用音色' }, { status: 400 });
+      await saveModelRoles(DATA_DIR, {
+        ...roles,
+        tts: { profileId, modelId, voice, style: styleRaw, format },
+      });
+      return NextResponse.json({ ok: true, tts: { profileId, modelId, voice, style: styleRaw, format } });
+    }
     await saveModelRoles(DATA_DIR, {
       ...roles,
       [role]: { profileId, modelId },
@@ -472,8 +513,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const profileId = typeof body.profileId === 'string' ? body.profileId : '';
     const modelId = typeof body.modelId === 'string' ? body.modelId : '';
     const profile = findProfile(store, profileId);
-    if (profile === undefined || findModel(profile, modelId) === undefined) {
-      return NextResponse.json({ error: '找不到这个模型' }, { status: 404 });
+    const model = profile !== undefined ? findModel(profile, modelId) : undefined;
+    if (profile === undefined || model === undefined || model.kind !== 'chat') {
+      return NextResponse.json({ error: '找不到这个对话模型' }, { status: 404 });
     }
     const preset = presetById(profile.presetId);
     const secret = await resolveProfileSecret(profile);

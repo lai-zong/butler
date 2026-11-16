@@ -4,8 +4,8 @@
  * 预设只负责预填连接信息，不锁定用户配置；KEY 仍由用户自己填写。
  * 这里不做“自动发现能力”——能力由用户在模型上显式勾选，避免静默失效。
  */
-export type ModelPresetAdapter = 'deepseek' | 'openai' | 'ollama';
-export type ModelPresetKind = 'chat' | 'embedding' | 'rerank';
+export type ModelPresetAdapter = 'deepseek' | 'openai' | 'ollama' | 'mimo';
+export type ModelPresetKind = 'chat' | 'embedding' | 'rerank' | 'tts';
 
 export interface ModelPreset {
   readonly id: string;
@@ -60,6 +60,11 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
   { kind: 'embedding', id: 'dashscope-embedding', label: '阿里云百炼 Embeddings', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', adapter: 'openai', requiresKey: true },
   { kind: 'embedding', id: 'siliconflow-embedding', label: '硅基流动 Embeddings', baseUrl: 'https://api.siliconflow.cn/v1', adapter: 'openai', requiresKey: true },
   { kind: 'embedding', id: 'ollama-embedding', label: 'Ollama Embeddings', baseUrl: 'http://127.0.0.1:11434/v1', adapter: 'openai', requiresKey: false },
+
+  // 语音合成（TTS）
+  { kind: 'tts', id: 'mimo-tts', label: 'MiMo TTS', baseUrl: 'https://api.xiaomimimo.com/v1', adapter: 'mimo', requiresKey: true },
+  { kind: 'tts', id: 'openai-tts', label: 'OpenAI TTS', baseUrl: 'https://api.openai.com/v1', adapter: 'openai', requiresKey: true },
+  { kind: 'tts', id: 'openai-compatible-tts', label: 'OpenAI 兼容 TTS', baseUrl: 'https://api.openai.com/v1', adapter: 'openai', requiresKey: true },
 
   // 重排：当前使用 OpenAI 兼容的 LLM 精排接口；不是专用 rerank HTTP 协议。
   { kind: 'rerank', id: 'custom-rerank-llm', label: '自定义 LLM 重排（OpenAI 兼容）', baseUrl: 'https://api.openai.com/v1', adapter: 'openai', requiresKey: true },

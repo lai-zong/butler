@@ -15,11 +15,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { InlineError, Skeleton } from '../components/Common';
+import { TtsSettingsSection, type TtsRoleView, type TtsProfile } from './TtsSettingsSection';
 import { errorMessage, fetchJson, postJson } from '../lib/api.js';
 import type { LocalModelView, ToastMessage } from '../lib/types.js';
 
 type CapabilityKey = 'vision' | 'imageGeneration' | 'audio' | 'tools' | 'reasoning';
-type ModelKind = 'chat' | 'embedding' | 'rerank';
+type ModelKind = 'chat' | 'embedding' | 'rerank' | 'tts';
 
 interface ProfileModelView {
   readonly id: string;
@@ -46,7 +47,7 @@ interface ModelPreset {
   readonly label: string;
   readonly kind: ModelKind;
   readonly baseUrl: string;
-  readonly adapter: 'deepseek' | 'openai' | 'ollama';
+  readonly adapter: 'deepseek' | 'openai' | 'ollama' | 'mimo';
   readonly requiresKey: boolean;
 }
 
@@ -59,6 +60,9 @@ interface ModelResponse {
   readonly profiles: readonly ProfileView[];
   readonly presets: readonly ModelPreset[];
   readonly localModels: readonly LocalModelView[];
+  readonly tts: TtsRoleView | null;
+  readonly ttsVoices: readonly { readonly id: string; readonly label: string }[];
+  readonly ttsVoicesByPreset?: Readonly<Record<string, readonly { readonly id: string; readonly label: string }[]>>;
 }
 
 interface DiscoverResponse {
@@ -97,7 +101,7 @@ function sourceLabel(source: ProfileView['keySource']): string {
 }
 
 function kindLabel(kind: ModelKind): string {
-  return kind === 'chat' ? '对话' : kind === 'embedding' ? '嵌入' : '重排';
+  return kind === 'chat' ? '对话' : kind === 'embedding' ? '嵌入' : kind === 'rerank' ? '重排' : '语音';
 }
 
 export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.Element {
@@ -533,7 +537,14 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
     .filter((profile) => profile.models.length > 0);
   /** 本地资产按页签归属展示；对话页没有本地资产时自然为空。 */
   const localModels = data.localModels.filter((model) => model.kind === modelType);
-  const typeLabel = modelType === 'chat' ? '对话模型' : modelType === 'embedding' ? '嵌入模型' : '重排模型';
+  const typeLabel =
+    modelType === 'chat'
+      ? '对话模型'
+      : modelType === 'embedding'
+        ? '嵌入模型'
+        : modelType === 'rerank'
+          ? '重排模型'
+          : '语音模型';
 
   return (
     <section className="model-settings-page">
@@ -544,6 +555,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
           ['chat', '对话模型'],
           ['embedding', '嵌入模型'],
           ['rerank', '重排模型'],
+          ['tts', '语音模型'],
         ] as const).map(([kind, label]) => (
           <button
             key={kind}
@@ -566,6 +578,7 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
         </span>
         <button type="button" className="model-primary" onClick={resetForm}>＋ 新增配置</button>
       </div>
+
 
       {localModels.length > 0 && (
         <div className="model-local-block">
@@ -632,6 +645,16 @@ export function ModelProviderPanel({ notify, onRefreshOverview }: Props): JSX.El
       )}
 
 
+      {modelType === 'tts' ? (
+        <TtsSettingsSection
+          profiles={data.profiles as unknown as readonly TtsProfile[]}
+          role={data.tts}
+          voices={data.ttsVoices}
+          {...(data.ttsVoicesByPreset !== undefined ? { voicesByPreset: data.ttsVoicesByPreset } : {})}
+          notify={notify}
+          onChanged={load}
+        />
+      ) : null}
     </section>
   );
 }

@@ -20,14 +20,17 @@ describe('model roles', () => {
     const empty = await loadModelRoles(dir);
     expect(empty.memory).toBeNull();
     expect(empty.rerank).toBeNull();
+    expect(empty.tts).toBeNull();
 
     await saveModelRoles(dir, {
       version: 1,
       memory: { profileId: 'p1', modelId: 'm1' },
       rerank: { profileId: 'p2', modelId: 'r1' },
+      tts: { profileId: 'p3', modelId: 't1', voice: '冰糖', style: '温柔', format: 'mp3' },
     });
     const loaded = await loadModelRoles(dir);
     expect(loaded.memory).toEqual({ profileId: 'p1', modelId: 'm1' });
     expect(loaded.rerank).toEqual({ profileId: 'p2', modelId: 'r1' });
+    expect(loaded.tts).toEqual({ profileId: 'p3', modelId: 't1', voice: '冰糖', style: '温柔', format: 'mp3' });
   });
 });

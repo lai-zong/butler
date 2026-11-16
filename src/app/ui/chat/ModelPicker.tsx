@@ -6,7 +6,7 @@ import { Icon } from '@/app/ui/components/Icon';
 
 export interface PickableModel {
   readonly id: string;
-  readonly kind: 'chat' | 'embedding' | 'rerank';
+  readonly kind: 'chat' | 'embedding' | 'rerank' | 'tts';
 }
 
 export interface PickableProfile {

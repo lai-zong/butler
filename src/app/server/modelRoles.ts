@@ -20,19 +20,43 @@ export interface ModelRoleSelection {
   readonly modelId: string;
 }
 
+export interface TtsRole {
+  readonly profileId: string;
+  readonly modelId: string;
+  readonly voice: string;
+  readonly style: string;
+  readonly format: 'mp3' | 'wav';
+}
+
 export interface ModelRoles {
   readonly version: 1;
   readonly memory: ModelRoleSelection | null;
   readonly rerank: ModelRoleSelection | null;
+  readonly tts: TtsRole | null;
 }
 
-const EMPTY: ModelRoles = { version: 1, memory: null, rerank: null };
+const EMPTY: ModelRoles = { version: 1, memory: null, rerank: null, tts: null };
 
 function parseSelection(raw: unknown): ModelRoleSelection | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const v = raw as Record<string, unknown>;
   if (typeof v['profileId'] !== 'string' || typeof v['modelId'] !== 'string') return null;
   return { profileId: v['profileId'], modelId: v['modelId'] };
+}
+
+function parseTts(raw: unknown): TtsRole | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const v = raw as Record<string, unknown>;
+  if (typeof v['profileId'] !== 'string' || typeof v['modelId'] !== 'string') return null;
+  const voice = typeof v['voice'] === 'string' ? v['voice'].trim() : '';
+  if (voice.length === 0) return null;
+  return {
+    profileId: v['profileId'],
+    modelId: v['modelId'],
+    voice,
+    style: typeof v['style'] === 'string' ? v['style'].slice(0, 500) : '',
+    format: v['format'] === 'wav' ? 'wav' : 'mp3',
+  };
 }
 
 export async function loadModelRoles(dataDir: string): Promise<ModelRoles> {
@@ -43,6 +67,7 @@ export async function loadModelRoles(dataDir: string): Promise<ModelRoles> {
       version: 1,
       memory: parseSelection(parsed['memory']),
       rerank: parseSelection(parsed['rerank']),
+      tts: parseTts(parsed['tts']),
     };
   } catch {
     return EMPTY;
@@ -56,7 +81,7 @@ export async function saveModelRoles(dataDir: string, roles: ModelRoles): Promis
   await writeFile(
     tmp,
     JSON.stringify(
-      { version: 1, memory: roles.memory, rerank: roles.rerank },
+      { version: 1, memory: roles.memory, rerank: roles.rerank, tts: roles.tts },
       null,
       2,
     ),

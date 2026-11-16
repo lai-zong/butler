@@ -17,7 +17,7 @@ import { loadSelection, specOf } from './modelProvider.js';
 import { presetById, type ModelPreset } from './modelPresets.js';
 
 export type ModelCapabilityKey = 'vision' | 'imageGeneration' | 'audio' | 'tools' | 'reasoning';
-export type ProfileModelKind = 'chat' | 'embedding' | 'rerank';
+export type ProfileModelKind = 'chat' | 'embedding' | 'rerank' | 'tts';
 
 export interface ProfileModel {
   readonly id: string;
@@ -90,7 +90,7 @@ function defaultCapabilities(adapter: ModelPreset['adapter']): Readonly<Record<M
     imageGeneration: false,
     audio: false,
     tools: true,
-    reasoning: adapter === 'deepseek',
+    reasoning: adapter === 'deepseek' || adapter === 'mimo',
   };
 }
 
@@ -103,7 +103,10 @@ function cleanModels(models: readonly unknown[]): readonly ProfileModel[] {
     const id = typeof item.id === 'string' ? item.id.trim() : '';
     if (id.length === 0 || seen.has(id)) continue;
     seen.add(id);
-    const kind: ProfileModelKind = item.kind === 'embedding' || item.kind === 'rerank' ? item.kind : 'chat';
+    const kind: ProfileModelKind =
+      item.kind === 'embedding' || item.kind === 'rerank' || item.kind === 'tts'
+        ? item.kind
+        : 'chat';
     const c = typeof item.capabilities === 'object' && item.capabilities !== null
       ? (item.capabilities as Record<string, unknown>)
       : {};
@@ -466,7 +469,7 @@ export async function discoverModels(args: {
   const body = (await response.json()) as unknown;
   // 对话模型过滤明显的非对话端点；嵌入类型必须保留 embedding 模型。
   const nonChat = /(embedding|rerank|whisper|tts|dall-e|moderation|transcribe)/i;
-  return [...new Set(parse(body).filter((id) => id.length > 0 && (preset.kind === 'embedding' || !nonChat.test(id))))].sort();
+  return [...new Set(parse(body).filter((id) => id.length > 0 && (preset.kind === 'embedding' || preset.kind === 'tts' || !nonChat.test(id))))].sort();
 }
 
 export interface ResolvedModel {

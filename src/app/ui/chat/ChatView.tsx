@@ -120,6 +120,7 @@ import {
   ReportsPanel,
 } from './Cards';
 import { StudyPane } from './StudyPane';
+import { TtsBlobCache, ttsCacheKey } from './ttsCache.js';
 import { WorkPanel, type WorkPanelAiOp } from './WorkPanel';
 import { BrowserPanel } from './BrowserPanel';
 import { ExternalFilePanel, type ExternalFileHandleDto } from './ExternalFilePanel';
@@ -162,9 +163,18 @@ function clearDraftText(key: string): void {
   writeDraftText(key, '');
 }
 
+interface TtsConfig {
+  readonly profileId: string;
+  readonly modelId: string;
+  readonly voice: string;
+  readonly style: string;
+  readonly format: 'mp3' | 'wav';
+}
+
 interface ModelCatalogResponse {
   readonly profiles: readonly PickableProfile[];
   readonly lastChat: ModelChoice | null;
+  readonly tts?: TtsConfig | null;
 }
 
 function fallbackModelChoice(profiles: readonly PickableProfile[]): ModelChoice | null {
@@ -852,6 +862,7 @@ export function ChatView({
   /** 图片压缩中：按钮禁用、发送拦截，避免同一张图被重复处理/带着旧附件发出去。 */
   const [imageProcessing, setImageProcessing] = useState(false);
   const [modelCatalog, setModelCatalog] = useState<readonly PickableProfile[]>([]);
+  const [ttsConfig, setTtsConfig] = useState<TtsConfig | null>(null);
   const [lastChatModel, setLastChatModel] = useState<ModelChoice | null>(null);
   const [chatModel, setChatModel] = useState<ModelChoice | null>(null);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(true);
@@ -971,6 +982,10 @@ export function ChatView({
   const sessionIdRef = useRef<string | null>(null);
   const settingsSavingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const ttsAbortRef = useRef<AbortController | null>(null);
+  const ttsCacheRef = useRef(new TtsBlobCache());
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsObjectUrlRef = useRef<string | null>(null);
   const voiceBaseRef = useRef('');
   const reviewAbortRef = useRef<AbortController | null>(null);
   /** 重新打开面板时，是否等历史加载完再恢复最近一条 completed。 */
@@ -1231,6 +1246,7 @@ export function ChatView({
     try {
       const res = await fetchJson<ModelCatalogResponse>('/api/model');
       setModelCatalog(res.profiles);
+      setTtsConfig(res.tts ?? null);
       const last = res.lastChat ?? fallbackModelChoice(res.profiles);
       setLastChatModel(last);
       setChatModel((previous) => previous ?? last);
@@ -1244,6 +1260,13 @@ export function ChatView({
   useEffect(() => {
     void loadModelCatalog();
   }, [loadModelCatalog]);
+
+  // 从设置页返回对话时重新读取模型角色，TTS 配置刚改完也能立刻生效。
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    if (active && !wasActiveRef.current) void loadModelCatalog();
+    wasActiveRef.current = active;
+  }, [active, loadModelCatalog]);
 
   const loadReviewHistory = useCallback(async (id: string): Promise<void> => {
     const seq = ++reviewHistorySeqRef.current;
@@ -3138,6 +3161,17 @@ export function ChatView({
     setTtsSupported(typeof window !== 'undefined' && 'speechSynthesis' in window);
     return () => {
       recognitionRef.current?.abort();
+      ttsAbortRef.current?.abort();
+      if (ttsAudioRef.current !== null) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current.src = '';
+        ttsAudioRef.current = null;
+      }
+      if (ttsObjectUrlRef.current !== null) {
+        URL.revokeObjectURL(ttsObjectUrlRef.current);
+        ttsObjectUrlRef.current = null;
+      }
+      ttsCacheRef.current.clear();
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -3763,14 +3797,30 @@ export function ChatView({
     }
   }
 
-  function speak(text: string, id: string): void {
-    if (!('speechSynthesis' in window)) {
-      notify('当前浏览器不支持语音朗读。', 'warning');
-      return;
+  function stopCloudSpeech(): void {
+    ttsAbortRef.current?.abort();
+    ttsAbortRef.current = null;
+    const audio = ttsAudioRef.current;
+    ttsAudioRef.current = null;
+    if (audio !== null) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.src = '';
     }
-    if (speakingId === id) {
+    if (ttsObjectUrlRef.current !== null) {
+      URL.revokeObjectURL(ttsObjectUrlRef.current);
+      ttsObjectUrlRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
+    }
+  }
+
+  function speakWithBrowser(text: string, id: string): void {
+    if (!('speechSynthesis' in window)) {
       setSpeakingId(null);
+      notify('当前浏览器不支持语音朗读。', 'warning');
       return;
     }
     window.speechSynthesis.cancel();
@@ -3784,6 +3834,110 @@ export function ChatView({
     };
     setSpeakingId(id);
     window.speechSynthesis.speak(utterance);
+  }
+
+  async function playCloudBlob(blob: Blob, cacheKey: string, text: string, id: string): Promise<void> {
+    const url = URL.createObjectURL(blob);
+    ttsObjectUrlRef.current = url;
+    const audio = new Audio(url);
+    ttsAudioRef.current = audio;
+    audio.onended = () => {
+      if (ttsAudioRef.current === audio) {
+        ttsAudioRef.current = null;
+        if (ttsObjectUrlRef.current === url) {
+          URL.revokeObjectURL(url);
+          ttsObjectUrlRef.current = null;
+        }
+        setSpeakingId(null);
+      }
+    };
+    audio.onerror = () => {
+      if (ttsAudioRef.current !== audio) return;
+      ttsAudioRef.current = null;
+      if (ttsObjectUrlRef.current === url) {
+        URL.revokeObjectURL(url);
+        ttsObjectUrlRef.current = null;
+      }
+      ttsCacheRef.current.delete(cacheKey);
+      setSpeakingId(null);
+      notify('云端音频无法播放，已切换系统朗读。', 'warning');
+      speakWithBrowser(text, id);
+    };
+    try {
+      await audio.play();
+    } catch (err) {
+      if (ttsAudioRef.current === audio) {
+        ttsAudioRef.current = null;
+        audio.pause();
+        audio.src = '';
+      }
+      if (ttsObjectUrlRef.current === url) {
+        URL.revokeObjectURL(url);
+        ttsObjectUrlRef.current = null;
+      }
+      ttsCacheRef.current.delete(cacheKey);
+      throw err;
+    }
+  }
+
+  async function speak(text: string, id: string): Promise<void> {
+    if (speakingId === id) {
+      stopCloudSpeech();
+      setSpeakingId(null);
+      return;
+    }
+    stopCloudSpeech();
+    setSpeakingId(id);
+
+    if (ttsConfig === null) {
+      speakWithBrowser(text, id);
+      return;
+    }
+
+    const cacheKey = ttsCacheKey(id, text.slice(0, 4_000), ttsConfig);
+    const cached = ttsCacheRef.current.get(cacheKey);
+    if (cached !== undefined) {
+      const cachedController = new AbortController();
+      ttsAbortRef.current = cachedController;
+      try {
+        await playCloudBlob(cached, cacheKey, text, id);
+      } catch (err) {
+        if (cachedController.signal.aborted) return;
+        notify(`云端朗读失败：${errorMessage(err)}；已切换系统朗读。`, 'warning');
+        speakWithBrowser(text, id);
+      } finally {
+        if (ttsAbortRef.current === cachedController) ttsAbortRef.current = null;
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    ttsAbortRef.current = controller;
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.slice(0, 4_000) }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: unknown } | null;
+        const detail = typeof payload?.error === 'string' ? payload.error : `HTTP ${res.status}`;
+        throw new Error(detail);
+      }
+      const blob = await res.blob();
+      if (controller.signal.aborted) return;
+      ttsCacheRef.current.set(cacheKey, blob);
+      await playCloudBlob(blob, cacheKey, text, id);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      ttsCacheRef.current.delete(cacheKey);
+      stopCloudSpeech();
+      notify(`云端朗读失败：${errorMessage(err)}；已切换系统朗读。`, 'warning');
+      speakWithBrowser(text, id);
+    } finally {
+      if (ttsAbortRef.current === controller) ttsAbortRef.current = null;
+    }
   }
 
   function stop(): void {
@@ -4499,9 +4653,9 @@ export function ChatView({
                 onOpenMemory={onOpenMemory}
                 notify={notify}
                 now={now}
-                canSpeak={ttsSupported}
+                canSpeak={ttsSupported || ttsConfig !== null}
                 speaking={speakingId === m.id}
-                onSpeak={() => speak(m.text, m.id)}
+                onSpeak={() => { void speak(m.text, m.id); }}
               />
             ))}
 
