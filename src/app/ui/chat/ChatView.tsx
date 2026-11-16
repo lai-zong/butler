@@ -23,7 +23,7 @@ import type {
 
 import { Icon, type IconName } from '../components/Icon';
 import { Markdown } from '../components/Markdown';
-import { Badge, Collapse, InlineError, Skeleton } from '../components/Common';
+import { Badge, InlineError, Skeleton } from '../components/Common';
 import { primaryPathOf } from '@/core/tools/pathFields.js';
 import { useAutoResize, useMounted, useNow } from '../lib/hooks.js';
 import { ApiError, errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
@@ -119,7 +119,7 @@ import {
   ReflectionCard,
   ReportsPanel,
 } from './Cards';
-import { QuizSection } from './Quiz';
+import { StudyPane } from './StudyPane';
 import { WorkPanel, type WorkPanelAiOp } from './WorkPanel';
 import { BrowserPanel } from './BrowserPanel';
 import { ExternalFilePanel, type ExternalFileHandleDto } from './ExternalFilePanel';
@@ -214,7 +214,7 @@ interface ChatViewProps {
  * ★ 内部 kind 仍叫 files（= 工作区）：改名只改用户看到的文案，
  *   这样后端、测试和已有实例判断都不用跟着连锁改动。
  */
-type PaneKind = 'files' | 'browser' | 'review' | 'external-file' | 'terminal';
+type PaneKind = 'files' | 'browser' | 'review' | 'external-file' | 'terminal' | 'study';
 
 interface PaneInstance {
   readonly id: string;
@@ -236,6 +236,7 @@ const PANE_KIND_ICON: Record<PaneKind, IconName> = {
   // 图标集里没有 terminal，用同义的 console 表示终端。
   'external-file': 'file',
   terminal: 'console',
+  study: 'book',
 };
 
 /** 初始就有一个工作区面板：右栏默认关着，但一打开就该有东西可看。 */
@@ -843,6 +844,8 @@ export function ChatView({
   const [localCancel, setLocalCancel] = useState<SessionCancellationDto | null>(null);
   const [verdicts, setVerdicts] = useState<readonly VerdictDto[]>([]);
   const [quizzes, setQuizzes] = useState<readonly QuizItem[]>([]);
+  /** 收尾刷新时用于判断“这次是否真的产出了新练习”。 */
+  const quizzesRef = useRef<readonly QuizItem[]>([]);
   const [liveTurns, setLiveTurns] = useState<readonly LiveTurn[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<readonly Attachment[]>([]);
@@ -1137,6 +1140,8 @@ export function ChatView({
    * ★ 只作为派生值，不再有 setPaneTab —— 否则多开面板又会退回“全局一个页签”的旧逻辑。
    */
   const paneTab: PaneKind = activePane?.kind ?? 'files';
+  /** 练习面板当前是否正显示在右栏。 */
+  const quizPaneOpen = reviewOpen && paneTab === 'study';
   /*
    * ★ 分体按钮不再派生面板名：文案会随「工作区 10」变长而挤压标题，
    *   当前在哪一栏改由列表里的勾选表达，按钮只负责“显隐”这一件事。
@@ -1403,6 +1408,10 @@ export function ChatView({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    quizzesRef.current = quizzes;
+  }, [quizzes]);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -2144,6 +2153,17 @@ export function ChatView({
     return terminal !== null
       ? { ...pane, terminal }
       : { ...pane, terminalError: errorText ?? '终端启动失败' };
+  }
+
+  /** 学习面板是会话级单实例：不复制题目，只承载当前会话的 quizzes。 */
+  function createStudyPane(): PaneInstance {
+    paneSeqRef.current += 1;
+    return { id: `pane-${paneSeqRef.current}`, kind: 'study', label: '学习' };
+  }
+
+  function openStudyPane(): void {
+    const existing = panesRef.current.find((pane) => pane.kind === 'study');
+    showPane(existing ?? createStudyPane());
   }
 
   /**
@@ -3191,11 +3211,16 @@ export function ChatView({
       if (sessionIdRef.current !== id) return;
       if (turnTokenRef.current !== null || streamingRef.current) return;
       const merged = reconcileLiveTurns(res.messages, liveTurnsRef.current);
+      const knownQuizIds = new Set(quizzesRef.current.map((quiz) => quiz.id));
+      const hasNewQuiz = res.quizzes.some((quiz) => !knownQuizIds.has(quiz.id));
       setMessages(merged.messages);
       setLiveTurns(merged.liveTurns);
       setVerdicts(res.verdicts);
       setQuizzes(res.quizzes);
+      quizzesRef.current = res.quizzes;
       setCancellations(res.cancellations ?? []);
+      // AI 明确产出了新练习 → 自动打开右侧练习栏；历史加载/复盘不触发。
+      if (hasNewQuiz) openStudyPane();
     } catch {
       // 刷新只是收尾的补充：失败保留 live 视图，切会话仍能看到已落盘结果。
     }
@@ -4084,7 +4109,9 @@ export function ChatView({
         reviewOpen && paneTab === 'files' ? ' is-work' : ''
       }${reviewOpen && paneTab === 'browser' ? ' is-browser' : ''}${
         reviewOpen && paneTab === 'external-file' ? ' is-external-file' : ''
-      }${reviewOpen && paneTab === 'terminal' ? ' is-terminal' : ''}${panelExpanded ? ' is-panel-max' : ''}${
+      }${reviewOpen && paneTab === 'terminal' ? ' is-terminal' : ''}${
+        reviewOpen && paneTab === 'study' ? ' is-study' : ''
+      }${panelExpanded ? ' is-panel-max' : ''}${
         panelExpanded && chatFloat.collapsed ? ' is-chat-collapsed' : ''
       }`}
     >
@@ -4238,6 +4265,16 @@ export function ChatView({
                       >
                         <Icon name={PANE_KIND_ICON.files} size={13} />
                         <span>工作区</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="panel-menu-item"
+                        title="查看当前对话的练习历史"
+                        onClick={() => runPanelMenuItem(openStudyPane)}
+                      >
+                        <Icon name={PANE_KIND_ICON.study} size={13} />
+                        <span>学习</span>
                       </button>
                       <button
                         type="button"
@@ -4493,8 +4530,8 @@ export function ChatView({
               />
             )}
 
-            {quizzes.length > 0 && sessionId !== null && (
-              <QuizInvite sessionId={sessionId} quizzes={quizzes} notify={notify} />
+            {quizzes.length > 0 && sessionId !== null && !quizPaneOpen && (
+              <QuizInvite quizzes={quizzes} onOpen={openStudyPane} />
             )}
           </div>
         </div>
@@ -4745,7 +4782,7 @@ export function ChatView({
       */}
       <section
         className="review-pane"
-        aria-label="工作区、外部文件、浏览器、审查与终端"
+        aria-label="工作区、外部文件、浏览器、审查、学习与终端"
         hidden={!reviewOpen}
       >
             {/*
@@ -5185,6 +5222,11 @@ export function ChatView({
           外部文件与终端实例在收起右栏时也保持挂载（见上方说明），非激活实例 hidden。
           ★ 句柄 / 终端会话跟着实例走：列表里关掉（或切会话移除）才卸载并调 close。
         */}
+        {reviewOpen && paneTab === 'study' && activePane !== null ? (
+          <div className="study-pane-slot">
+            <StudyPane sessionId={sessionId} quizzes={quizzes} notify={notify} />
+          </div>
+        ) : null}
         {panes
           .filter((pane) => pane.kind === 'external-file')
           .map((pane) => (
@@ -5878,44 +5920,31 @@ function CancellationCard({
 }
 
 function QuizInvite({
-  sessionId,
   quizzes,
-  notify,
+  onOpen,
 }: {
-  readonly sessionId: string;
   readonly quizzes: readonly QuizItem[];
-  readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
+  readonly onOpen: () => void;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
   const questions = quizzes.reduce((n, q) => n + q.questions.length, 0);
 
   return (
-    <section className={`quiz-invite ${open ? 'is-open' : ''}`}>
+    <section className="quiz-invite">
       <div className="quiz-invite-head">
         <span className="quiz-invite-icon">
           <Icon name="file" size={18} />
         </span>
         <div className="quiz-invite-text">
-          <strong>这一轮留下了一套练习</strong>
+          <strong>练习已生成</strong>
           <p>
-            {quizzes.length} 套 · {questions} 题 · 确定性批改，不调用模型
+            {quizzes.length} 套 · {questions} 题 · 选择题确定性判分 · 主观题 AI 批改
           </p>
         </div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-        >
-          {open ? '收起' : '开始作答'}
-          <Icon name={open ? 'chevronDown' : 'chevronRight'} size={14} />
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen}>
+          查看练习
+          <Icon name="chevronRight" size={14} />
         </button>
       </div>
-      <Collapse open={open}>
-        <div className="quiz-invite-body">
-          <QuizSection sessionId={sessionId} quizzes={quizzes} notify={notify} embedded />
-        </div>
-      </Collapse>
     </section>
   );
 }

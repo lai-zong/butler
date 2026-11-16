@@ -30,16 +30,33 @@ function parseQuestion(raw: unknown): QuizQuestion | null {
   const stem = asText(rec['stem']);
   const rawOptions = rec['options'];
   if (id.length === 0 || stem.length === 0) return null;
-  if (!Array.isArray(rawOptions)) return null;
-  const options = rawOptions.filter((o): o is string => typeof o === 'string' && o.length > 0);
-  if (options.length < 2) return null;
-  return { id, stem, options };
+  const options = Array.isArray(rawOptions)
+    ? rawOptions.filter((o): o is string => typeof o === 'string' && o.length > 0)
+    : [];
+  const type =
+    rec['type'] === 'short' || rec['type'] === 'essay' ? rec['type'] : 'choice';
+  if (type === 'choice' && options.length < 2) return null;
+  const rawPoints = rec['points'];
+  const points =
+    typeof rawPoints === 'number' && Number.isFinite(rawPoints) && rawPoints > 0
+      ? Math.min(100, Math.round(rawPoints))
+      : 1;
+  return { id, stem, options: type === 'choice' ? options : [], type, points };
+}
+
+interface ParsedAnswer {
+  readonly id: string;
+  readonly correct?: string;
+  readonly reference?: string;
+  readonly rubric?: string;
+  readonly explanation?: string;
+  readonly points: number;
 }
 
 /** 解析 `quiz.created` 的 payload；**任一必需结构缺失就整体作废** */
 function parseCreated(
   payload: unknown,
-): { questions: QuizQuestion[]; answers: { id: string; correct: string; explanation?: string }[] } | null {
+): { questions: QuizQuestion[]; answers: ParsedAnswer[] } | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const rec = payload as Record<string, unknown>;
 
@@ -51,16 +68,31 @@ function parseCreated(
   if (questions.length === 0) return null;
 
   const rawAnswers = rec['answers'];
-  const answers: { id: string; correct: string; explanation?: string }[] = [];
+  const answers: ParsedAnswer[] = [];
   if (Array.isArray(rawAnswers)) {
     for (const a of rawAnswers) {
       if (typeof a !== 'object' || a === null) continue;
       const r = a as Record<string, unknown>;
       const id = asText(r['id']);
+      if (id.length === 0) continue;
       const correct = asText(r['correct']);
-      if (id.length === 0 || correct.length === 0) continue;
+      const reference = asText(r['reference']);
+      const rubric = asText(r['rubric']);
       const explanation = asText(r['explanation']);
-      answers.push(explanation.length > 0 ? { id, correct, explanation } : { id, correct });
+      const rawPoints = r['points'];
+      const points =
+        typeof rawPoints === 'number' && Number.isFinite(rawPoints) && rawPoints > 0
+          ? Math.min(100, Math.round(rawPoints))
+          : 1;
+      if (correct.length === 0 && reference.length === 0 && rubric.length === 0) continue;
+      answers.push({
+        id,
+        points,
+        ...(correct.length > 0 ? { correct } : {}),
+        ...(reference.length > 0 ? { reference } : {}),
+        ...(rubric.length > 0 ? { rubric } : {}),
+        ...(explanation.length > 0 ? { explanation } : {}),
+      });
     }
   }
 
@@ -82,20 +114,33 @@ function parseGraded(payload: unknown): QuizGrade | null {
     if (questionId.length === 0) continue;
     const picked = asText(r['picked']);
     const correct = asText(r['correct']);
+    const score = typeof r['score'] === 'number' && Number.isFinite(r['score']) ? r['score'] : undefined;
+    const maxScore =
+      typeof r['maxScore'] === 'number' && Number.isFinite(r['maxScore']) ? r['maxScore'] : undefined;
+    const feedback = asText(r['feedback']);
+    const reference = asText(r['reference']);
     items.push({
       questionId,
       stem: asText(r['stem']),
       ...(picked.length > 0 ? { picked } : {}),
       ...(correct.length > 0 ? { correct } : {}),
+      ...(score !== undefined ? { score } : {}),
+      ...(maxScore !== undefined ? { maxScore } : {}),
+      ...(feedback.length > 0 ? { feedback } : {}),
+      ...(reference.length > 0 ? { reference } : {}),
       right: r['right'] === true,
     });
   }
   if (items.length === 0) return null;
 
+  const score = items.reduce((sum, i) => sum + (i.score ?? (i.right ? (i.maxScore ?? 1) : 0)), 0);
+  const maxScore = items.reduce((sum, i) => sum + (i.maxScore ?? 1), 0);
   return {
     total: items.length,
     right: items.filter((i) => i.right).length,
     items,
+    score,
+    maxScore,
   };
 }
 
@@ -189,13 +234,19 @@ export function readAnswerKey(
 
   const correct = new Map<string, string>();
   const explanations = new Map<string, string>();
+  const references = new Map<string, string>();
+  const rubrics = new Map<string, string>();
+  const points = new Map<string, number>();
   for (const a of parsed.answers) {
-    correct.set(a.id, a.correct);
+    if (a.correct !== undefined) correct.set(a.id, a.correct);
     if (a.explanation !== undefined) explanations.set(a.id, a.explanation);
+    if (a.reference !== undefined) references.set(a.id, a.reference);
+    if (a.rubric !== undefined) rubrics.set(a.id, a.rubric);
+    points.set(a.id, a.points);
   }
 
   // 一题答案都没有 ⇒ 无法批改，当作不存在
-  if (correct.size === 0) return undefined;
+  if (correct.size === 0 && references.size === 0) return undefined;
 
   return {
     id: event.seq,
@@ -203,6 +254,9 @@ export function readAnswerKey(
     questions: parsed.questions,
     correct,
     explanations,
+    references,
+    rubrics,
+    points,
   };
 }
 

@@ -500,6 +500,8 @@ export interface QuizQuestion {
   readonly id: string;
   readonly stem: string;
   readonly options: readonly string[];
+  readonly type?: 'choice' | 'short' | 'essay';
+  readonly points?: number;
 }
 
 export interface QuizItemResult {
@@ -508,12 +510,18 @@ export interface QuizItemResult {
   readonly picked?: string;
   readonly correct?: string;
   readonly right: boolean;
+  readonly score?: number;
+  readonly maxScore?: number;
+  readonly feedback?: string;
+  readonly reference?: string;
 }
 
 export interface QuizGrade {
   readonly total: number;
   readonly right: number;
   readonly items: readonly QuizItemResult[];
+  readonly score?: number;
+  readonly maxScore?: number;
 }
 
 export interface QuizItem {

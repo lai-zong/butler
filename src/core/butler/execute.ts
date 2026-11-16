@@ -39,7 +39,7 @@ import {
   executionReportSchema,
   type ExecutionReportOutput,
 } from '../prompts/schemas.js';
-import { BUTLER_SYSTEM, butlerExecuteTask, PROMPT_VERSIONS } from '../prompts/butler.js';
+import { BUTLER_SYSTEM, butlerExecuteTask, PRACTICE_RULES, PROMPT_VERSIONS } from '../prompts/butler.js';
 import {
   globalAgentsBlock,
   type GlobalAgentsSnapshot,
@@ -49,6 +49,7 @@ import type { ReasoningPlan } from '../model/reasoning.js';
 import type { TaskContract } from './contract.js';
 import type { DomainId } from '../domain/types.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
+import { isPracticeRequest } from '../quiz/intent.js';
 import type { ApprovalAsker } from '../tools/approval.js';
 import type {
   Finding,
@@ -183,6 +184,7 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
           ),
         ]
       : []),
+    msg.system(PRACTICE_RULES),
     ...(args.contract.criteria.length === 0
       ? [
           msg.system(
@@ -201,9 +203,18 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
     }),
   ];
 
-  const { raw, usage, attempts, memoryWriteBlocked } = args.tools
-    ? await runWithTools(args, baseMessages, reasoningPlan)
-    : await runSingleShot(args, baseMessages, reasoningPlan);
+  /**
+   * ★ 出题请求必须走单次结构化路径。
+   *
+   * 工具路径的最终交付是自然语言（`runWithTools` 固定 artifacts: []），
+   * 模型把 quiz JSON 写在正文里也不会形成 quiz.created。
+   * 用户明确要求出题时改用 completeStructured，schema 才会把 artifacts 交回来。
+   */
+  const practiceRequest = isPracticeRequest(args.userGoal);
+  const { raw, usage, attempts, memoryWriteBlocked } =
+    args.tools !== undefined && !practiceRequest
+      ? await runWithTools(args, baseMessages, reasoningPlan)
+      : await runSingleShot(args, baseMessages, reasoningPlan);
 
   // ── 归一化：把模型的多种自然写法收敛成领域模型 ──
   // ⚠️ 复用 `schemas.ts` 里现成的实现，不自己重写 ——

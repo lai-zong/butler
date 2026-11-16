@@ -70,6 +70,7 @@ export type IconName =
   | 'music'
   | 'bell'
   | 'chevronUp'
+  | 'book'
   | 'layers';
 
 const ICONS: Record<IconName, ReactNode> = {
@@ -367,6 +368,13 @@ const ICONS: Record<IconName, ReactNode> = {
     </>
   ),
   chevronUp: <path d="m6 15 6-6 6 6" />,
+  book: (
+    <>
+      <path d="M4.5 5.2A2.2 2.2 0 0 1 6.7 3h5.1v17H6.7a2.2 2.2 0 0 0-2.2 2.2V5.2Z" />
+      <path d="M19.5 5.2A2.2 2.2 0 0 0 17.3 3h-5.1v17h5.1a2.2 2.2 0 0 1 2.2 2.2V5.2Z" />
+      <path d="M7.3 7.5h2.8M7.3 10.5h2.8M13.9 7.5h2.8M13.9 10.5h2.8" />
+    </>
+  ),
   layers: (
     <>
       <rect x="3.6" y="7.6" width="12.8" height="12.8" rx="2.4" />

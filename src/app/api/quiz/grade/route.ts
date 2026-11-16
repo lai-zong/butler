@@ -1,13 +1,13 @@
 /**
- * 批改端点 —— 确定性比对，**零 LLM 调用**（v8 批次A）。
+ * 批改端点 —— 选择题确定性比对，简答/主观题按 rubric 交给 AI。
  *
  * 设计依据：
- *   · 「直接批改」走服务端确定性比对；「解析答案」才交给管家
- *   · 方案 D-23：客观判定不交给模型（与 `verifyHardConstraints` 同一原则）
+ *   · 客观判定不交给模型（方案 D-23）
+ *   · 主观题没有唯一字符串答案，必须依据参考答案与评分标准批改
  *   · 方案 D-24：⚠️ 批改结果**不能**直接当 `fitness` 的负反馈（语义陷阱）
  *
  * ★ 三条不变量：
- *   ① **不调模型** —— 选择题的对错是确定的事
+ *   ① 选择题不调模型；主观题一次提交合并成一次模型调用
  *   ② **批改结果必须落事件**（`quiz.graded`）—— 否则会话结束后的反思
  *      不知道"用户做过这套题、错在哪"，"后续对话知道做题结果"就断链了
  *   ③ **不写记忆** —— 批改是行为，不是记忆；记忆走反思链路
@@ -18,8 +18,10 @@ import { NextResponse } from 'next/server';
 
 import { getRuntime } from '@/app/runtime';
 import { gradeQuiz } from '@/core/quiz/grade.js';
+import { gradeSubjective } from '@/core/quiz/aiGrade.js';
 import { readAnswerKey } from '@/core/quiz/read.js';
-import type { QuizSubmission } from '@/core/quiz/types.js';
+import type { QuizAnswerKey, QuizGrade, QuizItemResult, QuizSubmission } from '@/core/quiz/types.js';
+import type { QuizQuestion } from '@/core/execution/types.js';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -94,7 +96,84 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const grade = gradeQuiz({ answerKey, submission: answers });
+  function subjective(q: QuizQuestion): boolean {
+    return q.type === 'short' || q.type === 'essay' || q.options.length === 0;
+  }
+
+  const choiceQuestions = answerKey.questions.filter((q) => !subjective(q));
+  const choiceKey: QuizAnswerKey = {
+    ...answerKey,
+    questions: choiceQuestions,
+  };
+  const choiceGrade = gradeQuiz({ answerKey: choiceKey, submission: answers });
+  const choiceById = new Map(choiceGrade.items.map((item) => [item.questionId, item]));
+
+  const subjectiveQuestions = answerKey.questions.filter(subjective);
+  let subjectiveItems = [] as readonly {
+    readonly questionId: string;
+    readonly right: boolean;
+    readonly score: number;
+    readonly maxScore: number;
+    readonly feedback?: string;
+    readonly reference?: string;
+  }[];
+  if (subjectiveQuestions.length > 0) {
+    if (rt.model === null) {
+      return NextResponse.json(
+        { error: '主观题批改需要先配置对话模型', code: 'model_unavailable' },
+        { status: 503 },
+      );
+    }
+    try {
+      const result = await gradeSubjective({
+        model: rt.model,
+        answerKey,
+        submission: answers,
+      });
+      subjectiveItems = result?.items ?? [];
+    } catch (err) {
+      return NextResponse.json(
+        {
+          error: `主观题批改失败：${err instanceof Error ? err.message : String(err)}`,
+          code: 'ai_grade_failed',
+        },
+        { status: 502 },
+      );
+    }
+  }
+  const subjectiveById = new Map(subjectiveItems.map((item) => [item.questionId, item]));
+
+  const items: QuizItemResult[] = answerKey.questions.map((q) => {
+    const points = Math.max(1, answerKey.points?.get(q.id) ?? q.points ?? 1);
+    if (subjective(q)) {
+      const got = subjectiveById.get(q.id);
+      return {
+        questionId: q.id,
+        stem: q.stem,
+        right: got?.right ?? false,
+        score: got?.score ?? 0,
+        maxScore: points,
+        ...(got?.feedback !== undefined ? { feedback: got.feedback } : {}),
+        ...(got?.reference !== undefined ? { reference: got.reference } : {}),
+        picked: answers[q.id] ?? '',
+      };
+    }
+    const got = choiceById.get(q.id);
+    return {
+      ...(got ?? { questionId: q.id, stem: q.stem, right: false }),
+      score: got?.right === true ? points : 0,
+      maxScore: points,
+    };
+  });
+  const score = items.reduce((sum, item) => sum + (item.score ?? 0), 0);
+  const maxScore = items.reduce((sum, item) => sum + (item.maxScore ?? 1), 0);
+  const grade: QuizGrade = {
+    total: items.length,
+    right: items.filter((item) => item.right).length,
+    items,
+    score,
+    maxScore,
+  };
 
   /**
    * ★ 落事件。
@@ -113,6 +192,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       quizId,
       total: grade.total,
       right: grade.right,
+      score: grade.score,
+      maxScore: grade.maxScore,
       items: grade.items,
       explanations: [...answerKey.explanations.entries()].map(([questionId, explanation]) => ({
         questionId,

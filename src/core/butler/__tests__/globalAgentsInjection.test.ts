@@ -153,7 +153,7 @@ describe('全局 AGENTS 只进入 contract / execute / narrate', () => {
     expect(JSON.stringify(messages)).not.toContain(PERSONA_MARKER);
   });
 
-  it('runButler：BUTLER_SYSTEM → 全局规则 → 人格 → 历史 → 用户任务', async () => {
+  it('runButler：BUTLER_SYSTEM → 全局规则 → 人格 → 出题规则 → 历史 → 用户任务', async () => {
     const captured: ModelCall[] = [];
     const log = new EventLog('s');
     await runButler({
@@ -175,7 +175,8 @@ describe('全局 AGENTS 只进入 contract / execute / narrate', () => {
     expect((messages[2]!.content[0] as { text: string }).text).toContain(PERSONA_MARKER);
     // 顺序：人格在全局规则之后
     expect(JSON.stringify(messages)).toContain(GLOBAL_MARKER);
-    expect(messages[3]!.role).toBe('user');
+    expect((messages[3]!.content[0] as { text: string }).text).toContain('出题规则');
+    expect(messages[4]!.role).toBe('user');
   });
 
   it('runButler：reasoningPlan 真正传给模型调用', async () => {

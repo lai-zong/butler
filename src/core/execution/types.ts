@@ -114,18 +114,29 @@ export interface TableContent {
  * ★★ 答案在 `QuizAnswer` 里，落事件而不进产出物。
  *    "把答案留在产出物里"这件事在类型层面写不出来（不是靠约定）。
  */
+export type QuizQuestionType = 'choice' | 'short' | 'essay';
+
 export interface QuizQuestion {
   readonly id: string;
   readonly stem: string;
   readonly options: readonly string[];
+  /** 缺省按 choice 兼容旧题。 */
+  readonly type?: QuizQuestionType;
+  /** 该题分值；缺省 1。 */
+  readonly points?: number;
 }
 
 /** 题目的正确答案（服务端专用，落 `quiz.created` 事件）。 */
 export interface QuizAnswer {
   readonly id: string;
-  /** 正确选项字母（A/B/C…），已归一化 */
-  readonly correct: string;
+  /** 选择题正确选项字母（A/B/C…），已归一化；主观题没有。 */
+  readonly correct?: string;
+  /** 主观题参考答案。 */
+  readonly reference?: string;
+  /** 主观题评分标准。 */
+  readonly rubric?: string;
   readonly explanation?: string;
+  readonly points?: number;
 }
 
 /**

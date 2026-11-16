@@ -206,6 +206,14 @@ export const artifactSchema = z.object({
         answer: z.union([z.string(), z.number()]).optional(),
         correct: z.union([z.string(), z.number()]).optional(),
         explanation: z.string().optional(),
+        /** choice / short / essay；缺省按 choice 兼容旧题。 */
+        type: z.enum(['choice', 'short', 'essay']).optional(),
+        /** 分值；缺省 1。 */
+        points: z.number().optional(),
+        /** 主观题参考答案（会被搬到答案卷）。 */
+        reference: z.string().optional(),
+        /** 主观题评分标准（会被搬到答案卷）。 */
+        rubric: z.string().optional(),
       }),
     )
     .optional(),
@@ -257,6 +265,17 @@ function asText(v: unknown): string {
 }
 
 /** 从 `items` 的任意对象里取一道题（模型常把题目塞进 items）。 */
+function questionTypeOf(rec: Record<string, unknown>): 'choice' | 'short' | 'essay' {
+  const value = rec['type'];
+  return value === 'short' || value === 'essay' ? value : 'choice';
+}
+
+function pointsOf(rec: Record<string, unknown>): number {
+  const value = rec['points'];
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(100, Math.round(value)) : 1;
+}
+
+/** 从 `items` 的任意对象里取一道题（模型常把题目塞进 items）。 */
 function quizFromRecord(
   rec: Record<string, unknown>,
   index: number,
@@ -264,27 +283,53 @@ function quizFromRecord(
   const stem = asText(rec['stem'] ?? rec['question'] ?? rec['q'] ?? rec['title']);
   const rawOptions = rec['options'] ?? rec['choices'];
   const rawAnswer = rec['answer'] ?? rec['correct'] ?? rec['answerKey'];
-
   if (stem.length === 0) return null;
-  if (!Array.isArray(rawOptions)) return null;
 
-  const options = rawOptions
-    .map((o) => (typeof o === 'string' ? stripOptionPrefix(o) : ''))
-    .filter((o) => o.length > 0);
-  if (options.length < 2) return null;
-
-  const answerText =
-    typeof rawAnswer === 'string' || typeof rawAnswer === 'number' ? rawAnswer : '';
-  const correct = toOptionLetter(answerText, options);
-  // 没有可判定的答案 → 这道题无法批改，整题丢弃（宁可少一题，也不给错判）
-  if (correct === undefined) return null;
-
+  const options = Array.isArray(rawOptions)
+    ? rawOptions
+        .map((o) => (typeof o === 'string' ? stripOptionPrefix(o) : ''))
+        .filter((o) => o.length > 0)
+    : [];
+  const type = questionTypeOf(rec);
   const id = asText(rec['id']) || `q${index + 1}`;
+  const points = pointsOf(rec);
   const explanation = asText(rec['explanation'] ?? rec['analysis']);
 
+  if (type === 'choice') {
+    if (options.length < 2) return null;
+    const answerText =
+      typeof rawAnswer === 'string' || typeof rawAnswer === 'number' ? rawAnswer : '';
+    const correct = toOptionLetter(answerText, options);
+    if (correct === undefined) return null;
+    return {
+      question: {
+        id,
+        stem,
+        options,
+        ...(type !== 'choice' ? { type } : {}),
+        ...(points !== 1 ? { points } : {}),
+      },
+      answer: {
+        id,
+        correct,
+        ...(points !== 1 ? { points } : {}),
+        ...(explanation.length > 0 ? { explanation } : {}),
+      },
+    };
+  }
+
+  const reference = asText(rec['reference'] ?? rawAnswer);
+  const rubric = asText(rec['rubric'] ?? rec['gradingCriteria'] ?? rec['criteria']);
+  if (reference.length === 0 && rubric.length === 0) return null;
   return {
-    question: { id, stem, options },
-    answer: explanation.length > 0 ? { id, correct, explanation } : { id, correct },
+    question: { id, stem, options: [], type, ...(points !== 1 ? { points } : {}) },
+    answer: {
+      id,
+      ...(points !== 1 ? { points } : {}),
+      ...(reference.length > 0 ? { reference } : {}),
+      ...(rubric.length > 0 ? { rubric } : {}),
+      ...(explanation.length > 0 ? { explanation } : {}),
+    },
   };
 }
 
@@ -331,20 +376,8 @@ function normalizeQuiz(a: RawArtifact): {
 
   if (a.quiz && a.quiz.length > 0) {
     a.quiz.forEach((q, i) => {
-      const rawOptions = q.options ?? q.choices ?? [];
-      const options = rawOptions.map((o) => stripOptionPrefix(o)).filter((o) => o.length > 0);
-      const stem = asText(q.stem ?? q.question);
-      if (stem.length === 0 || options.length < 2) return;
-
-      const correct = toOptionLetter(q.answer ?? q.correct ?? '', options);
-      if (correct === undefined) return;
-
-      const id = asText(q.id) || `q${i + 1}`;
-      const explanation = asText(q.explanation);
-      parsed.push({
-        question: { id, stem, options },
-        answer: explanation.length > 0 ? { id, correct, explanation } : { id, correct },
-      });
+      const got = quizFromRecord(q as Record<string, unknown>, i);
+      if (got) parsed.push(got);
     });
   }
 

@@ -23,6 +23,11 @@ export interface QuizItemResult {
   /** 正确答案 —— ⚠️ 只在该题**已批改**时下发给调用方 */
   readonly correct?: string;
   readonly right: boolean;
+  /** 主观题得分（choice 题也有，用于统一显示） */
+  readonly score?: number;
+  readonly maxScore?: number;
+  readonly feedback?: string;
+  readonly reference?: string;
 }
 
 /** 一次批改的完整结果 */
@@ -30,6 +35,9 @@ export interface QuizGrade {
   readonly total: number;
   readonly right: number;
   readonly items: readonly QuizItemResult[];
+  /** 主观题参与后的总分；纯客观题时等于 right/total。 */
+  readonly score?: number;
+  readonly maxScore?: number;
 }
 
 /**
@@ -63,6 +71,12 @@ export interface QuizAnswerKey {
   readonly correct: ReadonlyMap<string, string>;
   /** questionId → 解析（可选） */
   readonly explanations: ReadonlyMap<string, string>;
+  /** questionId → 主观题参考答案 */
+  readonly references?: ReadonlyMap<string, string>;
+  /** questionId → 主观题评分标准 */
+  readonly rubrics?: ReadonlyMap<string, string>;
+  /** questionId → 分值 */
+  readonly points?: ReadonlyMap<string, number>;
 }
 
 /** 用户提交的作答：questionId → 选项字母 */

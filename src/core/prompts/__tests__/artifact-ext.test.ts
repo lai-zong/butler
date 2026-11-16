@@ -215,6 +215,32 @@ describe('normalizeArtifact —— quiz（题目与答案分离）', () => {
     expect(n?.answers.map((a) => a.correct)).toEqual(['A', 'B']);
   });
 
+  it('混合题型：简答题只把 reference/rubric 放进答案卷', () => {
+    const n = normalizeArtifact({
+      kind: 'quiz',
+      quiz: [
+        { stem: '选择题', options: ['甲', '乙'], answer: 'A' },
+        {
+          stem: '简答题',
+          type: 'short',
+          points: 5,
+          answer: '这是答案',
+          rubric: '要点齐全',
+        },
+      ],
+    });
+    expect(n?.answers[1]).toMatchObject({
+      id: 'q2',
+      reference: '这是答案',
+      rubric: '要点齐全',
+      points: 5,
+    });
+    const questions = questionsOf(n);
+    expect(questions[1]).toMatchObject({ type: 'short', options: [], points: 5 });
+    expect(JSON.stringify(questions)).not.toContain('这是答案');
+    expect(JSON.stringify(questions)).not.toContain('要点齐全');
+  });
+
   it('一道有效题都没有 → null', () => {
     expect(normalizeArtifact({ kind: 'quiz', quiz: [] })).toBeNull();
     expect(normalizeArtifact({ kind: 'quiz' })).toBeNull();

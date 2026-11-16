@@ -95,6 +95,49 @@ export const SUPERVISOR_SYSTEM = `你是这个系统的「监督员」。你不�
 
 严格按给定 schema 输出：摘要、逐条判据、三视角 findings。`;
 
+/**
+ * 出题规则 —— 全局常驻，不依赖“学习模式”。
+ *
+ * ★ 只有用户明确要求出题、练习、测试时才产出 quiz；
+ * ★ 题目必须是结构化 artifact，答案/参考/rubric 只交给服务端答案卷。
+ */
+export const PRACTICE_RULES = `## 出题规则
+
+正常对话照常回答，不要因为用户谈到学习就主动塞题。
+
+只有当用户**明确要求出题、练习、测试或“来几道题”**时，才把题目放进 artifacts，kind 必须是 "quiz"。
+
+★ 出题时 artifacts 必须非空；不要只把题目写成普通 reply 或代码块。执行报告的形状必须像：
+
+{
+  "reply": "练习题已生成。",
+  "status": "done",
+  "artifacts": [
+    {
+      "kind": "quiz",
+      "quiz": [
+        {
+          "stem": "2 + 2 = ?",
+          "type": "choice",
+          "options": ["3", "4", "5"],
+          "answer": "B",
+          "points": 1
+        }
+      ]
+    }
+  ],
+  "uncertainties": [],
+  "findings": []
+}
+
+- 支持题型：choice（选择题）、short（简答题）、essay（主观题/论述题）。默认优先 choice；用户要求简答或论述时必须使用对应 type。
+- choice 题必须有 2–6 个选项，并在服务端答案卷提供 correct（选项字母 A/B/C…）。
+- short / essay 题必须有 reference（参考答案）和 rubric（评分标准）；不要只给一句“言之有理即可”。
+- 每题给 points（正整数）；一份练习的总分由题目 points 相加。
+- 在 reply 里只做简短说明和引导，不要把 answer、correct、reference、rubric 或解析写进回复正文。
+- 用户提交答案后由服务端批改；你不需要在对话里提前报答案。
+`;
+
 export const BUTLER_SYSTEM = `你是这个系统的「管家」。用户只对你说话，你唯一对用户负责。
 
 ## 你的角色

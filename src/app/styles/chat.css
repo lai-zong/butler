@@ -8419,3 +8419,246 @@ html[data-theme='dark'] body:not(.console-mode) .terminal-banner.is-danger {
     box-shadow: 0 0 0 5px rgba(134, 201, 168, 0);
   }
 }
+
+/* ─────────────────────────────────────────────
+   学习模式右栏
+   ───────────────────────────────────────────── */
+
+.study-pane-slot {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.study-pane {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--paper);
+}
+
+.study-head {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface);
+}
+
+.study-head-main {
+  min-width: 0;
+}
+
+.study-overline {
+  margin: 0 0 4px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.study-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.study-meta {
+  margin: 4px 0 0;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.study-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 20px 28px;
+}
+
+.study-empty {
+  max-width: 360px;
+  margin: 8vh auto 0;
+  text-align: center;
+}
+
+.study-empty-icon {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 14px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.study-empty h3 {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.study-empty p {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.study-empty ul {
+  margin: 16px 0 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.9;
+  list-style: none;
+  text-align: left;
+}
+
+.study-empty li::before {
+  content: '·';
+  margin-right: 7px;
+  color: var(--accent);
+}
+
+.quiz-type-label,
+.quiz-points {
+  flex: none;
+  align-self: flex-start;
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1.8;
+}
+
+.quiz-points {
+  margin-left: 0;
+  font-family: var(--font-mono);
+}
+
+.quiz-question.is-subjective .quiz-stem {
+  flex-wrap: wrap;
+}
+
+.quiz-textarea {
+  display: block;
+  width: calc(100% - 25px);
+  margin: 9px 0 0 25px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.quiz-textarea:focus {
+  outline: 2px solid var(--accent-ring, var(--accent));
+  outline-offset: 1px;
+}
+
+.quiz-textarea:disabled {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.quiz-result {
+  margin: 10px 0 0 25px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.quiz-result.is-right {
+  border-color: #cfe0d4;
+  background: var(--accent-soft);
+}
+
+.quiz-result.is-not-right {
+  border-color: #e3bdb3;
+  background: var(--danger-soft);
+}
+
+.quiz-result-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  font-size: 11px;
+}
+
+.quiz-result-head strong {
+  font-weight: 600;
+}
+
+.quiz-result-head span {
+  margin-left: auto;
+  color: var(--ink-3);
+}
+
+.quiz-result-line {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.quiz-reference {
+  margin-top: 7px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.quiz-reference summary {
+  cursor: pointer;
+}
+
+.quiz-reference p {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .study-head {
+    padding: 13px 16px 12px;
+  }
+
+  .study-body {
+    padding: 16px 16px 24px;
+  }
+
+  .quiz-textarea,
+  .quiz-result {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+html[data-theme='dark'] body:not(.console-mode) .study-head {
+  background: rgba(16, 16, 16, 0.9);
+}

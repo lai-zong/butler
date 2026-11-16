@@ -76,6 +76,35 @@ describe('readQuizzes', () => {
     expect(dumped).not.toContain('清蒸几乎不用油');
   });
 
+  it('混合题型：题目可见，但参考答案与 rubric 不出现在 readQuizzes', () => {
+    const log = new EventLog(LOG_ID);
+    log.append({
+      type: 'quiz.created',
+      actor: 'butler',
+      payload: {
+        taskId: SESSION,
+        questions: [
+          { id: 'q1', stem: '选择', options: ['甲', '乙'], type: 'choice', points: 1 },
+          { id: 'q2', stem: '解释一下', options: [], type: 'short', points: 5 },
+        ],
+        answers: [
+          { id: 'q1', correct: 'A', points: 1 },
+          { id: 'q2', reference: '参考答案', rubric: '评分标准', points: 5 },
+        ],
+      },
+    });
+    const seq = log.length;
+    const quiz = readQuizzes(log, SESSION)[0];
+    expect(quiz?.questions.map((q) => q.type)).toEqual(['choice', 'short']);
+    expect(JSON.stringify(quiz)).not.toContain('参考答案');
+    expect(JSON.stringify(quiz)).not.toContain('评分标准');
+
+    const key = readAnswerKey(log, SESSION, seq);
+    expect(key?.references?.get('q2')).toBe('参考答案');
+    expect(key?.rubrics?.get('q2')).toBe('评分标准');
+    expect(key?.points?.get('q2')).toBe(5);
+  });
+
   it('未批改时没有 grade 字段', () => {
     const log = new EventLog(LOG_ID);
     seedQuiz(log);

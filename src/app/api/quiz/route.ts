@@ -44,7 +44,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
    */
   const sessions = new Set<string>();
   for (const e of log.byType('quiz.created')) {
-    if (typeof e.sessionId === 'string' && e.sessionId.length > 0) sessions.add(e.sessionId);
+    // ⚠️ e.sessionId 是事件日志 id，不是聊天会话 id；聊天会话在 payload.taskId。
+    const payload = e.payload;
+    const chatSessionId =
+      typeof payload === 'object' && payload !== null
+        ? (payload as Record<string, unknown>)['taskId']
+        : undefined;
+    if (typeof chatSessionId === 'string' && chatSessionId.length > 0) {
+      sessions.add(chatSessionId);
+    }
   }
   const quizzes = [...sessions].flatMap((s) => readQuizzes(log, s));
 
