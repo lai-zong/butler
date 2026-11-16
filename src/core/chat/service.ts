@@ -86,6 +86,8 @@ export interface RunTurnArgs {
    *   用下面的 `persona` / `memoryMode` 构造一份默认快照。
    */
   readonly settings?: TurnSettings;
+  /** 本轮启用的技能说明（已由 app 层加载）；只追加在系统规则后。 */
+  readonly skillInstructions?: string;
   /**
    * 桌宠/调用方附加的人格说明；只追加在 BUTLER_SYSTEM 后，不覆盖不变量。
    * @deprecated 新调用方请用 `settings.persona`；这里只做兼容回退。
@@ -627,6 +629,9 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
           context: narrationContext(args.store, injected, args.userId, args.sessionId),
           // ★ 完整快照：叙述层不再读 session
           settings,
+          ...(args.skillInstructions !== undefined
+            ? { skillInstructions: args.skillInstructions }
+            : {}),
           onUpdate: (s) => args.onNarration?.(s),
           ...(args.translatorPort !== undefined ? { translatorPort: args.translatorPort } : {}),
           ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -653,6 +658,7 @@ export async function runTurn(args: RunTurnArgs): Promise<RunTurnResult> {
     userGoal: userText,
     // ★ 完整快照：契约/执行只从这一份读设置
     settings,
+    ...(args.skillInstructions !== undefined ? { skillInstructions: args.skillInstructions } : {}),
     ...(args.optionalPlan === true ? { optionalPlan: true } : {}),
     // ★ 本轮图片（只这一次有效，不落历史）
     ...(args.images !== undefined && args.images.length > 0 ? { images: args.images } : {}),

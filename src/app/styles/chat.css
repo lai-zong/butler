@@ -8709,3 +8709,45 @@ html[data-theme='dark'] body:not(.console-mode) .study-head {
   font-size: 10.5px;
   white-space: nowrap;
 }
+
+.session-sheet-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.session-sheet-skill {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.session-sheet-skill input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.session-sheet-skill span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-sheet-skill strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.session-sheet-skill small {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}

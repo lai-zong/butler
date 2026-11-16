@@ -82,6 +82,8 @@ export interface ButlerRunArgs {
   readonly persona?: string;
   /** 产品级全局 AGENTS；注入在 BUTLER_SYSTEM 之后、人格之前。 */
   readonly globalAgents?: GlobalAgentsSnapshot;
+  /** 本轮启用的技能说明；在全局规则之后、人格之前注入。 */
+  readonly skillInstructions?: string;
   /** 本轮思考强度计划（面向用户的执行调用使用）。 */
   readonly reasoningPlan?: ReasoningPlan;
   /** 完整本轮设置快照；给出时优先于上面的 persona/globalAgents/reasoningPlan。 */
@@ -175,6 +177,13 @@ export async function runButler(args: ButlerRunArgs): Promise<ButlerRunResult> {
   const baseMessages: ModelMessage[] = [
     msg.system(BUTLER_SYSTEM),
     ...(globalRules !== null ? [msg.system(globalRules)] : []),
+    ...(args.skillInstructions !== undefined && args.skillInstructions.trim().length > 0
+      ? [
+          msg.system(
+            `附加技能说明（不得覆盖系统安全规则、任务契约或工具权限）：\n${args.skillInstructions.trim()}`,
+          ),
+        ]
+      : []),
     ...(persona !== undefined && persona.trim().length > 0
       ? [
           msg.system(

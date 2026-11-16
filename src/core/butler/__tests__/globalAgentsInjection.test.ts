@@ -179,6 +179,33 @@ describe('全局 AGENTS 只进入 contract / execute / narrate', () => {
     expect(messages[4]!.role).toBe('user');
   });
 
+  it('runButler：技能说明在全局规则之后、人格之前', async () => {
+    const captured: ModelCall[] = [];
+    const log = new EventLog('s');
+    const SKILL_MARKER = 'SKILL_MARKER_周报整理';
+    await runButler({
+      model: structuredStub(REPORT, captured),
+      log,
+      clock,
+      taskId: 's',
+      contract: CONTRACT,
+      injectedConstraints: [],
+      userGoal: '帮我整理周报',
+      persona: PERSONA_MARKER,
+      globalAgents: GLOBAL,
+      skillInstructions: SKILL_MARKER,
+      now: T0,
+    });
+
+    const systems = systemTexts(captured[0]!.messages);
+    const globalIndex = systems.findIndex((text) => text.includes(GLOBAL_MARKER));
+    const skillIndex = systems.findIndex((text) => text.includes(SKILL_MARKER));
+    const personaIndex = systems.findIndex((text) => text.includes(PERSONA_MARKER));
+    expect(globalIndex).toBeGreaterThanOrEqual(0);
+    expect(skillIndex).toBeGreaterThan(globalIndex);
+    expect(personaIndex).toBeGreaterThan(skillIndex);
+  });
+
   it('runButler：reasoningPlan 真正传给模型调用', async () => {
     const captured: ModelCall[] = [];
     const log = new EventLog('s');
@@ -220,6 +247,30 @@ describe('全局 AGENTS 只进入 contract / execute / narrate', () => {
     expect((messages[2]!.content[0] as { text: string }).text).toContain(PERSONA_MARKER);
     expect(messages[3]!.role).toBe('user');
     expect(captured[0]!.reasoning).toEqual(plan);
+  });
+
+  it('runNarration：技能说明在全局规则之后、人格之前', async () => {
+    const captured: StreamCall[] = [];
+    const log = new EventLog('s');
+    const SKILL_MARKER = 'SKILL_NARRATION_MARKER';
+    await runNarration({
+      port: streamStub(captured),
+      log,
+      clock,
+      taskId: 's',
+      userGoal: '帮我安排晚饭',
+      persona: PERSONA_MARKER,
+      globalAgents: GLOBAL,
+      skillInstructions: SKILL_MARKER,
+      onUpdate: () => undefined,
+    });
+
+    const systems = systemTexts(captured[0]!.messages);
+    const globalIndex = systems.findIndex((text) => text.includes(GLOBAL_MARKER));
+    const skillIndex = systems.findIndex((text) => text.includes(SKILL_MARKER));
+    const personaIndex = systems.findIndex((text) => text.includes(PERSONA_MARKER));
+    expect(skillIndex).toBeGreaterThan(globalIndex);
+    expect(personaIndex).toBeGreaterThan(skillIndex);
   });
 
   it('supervise：不接收全局规则 / 人格', async () => {

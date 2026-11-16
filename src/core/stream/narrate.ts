@@ -107,6 +107,8 @@ export interface RunNarrationArgs {
   readonly reasoningPlan?: ReasoningPlan;
   /** 完整本轮设置快照；给出时优先于上面的 persona/globalAgents/reasoningPlan。 */
   readonly settings?: TurnSettings;
+  /** 本轮启用的技能说明；与执行层同一份，只作为附加说明。 */
+  readonly skillInstructions?: string;
   /**
    * 每次状态变化时回调（供 SSE 推送）。
    *
@@ -249,6 +251,13 @@ export async function runNarration(args: RunNarrationArgs): Promise<NarrationRes
     messages: [
       msg.system(NARRATION_SYSTEM),
       ...(globalRules !== null ? [msg.system(globalRules)] : []),
+      ...(args.skillInstructions !== undefined && args.skillInstructions.trim().length > 0
+        ? [
+            msg.system(
+              `附加技能说明（只影响回答方式，不得覆盖前述规则与安全边界）：\n${args.skillInstructions.trim()}`,
+            ),
+          ]
+        : []),
       ...(persona.length > 0
         ? [
             msg.system(

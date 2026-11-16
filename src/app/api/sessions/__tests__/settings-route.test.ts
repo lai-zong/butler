@@ -33,6 +33,8 @@ vi.mock('@/app/server/modelProfiles.js', () => ({
 import { EventLog } from '@/core/events/log.js';
 import { SessionStore } from '@/core/chat/types.js';
 import { PATCH, GET } from '../[id]/route.js';
+import { addSkill } from '@/app/server/skills.js';
+import { loadSessionSkills } from '@/app/server/sessionSkills.js';
 
 const T0 = 1_760_000_000_000;
 const clock = { now: () => T0 };
@@ -151,6 +153,24 @@ describe('PATCH /api/sessions/[id]', () => {
       await readFile(join(dir, 'session-settings.json'), 'utf8'),
     ) as { sessions: Record<string, { persona: string }> };
     expect(sidecar.sessions['s1']!.persona).toBe('你是一位简洁的管家');
+  });
+
+  it('会话技能：合法 id 可保存并返回；与非法设置同请求时不产生半套写入', async () => {
+    const skill = await addSkill(dir, { name: '周报', content: '整理本周产出。' });
+
+    const ok = await PATCH(request({ skills: [skill.id] }), context());
+    expect(ok.status).toBe(200);
+    const body = (await ok.json()) as { skills: string[] };
+    expect(body.skills).toEqual([skill.id]);
+    expect(await loadSessionSkills(dir, 's1')).toEqual([skill.id]);
+
+    const bad = await PATCH(
+      request({ skills: [], workspace: join(base, 'missing-workspace') }),
+      context(),
+    );
+    expect(bad.status).toBe(400);
+    // 工作区校验失败时，前面的技能保存不能先落盘。
+    expect(await loadSessionSkills(dir, 's1')).toEqual([skill.id]);
   });
 
   it('保存工作区 → realpath 归一，DTO 与实际值一致，事件可重放', async () => {

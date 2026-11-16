@@ -91,6 +91,18 @@ describe('parseSessionSettingsPatch', () => {
     }
   });
 
+  it('skills 只接受字符串数组、去重，并限制数量', () => {
+    expect(parseSessionSettingsPatch({ skills: ['a', 'b', 'a'] })).toEqual({
+      ok: true,
+      patch: { skills: ['a', 'b'] },
+    });
+    expect(parseSessionSettingsPatch({ skills: [] })).toEqual({ ok: true, patch: { skills: [] } });
+    for (const value of ['a', [1], [{}], null]) {
+      expect(parseSessionSettingsPatch({ skills: value }).ok).toBe(false);
+    }
+    expect(parseSessionSettingsPatch({ skills: Array.from({ length: 21 }, (_, i) => `s${i}`) }).ok).toBe(false);
+  });
+
   it('空对象 / 非对象 / 未知字段 → 拒绝（未知字段不静默写入）', () => {
     expect(parseSessionSettingsPatch({}).ok).toBe(false);
     expect(parseSessionSettingsPatch(null).ok).toBe(false);

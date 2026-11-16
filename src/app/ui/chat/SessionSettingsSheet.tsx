@@ -36,6 +36,8 @@ import type {
   SessionSettingsPatch,
   SessionSettingsPatchResponse,
   SessionSummary,
+  SkillRecord,
+  SkillsResponse,
   ToastMessage,
 } from '../lib/types.js';
 import {
@@ -72,6 +74,7 @@ interface Baseline {
   readonly memoryMode: SessionMemoryMode;
   readonly workspace: string | null;
   readonly permission: SessionPermission | null;
+  readonly skills: readonly string[];
 }
 
 export function SessionSettingsSheet({
@@ -88,6 +91,9 @@ export function SessionSettingsSheet({
   const [memoryMode, setMemoryMode] = useState<SessionMemoryMode>('on');
   const [workspace, setWorkspace] = useState('');
   const [permission, setPermission] = useState<'' | SessionPermission>('');
+  const [skills, setSkills] = useState<readonly SkillRecord[]>([]);
+  const [skillIds, setSkillIds] = useState<readonly string[]>([]);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
   const [scope, setScope] = useState<SessionScopeView | null>(null);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [saving, setSaving] = useState(false);
@@ -101,10 +107,30 @@ export function SessionSettingsSheet({
     setLoading(true);
     setLoadError(null);
     setSaveError(null);
+    setSkillsError(null);
+    setSkills([]);
     try {
       const res = await fetchJson<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(id)}`);
       if (token !== tokenRef.current) return;
       const settings = res.session.settings;
+      let availableSkills: readonly SkillRecord[] | null = null;
+      try {
+        const library = await fetchJson<SkillsResponse>('/api/skills');
+        availableSkills = library.skills;
+        if (token === tokenRef.current) {
+          setSkills(library.skills);
+          setSkillsError(null);
+        }
+      } catch (err) {
+        if (token === tokenRef.current) setSkillsError(errorMessage(err));
+      }
+      // 技能被删除后 sidecar 里可能残留 id；界面只保留仍存在的选择，
+      // 避免用户保存其它设置时被已删除技能卡住。
+      // 技能库请求失败时保留会话原值，绝不能因为读不到库就清空选择。
+      const nextSkillIds =
+        availableSkills === null
+          ? (res.skills ?? [])
+          : (res.skills ?? []).filter((id) => availableSkills.some((skill) => skill.id === id));
       const nextPersona = typeof settings.persona === 'string' ? settings.persona : '';
       const nextMemory: SessionMemoryMode = settings.memoryMode === 'off' ? 'off' : 'on';
       const nextScope = scopeOf(res.session);
@@ -113,11 +139,13 @@ export function SessionSettingsSheet({
       setWorkspace(nextScope.workspace ?? '');
       setPermission(nextScope.permission ?? '');
       setScope(nextScope);
+      setSkillIds(nextSkillIds);
       setBaseline({
         persona: nextPersona,
         memoryMode: nextMemory,
         workspace: nextScope.workspace,
         permission: nextScope.permission,
+        skills: nextSkillIds,
       });
     } catch (err) {
       if (token !== tokenRef.current) return;
@@ -136,6 +164,9 @@ export function SessionSettingsSheet({
       setPermission('');
       setScope(null);
       setBaseline(null);
+      setSkills([]);
+      setSkillIds([]);
+      setSkillsError(null);
       setLoadError(null);
       setSaveError(null);
       setLoading(false);
@@ -145,12 +176,17 @@ export function SessionSettingsSheet({
   }, [load, open, sessionId]);
 
   const formScope = scopePatchOf({ workspace, permission });
+  const skillsChanged =
+    baseline !== null &&
+    (skillIds.length !== baseline.skills.length ||
+      skillIds.some((id) => !baseline.skills.includes(id)));
   const dirty =
     baseline !== null &&
     (persona !== baseline.persona ||
       memoryMode !== baseline.memoryMode ||
       formScope.workspace !== baseline.workspace ||
-      formScope.permission !== baseline.permission);
+      formScope.permission !== baseline.permission ||
+      skillsChanged);
 
   const submit = useCallback(
     async (overridePersona?: string): Promise<void> => {
@@ -166,6 +202,8 @@ export function SessionSettingsSheet({
       const patch: SessionSettingsPatch = {
         persona: nextPersona,
         memoryMode,
+        // 只提交真正变化的技能选择；技能库读取失败时不能误清空 sidecar。
+        ...(skillsChanged ? { skills: [...skillIds] } : {}),
         ...(nextScope.workspace !== baseline.workspace ? { workspace: nextScope.workspace } : {}),
         ...(nextScope.permission !== baseline.permission
           ? { permission: nextScope.permission }
@@ -181,15 +219,18 @@ export function SessionSettingsSheet({
         const saved = res.session.settings;
         const savedPersona = typeof saved.persona === 'string' ? saved.persona : nextPersona;
         const savedScope = scopeOf(res.session);
+        const savedSkills = res.skills ?? skillIds;
         setPersona(savedPersona);
         setWorkspace(savedScope.workspace ?? '');
         setPermission(savedScope.permission ?? '');
         setScope(savedScope);
+        setSkillIds(savedSkills);
         setBaseline({
           persona: savedPersona,
           memoryMode: saved.memoryMode === 'off' ? 'off' : 'on',
           workspace: savedScope.workspace,
           permission: savedScope.permission,
+          skills: savedSkills,
         });
         onSaved(res.session);
         notify('对话设置已保存', 'success');
@@ -212,6 +253,8 @@ export function SessionSettingsSheet({
       persona,
       saving,
       sessionId,
+      skillIds,
+      skillsChanged,
       workspace,
     ],
   );
@@ -378,6 +421,48 @@ export function SessionSettingsSheet({
               <p className="session-sheet-hint">
                 人格只影响答复与叙述，不会改写任务契约、记忆提取或监督记录。
               </p>
+            </section>
+
+            <section className="session-sheet-section" aria-labelledby="session-skills-label">
+              <div className="session-sheet-head">
+                <div>
+                  <h3 id="session-skills-label">技能</h3>
+                  <p>只对本对话生效；V1 只启用 Markdown 说明，不执行脚本。</p>
+                </div>
+                <span className="session-sheet-count mono">{skillIds.length} 个已启用</span>
+              </div>
+              {skillsError !== null && <InlineError message={skillsError} />}
+              {skills.length === 0 && skillsError === null ? (
+                <p className="session-sheet-hint">
+                  还没有技能。先到「设置 → 技能库」添加 Markdown 技能。
+                </p>
+              ) : (
+                <div className="session-sheet-skill-list">
+                  {skills.map((skill) => {
+                    const checked = skillIds.includes(skill.id);
+                    return (
+                      <label className="session-sheet-skill" key={skill.id}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={saving}
+                          onChange={(event) => {
+                            setSkillIds((prev) =>
+                              event.target.checked
+                                ? [...prev, skill.id]
+                                : prev.filter((id) => id !== skill.id),
+                            );
+                          }}
+                        />
+                        <span>
+                          <strong>{skill.name}</strong>
+                          <small>{skill.description.length > 0 ? skill.description : '没有描述'}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
             </section>
 
             <section className="session-sheet-section" aria-labelledby="session-memory-label">

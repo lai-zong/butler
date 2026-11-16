@@ -36,6 +36,8 @@ export interface SessionSettingsPatch {
   readonly permission?: SessionPermission | null;
   readonly modelProfileId?: string;
   readonly modelId?: string;
+  /** 本会话启用的技能 id；空数组 = 不使用技能。 */
+  readonly skills?: readonly string[];
 }
 
 export type ParseSessionSettingsPatchResult =
@@ -105,6 +107,17 @@ export function parseSessionSettingsPatch(
     modelId = body['modelId'].trim();
   }
 
+  let skills: readonly string[] | undefined;
+  if ('skills' in body) {
+    const value = body['skills'];
+    if (!Array.isArray(value) || value.some((x) => typeof x !== 'string')) {
+      return { ok: false, error: 'skills 必须是字符串数组' };
+    }
+    const clean = [...new Set(value.map((x) => x.trim()).filter((x) => x.length > 0))];
+    if (clean.length > 20) return { ok: false, error: '每段对话最多启用 20 个技能' };
+    skills = clean;
+  }
+
   let workspace: string | null | undefined;
   if ('workspace' in body) {
     const value = body['workspace'];
@@ -142,6 +155,7 @@ export function parseSessionSettingsPatch(
     ...(memoryMode !== undefined ? { memoryMode } : {}),
     ...(workspace !== undefined ? { workspace } : {}),
     ...(permission !== undefined ? { permission } : {}),
+    ...(skills !== undefined ? { skills } : {}),
     ...(modelProfileId !== undefined && modelId !== undefined
       ? { modelProfileId, modelId }
       : {}),

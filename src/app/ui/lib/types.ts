@@ -372,6 +372,7 @@ export type SessionSettingsPatch = {
   readonly permission?: SessionPermission | null;
   readonly modelProfileId?: string;
   readonly modelId?: string;
+  readonly skills?: readonly string[];
 };
 
 export type MessageRole = 'user' | 'butler' | 'servant' | 'system';
@@ -573,6 +574,7 @@ export interface SessionCancellationDto {
 
 export interface SessionDetailResponse {
   readonly ok: boolean;
+  readonly skills?: readonly string[];
   readonly session: SessionDetail;
   readonly messages: readonly MessageDto[];
   readonly verdicts: readonly VerdictDto[];
@@ -583,7 +585,26 @@ export interface SessionDetailResponse {
 
 export interface SessionSettingsPatchResponse {
   readonly ok: boolean;
+  readonly skills?: readonly string[];
   readonly session: SessionDetail;
+}
+
+export interface SkillRecord {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly content: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface SkillsResponse {
+  readonly ok: boolean;
+  readonly skills: readonly SkillRecord[];
+}
+
+export interface SkillsMutationResponse extends SkillsResponse {
+  readonly skill?: SkillRecord;
 }
 
 export interface SessionsResponse {

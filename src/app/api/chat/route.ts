@@ -51,6 +51,8 @@ import {
   type ReasoningProvider,
 } from '@/core/model/reasoning.js';
 import { loadGlobalAgents } from '@/app/server/globalAgents.js';
+import { loadSessionSkills } from '@/app/server/sessionSkills.js';
+import { skillsByIds, skillsPromptBlock } from '@/app/server/skills.js';
 import { SseApprovals } from '@/core/tools/approval.js';
 import { normalizeRequestImages } from '@/core/multimodal/requestImages.js';
 import { DeepSeekModel } from '@/adapters/model/deepseek.js';
@@ -295,6 +297,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     capturedAt: rt.clock.now(),
   });
 
+  // 会话级技能启用是 sidecar；只把真实存在的技能正文注入本轮。
+  // 技能库损坏不能拖垮整轮对话：读不到就按未启用处理，并在服务端留空。
+  let skillInstructions: string | undefined;
+  try {
+    const enabledSkillIds = await loadSessionSkills(DATA_DIR, session.id);
+    const enabledSkills = await skillsByIds(DATA_DIR, enabledSkillIds);
+    skillInstructions = skillsPromptBlock(enabledSkills) ?? undefined;
+  } catch {
+    skillInstructions = undefined;
+  }
+
   /**
    * ★★ 本会话/本轮的独立工具作用域。
    *
@@ -532,6 +545,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           // ★ 本轮设置快照：persona / reasoning / memoryMode / global AGENTS
           //   全部来自这里，执行中 PATCH 不影响当前轮。
           settings: turnSettings,
+          ...(skillInstructions !== undefined ? { skillInstructions } : {}),
           ...(petContext !== undefined && petContext.length > 0 ? { petContext } : {}),
           ...(browserContext !== undefined ? { browserContext } : {}),
           // ★ 本轮图片（只这一次有效，不落历史）

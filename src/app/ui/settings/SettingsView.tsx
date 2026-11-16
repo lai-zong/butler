@@ -28,6 +28,7 @@ import { McpPanel } from './McpPanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { LocalAuthPanel } from './LocalAuthPanel';
 import { ModelProviderPanel } from './ModelProviderPanel';
+import { SkillsPanel } from './SkillsPanel';
 import { TrashPanel } from './TrashPanel';
 import { errorMessage, fetchJson } from '../lib/api.js';
 import { formatNumber } from '../lib/format.js';
@@ -41,6 +42,7 @@ interface SettingsViewProps {
 
 type SettingsPage =
   | 'model'
+  | 'skills'
   | 'automation'
   | 'pet'
   | 'security'
@@ -58,6 +60,7 @@ const SETTINGS_NAV: readonly {
     label: '运行',
     items: [
       { id: 'model', label: '模型接入' },
+      { id: 'skills', label: '技能库' },
       { id: 'automation', label: '自动化' },
       { id: 'pet', label: '网页桌宠' },
     ],
@@ -314,6 +317,16 @@ export function SettingsView({
             />
             <ModelProviderPanel notify={notify} onRefreshOverview={onRefreshOverview} />
           </div>
+
+          {visitedPages.has('skills') && (
+            <div className="settings-page-view" hidden={settingsPage !== 'skills'}>
+              <SettingsPageHead
+                title="技能库"
+                description="导入 Markdown 技能，并在每段对话的设置里选择启用；技能不能绕过工具权限。"
+              />
+              <SkillsPanel notify={notify} />
+            </div>
+          )}
 
           {visitedPages.has('automation') && (
             <div className="settings-page-view" hidden={settingsPage !== 'automation'}>

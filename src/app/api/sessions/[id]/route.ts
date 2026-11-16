@@ -34,6 +34,8 @@ import { readQuizzes } from '@/core/quiz/read.js';
 import { normalizePersona } from '@/core/chat/settings.js';
 import { parseSessionSettingsPatch } from '@/app/server/sessionSettingsApi.js';
 import { saveSessionPersona } from '@/app/server/sessionSettingsStore.js';
+import { loadSessionSkills, saveSessionSkills } from '@/app/server/sessionSkills.js';
+import { loadSkillStore } from '@/app/server/skills.js';
 import { resolveProfileModel } from '@/app/server/modelProfiles.js';
 import { assertSessionWorkspace } from '@/app/server/sessionWorkspace.js';
 import { appRootOf, dataDirOf, scopeDefaultsOf } from '@/app/server/sessionScope.js';
@@ -61,9 +63,11 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<NextRes
   const reviews = chat.reviewRunsOf(id);
   const quizzes = readQuizzes(rt.bootstrapped.log, id);
   const display = await readSessionDisplay(dataDirOf(rt), id);
+  const skills = await loadSessionSkills(dataDirOf(rt), id);
 
   return NextResponse.json({
     ok: true,
+    skills,
     // 详情接口带完整人格正文（列表接口只给摘要）
     session: toSessionDetailDto(
       session,
@@ -104,6 +108,18 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<NextRe
   const patch = parsed.patch;
   const scopeDefaults = scopeDefaultsOf(rt);
   const dir = dataDirOf(rt);
+
+  // 技能启用是会话级 sidecar；只接受技能库中真实存在的 id。
+  // ★ 这里只校验，不写入：工作区/模型校验失败时不能留下半套设置。
+  let requestedSkills: readonly string[] | undefined;
+  if (patch.skills !== undefined) {
+    const all = await loadSkillStore(dir);
+    const known = new Set(all.map((skill) => skill.id));
+    if (patch.skills.some((skillId) => !known.has(skillId))) {
+      return NextResponse.json({ error: '包含不存在的技能' }, { status: 400 });
+    }
+    requestedSkills = patch.skills;
+  }
 
   /**
    * ── 工作区：真实磁盘校验 ──
@@ -172,11 +188,17 @@ export async function PATCH(req: NextRequest, ctx: RouteContext): Promise<NextRe
       return NextResponse.json({ error: '找不到这个会话' }, { status: 404 });
     }
 
+    // ★ 所有校验都通过后才写技能 sidecar，避免 400 后留下部分修改。
+    if (requestedSkills !== undefined) {
+      await saveSessionSkills(dir, id, requestedSkills);
+    }
+
     // 设置是用户可见的状态变更，尽早落盘。
     await rt.bootstrapped.log.flushPersistence().catch(() => undefined);
 
     return NextResponse.json({
       ok: true,
+      skills: requestedSkills ?? (await loadSessionSkills(dir, id)),
       session: toSessionDetailDto(
         updated,
         chat.messagesOf(id),

@@ -74,6 +74,8 @@ export interface RunSessionArgs {
    *   这样“本轮只用一份快照”在每一层都成立，不会出现某层又读到新设置。
    */
   readonly settings?: TurnSettings;
+  /** 本轮启用的技能说明（已由 app 层加载）。 */
+  readonly skillInstructions?: string;
   /**
    * 本轮附带的图片（**只在这一轮有效**，不落历史、不进事件）。
    * 见 `ButlerRunArgs.images` 的说明。
@@ -516,6 +518,9 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
         ? { persona: persona.trim() }
         : {}),
       ...(globalAgents !== undefined ? { globalAgents } : {}),
+      ...(args.skillInstructions !== undefined
+        ? { skillInstructions: args.skillInstructions }
+        : {}),
       ...(reasoningPlan !== undefined ? { reasoningPlan } : {}),
       ...(args.settings !== undefined ? { settings: args.settings } : {}),
       // ★ 本轮图片透传给管家执行层（模型在那里才真正看到图）
