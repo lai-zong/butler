@@ -8662,3 +8662,50 @@ html[data-theme='dark'] body:not(.console-mode) .terminal-banner.is-danger {
 html[data-theme='dark'] body:not(.console-mode) .study-head {
   background: rgba(16, 16, 16, 0.9);
 }
+
+/* 对话按自然日分隔：今天 / 昨天 / 具体日期。 */
+.chat-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 -8px;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.chat-day::before,
+.chat-day::after {
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+  content: "";
+}
+
+.chat-day > span {
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-3);
+}
+
+.chat-day[role='separator'] {
+  user-select: none;
+}
+
+.msg-system-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.msg-system-time {
+  flex: none;
+  color: var(--ink-4);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}

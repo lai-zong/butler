@@ -32,6 +32,28 @@ describe('中断消息持久化', () => {
     expect(msg?.auditRange).toEqual({ fromSeq: 3, toSeq: 9 });
   });
 
+  it('已生成正文、narration 和思考都能落盘并在重放后保留', () => {
+    const log = new EventLog('s_interrupted_partial');
+    const store = new SessionStore(log, new FixedClock(T0), 'u');
+    const session = store.createSession('s_partial');
+
+    store.appendMessage(session.id, {
+      role: 'butler',
+      text: '已经生成的正文\n\n---\n\n> 本轮已终止',
+      narration: '我先看一下文件。',
+      reasoning: '需要先确认路径。',
+      status: 'interrupted',
+      interruptReason: 'user_stopped',
+    });
+
+    const replayed = replaySessions(log.all());
+    const msg = replayed.messages[0];
+    expect(msg?.text).toContain('已经生成的正文');
+    expect(msg?.narration).toBe('我先看一下文件。');
+    expect(msg?.reasoning).toBe('需要先确认路径。');
+    expect(msg?.status).toBe('interrupted');
+  });
+
   it('事件 payload 里带中断原因（刷新后仍能区分是谁断的）', () => {
     const log = new EventLog('s_interrupted_payload');
     const store = new SessionStore(log, new FixedClock(T0), 'u');

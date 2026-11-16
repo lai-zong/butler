@@ -449,6 +449,7 @@ export interface MessageDto {
   readonly servant: string | null;
   readonly servantLabel: string | null;
   readonly text: string;
+  readonly narration: string | null;
   readonly reasoning: string | null;
   readonly reasoningTranslated: string | null;
   readonly status: MessageStatus;

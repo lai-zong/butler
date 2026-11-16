@@ -442,6 +442,7 @@ export interface MessageDto {
   readonly servant: string | null;
   readonly servantLabel: string | null;
   readonly text: string;
+  readonly narration: string | null;
   readonly reasoning: string | null;
   readonly reasoningTranslated: string | null;
   readonly status: ChatMessage['status'];
@@ -478,6 +479,7 @@ export function toMessageDto(m: ChatMessage): MessageDto {
     servant: m.servant ?? null,
     servantLabel: m.servant !== undefined ? domainName(m.servant) : null,
     text: m.text,
+    narration: m.narration ?? null,
     reasoning: m.reasoning ?? null,
     reasoningTranslated: m.reasoningTranslated ?? null,
     status: m.status,

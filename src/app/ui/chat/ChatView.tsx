@@ -14,7 +14,7 @@
  *   切去看一眼记忆不该把正在跑的任务掐掉。
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -28,13 +28,14 @@ import { primaryPathOf } from '@/core/tools/pathFields.js';
 import { useAutoResize, useMounted, useNow } from '../lib/hooks.js';
 import { ApiError, errorMessage, fetchJson, patchJson, postJson } from '../lib/api.js';
 import {
-  formatClock,
+  formatChatTime,
   formatDateFull,
   formatDateTime,
+  formatDayLabel,
   formatNumber,
   greeting,
   plainText,
-  relativeTime,
+  sameLocalDay,
   truncate,
 } from '../lib/format.js';
 import { applyEvent, asSseEvent, emptyAssistant } from '../lib/chatLive.js';
@@ -4158,7 +4159,7 @@ export function ChatView({
       : (liveTitle ?? currentSession?.title ?? '新对话');
   const subtitle =
     currentSession !== undefined
-      ? `${currentSession.turnCount} 次对话 · ${relativeTime(currentSession.updatedAt, now)}`
+      ? `${currentSession.turnCount} 次对话 · 最后活动 ${formatChatTime(currentSession.updatedAt, now)}`
       : '一段新的上下文';
 
   const activeApproval = currentApproval(approvals);
@@ -4645,32 +4646,47 @@ export function ChatView({
           )}
 
           <div className="chat-messages">
-            {messages.map((m, i) => (
-              <ServerMessage
-                key={m.id}
-                message={m}
-                verdict={verdictFor(messages, verdicts, i)}
-                onOpenMemory={onOpenMemory}
-                notify={notify}
-                now={now}
-                canSpeak={ttsSupported || ttsConfig !== null}
-                speaking={speakingId === m.id}
-                onSpeak={() => { void speak(m.text, m.id); }}
-              />
-            ))}
+            {messages.map((m, i) => {
+              const previous = messages[i - 1];
+              const showDay =
+                previous === undefined || !sameLocalDay(previous.createdAt, m.createdAt);
+              return (
+                <Fragment key={m.id}>
+                  {showDay && <ChatDayDivider ts={m.createdAt} now={now} />}
+                  <ServerMessage
+                    message={m}
+                    verdict={verdictFor(messages, verdicts, i)}
+                    notify={notify}
+                    now={now}
+                    canSpeak={ttsSupported || ttsConfig !== null}
+                    speaking={speakingId === m.id}
+                    onSpeak={() => { void speak(m.text, m.id); }}
+                  />
+                </Fragment>
+              );
+            })}
 
-            {liveTurns.map((turn, i) => (
-              <LiveTurnView
-                key={`live-${i}`}
-                turn={turn}
-                onOpenMemory={onOpenMemory}
-                onRetry={(text) => {
-                  setInput(text);
-                  window.setTimeout(() => textareaRef.current?.focus(), 60);
-                }}
-                onCopy={(text) => void copyText(text)}
-              />
-            ))}
+            {liveTurns.map((turn, i) => {
+              const previousAt =
+                i > 0 ? liveTurns[i - 1]?.startedAt : messages[messages.length - 1]?.createdAt;
+              const showDay =
+                previousAt === undefined || !sameLocalDay(previousAt, turn.startedAt);
+              return (
+                <Fragment key={`live-${i}`}>
+                  {showDay && <ChatDayDivider ts={turn.startedAt} now={now} />}
+                  <LiveTurnView
+                    turn={turn}
+                    now={now}
+                    onOpenMemory={onOpenMemory}
+                    onRetry={(text) => {
+                      setInput(text);
+                      window.setTimeout(() => textareaRef.current?.focus(), 60);
+                    }}
+                    onCopy={(text) => void copyText(text)}
+                  />
+                </Fragment>
+              );
+            })}
 
             {displayCancellation !== null && (
               <CancellationCard
@@ -5623,7 +5639,7 @@ export function ChatView({
                           <span className="focus-chat-session-copy">
                             <strong>{session.title.length > 0 ? session.title : '新对话'}</strong>
                             <small>
-                              {session.turnCount} 次对话 · {relativeTime(session.updatedAt, now)}
+                              {session.turnCount} 次对话 · 最后活动 {formatChatTime(session.updatedAt, now)}
                             </small>
                           </span>
                           {isCurrent && <Icon name="check" size={14} />}
@@ -6034,7 +6050,7 @@ function CancellationCard({
           <span>用户取消</span>
         </div>
         <span className="cancel-time mono">
-          {formatClock(cancellation.createdAt)} · {relativeTime(cancellation.createdAt, now)}
+          {formatChatTime(cancellation.createdAt, now)}
         </span>
       </div>
       <div className="cancel-grid">
@@ -6229,10 +6245,18 @@ function verdictFor(
   return undefined;
 }
 
+function ChatDayDivider({ ts, now }: { readonly ts: number; readonly now: number }): JSX.Element {
+  const label = formatDayLabel(ts, now);
+  return (
+    <div className="chat-day" role="separator" aria-label={label}>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 function ServerMessage({
   message,
   verdict,
-  onOpenMemory,
   notify,
   now,
   canSpeak,
@@ -6241,7 +6265,6 @@ function ServerMessage({
 }: {
   readonly message: MessageDto;
   readonly verdict: VerdictDto | undefined;
-  readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly notify: (text: string, tone?: ToastMessage['tone']) => void;
   readonly now: number;
   readonly canSpeak: boolean;
@@ -6253,7 +6276,13 @@ function ServerMessage({
       <div className="msg msg--user" id={`msg-${message.id}`}>
         <div className="user-bubble">{message.text}</div>
         <div className="msg-meta">
-          <span>{formatClock(message.createdAt)}</span>
+          <time
+            className="msg-meta-time"
+            dateTime={new Date(message.createdAt).toISOString()}
+            title={formatDateTime(message.createdAt)}
+          >
+            {formatChatTime(message.createdAt, now)}
+          </time>
         </div>
       </div>
     );
@@ -6263,7 +6292,14 @@ function ServerMessage({
     return (
       <div className="msg-system">
         <Icon name="info" size={14} />
-        <span>{message.text}</span>
+        <span className="msg-system-text">{message.text}</span>
+        <time
+          className="msg-system-time"
+          dateTime={new Date(message.createdAt).toISOString()}
+          title={formatDateTime(message.createdAt)}
+        >
+          {formatChatTime(message.createdAt, now)}
+        </time>
       </div>
     );
   }
@@ -6279,9 +6315,13 @@ function ServerMessage({
         </span>
         <strong>管家</strong>
         {label !== null && <Badge tone="outline">{label}</Badge>}
-        <span className="msg-time" title={formatDateFull(message.createdAt)}>
-          {relativeTime(message.createdAt, now)}
-        </span>
+        <time
+          className="msg-time"
+          dateTime={new Date(message.createdAt).toISOString()}
+          title={formatDateTime(message.createdAt)}
+        >
+          {formatChatTime(message.createdAt, now)}
+        </time>
         {message.status === 'failed' && <Badge tone="danger">未完成</Badge>}
         {message.status === 'interrupted' && (
           <Badge tone="warn" title="这一轮没有正常结束；已保留完成的部分，可以审查">
@@ -6292,8 +6332,11 @@ function ServerMessage({
 
       <ProcessPanel
         rounds={rounds}
+        narration={message.narration ?? ''}
         narrationReasoning={message.reasoning ?? ''}
         narrationTranslated={message.reasoningTranslated ?? ''}
+        // ★ 中断轮次默认展开：已完成的思考/工具轨迹不该被折叠藏起来。
+        defaultOpen={message.status === 'interrupted'}
         durationMs={verdict?.durationMs ?? null}
         injectedConstraints={[]}
         usage={usageOfMessage(message, verdict)}
@@ -6315,9 +6358,6 @@ function ServerMessage({
             <Icon name="volume" size={13} /> {speaking ? '停止朗读' : '朗读'}
           </button>
         )}
-        <button type="button" className="text-btn" onClick={() => onOpenMemory()}>
-          <Icon name="memory" size={13} /> 看记忆
-        </button>
       </footer>
     </article>
   );
@@ -6338,11 +6378,13 @@ async function copyToClipboard(text: string, notify: (text: string, tone?: Toast
 
 function LiveTurnView({
   turn,
+  now,
   onOpenMemory,
   onRetry,
   onCopy,
 }: {
   readonly turn: LiveTurn;
+  readonly now: number;
   readonly onOpenMemory: (opts?: MemoryTarget) => void;
   readonly onRetry: (text: string) => void;
   readonly onCopy: (text: string) => void;
@@ -6365,12 +6407,13 @@ function LiveTurnView({
           {turn.userText.length > 0 && turn.userText}
         </div>
         <div className="msg-meta">
-          {/*
-            * 这里的「now」直接取 Date.now()：实时轮在流式期间每 48ms 就会重渲染，
-            * 时间自然跟着走；流结束后组件不再刷新，显示的停在那次渲染，
-            * 这正是我们要的（结束时刻）。
-            */}
-          <span>{relativeTime(turn.startedAt, Date.now())}</span>
+          <time
+            className="msg-meta-time"
+            dateTime={new Date(turn.startedAt).toISOString()}
+            title={formatDateTime(turn.startedAt)}
+          >
+            {formatChatTime(turn.startedAt, now)}
+          </time>
         </div>
       </div>
 
@@ -6397,6 +6440,13 @@ function LiveTurnView({
             <Icon name="memory" size={14} />
           </span>
           <strong>管家</strong>
+          <time
+            className="msg-time"
+            dateTime={new Date(turn.startedAt).toISOString()}
+            title={formatDateTime(turn.startedAt)}
+          >
+            {formatChatTime(turn.startedAt, now)}
+          </time>
           {streaming && (
             <span className="live-status">
               <span className="typing-dots" aria-hidden="true">
@@ -6479,9 +6529,6 @@ function LiveTurnView({
           <footer className="msg-foot">
             <button type="button" className="text-btn" onClick={() => onCopy(a.text)}>
               <Icon name="copy" size={13} /> 复制
-            </button>
-            <button type="button" className="text-btn" onClick={() => onOpenMemory()}>
-              <Icon name="memory" size={13} /> 看记忆
             </button>
           </footer>
         )}

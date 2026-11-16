@@ -54,7 +54,7 @@ export function interruptedNote(args: {
   const pending = args.toolCalls > args.toolResults ? '，其中一次尚未返回' : '';
   switch (args.reason) {
     case 'user_stopped':
-      return `> 本轮已终止：你点了停止。已完成 ${args.toolResults} 次工具调用${pending}；本轮依据仍可展开查看。`;
+      return `> 本轮已终止：你点了停止。已保留已生成的内容；已完成 ${args.toolResults} 次工具调用${pending}。过程与本轮依据可展开查看。`;
     case 'insufficient_balance':
       return '> 本轮中断：模型余额不足。已经完成的部分保留在这里，可以审查。';
     case 'network':

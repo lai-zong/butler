@@ -153,6 +153,8 @@ export interface ChatMessage {
   readonly servant?: DomainId;
   /** 正文（markdown） */
   readonly text: string;
+  /** 本轮「先说思路」；仅中断轮次可能落盘，成功轮次不写。 */
+  readonly narration?: string;
   /**
    * 这条回复对应的本轮事件区间（用于刷新后的“本轮依据”）。
    * 旧消息没有这个字段，界面应回退到“会话依据”。
@@ -474,6 +476,7 @@ export interface AppendMessageInput {
   readonly role: MessageRole;
   readonly servant?: DomainId;
   readonly text: string;
+  readonly narration?: string;
   readonly reasoning?: string;
   readonly reasoningTranslated?: string;
   readonly status?: MessageStatus;
@@ -664,6 +667,7 @@ export class SessionStore {
       role: input.role,
       ...(input.servant !== undefined ? { servant: input.servant } : {}),
       text: input.text,
+      ...(input.narration !== undefined ? { narration: input.narration } : {}),
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       ...(input.reasoningTranslated !== undefined
         ? { reasoningTranslated: input.reasoningTranslated }
@@ -706,9 +710,14 @@ export class SessionStore {
         sessionId,
         messageId: msg.id,
         role: msg.role,
-        text: msg.text.slice(0, 2000),
+        text: msg.text.slice(0, msg.status === 'interrupted' ? 12_000 : 2000),
         status: msg.status,
         ...(msg.interruptReason !== undefined ? { interruptReason: msg.interruptReason } : {}),
+        ...(msg.narration !== undefined ? { narration: msg.narration } : {}),
+        ...(msg.reasoning !== undefined ? { reasoning: msg.reasoning } : {}),
+        ...(msg.reasoningTranslated !== undefined
+          ? { reasoningTranslated: msg.reasoningTranslated }
+          : {}),
         hasReasoning: msg.reasoning !== undefined,
         memoryRefCount: msg.memoryRefs?.length ?? 0,
         /**
@@ -1090,6 +1099,11 @@ export function replaySessions(
         text: typeof p['text'] === 'string' ? p['text'] : '',
         status: (typeof p['status'] === 'string' ? p['status'] : 'done') as MessageStatus,
         ...(typeof p['interruptReason'] === 'string' ? { interruptReason: p['interruptReason'] } : {}),
+        ...(typeof p['narration'] === 'string' ? { narration: p['narration'] } : {}),
+        ...(typeof p['reasoning'] === 'string' ? { reasoning: p['reasoning'] } : {}),
+        ...(typeof p['reasoningTranslated'] === 'string'
+          ? { reasoningTranslated: p['reasoningTranslated'] }
+          : {}),
         createdAt: e.createdAt,
         ...(replayedTrace !== undefined ? { agentTrace: replayedTrace } : {}),
         ...(replayedReports !== undefined ? { servantReports: replayedReports } : {}),

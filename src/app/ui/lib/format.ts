@@ -122,15 +122,66 @@ export function formatDateTime(ts: number): string {
   return `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, '0')}-${`${d.getDate()}`.padStart(2, '0')} ${formatClock(ts)}`;
 }
 
+/**
+ * 本地自然日的序号（UTC 日序号）。
+ *
+ * 用 Date.UTC 只承载 Y/M/D，避免夏令时让两个相邻自然日相差 23/25 小时。
+ */
+function localDayIndex(ts: number): number {
+  const d = new Date(ts);
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000);
+}
+
+export function localDayDiff(ts: number, now = Date.now()): number {
+  return localDayIndex(now) - localDayIndex(ts);
+}
+
+export function sameLocalDay(a: number, b: number): boolean {
+  return localDayIndex(a) === localDayIndex(b);
+}
+
+/** 日期分隔条：今天 / 昨天 / 具体日期。 */
+export function formatDayLabel(ts: number, now = Date.now()): string {
+  const diff = localDayDiff(ts, now);
+  if (diff === 0) return '今天';
+  if (diff === 1) return '昨天';
+  const d = new Date(ts);
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  const prefix = sameYear ? '' : `${d.getFullYear()} 年 `;
+  return `${prefix}${d.getMonth() + 1} 月 ${d.getDate()} 日`;
+}
+
+/**
+ * 对话消息时间。
+ *
+ * ★ 今天的消息只显示 HH:mm；跨天后必须带上日期，不能只留一个
+ *   “23:50”让人误以为是今天。昨天带“昨天 HH:mm”，更早带完整日期。
+ */
+export function formatChatTime(ts: number, now = Date.now()): string {
+  const diff = localDayDiff(ts, now);
+  const clock = formatClock(ts);
+  if (diff === 0) return clock;
+  if (diff === 1) return `昨天 ${clock}`;
+  const d = new Date(ts);
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  const prefix = sameYear ? '' : `${d.getFullYear()} 年 `;
+  return `${prefix}${d.getMonth() + 1} 月 ${d.getDate()} 日 ${clock}`;
+}
+
 export function relativeTime(ts: number, now = Date.now()): string {
   const diff = Math.max(0, now - ts);
   if (diff < 45_000) return '刚刚';
-  if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 24 * 60 * 60_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 2 * 24 * 60 * 60_000) return '昨天';
-  if (diff < 7 * 24 * 60 * 60_000) return `${Math.floor(diff / 86_400_000)} 天前`;
-  if (diff < 30 * 24 * 60 * 60_000) return `${Math.floor(diff / (7 * 86_400_000))} 周前`;
-  return formatDate(ts);
+
+  // ★ 不能用固定 24h/48h 判断“昨天”：必须按本地自然日边界。
+  const dayDiff = Math.max(0, localDayDiff(ts, now));
+  if (dayDiff === 0) {
+    if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+    return `${Math.max(1, Math.floor(diff / 3_600_000))} 小时前`;
+  }
+  if (dayDiff === 1) return '昨天';
+  if (dayDiff < 7) return `${dayDiff} 天前`;
+  if (dayDiff < 30) return `${Math.floor(dayDiff / 7)} 周前`;
+  return formatDayLabel(ts, now);
 }
 
 export function greeting(now = new Date()): string {

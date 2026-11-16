@@ -489,6 +489,15 @@ export async function POST(req: NextRequest): Promise<Response> {
        *   这里顺手用同一个收集器接住进度事件 —— 中断消息因此也带轨迹。
        */
       const turnTrace = createTraceCollector();
+      /**
+       * ★ 中断保留：流式回调里的完整累积内容。
+       *
+       *   turnTrace 为了事件体积只保留尾部；这里另存完整正文/思考，
+       *   让用户点停止时能看到的最后状态原样落盘。
+       */
+      const partialTexts = new Map<number, string>();
+      const partialReasoning = new Map<number, string>();
+      const lastNarration = { answer: '', reasoning: '', reasoningTranslated: '' };
       let lastMilestone = '';
       let milestoneCount = 0;
       const emitMilestone = (text: string | null): void => {
@@ -564,7 +573,10 @@ export async function POST(req: NextRequest): Promise<Response> {
            */
           ...(chatStreamModel !== null ? { streamModel: chatStreamModel } : {}),
           ...(chatTranslator !== null ? { translatorPort: chatTranslator } : {}),
-          onNarration: (s) =>
+          onNarration: (s) => {
+            lastNarration.answer = s.answer;
+            lastNarration.reasoning = s.reasoning;
+            lastNarration.reasoningTranslated = s.reasoningTranslated;
             send({
               type: 'narration',
               reasoning: s.reasoning,
@@ -572,7 +584,8 @@ export async function POST(req: NextRequest): Promise<Response> {
               answer: s.answer,
               firstChunkMs: s.firstChunkMs,
               done: s.done,
-            }),
+            });
+          },
 
           /**
            * ★★ 工具循环进度 —— 「思考 → 工具 → 再思考」画面的来源。
@@ -589,6 +602,8 @@ export async function POST(req: NextRequest): Promise<Response> {
            */
           onAgentProgress: (e) => {
             // 中断时靠这份轨迹说明"它已经做过什么"
+            if (e.kind === 'text') partialTexts.set(e.round, e.accumulated);
+            else if (e.kind === 'reasoning') partialReasoning.set(e.round, e.accumulated);
             turnTrace.onEvent(e);
             switch (e.kind) {
               case 'roundStarted':
@@ -786,10 +801,38 @@ export async function POST(req: NextRequest): Promise<Response> {
           error: err,
         });
 
+        const lastNonEmpty = (values: Map<number, string>): string => {
+          for (const value of [...values.values()].reverse()) {
+            if (value.trim().length > 0) return value;
+          }
+          return '';
+        };
+        const partialText = lastNonEmpty(partialTexts);
+        const partialThinking = lastNonEmpty(partialReasoning);
+        const narration = lastNarration.answer;
+        const narrationReasoning = lastNarration.reasoning || partialThinking;
+        /**
+         * ★ 有正文就保留正文；没有正文至少保留 narration。
+         *
+         *   中断说明追加在末尾，绝不替换已生成内容。
+         *   超过 12k 的正文保留前段并明确告知截断；
+         *   思考由 agentTrace 保留尾部（其自身有上限）。
+         */
+        const body =
+          partialText.trim().length > 0
+            ? `${partialText.trim().slice(0, 12_000)}${
+                partialText.length > 12_000 ? '\n\n（后续内容因长度上限未写入）' : ''
+              }\n\n---\n\n${note}`
+            : note;
+
         try {
           rt.bootstrapped.chat.appendMessage(session.id, {
             role: 'butler',
-            text: note,
+            text: body,
+            ...(narration.length > 0 ? { narration: narration.slice(0, 4_000) } : {}),
+            ...(narrationReasoning.length > 0
+              ? { reasoning: narrationReasoning.slice(-8_000) }
+              : {}),
             status: 'interrupted',
             interruptReason: interruptedReason,
             auditRange: { fromSeq, toSeq },

@@ -524,7 +524,7 @@ export function ButlerApp(): JSX.Element {
         window.clearTimeout(leaveTimer.current);
         leaveTimer.current = null;
       }
-      // 从专注空间点“看记忆 / 控制台”视为离开专注：回来时停在普通对话。
+      // 从专注空间打开“控制台 / 记忆”视为离开专注：回来时停在普通对话。
       if (focusActive) {
         setFocusChatOpen(false);
         setFocusLeaving(false);

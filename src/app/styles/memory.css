@@ -13,9 +13,15 @@
 
 .mm {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 560px;
+  /* clip 而不是 hidden：阻止 focus/scrollIntoView 把整张记忆页横向滚走。
+     hidden 是旧浏览器回退；支持 clip 的浏览器不会产生可滚动区域。 */
   overflow: hidden;
+  overflow: clip;
   isolation: isolate;
   background:
     radial-gradient(1200px 760px at 62% 18%, rgba(52, 116, 132, 0.16), transparent 62%),
@@ -177,13 +183,16 @@
    标题 / 顶部读数
    ───────────────────────────────────────────── */
 
+/* .mm-head is a real grid row: its height must push the text directory down. */
 .mm-head {
-  position: absolute;
-  top: 0;
-  left: 0;
+  position: relative;
   z-index: 4;
-  max-width: 440px;
-  padding: 26px 0 0 30px;
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  /* Leave room for the independent metrics / view-switch bar at top right. */
+  padding: 24px 300px 12px 30px;
   pointer-events: none;
 }
 
@@ -195,17 +204,23 @@
 
 .mm-head-row {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  width: 100%;
+  max-width: 760px;
+  min-width: 0;
   margin-top: 0;
 }
 
 .mm-title {
+  flex: 0 0 auto;
   color: #e9f6ef;
   font-size: 30px;
   font-weight: 600;
   letter-spacing: -0.045em;
   line-height: 1.15;
+  white-space: nowrap;
   text-shadow: 0 0 32px rgba(127, 224, 195, 0.16);
 }
 
@@ -667,12 +682,17 @@
    ───────────────────────────────────────────── */
 
 .mm-text {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  inset: auto;
   z-index: 3;
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
+  width: 100%;
+  min-width: 0;
   flex-direction: column;
-  padding: 106px 22px 22px 32px;
+  min-height: 0;
+  padding: 0 22px 22px 32px;
   background: linear-gradient(
     180deg,
     rgba(4, 8, 11, 0.1) 0%,
@@ -1816,11 +1836,7 @@
   }
 
   .mm-head {
-    max-width: 380px;
-  }
-
-  .mm-text {
-    padding-top: 110px;
+    padding-right: 230px;
   }
 }
 
@@ -1832,7 +1848,7 @@
 
 @media (max-width: 900px) {
   .mm-head {
-    padding: 20px 0 0 20px;
+    padding: 18px 20px 10px;
   }
 
   .mm-title {
@@ -1849,7 +1865,7 @@
   }
 
   .mm-text {
-    padding: 92px 20px 18px;
+    padding: 0 20px 18px;
   }
 
   .mm-text-time {
@@ -1886,10 +1902,6 @@
 }
 
 @media (max-width: 760px) {
-  .mm-head {
-    max-width: 56vw;
-  }
-
   .mm-sub {
     display: none;
   }
@@ -1918,7 +1930,7 @@
   }
 
   .mm-text {
-    padding: 80px 16px 14px;
+    padding: 0 16px 14px;
   }
 
   .mm-text-bar {
@@ -1967,12 +1979,19 @@
  */
 @media (max-width: 820px) {
   .mm-head {
-    max-width: min(440px, 42vw);
+    /* 820–761px 时右侧仍显示带文字的视图切换。 */
+    padding-right: 220px;
   }
 
   .mm-head-row {
-    flex-wrap: wrap;
     gap: 7px 10px;
+  }
+}
+
+@media (max-width: 760px) {
+  .mm-head {
+    /* 视图切换只剩图标，仍需给右上角留出窄列。 */
+    padding-right: 145px;
   }
 }
 
@@ -2686,3 +2705,31 @@
   }
 }
 
+
+/*
+ * 超窄窗口：页头操作按钮和右侧视图切换已经无法并排。
+ * 把视图切换放进第二行，文本目录顺延到第三行，避免它盖住标题。
+ */
+@media (max-width: 440px) {
+  .mm {
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .mm-head {
+    padding-right: 20px;
+  }
+
+  .mm-headbar {
+    position: relative;
+    top: auto;
+    right: auto;
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: end;
+    margin: 0 16px 8px;
+  }
+
+  .mm-text {
+    grid-row: 3;
+  }
+}
