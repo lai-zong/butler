@@ -19,7 +19,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const NEXT_BIN = join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next');
-const HOST = '127.0.0.1';
+// 浏览器入口与 Next 的重定向 origin 保持一致，避免 host-only cookie 丢失。
+const HOST = 'localhost';
 const WAIT_TIMEOUT_MS = 120_000;
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));

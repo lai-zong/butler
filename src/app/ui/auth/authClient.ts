@@ -129,7 +129,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         ...(init?.headers ?? {}),
       },
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new AuthRequestError('登录状态检查超时，请重试', 0, 'timeout');
+    }
     throw new AuthRequestError(
       '连不上本地服务，请确认终端里的 butler 仍在运行',
       0,
@@ -190,8 +193,8 @@ function parseStatus(payload: unknown): LocalAuthStatus {
 // 接口
 // ═══════════════════════════════════════════════════════════
 
-export async function getAuthStatus(): Promise<LocalAuthStatus> {
-  return parseStatus(await request<unknown>('/api/auth/status'));
+export async function getAuthStatus(signal?: AbortSignal): Promise<LocalAuthStatus> {
+  return parseStatus(await request<unknown>('/api/auth/status', signal !== undefined ? { signal } : undefined));
 }
 
 /** 首次设置：密码 + 找回问题；成功后服务端直接写会话 cookie。 */
@@ -292,5 +295,10 @@ export function safeNextPath(raw: string | null | undefined): string {
   if (parsed.pathname === '/login' || parsed.pathname === '/setup') return '/';
   if (parsed.pathname.startsWith('/api/')) return '/';
 
-  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  // 应用只有一个页面，视图在 hash 里（#/tasks、#/settings…）。
+  // 登录入口可能收到旧的 path-style next；保留它会让登录后落到 /tasks 404。
+  if (parsed.pathname !== '/') {
+    return `/#${parsed.pathname}${parsed.search}${parsed.hash}`;
+  }
+  return `/${parsed.search}${parsed.hash}`;
 }

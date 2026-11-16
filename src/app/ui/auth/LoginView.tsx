@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { Icon } from '../components/Icon';
+import { BootScreen } from '../components/BootScreen';
 import { AuthFatalView, authFatalFrom, type AuthFatal } from './AuthFatalView';
 import { AuthShell } from './AuthShell';
 import { PasswordField } from './PasswordField';
@@ -49,6 +50,9 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
   const nextPath = safeNextPath(initialNext ?? null);
 
   const [mode, setMode] = useState<LoginMode>('login');
+  const [checking, setChecking] = useState(true);
+  const [bootReady, setBootReady] = useState(false);
+  const [showBoot, setShowBoot] = useState(true);
   const [fatal, setFatal] = useState<AuthFatal | null>(null);
   const [securityQuestion, setSecurityQuestion] = useState<SecurityQuestion | null>(null);
 
@@ -82,9 +86,23 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
    */
   useEffect(() => {
     let cancelled = false;
+    let settleTimer = 0;
+    const controller = new AbortController();
+    // 认证接口不能无限等：超时后仍然落到可重试的错误页，而不是永久 BootScreen。
+    const timeoutTimer = window.setTimeout(() => controller.abort(), 12_000);
+    const startedAt = Date.now();
+    const settle = (): void => {
+      // 至少让启动动画完整展示，避免认证接口秒回时闪一下。
+      const wait = Math.max(0, 650 - (Date.now() - startedAt));
+      settleTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        setChecking(false);
+        setBootReady(true);
+      }, wait);
+    };
     void (async () => {
       try {
-        const status = await getAuthStatus();
+        const status = await getAuthStatus(controller.signal);
         if (cancelled) return;
         if (!status.configured) {
           window.location.replace(`/setup?next=${encodeURIComponent(nextPath)}`);
@@ -95,22 +113,29 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
           return;
         }
         setSecurityQuestion(status.securityQuestion);
+        window.clearTimeout(timeoutTimer);
+        settle();
       } catch (err) {
         if (cancelled) return;
+        window.clearTimeout(timeoutTimer);
         setFatal(authFatalFrom(asAuthError(err)));
+        settle();
       }
     })();
     return () => {
       cancelled = true;
+      controller.abort();
+      window.clearTimeout(timeoutTimer);
+      window.clearTimeout(settleTimer);
     };
   }, [nextPath]);
 
   // 模式切换后把焦点放到第一个可输入项，键盘用户不用 Tab 找。
   useEffect(() => {
-    if (fatal !== null) return;
+    if (checking || fatal !== null) return;
     if (mode === 'login') passwordRef.current?.focus();
     else if (securityQuestion !== null) answerRef.current?.focus();
-  }, [mode, fatal, securityQuestion]);
+  }, [mode, checking, fatal, securityQuestion]);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -259,6 +284,19 @@ export function LoginView({ initialNext }: LoginViewProps): JSX.Element {
       resettingRef.current = false;
       setResetting(false);
     }
+  }
+
+  if (showBoot) {
+    return (
+      <BootScreen
+        progress={bootReady ? 1 : 0.65}
+        stage={checking ? '正在检查登录状态' : '正在准备登录'}
+        ready={bootReady}
+        error={null}
+        onRetry={() => window.location.reload()}
+        onDone={() => setShowBoot(false)}
+      />
+    );
   }
 
   const head = fatal !== null

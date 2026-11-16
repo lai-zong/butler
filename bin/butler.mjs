@@ -265,7 +265,10 @@ async function cmdWeb(flags) {
     warn(`端口 ${wantPort} 被占用，已改用 ${port}`);
   }
 
-  const url = `http://127.0.0.1:${port}`;
+  // ★ 统一用 localhost 作为浏览器入口：Next 的页面重定向会把本机
+  //   origin 规范成 localhost；cookie 是 host-only 的，若入口用 127.0.0.1，
+  //   重定向后就会切到另一个 host，7 天内的会话也会像“没登录”。
+  const url = `http://localhost:${port}`;
 
   say();
   say(`  ${C.bold}butler${C.reset} ${C.dim}v${pkg.version}${C.reset}`);

@@ -18,7 +18,7 @@ import { firstSearchParam } from '../searchParams.js';
 
 describe('safeNextPath', () => {
   it('接受站内路径、查询串与 hash 深链', () => {
-    expect(safeNextPath('/tasks?filter=due')).toBe('/tasks?filter=due');
+    expect(safeNextPath('/tasks?filter=due')).toBe('/#/tasks?filter=due');
     expect(safeNextPath('/#/settings')).toBe('/#/settings');
     expect(safeNextPath('/')).toBe('/');
   });
@@ -34,6 +34,7 @@ describe('safeNextPath', () => {
     expect(safeNextPath('/login?next=/tasks')).toBe('/');
     expect(safeNextPath('/setup?next=/tasks')).toBe('/');
     expect(safeNextPath('/api/auth/status')).toBe('/');
+    expect(safeNextPath('/tasks')).toBe('/#/tasks');
   });
 
   it('拒绝控制字符与空值', () => {
