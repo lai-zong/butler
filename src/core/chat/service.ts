@@ -1046,7 +1046,7 @@ export function buildVerdict(args: {
           : `产出与硬约束「${v.content}」冲突`,
       memoryId: v.constraintId,
       memoryContent: v.content,
-      suggestion: '换个不涉及该约束的方案，或由你确认后继续',
+      suggestion: '换个不涉及该约束的方案，或到记忆控制台调整/撤销这条约束',
     });
   }
 
@@ -1243,7 +1243,7 @@ function buildRejectedReply(session: RunSessionResult, verdict: Verdict): string
   }
   suggestions.add('告诉我你的想法，我按你的意思重做');
   for (const s of suggestions) lines.push(`- ${s}`);
-  lines.push('- 或者直接说「我确认，继续」—— 你是最终决策者，我只负责说明风险');
+  lines.push('- 如果这条约束本身不对，请到记忆控制台调整或撤销它；安全约束不能靠一句聊天文本绕过');
 
   if (advisory.length > 0) {
     lines.push('');

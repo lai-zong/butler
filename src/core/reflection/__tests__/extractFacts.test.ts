@@ -19,7 +19,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { quoteAppearsIn } from '../extractFacts.js';
+import { extractFacts, quoteAppearsIn } from '../extractFacts.js';
+import { EventLog } from '../../events/log.js';
+import { FixedClock } from '../../ports/clock.js';
+import { domainForFactContent, normalizeFactCategory } from '../../memory/constraintSemantics.js';
 
 // ═══════════════════════════════════════════════════════════
 // ★ 防幻觉：quote 必须真的出现在用户发言里
@@ -83,5 +86,64 @@ describe('★ category → memClass 的映射语义', () => {
     expect(toMemClass('identity')).toBe('global_shared');
     expect(toMemClass('preference')).toBe('global_shared');
     expect(toMemClass('context')).toBe('global_shared');
+  });
+});
+
+describe('★ 事实类别护栏（2026-11-17 回归）', () => {
+  it('“控糖/尽量”不会被归类为硬约束', () => {
+    const content = '用户晚上尽量不吃甜的和油炸的食物。';
+    expect(normalizeFactCategory('constraint', content)).toBe('preference');
+    expect(domainForFactContent(content)).toBe('health');
+  });
+
+  it('“花生严重过敏”必须保留为硬约束', () => {
+    expect(normalizeFactCategory('preference', '用户对花生严重过敏。')).toBe('constraint');
+  });
+
+  it('“华法林/医嘱”必须保留为硬约束', () => {
+    expect(normalizeFactCategory('context', '用户服用华法林，医生禁止吃维生素K。')).toBe(
+      'constraint',
+    );
+  });
+});
+
+describe('★ extractFacts 端到端分类护栏', () => {
+  const T = 1_760_000_000_000;
+  const userText = '我最近在控糖，晚上尽量不吃甜的和油炸的；以后推荐吃的先帮我排除这两类';
+  const model = {
+    async completeStructured() {
+      return {
+        value: {
+          facts: [
+            {
+              content: '用户晚上尽量不吃甜的和油炸的食物。',
+              confidence: 0.85,
+              category: 'constraint',
+              quote: '晚上尽量不吃甜的和油炸的',
+            },
+          ],
+        },
+        usage: { inputTokens: 10, outputTokens: 10 },
+      };
+    },
+  };
+
+  it('★ 模型误标 constraint，最终仍落成 preference/global_shared', async () => {
+    const log = new EventLog('s_extract');
+    const clock = new FixedClock(T);
+    const r = await extractFacts({
+      model: model as never,
+      log,
+      clock,
+      store: {} as never,
+      userId: 'u',
+      userText,
+      existing: [],
+    });
+    expect(r.facts).toHaveLength(1);
+    expect(r.facts[0]?.category).toBe('preference');
+    expect(r.candidates[0]?.kind).toBe('preference');
+    expect(r.candidates[0]?.scope.memClass).toBe('global_shared');
+    expect(r.candidates[0]?.scope.domain).toBe('health');
   });
 });

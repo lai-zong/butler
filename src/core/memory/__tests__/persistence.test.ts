@@ -734,3 +734,39 @@ describe('⑦ diffStores 的比较能力', () => {
     expect(diffStores(a, b).identical).toBe(true);
   });
 });
+
+describe('① ★ 安全硬约束准入（2026-11-17 回归）', () => {
+  it('软偏好不能自动升级为 global_constraint', () => {
+    const d = decideAdmission({
+      candidate: candidate({
+        content: '用户晚上尽量不吃甜的和油炸的食物。',
+        scope: { memClass: 'global_constraint' },
+      }),
+      source: 'userStated',
+    });
+    expect(d.admission).toBe('needsReview');
+    expect(d.reason).toContain('偏好');
+  });
+
+  it('明确过敏仍可自主生效', () => {
+    const d = decideAdmission({
+      candidate: candidate({
+        content: '用户对花生严重过敏。',
+        scope: { memClass: 'global_constraint' },
+      }),
+      source: 'userStated',
+    });
+    expect(d.admission).toBe('autoApproved');
+  });
+
+  it('不明确的硬约束需确认，而不是自动生效', () => {
+    const d = decideAdmission({
+      candidate: candidate({
+        content: '用户对饮食有一些要求。',
+        scope: { memClass: 'global_constraint' },
+      }),
+      source: 'userStated',
+    });
+    expect(d.admission).toBe('needsReview');
+  });
+});

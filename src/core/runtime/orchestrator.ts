@@ -605,6 +605,10 @@ export async function runSession(args: RunSessionArgs): Promise<RunSessionResult
     hardConstraints: hardConstraintMemories,
     reports,
     now: args.clock.now(),
+    task: {
+      userGoal: args.userGoal,
+      domains: contract.domains,
+    },
   });
 
   // 审查已完全改为用户主动发起的工具型审查；主回合不再自动调用监督员。

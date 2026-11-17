@@ -59,13 +59,14 @@ function report(
     artifacts?: string[];
     findings?: ExecutionReport['findings'];
     status?: ExecutionReport['status'];
+    reply?: string;
   } = {},
 ): ExecutionReport {
   return {
     taskId: `t_${domain}`,
     domain,
     status: opts.status ?? 'done',
-    reply: `（${domain} 的汇报）`,
+    reply: opts.reply ?? `（${domain} 的汇报）`,
     artifacts: (opts.artifacts ?? []).map((c) => ({ kind: 'text' as const, content: c })),
     memoryRefs: [],
     uncertainties: [],
@@ -240,5 +241,96 @@ describe('verifyHardConstraints · 边界', () => {
       now: T,
     });
     expect(result.mustBlock).toBe(false);
+  });
+});
+
+describe('verifyHardConstraints · 任务适用性（2026-11-17 回归）', () => {
+  it('★ 写文件任务与饮食约束无关 → 不拦截', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('你对花生严重过敏')],
+      reports: [report('code', { artifacts: [], reply: '已写入 edge-check.txt' })],
+      task: { userGoal: '把 edge-check 写入文件', domains: ['code'] },
+      now: T,
+    });
+    expect(result.mustBlock).toBe(false);
+    expect(result.verdicts[0]?.applicability).toBe('not_applicable');
+    expect(log.byType('constraint.hardBlocked')).toHaveLength(0);
+  });
+
+  it('★ 饮食任务中 reply 已明确处理、artifacts 为空 → 通过', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('你对花生严重过敏')],
+      reports: [
+        report('life', {
+          artifacts: [],
+          reply: '今晚建议清蒸鱼和蔬菜，已排除花生和花生油。',
+        }),
+      ],
+      task: { userGoal: '今晚想点外卖，给我三个不踩雷的选择', domains: [] },
+      now: T,
+    });
+    expect(result.mustBlock).toBe(false);
+    expect(result.verdicts[0]?.applicability).toBe('applicable');
+    expect(result.verdicts[0]?.satisfied).toBe(true);
+  });
+
+  it('★ 饮食任务中 reply 没处理 → 仍然拦截', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('你对花生严重过敏')],
+      reports: [report('life', { artifacts: [], reply: '给你推荐炸鸡和甜点。' })],
+      task: { userGoal: '今晚想点外卖，给我三个不踩雷的选择', domains: [] },
+      now: T,
+    });
+    expect(result.mustBlock).toBe(true);
+    expect(result.verdicts[0]?.applicability).toBe('applicable');
+    expect(result.verdicts[0]?.satisfied).toBe(false);
+  });
+
+  it('★ 真正的安全约束在相关任务中仍然拦截', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('你对花生严重过敏')],
+      reports: [report('life', { artifacts: [], reply: '推荐花生酱拌面。' })],
+      task: { userGoal: '今晚吃什么', domains: ['life'] },
+      now: T,
+    });
+    expect(result.mustBlock).toBe(true);
+    expect(result.verdicts[0]?.applicability).toBe('applicable');
+  });
+
+  it('★ 旧数据里误存的软偏好硬约束不再卡死对话', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('用户晚上尽量不吃甜的和油炸的食物', 'm_legacy_soft')],
+      reports: [report('code', { artifacts: [], reply: '文件已写入。' })],
+      task: { userGoal: '写一个文件', domains: ['code'] },
+      now: T,
+    });
+    expect(result.mustBlock).toBe(false);
+    expect(result.verdicts[0]?.applicability).toBe('not_applicable');
+  });
+});
+
+describe('verifyHardConstraints · 仅提到禁忌物不等于处理', () => {
+  it('★ 推荐花生酱拌面不能被当成“已处理花生过敏”', () => {
+    const log = new EventLog('s');
+    const result = verifyHardConstraints({
+      log,
+      hardConstraints: [constraint('你对花生严重过敏')],
+      reports: [report('life', { artifacts: [], reply: '推荐花生酱拌面，很好吃。' })],
+      task: { userGoal: '今晚吃什么', domains: ['life'] },
+      now: T,
+    });
+    expect(result.mustBlock).toBe(true);
+    expect(result.verdicts[0]?.applicability).toBe('applicable');
+    expect(result.verdicts[0]?.satisfied).toBe(false);
   });
 });

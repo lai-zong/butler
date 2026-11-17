@@ -35,6 +35,10 @@ import type { MemoryCandidate } from './reflect.js';
 import { memoryExtractionSchema } from '../prompts/schemas.js';
 import { msg } from '../ports/model.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../config/budget.js';
+import {
+  domainForFactContent,
+  normalizeFactCategory,
+} from '../memory/constraintSemantics.js';
 
 // ═══════════════════════════════════════════════════════════
 // 常量与类型
@@ -181,43 +185,51 @@ export async function extractFacts(args: {
       dropped += 1;
       continue;
     }
-    checked.push({ ...f, content: f.content.trim(), quote: f.quote.trim() });
+    const content = f.content.trim();
+    checked.push({
+      ...f,
+      category: normalizeFactCategory(f.category, content),
+      content,
+      quote: f.quote.trim(),
+    });
   }
 
   // ── 转成记忆候选 ──
-  const candidates: MemoryCandidate[] = checked.map((f, i) => ({
-    id: `cand_fact_${args.clock.now().toString(36)}_${i}`,
-    kind: 'fact',
-    content: f.content,
-    confidence: clamp01(f.confidence),
-    /**
-     * ★ 证据链带上用户原话 —— 这是 `inferSource` 判定
-     *   「用户陈述」的依据，也是用户日后审计时看到的「你当时是这么说的」。
-     */
-    evidence: [`用户说：「${f.quote}」`],
-    scope: {
+  const candidates: MemoryCandidate[] = checked.map((f, i) => {
+    const domain = domainForFactContent(f.content);
+    return {
+      id: `cand_fact_${args.clock.now().toString(36)}_${i}`,
+      // 偏好必须是 preference，不能把软表达伪装成事实；硬约束才是 fact。
+      kind: f.category === 'preference' ? 'preference' : 'fact',
+      content: f.content,
+      confidence: clamp01(f.confidence),
       /**
-       * ★★ 类别决定记忆分层 —— 这是**安全设计的核心区分**，
-       *    不是分类学的洁癖。
-       *
-       *   实测踩过：`constraint` 类（过敏）被一律写成 `global_shared`，
-       *   于是它是一条**软约束** —— 可以被相关性过滤掉、会随时间衰减、
-       *   会被归档淘汰。
-       *
-       *   ⚠️ 而「花生过敏」这类信息的安全属性是**不可协商**的：
-       *      它必须 ① 无条件注入给每个相关仆人（不看相关性）
-       *             ② 不参与衰减与演化淘汰
-       *             ③ 任何冲突都按 blocking 处理
-       *
-       *   这正是 `global_constraint` 的定义（见方案 § 2.2⑥ 的权限矩阵）。
+       * ★ 证据链带上用户原话 —— 这是 `inferSource` 判定
+       *   「用户陈述」的依据，也是用户日后审计时看到的「你当时是这么说的」。
        */
-      memClass: f.category === 'constraint' ? 'global_constraint' : 'global_shared',
-    },
-    rationale: `从用户发言中提取（类别：${CATEGORY_LABEL[f.category] ?? f.category}）`,
-    layer: 'butler',
-    by: 'butler',
-    createdAt: args.clock.now(),
-  }));
+      evidence: [`用户说：「${f.quote}」`],
+      scope: {
+        /**
+         * ★★ 类别决定记忆分层 —— 这是**安全设计的核心区分**。
+         *
+         * 2026-11-17 实机事故：模型把「控糖/尽量不吃甜和油炸」标成
+         * `constraint`，被直接写成 global_constraint，之后每一轮都被
+         * 机械硬约束校验拦下，连写文件任务也失败。
+         *
+         * 所以这里不再把模型的 category 直接当真相：
+         *   · 有明确安全语义 → global_constraint；
+         *   · 软偏好 → global_shared + preference；
+         *   · 饮食/健康类偏好 → 带 health 领域，便于后续适用性判断。
+         */
+        memClass: f.category === 'constraint' ? 'global_constraint' : 'global_shared',
+        ...(domain !== undefined && f.category !== 'constraint' ? { domain } : {}),
+      },
+      rationale: `从用户发言中提取（类别：${CATEGORY_LABEL[f.category] ?? f.category}）`,
+      layer: 'butler',
+      by: 'butler',
+      createdAt: args.clock.now(),
+    };
+  });
 
   args.log.append({
     type: 'reflection.done',
@@ -276,7 +288,7 @@ const EXTRACT_SYSTEM = `你是一个"事实提取器"。你的唯一任务是从
    找不到原话就不要提这一条。宁可少提。
 2. **没有事实就返回空数组。** 这是完全正常的答案 ——
    「帮我查个天气」不含任何关于用户本人的事实。
-3. content 用第三人称陈述句，简洁，不超过 40 字。
+3. content 用第三人称陈述句，简洁，不超过 40 字；必须保留原话里的条件、时间范围和适用场景，不要把「尽量/希望」改写成绝对禁令。
 4. 一次最多 4 条。**宁可少提，不要凑数。**`;
 
 function buildExtractPrompt(userText: string, existing: readonly string[]): string {

@@ -38,6 +38,7 @@ import type { MemoryStore } from './store.js';
 import type { MemoryCandidate } from '../reflection/reflect.js';
 import type { MemoryEntry } from './types.js';
 import { snapshotOf } from './snapshot.js';
+import { isStrongSafetyContent, isSoftPreferenceContent } from './constraintSemantics.js';
 
 // ═══════════════════════════════════════════════════════════
 // 候选来源
@@ -142,6 +143,34 @@ export function decideAdmission(args: {
       reason: '原则会改变 AI 未来的行为方式，风险最高，需用户确认。',
       confidenceOk: true,
     };
+  }
+
+  /**
+   * ③ ★ 新增/修改安全硬约束必须过安全语义门。
+   *
+   * 2026-11-17 实机事故：用户说「控糖/尽量不吃甜和油炸」，
+   * 模型把它标成 constraint，旧逻辑对 userStated 直接 autoApproved，
+   * 于是一条软偏好变成 global_constraint，之后每轮机械拦截。
+   *
+   * 这里不能再把“模型说是 constraint”当真相：
+   *   · 明确安全语义（过敏/医嘱/禁用/不能吃等）→ 保持自主；
+   *   · 软表达/模糊表达 → 进入待审，绝不自动升级为安全规则。
+   */
+  if (candidate.scope.memClass === 'global_constraint') {
+    if (isSoftPreferenceContent(candidate.content)) {
+      return {
+        admission: 'needsReview',
+        reason: '这是偏好/软表达，不能自动成为全局安全硬约束；请确认是否升级。',
+        confidenceOk: true,
+      };
+    }
+    if (!isStrongSafetyContent(candidate.content)) {
+      return {
+        admission: 'needsReview',
+        reason: '硬约束必须是明确的安全约束（过敏、医嘱、禁用等），当前语义不够明确，需确认。',
+        confidenceOk: true,
+      };
+    }
   }
 
   // ③ AI 推断的偏好待审 —— 这正是"AI 静默把你带偏"的主要来源

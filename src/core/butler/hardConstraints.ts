@@ -22,14 +22,30 @@ import { coreOf, hasAnyNgram } from '../text/keywords.js';
 import type { ScoredMemory } from '../memory/recall.js';
 import type { ExecutionReport } from '../execution/types.js';
 import { artifactToText } from '../execution/render.js';
+import type { DomainId } from '../domain/types.js';
+import {
+  assessConstraintApplicability,
+  type ConstraintApplicability,
+} from '../memory/constraintSemantics.js';
+
+/**
+ * 文本里出现这些词，才说明它在约束下做了规避/核对，而非仅提到禁忌物。
+ *
+ * 反例：「推荐花生酱拌面」也提到了“花生”，但它是违反约束，不是处理。
+ */
+const SAFE_HANDLING_PATTERN = /排除|避免|避开|不含|禁用|禁止|不能|不得|不要|远离|过敏|注意|核对|确认|替代/;
 
 export interface HardConstraintVerdict {
   readonly constraintId: string;
   readonly content: string;
-  /** 该约束是否被每个产出方都处理过 */
+  /** 该约束对本次任务是否适用 */
+  readonly applicability: ConstraintApplicability;
+  /** 该约束是否被每个适用的产出方处理过 */
   readonly satisfied: boolean;
-  /** 哪些仆人没有处理它 */
+  /** 哪些产出方没有处理它 */
   readonly unhandledBy: readonly string[];
+  /** 可读的适用性/处理说明 */
+  readonly reason: string;
 }
 
 export interface HardConstraintReport {
@@ -57,11 +73,23 @@ function handledBy(report: ExecutionReport, constraintContent: string, constrain
   );
   if (refsIt) return true;
 
-  // ② 产出物中提到了相关关键词
-  const haystack = report.artifacts
-    .map((a) => artifactToText(a, '\n'))
+  // ② 最终回复、产出物、findings 中**明确处理**约束，才算处理过。
+  //
+  // 2026-11-17 实机事故：工具循环固定返回 artifacts: []，
+  // 最终交付只在 report.reply 里；旧实现只看 artifacts，
+  // 导致「reply 已明确避开甜食/油炸」仍被判未处理。
+  //
+  // 同时不能把“提到花生”直接当成“处理了花生过敏”：
+  // 「推荐花生酱拌面」也提到了花生，但它是违反约束，不是处理。
+  // 因此文本路径要求同时出现约束片段和明确的处理/规避词。
+  const haystack = [
+    report.reply,
+    ...report.artifacts.map((a) => artifactToText(a, '\n')),
+    ...(report.findings ?? []).map((f) => f.statement),
+  ]
+    .filter((text) => text.length > 0)
     .join('\n');
-  return mentions(haystack, constraintContent);
+  return mentions(haystack, constraintContent) && SAFE_HANDLING_PATTERN.test(haystack);
 }
 
 /**
@@ -114,6 +142,14 @@ export function verifyHardConstraints(args: {
   readonly hardConstraints: readonly ScoredMemory[];
   readonly reports: readonly ExecutionReport[];
   readonly now: number;
+  /**
+   * 本次任务上下文。用于判断硬约束是否真的与任务/产出相关。
+   * 不传时按 reports 自身的文本判断（兼容旧测试/调用方）。
+   */
+  readonly task?: {
+    readonly userGoal: string;
+    readonly domains: readonly DomainId[];
+  };
 }): HardConstraintReport {
   const verdicts: HardConstraintVerdict[] = [];
 
@@ -128,6 +164,32 @@ export function verifyHardConstraints(args: {
      */
     if (specificCore(hc.memory.content).length < 3) continue;
 
+    const applicability = assessConstraintApplicability({
+      content: hc.memory.content,
+      taskGoal: args.task?.userGoal ?? '',
+      taskDomains: args.task?.domains ?? [],
+      reports: args.reports,
+    });
+
+    /**
+     * 约束不适用 / 无法判断时，不做机械 blocking。
+     *
+     * ⚠️ 这不是“放行所有硬约束”：真正的安全约束只要适用，
+     *    仍然走下面的确定性校验；这里只是不允许一条无关规则
+     *    把写文件、代码等任务全部扣下。
+     */
+    if (applicability.applicability !== 'applicable') {
+      verdicts.push({
+        constraintId: hc.memory.id,
+        content: hc.memory.content,
+        applicability: applicability.applicability,
+        satisfied: true,
+        unhandledBy: [],
+        reason: applicability.reason,
+      });
+      continue;
+    }
+
     const unhandledBy: string[] = [];
     for (const rep of args.reports) {
       // 状态为 failed 的仆人没有产出，不算"未处理"
@@ -139,8 +201,10 @@ export function verifyHardConstraints(args: {
     verdicts.push({
       constraintId: hc.memory.id,
       content: hc.memory.content,
+      applicability: applicability.applicability,
       satisfied,
       unhandledBy,
+      reason: applicability.reason,
     });
 
     // ★ 机械拦截：确定性判定，不看模型怎么想
