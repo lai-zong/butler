@@ -42,6 +42,26 @@ pnpm 9.15.0
 
 ### 安装
 
+Windows 用户推荐直接双击项目根目录的 `启动.bat`：它会检查 Node.js 与依赖、自动创建 `.env.local`，然后启动开发服务器并打开浏览器。
+
+也可以手动安装。
+
+**Windows（cmd）**
+
+```bat
+pnpm install
+copy .env.example .env.local
+```
+
+**Windows（PowerShell）**
+
+```powershell
+pnpm install
+Copy-Item .env.example .env.local
+```
+
+**macOS / Linux**
+
 ```bash
 pnpm install
 cp .env.example .env.local
@@ -69,11 +89,33 @@ DEEPSEEK_API_KEY=你的密钥
 
 ### 启动
 
-```bash
-# 开发服务器（自动打开浏览器）
+Windows 推荐双击 `启动.bat`，它会自动完成依赖检查、环境文件创建并打开浏览器。
+
+也可以从项目根目录启动：
+
+```bat
+:: Windows cmd
 pnpm dev
 
-# 指定端口 / 不自动打开
+:: 指定端口（cmd）
+set PORT=3001
+pnpm dev
+
+:: 不自动打开浏览器（cmd）
+set BUTLER_NO_OPEN=1
+pnpm dev
+```
+
+```powershell
+# Windows PowerShell
+pnpm dev
+$env:PORT=3001; pnpm dev
+$env:BUTLER_NO_OPEN=1; pnpm dev
+```
+
+```bash
+# macOS / Linux
+pnpm dev
 PORT=3001 pnpm dev
 BUTLER_NO_OPEN=1 pnpm dev
 ```
