@@ -39,17 +39,15 @@ export interface SessionPathGuardOptions {
   readonly permission: SessionPermission;
   readonly protectedPaths: readonly string[];
   /**
-   * 允许执行命令的沙箱根（可选）。
+   * 受控命令沙箱根（可选）。
    *
-   * ★ 存在的理由：审查 Agent 需要在**临时副本**里跑测试/构建。
-   *   没有这个字段时 `run_command` 一律被拒 —— 而审查提示词又明确教模型
-   *   用它跑测试，等于每次审查都先撞一次墙，白烧一轮 token，
-   *   "在临时副本里跑测试"这个承诺实际不成立。
+   * ★ 这是为受控命令场景保留的能力；当前主对话和审查路由都**不传**它。
+   *   审查路由已改为只读文件/文档工具，不再通过命令执行取证。
    *
    * ⚠️ 给了它也不等于放开命令执行：
    *   · cwd 必须落在该根之下（字面与真实路径都比）；
    *   · 可执行文件名必须在白名单里；
-   *   · 主对话的工具作用域**不会**传这个字段。
+   *   · 参数本身仍不是 OS 沙箱，不能承诺宿主机隔离。
    */
   readonly commandRoot?: string;
   /**
@@ -61,7 +59,7 @@ export interface SessionPathGuardOptions {
   readonly allowedPaths?: readonly string[];
 }
 
-/** 审查沙箱里允许的可执行文件（只覆盖"跑测试 / 构建 / 看状态"）。 */
+/** 受控命令沙箱里允许的可执行文件（只覆盖"跑测试 / 构建 / 看状态"）。 */
 const SANDBOX_COMMANDS: ReadonlySet<string> = new Set([
   'node',
   'npm',

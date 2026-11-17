@@ -72,10 +72,10 @@ export interface CreateChatToolScopeInput {
    */
   readonly taskPlan?: TaskPlanState | undefined;
   /**
-   * 允许在哪个沙箱根里执行命令（可选）。
+   * 受控命令沙箱根（可选）。
    *
-   * ★ 只有审查作用域会传它：审查需要"在临时副本里跑测试"。
-   *   主对话一律不传 —— Web 会话没有 OS 沙箱，宁可不提供该工具。
+   * ★ 当前主对话和审查路由都不传它；审查已改为只读文件/文档工具。
+   *   Web 会话没有 OS 沙箱时，宁可不提供命令执行。
    *   权限、白名单与 cwd 校验都在 `sessionPathGuard` 里，这里只是透传。
    */
   readonly commandRoot?: string | undefined;

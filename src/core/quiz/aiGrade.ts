@@ -131,8 +131,12 @@ export async function gradeSubjective(args: {
       score,
       maxScore,
       ...(feedback.length > 0 ? { feedback } : {}),
+      /**
+       * ★ 只回传服务端答案卷里的 reference。
+       *   模型返回的 reference 是“批改员自己写的解释”，不可信；
+       *   旧实现让它覆盖可信参考答案，会把错误内容展示给用户。
+       */
       ...(q.reference.length > 0 ? { reference: q.reference } : {}),
-      ...(got.reference !== undefined ? { reference: got.reference } : {}),
     });
   }
   return { items };

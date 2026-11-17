@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPracticeRequest } from '../intent.js';
+import { isPracticeRequest, requiresEvidenceForPractice } from '../intent.js';
 
 describe('isPracticeRequest', () => {
   it('识别明确出题请求', () => {
@@ -26,6 +26,30 @@ describe('isPracticeRequest', () => {
       '你好',
     ]) {
       expect(isPracticeRequest(text), text).toBe(false);
+    }
+  });
+});
+
+describe('requiresEvidenceForPractice', () => {
+  it('识别依赖文件/笔记/文档的出题', () => {
+    for (const text of [
+      '先读一下 notes/数学笔记.md，再根据它出 3 道练习题。',
+      '根据附件里的文档出题',
+      '参考工作区里的资料出五道题',
+      '读一下这份报告，然后出题',
+    ]) {
+      expect(requiresEvidenceForPractice(text), text).toBe(true);
+    }
+  });
+
+  it('普通出题不要求取证', () => {
+    for (const text of [
+      '帮我出三道数学题',
+      '来几道题',
+      '根据我的水平出题',
+      'quiz me',
+    ]) {
+      expect(requiresEvidenceForPractice(text), text).toBe(false);
     }
   });
 });

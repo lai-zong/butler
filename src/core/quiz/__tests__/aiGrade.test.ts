@@ -96,4 +96,26 @@ describe('gradeSubjective', () => {
       gradeSubjective({ model, answerKey: key(), submission: { q1: 'a', q2: 'b' } }),
     ).rejects.toThrow('批改结果缺少题目');
   });
+
+  it('★ 不采纳模型自造的 reference，只回传答案卷里的可信 reference', async () => {
+    const { model } = fakeModel();
+    (model.completeStructured as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({
+      value: {
+        results: [
+          { questionId: 'q1', score: 4, maxScore: 5, feedback: 'ok', reference: '模型编造的答案' },
+          { questionId: 'q2', score: 8, maxScore: 10, feedback: 'ok', reference: '另一段编造' },
+        ],
+      },
+      usage: { inputTokens: 1, outputTokens: 1 },
+      attempts: 1,
+    });
+    const result = await gradeSubjective({
+      model,
+      answerKey: key(),
+      submission: { q1: 'a', q2: 'b' },
+    });
+    expect(result?.items[0]?.reference).toBe('特征值使 Av=λv');
+    expect(result?.items[1]?.reference).toBe('应提到对角化与稳定性');
+    expect(JSON.stringify(result)).not.toContain('模型编造的答案');
+  });
 });

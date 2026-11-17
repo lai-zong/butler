@@ -320,7 +320,15 @@ function quizFromRecord(
 
   const reference = asText(rec['reference'] ?? rawAnswer);
   const rubric = asText(rec['rubric'] ?? rec['gradingCriteria'] ?? rec['criteria']);
-  if (reference.length === 0 && rubric.length === 0) return null;
+  /**
+   * ★ 主观题必须能读出参考答案。
+   *
+   * 旧实现允许“只有 rubric、没有 reference”的题进入产出物，
+   * 而 readAnswerKey() 只把 correct/reference 视为可批改依据：
+   * 结果 UI 显示 gradable=true，提交后却 409。
+   * 这里和批改层统一为“没有 reference 就不算有效主观题”。
+   */
+  if (reference.length === 0) return null;
   return {
     question: { id, stem, options: [], type, ...(points !== 1 ? { points } : {}) },
     answer: {
@@ -367,6 +375,38 @@ function normalizeTable(a: RawArtifact): NormalizedTable | null {
   return null;
 }
 
+/**
+ * 题目 id 去重。
+ *
+ * ★ 模型经常把多道题都写成 `q1`（或者复制粘贴时漏改 id）。
+ *   如果原样落库，UI 的 key 会重复，答案表按 id 建 Map 也会互相覆盖，
+ *   最终表现为“两道题共用一个答案”。
+ *
+ * 处理策略：保留第一道题的 id，后续重复项加 `_2`、`_3`，
+ * 并同步修改对应答案的 id；不丢题、不改变题目顺序。
+ */
+function dedupeQuizIds(
+  parsed: { question: NormalizedQuizQuestion; answer: NormalizedQuizAnswer }[],
+): void {
+  const used = new Set<string>();
+  for (let i = 0; i < parsed.length; i += 1) {
+    const current = parsed[i]!;
+    let id = current.question.id;
+    if (used.has(id)) {
+      let suffix = 2;
+      while (used.has(`${id}_${suffix}`)) suffix += 1;
+      id = `${id}_${suffix}`;
+    }
+    if (id !== current.question.id) {
+      parsed[i] = {
+        question: { ...current.question, id },
+        answer: { ...current.answer, id },
+      };
+    }
+    used.add(id);
+  }
+}
+
 /** 归一化题目：优先专用 `quiz` 字段，退回 `items` 的对象数组。 */
 function normalizeQuiz(a: RawArtifact): {
   questions: NormalizedQuizQuestion[];
@@ -389,6 +429,7 @@ function normalizeQuiz(a: RawArtifact): {
     });
   }
 
+  dedupeQuizIds(parsed);
   return {
     questions: parsed.map((p) => p.question),
     answers: parsed.map((p) => p.answer),

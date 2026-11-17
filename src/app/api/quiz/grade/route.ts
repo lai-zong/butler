@@ -26,6 +26,10 @@ import type { QuizQuestion } from '@/core/execution/types.js';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+/** 一次提交的作答规模上限：防止超长/超多文本拖垮模型或事件日志。 */
+const MAX_ANSWER_KEYS = 200;
+const MAX_ANSWER_CHARS = 20_000;
+
 /** 请求体形状（宽松解析，逐字段校验） */
 interface GradeBody {
   readonly sessionId?: unknown;
@@ -62,6 +66,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
   if (answers === undefined) {
     return NextResponse.json({ error: 'answers 必须是 { 题目id: 选项字母 } 形式的对象' }, { status: 400 });
+  }
+  const answerEntries = Object.entries(answers);
+  const answerChars = answerEntries.reduce((sum, [key, value]) => sum + key.length + value.length, 0);
+  if (answerEntries.length > MAX_ANSWER_KEYS || answerChars > MAX_ANSWER_CHARS) {
+    return NextResponse.json(
+      { error: `作答规模超限：最多 ${MAX_ANSWER_KEYS} 项 / ${MAX_ANSWER_CHARS} 字符` },
+      { status: 413 },
+    );
   }
 
   const rt = await getRuntime();
@@ -206,8 +218,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   /**
    * ⚠️ 必须 flush：事件在内存里 append 完不等落盘，
    *    进程重启就丢。`/api/chat` 也是这个做法。
+   *
+   * ★ 不能吞掉失败：旧实现返回“批改完成”，但重启后成绩消失。
+   *   这里把持久化失败如实告诉用户，让 ta 知道需要重试/检查磁盘。
    */
-  await log.flushPersistence().catch(() => undefined);
+  try {
+    await log.flushPersistence();
+  } catch {
+    return NextResponse.json(
+      {
+        error: '批改结果未能写入磁盘，请检查磁盘空间后重试',
+        code: 'grade_persist_failed',
+      },
+      { status: 503 },
+    );
+  }
 
   return NextResponse.json({ ok: true, grade });
 }

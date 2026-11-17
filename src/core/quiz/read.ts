@@ -62,19 +62,31 @@ function parseCreated(
 
   const rawQuestions = rec['questions'];
   if (!Array.isArray(rawQuestions)) return null;
+  /**
+   * ★ 旧日志可能把多道题写成同一个 q1。
+   *   这里保留第一道，丢弃重复项；否则 UI 会重复 key，
+   *   答案表也会把两个 id 合成一个答案，造成错判。
+   *   新数据在 normalizeArtifact 阶段已自动重编号；这里兜底历史数据。
+   */
+  const seenQuestionIds = new Set<string>();
   const questions = rawQuestions
     .map(parseQuestion)
-    .filter((q): q is QuizQuestion => q !== null);
+    .filter((q): q is QuizQuestion => {
+      if (q === null || seenQuestionIds.has(q.id)) return false;
+      seenQuestionIds.add(q.id);
+      return true;
+    });
   if (questions.length === 0) return null;
 
   const rawAnswers = rec['answers'];
   const answers: ParsedAnswer[] = [];
+  const seenAnswerIds = new Set<string>();
   if (Array.isArray(rawAnswers)) {
     for (const a of rawAnswers) {
       if (typeof a !== 'object' || a === null) continue;
       const r = a as Record<string, unknown>;
       const id = asText(r['id']);
-      if (id.length === 0) continue;
+      if (id.length === 0 || seenAnswerIds.has(id) || !seenQuestionIds.has(id)) continue;
       const correct = asText(r['correct']);
       const reference = asText(r['reference']);
       const rubric = asText(r['rubric']);
@@ -85,6 +97,7 @@ function parseCreated(
           ? Math.min(100, Math.round(rawPoints))
           : 1;
       if (correct.length === 0 && reference.length === 0 && rubric.length === 0) continue;
+      seenAnswerIds.add(id);
       answers.push({
         id,
         points,
@@ -192,13 +205,23 @@ export function readQuizzes(log: EventLog, sessionId: string): readonly QuizItem
     const parsed = parseCreated(e.payload);
     if (!parsed) continue;
     const grade = gradedByQuiz.get(e.seq);
+    const questionIds = new Set(parsed.questions.map((q) => q.id));
+    /**
+     * ⚠️ 必须和 readAnswerKey() 的可用性一致：
+     *   只有 explanation/rubric、没有 correct/reference 的答案**不能批改**。
+     *   旧实现只看 answers.length，导致 UI 显示可批改、提交后 409。
+     */
+    const gradable = parsed.answers.some(
+      (a) =>
+        questionIds.has(a.id) &&
+        (a.correct !== undefined || a.reference !== undefined),
+    );
     out.push({
       id: e.seq,
       // ⚠️ 不是 `e.sessionId`（那是日志 id）—— 回填入参里的聊天会话 id
       sessionId,
       questions: parsed.questions,
-      // 答案卷不存在（如从脱敏备份导入）→ 明确标记不可批改
-      gradable: parsed.answers.length > 0,
+      gradable,
       ...(grade !== undefined ? { grade } : {}),
     });
   }

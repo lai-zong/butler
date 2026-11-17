@@ -6205,10 +6205,14 @@ function reviewPreviewText(userText: string): string {
  *
  * · done        —— 完整回复，整轮可审；
  * · interrupted —— 中断但保留了已生成部分，只审这部分；
- * · failed / running 仍不可选。
+ * · failed      —— 失败但保留了已生成部分，只审这部分；
+ * · running     —— 仍在生成，不可选。
  */
 function isReviewableTurn(turn: ReviewTurn): boolean {
-  return (turn.state === 'done' || turn.state === 'interrupted') && turn.assistant !== null;
+  return (
+    (turn.state === 'done' || turn.state === 'interrupted' || turn.state === 'failed') &&
+    turn.assistant !== null
+  );
 }
 
 /**

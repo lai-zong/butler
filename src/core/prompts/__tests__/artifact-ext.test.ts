@@ -241,6 +241,27 @@ describe('normalizeArtifact —— quiz（题目与答案分离）', () => {
     expect(JSON.stringify(questions)).not.toContain('要点齐全');
   });
 
+  it('★ 重复题目 id 会自动重编号，题目与答案保持一一对应', () => {
+    const n = normalizeArtifact({
+      kind: 'quiz',
+      quiz: [
+        { id: 'q1', stem: '第一题', options: ['甲', '乙'], answer: 'A' },
+        { id: 'q1', stem: '第二题', options: ['甲', '乙'], answer: 'B' },
+      ],
+    });
+    expect(questionsOf(n).map((q) => q.id)).toEqual(['q1', 'q1_2']);
+    expect(n?.answers.map((a) => a.id)).toEqual(['q1', 'q1_2']);
+    expect(n?.answers.map((a) => a.correct)).toEqual(['A', 'B']);
+  });
+
+  it('★ 主观题只有 rubric、没有 reference → 丢弃（否则 gradable 与 readAnswerKey 不一致）', () => {
+    const n = normalizeArtifact({
+      kind: 'quiz',
+      quiz: [{ id: 'q1', stem: '解释一下', type: 'short', rubric: '要点齐全' }],
+    });
+    expect(n).toBeNull();
+  });
+
   it('一道有效题都没有 → null', () => {
     expect(normalizeArtifact({ kind: 'quiz', quiz: [] })).toBeNull();
     expect(normalizeArtifact({ kind: 'quiz' })).toBeNull();

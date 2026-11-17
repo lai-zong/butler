@@ -235,6 +235,45 @@ describe('readAnswerKey', () => {
     expect(readAnswerKey(log, SESSION, quizId)).toBeUndefined();
   });
 
+  it('★ 只有 rubric、没有 correct/reference 的题不可批改（与 readAnswerKey 一致）', () => {
+    const log = new EventLog(LOG_ID);
+    log.append({
+      type: 'quiz.created',
+      actor: 'butler',
+      payload: {
+        taskId: SESSION,
+        questions: [{ id: 'q1', stem: '解释一下', options: [], type: 'short', points: 5 }],
+        answers: [{ id: 'q1', rubric: '要点齐全', points: 5 }],
+      },
+    });
+    const quizId = log.length;
+    expect(readQuizzes(log, SESSION)[0]?.gradable).toBe(false);
+    expect(readAnswerKey(log, SESSION, quizId)).toBeUndefined();
+  });
+
+  it('★ 旧日志里重复题目 id 只保留第一道，不产生重复 UI key / 错位答案', () => {
+    const log = new EventLog(LOG_ID);
+    log.append({
+      type: 'quiz.created',
+      actor: 'butler',
+      payload: {
+        taskId: SESSION,
+        questions: [
+          { id: 'q1', stem: '第一道', options: ['甲', '乙'], type: 'choice', points: 1 },
+          { id: 'q1', stem: '第二道', options: ['甲', '乙'], type: 'choice', points: 1 },
+        ],
+        answers: [
+          { id: 'q1', correct: 'A', points: 1 },
+          { id: 'q1', correct: 'B', points: 1 },
+        ],
+      },
+    });
+    const quiz = readQuizzes(log, SESSION)[0];
+    expect(quiz?.questions).toHaveLength(1);
+    expect(quiz?.questions[0]?.stem).toBe('第一道');
+    expect(readAnswerKey(log, SESSION, 1)?.correct.get('q1')).toBe('A');
+  });
+
   it('★ 绝不能把答案表现在直接当响应——它的类型里就有 correct', () => {
     // 这条是"提醒式断言"：说明为什么 API 层必须用 readQuizzes 而不是它
     const log = new EventLog(LOG_ID);

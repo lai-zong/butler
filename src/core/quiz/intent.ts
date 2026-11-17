@@ -28,3 +28,21 @@ export function isPracticeRequest(text: string): boolean {
 
   return false;
 }
+
+/**
+ * 出题请求是否**依赖外部资料**。
+ *
+ * ★ 只用于决定要不要先做一次只读取证；不改变“出题”本身。
+ *   “帮我出三道数学题”不需要读文件；
+ *   “根据笔记/附件/工作区文档出题”必须先取证，否则模型只能编。
+ */
+export function requiresEvidenceForPractice(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0) return false;
+
+  const evidenceVerb =
+    /(?:读|读取|阅读|打开|查看|分析|参考|结合|根据|基于|按照|从|总结|整理)/;
+  const evidenceSource =
+    /(?:文件|笔记|文档|资料|附件|目录|工作区|代码库|表格|报告|论文|教材|课程|数据|记录|\.(?:md|txt|pdf|docx?|csv|json|ya?ml|xlsx?|pptx?))/i;
+  return evidenceVerb.test(t) && evidenceSource.test(t);
+}
